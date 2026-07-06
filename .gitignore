@@ -21,7 +21,6 @@ build/
 
 # --- Claude Code (kept local, out of git) ---
 .claude/
-CLAUDE.md
 
 # --- OS / editor noise ---
 .DS_Store

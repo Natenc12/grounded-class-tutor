@@ -19,8 +19,12 @@ dist/
 build/
 *.local
 
-# --- Claude Code (kept local, out of git) ---
-.claude/
+# --- Claude Code ---
+# Ignore local/personal Claude config, but SHARE project skills + shared settings.
+.claude/*
+!.claude/skills/
+!.claude/settings.json
+.claude/settings.local.json
 
 # --- OS / editor noise ---
 .DS_Store

@@ -62,6 +62,23 @@
 - **Spike Pass 2 — tune:** full bake-off (chunking, k, embedder, generator) on a representative corpus,
   scored against the grown eval file; provisional defaults → evidence-backed choices.
 
+## Working the issue board  *(3 collaborators, parallel pickup)*
+GitHub issues for the active slice are generated from this roadmap by the `/roadmap-to-issues` skill
+(`.claude/skills/`). Each slice has an **epic** issue (dependency graph + child checklist + open flags) —
+that's the board's home base. Three conventions keep it honest:
+- **Pick from the ready-frontier.** Only take issues labeled `ready` (no open blockers). `blocked` means a
+  dependency isn't closed yet — leave it. The epic lists what's pickable *now*.
+- **Claim by assigning yourself** on GitHub before you start. That's the lock — there is no `wip` label; an
+  assignee means someone's on it.
+- **Reconcile after you close.** Closing a blocking issue does **not** auto-flip its dependents to `ready` —
+  GitHub doesn't know the graph. **Whoever closes a blocking issue re-runs `/roadmap-to-issues`** (no flag =
+  dry-run preview, `--create` to apply): it flips `blocked→ready` as deps close, re-ticks the epic, and adds
+  any new tasks — without duplicating existing ones (idempotent by hidden marker). Skip this and the labels
+  go stale and stop being trustworthy.
+
+Dependencies + file footprints (`Touches:`) live in each issue body; disjoint footprints = safe to work in
+parallel. The skill reads CLAUDE.md **Current status** to know which slice to project — keep that current.
+
 ## Readiness gate ✅  (all true → handoff valid)
 - [x] **No load-bearing design questions left open.** PM-1 (eval scoring rule) was the last one →
       resolved and **ratified** as **ADR 0023** (two-signal scoring: retrieval ∥ grounding; PARTIAL a

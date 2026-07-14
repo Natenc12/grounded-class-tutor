@@ -14,7 +14,7 @@ from pptx import Presentation
 from pypdf import PdfReader, PdfWriter
 from reportlab.pdfgen import canvas
 
-_OLE_SIGNATURE = b"\xd0\xcf\x11\xe0\xa1\xb1\x1a\xe1"
+from gct.ingest.parse import _OLE_SIGNATURE
 
 
 def make_pdf(path: Path, page_texts: list[str | None], encrypt_password: str | None = None) -> Path:

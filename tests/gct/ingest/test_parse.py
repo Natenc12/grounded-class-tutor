@@ -1,4 +1,4 @@
-"""Unit tests for `gct.ingest.parse` — pure, no DB / API key needed.
+"""Unit tests for `gct.ingest.parse` - pure, no DB / API key needed.
 
 Covers the honor-point ① contract: PDF/PPTX happy paths, per-page/slide unit
 boundaries (never-span, ADR 0019), provenance stamping, and each terminal-failure
@@ -28,7 +28,7 @@ class TestPdfHappyPath:
 
         assert isinstance(unit, ParsedUnit)
         with pytest.raises(AttributeError):
-            unit.text = "mutated"  # frozen dataclass — provenance can't drift post-parse
+            unit.text = "mutated"  # frozen dataclass - provenance can't drift post-parse
 
     def test_provenance_stamped_on_every_unit(self, pdf_factory):
         path = pdf_factory("lecture-3.pdf", ["Alpha", "Beta"])
@@ -84,6 +84,24 @@ class TestPptxHappyPath:
 
         assert "Beta content" not in units[0].text
         assert "Alpha content" not in units[1].text
+
+    def test_text_inside_a_grouped_shape_is_extracted(self, tmp_path):
+        from pptx import Presentation as PresentationBuilder
+
+        deck = PresentationBuilder()
+        slide = deck.slides.add_slide(deck.slide_layouts[6])
+        box1 = slide.shapes.add_textbox(0, 0, 100, 100)
+        box1.text_frame.text = "Grouped text one"
+        box2 = slide.shapes.add_textbox(0, 200, 100, 100)
+        box2.text_frame.text = "Grouped text two"
+        slide.shapes.add_group_shape([box1, box2])
+        path = tmp_path / "grouped.pptx"
+        deck.save(str(path))
+
+        [unit] = parse_file(path)
+
+        assert "Grouped text one" in unit.text
+        assert "Grouped text two" in unit.text
 
 
 class TestTerminalFailures:
@@ -145,3 +163,34 @@ class TestTerminalFailures:
             parse_file(path)
 
         assert exc_info.value.reason == "empty"
+
+    def test_pptx_valid_zip_but_not_a_real_ooxml_package_raises_unparseable(self, tmp_path):
+        # A structurally valid zip (unlike test_unparseable_pptx's raw garbage bytes)
+        # that isn't a real OOXML package - python-pptx fails deep inside package
+        # parsing here, not at the zip-open step, so this exercises a different
+        # failure mode than the plain-garbage-bytes case above.
+        import zipfile
+
+        path = tmp_path / "not_really_a_deck.pptx"
+        with zipfile.ZipFile(path, "w") as zf:
+            zf.writestr("[Content_Types].xml", "<Types/>")
+
+        with pytest.raises(ParseError) as exc_info:
+            parse_file(path)
+
+        assert exc_info.value.reason == "unparseable"
+
+    def test_malformed_slide_content_raises_unparseable(self, pptx_factory, monkeypatch):
+        import pptx.shapes.autoshape
+
+        path = pptx_factory("deck.pptx", ["Some text"])
+
+        def _boom(self):
+            raise RuntimeError("simulated corrupt slide part")
+
+        monkeypatch.setattr(pptx.shapes.autoshape.Shape, "has_text_frame", property(_boom))
+
+        with pytest.raises(ParseError) as exc_info:
+            parse_file(path)
+
+        assert exc_info.value.reason == "unparseable"

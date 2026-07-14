@@ -43,3 +43,8 @@ is pending Nate adding his `OPENAI_API_KEY` to `.env`.
 queue) → Retriever → Grounder → cited answer / refusal, script-driven, shipping `eval/questions.jsonl`
 (~12-question smoke suite). This is the differentiator, proven before any HTTP/UI. See `design/roadmap.md`
 and `design/components/{grounder,retriever,ingestion-worker}.md`.
+
+**Slice 1 work is on the GitHub issue board** — [epic #9](https://github.com/Natenc12/grounded-class-tutor/issues/9)
+(dependency graph + ready-frontier). Generated from this roadmap by the `/roadmap-to-issues` skill; see
+`design/HANDOFF.md` → *Working the issue board* for the ready-frontier / claim-by-assign / reconcile rules.
+Ready to pick up now: #1 parse · #2 chunk · #3 embed-adapter · #7 eval-suite.

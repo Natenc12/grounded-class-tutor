@@ -8,12 +8,15 @@ dependencies = [
     "pgvector>=0.3",
     "openai>=1.40",
     "python-dotenv>=1.0",
+    "pypdf>=6.14.2",
+    "python-pptx>=1.0.2",
 ]
 
 [project.optional-dependencies]
 dev = [
     "pytest>=8.0",
     "ruff>=0.6",
+    "reportlab>=5.0.0",
 ]
 
 [build-system]

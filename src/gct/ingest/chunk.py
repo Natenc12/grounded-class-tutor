@@ -64,9 +64,10 @@ def chunk_units(units: list[ParsedUnit]) -> list[TextChunk]:
     A unit whose text is shorter than `CHUNK_SIZE_WORDS` yields exactly ONE chunk (the whole
     unit). A unit with real text always yields >= 1 chunk.
     """
-    # TODO(nate): iterate units, extend the result with _chunk_one(unit) for each.
-    # See WIP-chunk.md "Planned shape" + "Edge cases".
-    raise NotImplementedError
+    chunks: list[TextChunk] = []
+    for unit in units:
+        chunks.extend(_chunk_one(unit))
+    return chunks
 
 
 def _chunk_one(unit: ParsedUnit) -> list[TextChunk]:
@@ -77,8 +78,16 @@ def _chunk_one(unit: ParsedUnit) -> list[TextChunk]:
     page_or_slide=unit.page_or_slide)`. Simple/flattening join (loses newline structure) is the
     locked provisional (WIP-chunk.md decision 4).
     """
-    # TODO(nate): implement per the docstring.
-    raise NotImplementedError
+    words = unit.text.split()
+    windows = _word_windows(len(words), CHUNK_SIZE_WORDS, CHUNK_OVERLAP_WORDS)
+    return [
+        TextChunk(
+            text=" ".join(words[start:end]),
+            file=unit.file,
+            page_or_slide=unit.page_or_slide,
+        )
+        for start, end in windows
+    ]
 
 
 def _word_windows(n_words: int, size: int, overlap: int) -> list[tuple[int, int]]:
@@ -91,5 +100,19 @@ def _word_windows(n_words: int, size: int, overlap: int) -> list[tuple[int, int]
       - `n_words == 0` -> `[]`; `0 < n_words <= size` -> exactly one window `(0, n_words)`.
       - Never emit an empty window; never advance by 0 (guarded by the module-level assert).
     """
-    # TODO(nate): implement the windowing math. This is the part to get right + test hardest.
-    raise NotImplementedError
+    assert 0 <= overlap < size, "overlap must be in [0, size)"  # stride > 0, no infinite loop
+    if n_words == 0:
+        return []
+
+    windows = []
+    start = 0
+    stride = size - overlap
+
+    while True:
+        end = min(start + size, n_words)
+        windows.append((start, end))
+        if end == n_words:
+            break
+        start += stride
+
+    return windows

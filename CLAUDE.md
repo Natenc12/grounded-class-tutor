@@ -36,8 +36,9 @@ Secrets (`OPENAI_API_KEY`, `DATABASE_URL`) live in `.env` (gitignored).
 
 ## Current status
 **Slice 0 — Foundation: COMPLETE** (schema + provider interfaces + embedding-consistency anchor).
-DB migrated & verified (4 tables, vector column, scope + HNSW indexes). Smoke test's final green PASS
-is pending Nate adding his `OPENAI_API_KEY` to `.env`.
+DB migrated & verified (4 tables, vector column, scope + HNSW indexes). Smoke test passes fully green
+(`PASS — foundation is wired.`) — db, live embeddings (`text-embedding-3-small`, dim 1536), and live
+generation (`gpt-4o-mini`) all confirmed end-to-end.
 
 **Next up → Slice 1 (the tracer bullet):** ingest ONE real file inline (parse→chunk→embed→index, no
 queue) → Retriever → Grounder → cited answer / refusal, script-driven, shipping `eval/questions.jsonl`

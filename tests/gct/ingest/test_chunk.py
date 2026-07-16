@@ -8,7 +8,6 @@ from __future__ import annotations
 import pytest
 
 from gct.ingest.chunk import (
-    CHUNK_OVERLAP_WORDS,
     CHUNK_SIZE_WORDS,
     TextChunk,
     _word_windows,

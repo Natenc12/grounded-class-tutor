@@ -44,8 +44,9 @@ class TextChunk:
 
     Distinct from `ParsedUnit` (a whole page/slide) even though the fields coincide today:
     the type is what tells a caller this text has been chunked and is safe to embed. Carries
-    ONLY text + provenance - scope, embedding, and identity are attached downstream (the seam
-    documented in WIP-chunk.md). `page_or_slide` is scalar by never-span (ADR 0019).
+    ONLY text + provenance - scope, embedding, and identity are attached downstream (the PM-4
+    seam; see module docstring, embedding stamp per ADR 0018). `page_or_slide` is scalar by
+    never-span (ADR 0019).
     """
 
     text: str
@@ -75,8 +76,8 @@ def _chunk_one(unit: ParsedUnit) -> list[TextChunk]:
 
     Split `unit.text` on whitespace into words, window them via `_word_windows`, and for each
     window build a `TextChunk(text=" ".join(window_words), file=unit.file,
-    page_or_slide=unit.page_or_slide)`. Simple/flattening join (loses newline structure) is the
-    locked provisional (WIP-chunk.md decision 4).
+    page_or_slide=unit.page_or_slide)`. Simple/flattening join (loses newline structure) is part
+    of the locked provisional whitespace-word strategy (see module docstring, ADR 0019 / 0021).
     """
     words = unit.text.split()
     windows = _word_windows(len(words), CHUNK_SIZE_WORDS, CHUNK_OVERLAP_WORDS)

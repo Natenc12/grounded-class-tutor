@@ -26,6 +26,13 @@ build/
 !.claude/settings.json
 .claude/settings.local.json
 
+# --- Dogfood corpus (real course materials — never committed, ADR 0021 / C5) ---
+# The eval bench references these by filename; the files themselves stay local.
+# A committed manifest (data/dogfood/*/manifest.md) records what the questions point at.
+data/dogfood/**
+!data/dogfood/**/
+!data/dogfood/**/manifest.md
+
 # --- OS / editor noise ---
 .DS_Store
 .idea/

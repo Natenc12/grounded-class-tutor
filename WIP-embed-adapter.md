@@ -33,14 +33,14 @@ tokens → the exact hard failure PM-1 says this adapter exists to prevent.
   - [x] docstring: adapter classifies, never retries; worker owns ADR 0011 budget
   - [x] `embed()` catches `RateLimitError`, `APITimeoutError`, `InternalServerError`,
         `APIConnectionError` → `TransientEmbeddingError`; terminal errors propagate
-- [ ] **Tests** — new `tests/gct/providers/test_openai_embeddings.py` (fake client via `client=`)
-  - [ ] order preserved + length matches across multiple sub-batches
-  - [ ] splits on token budget even under 2048 count (⭐ the regression test)
-  - [ ] splits on the count cap
-  - [ ] every recorded sub-batch call is under **both** caps
-  - [ ] `embed([])→[]`
-  - [ ] transient error → `TransientEmbeddingError`; non-transient propagates
-- [ ] Run: `uv run ruff check` + `uv run pytest`
+- [x] **Tests** — new `tests/gct/providers/test_openai_embeddings.py` (fake client via `client=`)
+  - [x] order preserved + length matches across multiple sub-batches
+  - [x] splits on token budget even under 2048 count (⭐ the regression test)
+  - [x] splits on the count cap
+  - [x] every recorded sub-batch call is under **both** caps
+  - [x] `embed([])→[]`
+  - [x] transient error → `TransientEmbeddingError`; non-transient propagates
+- [x] Run: `uv run ruff check` + `uv run pytest` — 31 passed
 - [ ] **Delete this file**, then open PR (Blocks #4)
 
 ## Out of scope (do NOT do here)

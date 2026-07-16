@@ -23,12 +23,12 @@ tokens → the exact hard failure PM-1 says this adapter exists to prevent.
   ("the caller decides retry policy, this module never does"); keeps the PM-4 seam pure.
 
 ## Task checklist
-- [ ] **Token-aware packer** in `src/gct/providers/openai_provider.py`
-  - [ ] `_EMBED_TOKEN_BUDGET` = 300k cap with conservative margin (~250k)
-  - [ ] per-text est: `len(text) // CHARS_PER_TOKEN + 1` (small divisor = overestimate)
-  - [ ] greedy pack in order; flush when next would breach count **or** token cap
-  - [ ] edges: `embed([])→[]`; lone over-budget text ships as singleton (comment why)
-  - [ ] fix stale `_EMBED_INPUT_CAP` comment (cites PM-2 → correctness floor is PM-1)
+- [x] **Token-aware packer** in `src/gct/providers/openai_provider.py`
+  - [x] `_EMBED_TOKEN_BUDGET` = 300k cap with conservative margin (~250k)
+  - [x] per-text est: `len(text) // CHARS_PER_TOKEN + 1` (divisor 3 = overestimate for dense text)
+  - [x] greedy pack in order (`_sub_batches`); flush when next would breach count **or** token cap
+  - [x] edges: `embed([])→[]`; lone over-budget text ships as singleton (comment why)
+  - [x] fix stale `_EMBED_INPUT_CAP` comment (cites PM-2 → correctness floor is PM-1)
 - [ ] **`TransientEmbeddingError`** in `src/gct/providers/base.py`
   - [ ] docstring: adapter classifies, never retries; worker owns ADR 0011 budget
   - [ ] `embed()` catches `RateLimitError`, `APITimeoutError`, `InternalServerError`,

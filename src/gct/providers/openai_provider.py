@@ -2,7 +2,7 @@
 commitments — the whole point of the interface is that these are swappable."""
 from __future__ import annotations
 
-from typing import Sequence
+from typing import Iterator, Sequence
 
 from openai import OpenAI
 
@@ -14,9 +14,49 @@ from ..config import (
 )
 from .base import Message
 
-# OpenAI embeddings cap: 2048 inputs (and ~300k tokens) per request. The adapter batches under
-# this so the worker's "embed all" call stays honest (PM-2).
+# OpenAI embeddings caps: 2048 inputs AND ~300k tokens per request. A single over-cap call is a
+# hard failure, not a throughput issue — the adapter sub-batches under BOTH so the worker's
+# "embed all" stays honest (PM-1 correctness floor). The token cap is usually the binding one:
+# the crossover is ~146 tokens/input, and real chunks run well above that.
 _EMBED_INPUT_CAP = 2048
+
+# The 300k token cap, held back by a safety margin. We *estimate* tokens (below), so we bias
+# every knob toward OVER-counting: undercounting would pack too much and blow the real cap (a
+# hard failure), while overcounting just costs one extra API call. English is ~4 chars/token, but
+# we divide by 3 so dense text (code, few spaces, other languages) still over-counts rather than
+# under-counts; the sub-300k budget absorbs any remaining estimate error.
+_EMBED_TOKEN_BUDGET = 250_000
+_CHARS_PER_TOKEN = 3
+
+
+def _est_tokens(text: str) -> int:
+    # +1 so any non-empty text counts for at least one token (never rounds to zero).
+    return len(text) // _CHARS_PER_TOKEN + 1
+
+
+def _sub_batches(texts: Sequence[str]) -> Iterator[list[str]]:
+    """Greedily pack `texts` (in order) into batches under both provider caps.
+
+    Yields nothing for empty input. A lone text whose own estimate exceeds the token budget
+    still ships as a singleton batch — we can't split one text; keeping chunks embeddable is the
+    chunker's contract (ADR 0019), not the adapter's.
+    """
+    batch: list[str] = []
+    batch_tokens = 0
+    for text in texts:
+        est = _est_tokens(text)
+        # Flush before adding if this text would breach either cap (skip when batch is empty, so
+        # an oversized lone text isn't dropped — it goes out on its own next).
+        if batch and (
+            len(batch) >= _EMBED_INPUT_CAP or batch_tokens + est > _EMBED_TOKEN_BUDGET
+        ):
+            yield batch
+            batch = []
+            batch_tokens = 0
+        batch.append(text)
+        batch_tokens += est
+    if batch:
+        yield batch
 
 
 def _client(client: OpenAI | None) -> OpenAI:
@@ -44,10 +84,9 @@ class OpenAIEmbeddings:
 
     def embed(self, texts: Sequence[str]) -> list[list[float]]:
         out: list[list[float]] = []
-        for start in range(0, len(texts), _EMBED_INPUT_CAP):
-            batch = texts[start : start + _EMBED_INPUT_CAP]
+        for batch in _sub_batches(texts):
             resp = self._client.embeddings.create(
-                model=self._model_id, input=list(batch), dimensions=self._dim
+                model=self._model_id, input=batch, dimensions=self._dim
             )
             out.extend(item.embedding for item in resp.data)
         return out

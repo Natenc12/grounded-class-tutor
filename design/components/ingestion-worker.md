@@ -121,6 +121,11 @@ Slow/external work runs with **no transaction open**; the transaction is a short
 ## Open / deferred (out of this spec)
 - **Chunking strategy / size / overlap** — spike; the single biggest lever on N1/N2 recall.
 - **Parsing tooling** — partly empirical (format coverage, metadata fidelity) → spike.
+  *Known Pass-2 input:* scanned / OCR-noisy PDFs (dogfood corpus — Long, Livingston) parse to garbled
+  text under pypdf; the concrete representative case that makes the pypdf-vs-`unstructured` bake-off
+  (roadmap Spike Pass 2) decide something. Note the boundary: *re-OCR* of scanned PDFs is the deferred
+  photo/OCR subsystem (ADR 0002, V4) — out of scope here; this is extraction-quality on an allowed
+  input, not the capture subsystem.
 - **Terminal-reason taxonomy** — V1 ships a small enumerated set (unparseable / protected / unsupported
   / empty); richer taxonomy is a clean V2 extension (ADR 0020).
 - **Throughput / batching (N6)** — embed-call batch *sizing* + worker concurrency are tuning, not

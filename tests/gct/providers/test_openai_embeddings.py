@@ -43,14 +43,17 @@ class _FakeResponse:
 
 
 class _FakeEmbeddingsAPI:
-    def __init__(self, calls: list[list[str]], error: Exception | None) -> None:
+    def __init__(
+        self, calls: list[list[str]], error: Exception | None, fail_on_call: int | None
+    ) -> None:
         self.calls = calls
         self._error = error
+        self._fail_on_call = fail_on_call  # 1-indexed; None → fail on every call
         self._counter = 0
 
     def create(self, *, model: str, input: list[str], dimensions: int) -> _FakeResponse:
         self.calls.append(list(input))
-        if self._error is not None:
+        if self._error is not None and self._fail_on_call in (None, len(self.calls)):
             raise self._error
         data = []
         for _ in input:
@@ -60,13 +63,15 @@ class _FakeEmbeddingsAPI:
 
 
 class FakeOpenAI:
-    def __init__(self, error: Exception | None = None) -> None:
+    def __init__(self, error: Exception | None = None, fail_on_call: int | None = None) -> None:
         self.calls: list[list[str]] = []
-        self.embeddings = _FakeEmbeddingsAPI(self.calls, error)
+        self.embeddings = _FakeEmbeddingsAPI(self.calls, error, fail_on_call)
 
 
-def _make(error: Exception | None = None) -> tuple[OpenAIEmbeddings, FakeOpenAI]:
-    fake = FakeOpenAI(error)
+def _make(
+    error: Exception | None = None, fail_on_call: int | None = None
+) -> tuple[OpenAIEmbeddings, FakeOpenAI]:
+    fake = FakeOpenAI(error, fail_on_call)
     return OpenAIEmbeddings(client=fake), fake
 
 
@@ -167,8 +172,24 @@ class TestEmbed:
     def test_transient_provider_error_is_reclassified(self):
         embedder, _ = _make(error=_openai_error(RateLimitError, 429, "slow down"))
 
-        with pytest.raises(TransientEmbeddingError):
+        with pytest.raises(TransientEmbeddingError) as excinfo:
             embedder.embed(["anything"])
+
+        # `raise ... from err` preserves the real cause for the worker's logs / debugging.
+        assert isinstance(excinfo.value.__cause__, RateLimitError)
+
+    def test_transient_error_on_a_later_batch_aborts_the_whole_call(self):
+        # A mid-stream batch failure discards the whole call (no partial `out`) - the "retry
+        # reprocesses from scratch" semantics the Slice-2 worker relies on (ADR 0011 / 0020).
+        embedder, fake = _make(
+            error=_openai_error(RateLimitError, 429, "slow down"), fail_on_call=2
+        )
+        texts = ["a"] * (_EMBED_INPUT_CAP + 3)  # forces exactly two batches
+
+        with pytest.raises(TransientEmbeddingError):
+            embedder.embed(texts)
+
+        assert len(fake.calls) == 2  # first batch ran; second raised, nothing returned
 
     def test_terminal_provider_error_propagates_untouched(self):
         embedder, _ = _make(error=_openai_error(AuthenticationError, 401, "bad key"))

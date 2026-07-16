@@ -4,7 +4,13 @@ from __future__ import annotations
 
 from typing import Iterator, Sequence
 
-from openai import OpenAI
+from openai import (
+    APIConnectionError,
+    APITimeoutError,
+    InternalServerError,
+    OpenAI,
+    RateLimitError,
+)
 
 from ..config import (
     ACTIVE_EMBEDDING_MODEL_ID,
@@ -12,7 +18,17 @@ from ..config import (
     EMBEDDING_DIM,
     load_settings,
 )
-from .base import Message
+from .base import Message, TransientEmbeddingError
+
+# OpenAI's "try again" errors: rate limit (429), timeout, server (5xx), network drop. Anything
+# else (bad key, malformed request, permission, not found) is terminal — retrying is futile, so
+# we let it propagate untouched.
+_TRANSIENT_OPENAI_ERRORS = (
+    RateLimitError,
+    APITimeoutError,
+    InternalServerError,
+    APIConnectionError,
+)
 
 # OpenAI embeddings caps: 2048 inputs AND ~300k tokens per request. A single over-cap call is a
 # hard failure, not a throughput issue — the adapter sub-batches under BOTH so the worker's
@@ -85,9 +101,12 @@ class OpenAIEmbeddings:
     def embed(self, texts: Sequence[str]) -> list[list[float]]:
         out: list[list[float]] = []
         for batch in _sub_batches(texts):
-            resp = self._client.embeddings.create(
-                model=self._model_id, input=batch, dimensions=self._dim
-            )
+            try:
+                resp = self._client.embeddings.create(
+                    model=self._model_id, input=batch, dimensions=self._dim
+                )
+            except _TRANSIENT_OPENAI_ERRORS as err:
+                raise TransientEmbeddingError(str(err)) from err
             out.extend(item.embedding for item in resp.data)
         return out
 

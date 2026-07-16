@@ -29,9 +29,9 @@ tokens → the exact hard failure PM-1 says this adapter exists to prevent.
   - [x] greedy pack in order (`_sub_batches`); flush when next would breach count **or** token cap
   - [x] edges: `embed([])→[]`; lone over-budget text ships as singleton (comment why)
   - [x] fix stale `_EMBED_INPUT_CAP` comment (cites PM-2 → correctness floor is PM-1)
-- [ ] **`TransientEmbeddingError`** in `src/gct/providers/base.py`
-  - [ ] docstring: adapter classifies, never retries; worker owns ADR 0011 budget
-  - [ ] `embed()` catches `RateLimitError`, `APITimeoutError`, `InternalServerError`,
+- [x] **`TransientEmbeddingError`** in `src/gct/providers/base.py`
+  - [x] docstring: adapter classifies, never retries; worker owns ADR 0011 budget
+  - [x] `embed()` catches `RateLimitError`, `APITimeoutError`, `InternalServerError`,
         `APIConnectionError` → `TransientEmbeddingError`; terminal errors propagate
 - [ ] **Tests** — new `tests/gct/providers/test_openai_embeddings.py` (fake client via `client=`)
   - [ ] order preserved + length matches across multiple sub-batches

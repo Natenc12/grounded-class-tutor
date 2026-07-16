@@ -8,6 +8,17 @@ from typing import Protocol, Sequence
 Message = dict[str, str]
 
 
+class TransientEmbeddingError(Exception):
+    """A retryable embedding failure (rate limit / timeout / server / network).
+
+    The provider-agnostic mirror of the *transient* class: an adapter catches its provider's
+    "try again" errors and re-raises this so callers never touch provider-specific exception
+    types. Like `parse.py`'s `ParseError` (terminal), the adapter only *classifies* — the retry
+    loop + budget live in the Slice-2 worker (ADR 0011), never here. Terminal errors (bad key,
+    malformed request) are not wrapped; they propagate untouched, since retrying them is futile.
+    """
+
+
 class Embeddings(Protocol):
     """Turn text into vectors. The active implementation's `model_id` is the ADR 0018
     invariant subject — it gets stamped onto every chunk and asserted at query time."""

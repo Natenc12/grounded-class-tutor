@@ -15,10 +15,12 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
+from uuid import uuid4
 
 import psycopg
 
 from gct.ingest.chunk import chunk_units
+from gct.ingest.index import index_file
 from gct.ingest.parse import parse_file
 from gct.providers.base import Embeddings
 
@@ -104,4 +106,14 @@ def ingest_file(
     all-or-nothing atomic write (which also creates the minimal `files` row -> `ready`). `conn` must be
     a connection with the pgvector adapter registered - use `gct.db.connect()`.
     """
-    raise NotImplementedError
+    file_id = str(uuid4())
+    chunks = compose(path, owner_id, class_id, embedder=embedder)
+    index_file(
+        conn,
+        file_id=file_id,
+        filename=Path(path).name,
+        owner_id=owner_id,
+        class_id=class_id,
+        chunks=chunks,
+    )
+    return file_id

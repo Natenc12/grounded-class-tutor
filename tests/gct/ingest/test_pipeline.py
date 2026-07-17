@@ -10,7 +10,7 @@ import pytest
 
 from gct.ingest.chunk import chunk_units
 from gct.ingest.parse import ParseError, parse_file
-from gct.ingest.pipeline import PreparedChunk, compose
+from gct.ingest.pipeline import PreparedChunk, compose, ingest_file
 
 OWNER_ID = "test-owner"
 CLASS_ID = "test-class"
@@ -53,3 +53,24 @@ def test_compose_propagates_parse_error_on_empty_file(pdf_factory, fake_embedder
 
     with pytest.raises(ParseError):
         compose(path, OWNER_ID, CLASS_ID, embedder=fake_embedder)
+
+
+def test_ingest_file_end_to_end(pdf_factory, fake_embedder, db):
+    """The top-level Slice-1 entry: a real file goes through parse→chunk→embed→index and lands as a
+    queryable, `ready` file. Returns the minted `file_id`; chunk rows are present under it."""
+    conn, owner_id, class_id = db
+    path = pdf_factory("lecture.pdf", ["alpha beta gamma", "delta epsilon"])
+
+    file_id = ingest_file(path, owner_id, class_id, embedder=fake_embedder, conn=conn)
+
+    assert isinstance(file_id, str)
+    status = conn.execute(
+        "select status from files where file_id = %s::uuid", (file_id,)
+    ).fetchone()[0]
+    assert status == "ready"
+
+    n_chunks = conn.execute(
+        "select count(*) from chunks where file_id = %s::uuid", (file_id,)
+    ).fetchone()[0]
+    # One chunk per short page (text under CHUNK_SIZE_WORDS) — matches the real chunker.
+    assert n_chunks == len(chunk_units(parse_file(path)))

@@ -33,6 +33,11 @@ data/dogfood/**
 !data/dogfood/**/
 !data/dogfood/**/manifest.md
 
+# --- Personal understanding log (gct-brief / gct-check / gct-english) ---
+# Nate's own comprehension notes + glossary, in his words — not project truth.
+# Personal for now; drop this line if it ever becomes a shared team artifact.
+understanding/
+
 # --- OS / editor noise ---
 .DS_Store
 .idea/

@@ -50,4 +50,45 @@ def index_file(
       - `embedding` (`list[float]`) adapts to `vector(1536)` only if the connection registered the
         pgvector type - `conn` MUST come from `gct.db.connect()`.
     """
-    raise NotImplementedError
+    with conn.transaction():
+        # 1. Publish the files row as `ready` (upsert). Must precede the chunk insert: chunks FK to
+        #    files.file_id. A repeat file_id lands on the UPDATE branch (idempotent re-index).
+        conn.execute(
+            """
+            insert into files (file_id, owner_id, class_id, filename, status)
+            values (%(file_id)s::uuid, %(owner_id)s, %(class_id)s::uuid, %(filename)s, 'ready')
+            on conflict (file_id) do update set status = 'ready', updated_at = now()
+            """,
+            {"file_id": file_id, "owner_id": owner_id, "class_id": class_id, "filename": filename},
+        )
+        # 2. Drop the old set for this file - re-running replaces cleanly, no dedup keys (ADR 0020).
+        conn.execute(
+            "delete from chunks where file_id = %(file_id)s::uuid",
+            {"file_id": file_id},
+        )
+        # 3. Insert the full new set. page_or_slide int -> text; ids cast ::uuid at the boundary;
+        #    embedding (list[float]) adapts to vector(1536) via the registered pgvector type.
+        with conn.cursor() as cur:
+            cur.executemany(
+                """
+                insert into chunks
+                    (file_id, owner_id, class_id, text, file, page_or_slide,
+                     embedding, embedding_model_id)
+                values
+                    (%(file_id)s::uuid, %(owner_id)s, %(class_id)s::uuid, %(text)s, %(file)s,
+                     %(page_or_slide)s, %(embedding)s, %(embedding_model_id)s)
+                """,
+                [
+                    {
+                        "file_id": file_id,
+                        "owner_id": chunk.owner_id,
+                        "class_id": chunk.class_id,
+                        "text": chunk.text,
+                        "file": chunk.file,
+                        "page_or_slide": str(chunk.page_or_slide),
+                        "embedding": chunk.embedding,
+                        "embedding_model_id": chunk.embedding_model_id,
+                    }
+                    for chunk in chunks
+                ],
+            )

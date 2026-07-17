@@ -48,4 +48,5 @@ and `design/components/{grounder,retriever,ingestion-worker}.md`.
 **Slice 1 work is on the GitHub issue board** — [epic #9](https://github.com/Natenc12/grounded-class-tutor/issues/9)
 (dependency graph + ready-frontier). Generated from this roadmap by the `/roadmap-to-issues` skill; see
 `design/HANDOFF.md` → *Working the issue board* for the ready-frontier / claim-by-assign / reconcile rules.
-Ready to pick up now: #1 parse · #2 chunk · #3 embed-adapter · #7 eval-suite.
+Ready to pick up now: #4 pipeline · #12 parse-notes · #13 parse-tables.
+Done (merged): #1 parse · #2 chunk · #3 embed-adapter · #7 eval-suite.

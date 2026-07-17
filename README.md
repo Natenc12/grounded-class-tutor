@@ -6,8 +6,14 @@ product. See [`design/START-HERE.md`](design/START-HERE.md) for the full picture
 
 ## Status
 
-**Slice 0 — Foundation** (schema + swappable provider interfaces). See
-[`design/roadmap.md`](design/roadmap.md) for the build sequence.
+**Slice 0 — Foundation: complete** (schema + swappable provider interfaces, smoke-verified).
+
+**Slice 1 — Tracer bullet: in progress** — the grounding loop end-to-end (parse → chunk → embed →
+index → retrieve → ground → cited answer / refusal), driven by a script. Tracked on
+[epic #9](https://github.com/Natenc12/grounded-class-tutor/issues/9); parse · chunk · embed · eval-suite
+are merged, the ingest pipeline and format-coverage spikes are the current ready-frontier.
+
+See [`design/roadmap.md`](design/roadmap.md) for the full build sequence.
 
 ## Local setup
 

@@ -35,6 +35,7 @@ from gct.providers.openai_provider import (
 @dataclass
 class _FakeItem:
     embedding: list[float]
+    index: int  # position within the request's input, as the real API reports it
 
 
 @dataclass
@@ -44,11 +45,16 @@ class _FakeResponse:
 
 class _FakeEmbeddingsAPI:
     def __init__(
-        self, calls: list[list[str]], error: Exception | None, fail_on_call: int | None
+        self,
+        calls: list[list[str]],
+        error: Exception | None,
+        fail_on_call: int | None,
+        reverse_data: bool,
     ) -> None:
         self.calls = calls
         self._error = error
         self._fail_on_call = fail_on_call  # 1-indexed; None → fail on every call
+        self._reverse_data = reverse_data
         self._counter = 0
 
     def create(self, *, model: str, input: list[str], dimensions: int) -> _FakeResponse:
@@ -56,22 +62,32 @@ class _FakeEmbeddingsAPI:
         if self._error is not None and self._fail_on_call in (None, len(self.calls)):
             raise self._error
         data = []
-        for _ in input:
-            data.append(_FakeItem([float(self._counter)]))
+        for i, _ in enumerate(input):
+            data.append(_FakeItem([float(self._counter)], index=i))
             self._counter += 1
+        # Each item carries its true `index`, so a reordered `data` must still realign correctly.
+        if self._reverse_data:
+            data.reverse()
         return _FakeResponse(data)
 
 
 class FakeOpenAI:
-    def __init__(self, error: Exception | None = None, fail_on_call: int | None = None) -> None:
+    def __init__(
+        self,
+        error: Exception | None = None,
+        fail_on_call: int | None = None,
+        reverse_data: bool = False,
+    ) -> None:
         self.calls: list[list[str]] = []
-        self.embeddings = _FakeEmbeddingsAPI(self.calls, error, fail_on_call)
+        self.embeddings = _FakeEmbeddingsAPI(self.calls, error, fail_on_call, reverse_data)
 
 
 def _make(
-    error: Exception | None = None, fail_on_call: int | None = None
+    error: Exception | None = None,
+    fail_on_call: int | None = None,
+    reverse_data: bool = False,
 ) -> tuple[OpenAIEmbeddings, FakeOpenAI]:
-    fake = FakeOpenAI(error, fail_on_call)
+    fake = FakeOpenAI(error, fail_on_call, reverse_data)
     return OpenAIEmbeddings(client=fake), fake
 
 
@@ -149,6 +165,18 @@ class TestEmbed:
 
         assert len(vectors) == len(texts)
         # fake tags inputs 0,1,2,... in receive order → correct order gives a clean run.
+        assert vectors == [[float(i)] for i in range(len(texts))]
+
+    def test_vectors_realign_when_provider_returns_data_out_of_order(self):
+        # Grounding-critical: OpenAI *currently* returns `data` sorted by index, but the concat is
+        # positional — if data ever arrives reordered, vectors must still map to the right input by
+        # `index`, or wrong vectors get indexed → wrong citations. The fake reverses `data` here.
+        embedder, _ = _make(reverse_data=True)
+        texts = [f"chunk-{i}" for i in range(5)]  # single batch, returned reversed
+
+        vectors = embedder.embed(texts)
+
+        # counter tags inputs 0..4 in receive order; realigned by index, output must be that run.
         assert vectors == [[float(i)] for i in range(len(texts))]
 
     def test_empty_input_returns_empty_without_calling_provider(self):

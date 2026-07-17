@@ -38,9 +38,12 @@ _EMBED_INPUT_CAP = 2048
 
 # The 300k token cap, held back by a safety margin. We *estimate* tokens (below), so we bias
 # every knob toward OVER-counting: undercounting would pack too much and blow the real cap (a
-# hard failure), while overcounting just costs one extra API call. English is ~4 chars/token, but
-# we divide by 3 so dense text (code, few spaces, other languages) still over-counts rather than
-# under-counts; the sub-300k budget absorbs any remaining estimate error.
+# hard failure), while overcounting just costs one extra API call. English is ~4 chars/token, and
+# we divide by 3 (plus the sub-300k budget) so ordinary English/Latin-script text over-counts.
+# CAVEAT: this does NOT hold for CJK, which runs ~0.5–1.5 tokens/char — chars/3 under-counts it
+# 3–5×, which could breach the real cap. Fine for the current English corpus; revisit before
+# ingesting CJK.
+# TODO: swap the char heuristic for tiktoken if we ingest CJK (or other token-dense scripts).
 _EMBED_TOKEN_BUDGET = 250_000
 _CHARS_PER_TOKEN = 3
 
@@ -107,7 +110,9 @@ class OpenAIEmbeddings:
                 )
             except _TRANSIENT_OPENAI_ERRORS as err:
                 raise TransientEmbeddingError(str(err)) from err
-            out.extend(item.embedding for item in resp.data)
+            # Concat is positional, so realign to input order by `index` — never trust `data` to
+            # arrive sorted. A silent misalignment would index wrong vectors → wrong citations.
+            out.extend(item.embedding for item in sorted(resp.data, key=lambda d: d.index))
         return out
 
 

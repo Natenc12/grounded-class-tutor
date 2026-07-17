@@ -28,3 +28,8 @@ packages = ["src/gct"]
 
 [tool.ruff]
 line-length = 100
+
+[tool.pytest.ini_options]
+markers = [
+    "live: test requires a live external dependency (OpenAI API key or Postgres). Excluded from the per-PR CI gate, which runs `pytest -m 'not live'` (issue #18). No tests carry this marker yet — it fences off the live/DB tests arriving in later slices.",
+]

@@ -1,0 +1,51 @@
+# Per-PR merge gate: lint + the fast, hermetic test suite (issue #18).
+# Trust is the product, so a red suite must BLOCK merge instead of relying on a
+# "tests pass" claim typed into a PR body. Runs only tests that need no network
+# and no DB: `pytest -m "not live"` (the `live` marker is registered in
+# pyproject.toml and fences off the OpenAI/Postgres tests arriving in later
+# slices — those need a secret + service container and stay out of this gate).
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+# A newer push to the same PR/branch cancels the older, still-running job.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  lint-and-test:
+    name: ruff + fast pytest (py3.10)
+    runs-on: ubuntu-latest
+    # Pin the interpreter for every uv command below. Without this, `uv python
+    # install 3.10` only makes 3.10 available — `uv sync`/`uv run` could still
+    # resolve a newer system Python (>=3.10), so the suite might not run on the
+    # 3.10 we intend to match locally.
+    env:
+      UV_PYTHON: "3.10"
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+
+      # Match local dev: 3.10 is our minimum supported (requires-python >=3.10)
+      # and what the local .venv runs, so a green CI reproduces for Nate locally.
+      - name: Install Python 3.10
+        run: uv python install 3.10
+
+      # `--extra dev` is required: pytest/ruff live in [project.optional-dependencies].dev,
+      # which a bare `uv sync` does NOT install.
+      - name: Sync dependencies
+        run: uv sync --frozen --extra dev
+
+      - name: Ruff
+        run: uv run ruff check
+
+      - name: Fast hermetic tests
+        run: uv run pytest -m "not live"

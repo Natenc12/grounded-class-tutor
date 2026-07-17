@@ -111,9 +111,10 @@ class FakeEmbeddings:
 
     Satisfies the `providers.base.Embeddings` protocol (`model_id`, `dim`, `embed`). `dim`
     defaults to `EMBEDDING_DIM` (1536) so vectors it returns satisfy the `chunks.embedding
-    vector(1536)` column in the real-DB index tests. Each text maps to a distinct, repeatable
-    vector (first component = a stable hash of the text) so a misalignment between input order
-    and stored vectors would show up.
+    vector(1536)` column in the real-DB index tests. Each text maps to a distinct vector
+    (first component = a per-run hash of the text — `hash()` is randomized per process, so it's
+    stable within a test run, not across runs) so a misalignment between input order and stored
+    vectors would show up.
     """
 
     def __init__(self, model_id: str = "fake-embed-3", dim: int = EMBEDDING_DIM) -> None:

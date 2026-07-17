@@ -73,10 +73,12 @@ def compose(
     vectors = embedder.embed([c.text for c in chunks])
     # Alignment guard: one vector per chunk, in order. A mismatch means a chunk would carry the
     # wrong embedding and later be retrieved for text it doesn't match - a silent mis-citation, the
-    # exact trust failure this product exists to prevent. Fail loud instead.
-    assert len(vectors) == len(chunks), (
-        f"embedder returned {len(vectors)} vectors for {len(chunks)} chunks"
-    )
+    # exact trust failure this product exists to prevent. Raise (not assert): this guard must hold
+    # even under `python -O`, which strips assert statements.
+    if len(vectors) != len(chunks):
+        raise ValueError(
+            f"embedder returned {len(vectors)} vectors for {len(chunks)} chunks"
+        )
     return [
         PreparedChunk(
             text=chunk.text,

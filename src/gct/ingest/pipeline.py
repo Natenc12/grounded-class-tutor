@@ -18,6 +18,8 @@ from pathlib import Path
 
 import psycopg
 
+from gct.ingest.chunk import chunk_units
+from gct.ingest.parse import parse_file
 from gct.providers.base import Embeddings
 
 # Implementations wire these as they build (kept out of the skeleton to stay import/lint-green):
@@ -65,7 +67,26 @@ def compose(
     is Slice 2's (ADR 0020). An empty parse cannot occur: `parse_file` raises `ParseError("empty", ...)`
     rather than returning `[]`.
     """
-    raise NotImplementedError
+    chunks = chunk_units(parse_file(path))
+    vectors = embedder.embed([c.text for c in chunks])
+    # Alignment guard: one vector per chunk, in order. A mismatch means a chunk would carry the
+    # wrong embedding and later be retrieved for text it doesn't match - a silent mis-citation, the
+    # exact trust failure this product exists to prevent. Fail loud instead.
+    assert len(vectors) == len(chunks), (
+        f"embedder returned {len(vectors)} vectors for {len(chunks)} chunks"
+    )
+    return [
+        PreparedChunk(
+            text=chunk.text,
+            file=chunk.file,
+            page_or_slide=chunk.page_or_slide,
+            embedding=vector,
+            owner_id=owner_id,
+            class_id=class_id,
+            embedding_model_id=embedder.model_id,
+        )
+        for chunk, vector in zip(chunks, vectors)
+    ]
 
 
 def ingest_file(

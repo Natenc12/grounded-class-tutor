@@ -22,9 +22,14 @@ the product. Full design lives in `design/` — start with `design/START-HERE.md
 uv sync                                 # install deps into .venv
 uv run python scripts/migrate.py        # apply migrations/*.sql
 uv run python scripts/smoke_slice0.py   # Slice 0 exit test → "PASS — foundation is wired."
+uv run pytest tests/ -q                 # full suite
+uv run ruff check src/ tests/           # lint
 ```
 Postgres 17 is keg-only; its psql/createdb live at `/opt/homebrew/opt/postgresql@17/bin`.
 Secrets (`OPENAI_API_KEY`, `DATABASE_URL`) live in `.env` (gitignored).
+**CI runs `ruff` + `pytest -m "not live"` on every PR** (#18). Note the DB-backed ingest tests are *not*
+marked `live`, so CI collects them and they self-skip via the `db` fixture when Postgres is unreachable
+— a green CI run does **not** prove the DB path. Run the suite locally before trusting it.
 
 ## Conventions / invariants (do not violate)
 - **Hand-rolled RAG** (ADR 0003) — no LangChain/LlamaIndex; we build the pipeline to learn it.
@@ -40,13 +45,21 @@ DB migrated & verified (4 tables, vector column, scope + HNSW indexes). Smoke te
 (`PASS — foundation is wired.`) — db, live embeddings (`text-embedding-3-small`, dim 1536), and live
 generation (`gpt-4o-mini`) all confirmed end-to-end.
 
-**Next up → Slice 1 (the tracer bullet):** ingest ONE real file inline (parse→chunk→embed→index, no
+**Slice 1 — the tracer bullet: IN PROGRESS.** ingest ONE real file inline (parse→chunk→embed→index, no
 queue) → Retriever → Grounder → cited answer / refusal, script-driven, shipping `eval/questions.jsonl`
 (~12-question smoke suite). This is the differentiator, proven before any HTTP/UI. See `design/roadmap.md`
 and `design/components/{grounder,retriever,ingestion-worker}.md`.
 
+**The write path is done end-to-end** (#4): `ingest_file(path, owner_id, class_id, embedder=, conn=)`
+takes a real PDF/PPTX to a `ready`, queryable, provenance-carrying chunk set in one atomic transaction —
+pure of any job/queue/lease machinery, so Slice 2 wraps it rather than rewriting it (PM-4 seam, ADR 0020).
+**What's left before the Slice 1 exit gate is the read path:** #5 Retriever → #6 Grounder → #8 ask-smoke.
+
 **Slice 1 work is on the GitHub issue board** — [epic #9](https://github.com/Natenc12/grounded-class-tutor/issues/9)
 (dependency graph + ready-frontier). Generated from this roadmap by the `/roadmap-to-issues` skill; see
 `design/HANDOFF.md` → *Working the issue board* for the ready-frontier / claim-by-assign / reconcile rules.
-Ready to pick up now: #4 pipeline · #12 parse-notes · #13 parse-tables.
-Done (merged): #1 parse · #2 chunk · #3 embed-adapter · #7 eval-suite.
+Ready to pick up now: #5 retriever · #12 parse-notes · #13 parse-tables · #23 index-hardening.
+Done (merged): #1 parse · #2 chunk · #3 embed-adapter · #4 pipeline · #7 eval-suite · #18 CI.
+Parked for Slice 2: #24 index-publish-columns — the re-index `DO UPDATE` set-list leaves `failed_reason`
+and scope columns stale. Unreachable in Slice 1; deferred because the right *location* depends on the
+Slice 2 worker's claim path (see the issue). Do not pull it onto the Slice 1 frontier.

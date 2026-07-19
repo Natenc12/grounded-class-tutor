@@ -55,18 +55,35 @@ def make_pdf(path: Path, page_texts: list[str | None], encrypt_password: str | N
     return path
 
 
-def make_pptx(path: Path, slide_texts: list[str | None]) -> Path:
+def make_pptx(
+    path: Path,
+    slide_texts: list[str | None],
+    slide_notes: list[str | None] | None = None,
+) -> Path:
     """Write a PPTX at `path` with one slide per entry in `slide_texts`.
 
     A `None` entry produces a slide with no text-bearing shape at all.
+
+    `slide_notes` (issue #12) optionally attaches speaker notes, positionally matched to
+    `slide_texts`; a `None` entry leaves that slide with **no notes part at all** - the
+    distinction matters, because `slide.notes_slide` creates the part on access, so a slide
+    that was merely given empty notes is not the same fixture as one that never had them.
+    Defaults to `None` (no slide gets notes), keeping every pre-#12 caller unchanged.
     """
+    if slide_notes is not None and len(slide_notes) != len(slide_texts):
+        raise ValueError(
+            f"slide_notes has {len(slide_notes)} entries but slide_texts has {len(slide_texts)}"
+        )
+
     deck = Presentation()
     blank_layout = deck.slide_layouts[6]  # "Blank" in the default template
-    for text in slide_texts:
+    for i, text in enumerate(slide_texts):
         slide = deck.slides.add_slide(blank_layout)
         if text is not None:
             box = slide.shapes.add_textbox(0, 0, deck.slide_width, deck.slide_height)
             box.text_frame.text = text
+        if slide_notes is not None and slide_notes[i] is not None:
+            slide.notes_slide.notes_text_frame.text = slide_notes[i]
     deck.save(str(path))
     return path
 
@@ -88,8 +105,12 @@ def pdf_factory(tmp_path):
 
 @pytest.fixture
 def pptx_factory(tmp_path):
-    def _make(name: str, slide_texts: list[str | None]) -> Path:
-        return make_pptx(tmp_path / name, slide_texts)
+    def _make(
+        name: str,
+        slide_texts: list[str | None],
+        slide_notes: list[str | None] | None = None,
+    ) -> Path:
+        return make_pptx(tmp_path / name, slide_texts, slide_notes)
 
     return _make
 

@@ -101,6 +101,14 @@ def _parse_pdf(path: Path) -> list[ParsedUnit]:
     return units
 
 
+# Separator between a slide's body text and its speaker notes within the same
+# ParsedUnit. Deliberately NOT bracketed: the Grounder renders labeled context as
+# "[S1] (lecture-3.pdf, p.4)" and validates the [S#] tokens the model cites back
+# (design/decisions/0015-grounder-citation-contract-validation.md §②), so a "[Speaker
+# notes]" token would put parse output into the citation validator's own vocabulary.
+_NOTES_MARKER = "Speaker notes:"
+
+
 def _iter_shapes(shapes):
     """Flatten grouped shapes so text nested inside a PowerPoint group (a common
     authoring pattern) isn't invisible to a top-level `shape.has_text_frame` scan."""
@@ -109,6 +117,18 @@ def _iter_shapes(shapes):
             yield from _iter_shapes(shape.shapes)
         else:
             yield shape
+
+
+def _slide_notes(slide) -> str:
+    """Return a slide's speaker-notes text, or "" if it has none.
+
+    Guards on `has_notes_slide` FIRST: reading `slide.notes_slide` *creates* the notes
+    part as a side effect (verified on python-pptx 1.0.2), so touching it before the
+    check both mutates the in-memory deck and makes a "slide has no notes" test pass for
+    the wrong reason. `notes_text_frame` can also be None on decks from other authoring
+    tools, so it is guarded separately rather than assumed present.
+    """
+    raise NotImplementedError
 
 
 def _parse_pptx(path: Path) -> list[ParsedUnit]:
@@ -135,9 +155,22 @@ def _parse_pptx(path: Path) -> list[ParsedUnit]:
                         lines.append(line)
             text = "\n".join(lines)
         except Exception as exc:
+            # Body-text failure stays TERMINAL - unchanged by #12.
             raise ParseError(
                 "unparseable", f"could not extract text from {path.name} slide {i}: {exc}"
             ) from exc
+
+        # TODO(#12, build step 3): merge this slide's speaker notes into `text`.
+        #   - call `_slide_notes(slide)` inside its OWN try/except: a notes failure
+        #     DEGRADES to body-only rather than failing an otherwise readable deck.
+        #     Swallow it silently with a comment - no logging in V1 (Slice 2 owns that).
+        #   - join body + notes with `_NOTES_MARKER` (body, blank line, marker, notes).
+        #   - a notes-only slide (empty body) must still emit a unit: the `empty`
+        #     terminal is a WHOLE-FILE condition (ADR 0020), so the `if` below must test
+        #     the COMBINED text.
+        # Notes ride inside this slide's own unit - one unit per slide, so never-span
+        # (ADR 0019) holds by construction.
+
         if text.strip():
             units.append(ParsedUnit(text=text, file=path.name, page_or_slide=i))
     return units

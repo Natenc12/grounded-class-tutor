@@ -225,3 +225,30 @@ class TestSlideNotes:
         [slide] = deck.slides
 
         assert _slide_notes(slide) == "Walk the third way slowly"
+
+    def test_body_and_notes_merged_into_one_unit(self, pptx_factory):
+        path = pptx_factory(
+            "deck.pptx",
+            ["Aquinas: five ways"],
+            slide_notes=["The third way is the one they always miss"],
+        )
+
+        [unit] = parse_file(path)
+
+        assert unit.page_or_slide == 1
+        body_i = unit.text.index("Aquinas: five ways")
+        marker_i = unit.text.index("Speaker notes:")
+        notes_i = unit.text.index("The third way is the one they always miss")
+        assert body_i < marker_i < notes_i
+
+    def test_notes_marker_present_and_unbracketed(self, pptx_factory):
+        path = pptx_factory(
+            "deck.pptx",
+            ["Aquinas: five ways"],
+            slide_notes=["The third way is the one they always miss"],
+        )
+
+        [unit] = parse_file(path)
+
+        assert "Speaker notes:" in unit.text
+        assert "[Speaker notes]" not in unit.text  # ADR 0015 citation-vocabulary collision

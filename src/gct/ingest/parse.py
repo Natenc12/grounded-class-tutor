@@ -165,17 +165,25 @@ def _parse_pptx(path: Path) -> list[ParsedUnit]:
                 "unparseable", f"could not extract text from {path.name} slide {i}: {exc}"
             ) from exc
 
-        # TODO(#12, build step 3): merge this slide's speaker notes into `text`.
-        #   - call `_slide_notes(slide)` inside its OWN try/except: a notes failure
-        #     DEGRADES to body-only rather than failing an otherwise readable deck.
-        #     Swallow it silently with a comment - no logging in V1 (Slice 2 owns that).
-        #   - join body + notes with `_NOTES_MARKER` (body, blank line, marker, notes).
-        #   - a notes-only slide (empty body) must still emit a unit: the `empty`
-        #     terminal is a WHOLE-FILE condition (ADR 0020), so the `if` below must test
-        #     the COMBINED text.
-        # Notes ride inside this slide's own unit - one unit per slide, so never-span
-        # (ADR 0019) holds by construction.
+        try:
+            notes = _slide_notes(slide)
+        except Exception:
+            # DEGRADE, don't fail (D2): a corrupt notes part on an otherwise readable
+            # deck must not turn into a terminal `unparseable` the student sees as a
+            # refusal. Swallowed deliberately and silently - no logging in V1; Slice 2
+            # owns observability (D3).
+            notes = ""
 
+        if notes.strip():
+            # Body, blank line, marker, notes (D1). Join only the non-empty parts so a
+            # notes-only slide doesn't carry a pointless leading blank block.
+            parts = [p for p in (text, f"{_NOTES_MARKER}\n{notes}") if p.strip()]
+            text = "\n\n".join(parts)
+
+        # Notes ride inside this slide's own unit - one unit per slide, so never-span
+        # (ADR 0019) holds by construction. The emptiness check tests the COMBINED text,
+        # so a notes-only slide still emits a unit (`empty` is a WHOLE-FILE terminal,
+        # ADR 0020).
         if text.strip():
             units.append(ParsedUnit(text=text, file=path.name, page_or_slide=i))
     return units

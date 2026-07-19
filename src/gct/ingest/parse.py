@@ -128,7 +128,12 @@ def _slide_notes(slide) -> str:
     the wrong reason. `notes_text_frame` can also be None on decks from other authoring
     tools, so it is guarded separately rather than assumed present.
     """
-    raise NotImplementedError
+    if not slide.has_notes_slide:
+        return ""
+    notes_text_frame = slide.notes_slide.notes_text_frame
+    if notes_text_frame is None:
+        return ""
+    return notes_text_frame.text
 
 
 def _parse_pptx(path: Path) -> list[ParsedUnit]:

@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import pytest
 
-from gct.ingest.parse import ParsedUnit, ParseError, parse_file
+from gct.ingest.parse import ParsedUnit, ParseError, _slide_notes, parse_file
 
 
 class TestPdfHappyPath:
@@ -194,3 +194,34 @@ class TestTerminalFailures:
             parse_file(path)
 
         assert exc_info.value.reason == "unparseable"
+
+
+class TestSlideNotes:
+    def test_slide_with_no_notes_returns_empty(self, pptx_factory):
+        import pptx
+
+        path = pptx_factory("deck.pptx", ["Some text"])
+        deck = pptx.Presentation(str(path))
+        [slide] = deck.slides
+
+        assert _slide_notes(slide) == ""
+
+    def test_notes_slide_not_created_as_a_side_effect(self, pptx_factory):
+        import pptx
+
+        path = pptx_factory("deck.pptx", ["Some text"])
+        deck = pptx.Presentation(str(path))
+        [slide] = deck.slides
+
+        _slide_notes(slide)
+
+        assert slide.has_notes_slide is False
+
+    def test_slide_with_notes_returns_the_notes_text(self, pptx_factory):
+        import pptx
+
+        path = pptx_factory("deck.pptx", ["Some text"], slide_notes=["Walk the third way slowly"])
+        deck = pptx.Presentation(str(path))
+        [slide] = deck.slides
+
+        assert _slide_notes(slide) == "Walk the third way slowly"

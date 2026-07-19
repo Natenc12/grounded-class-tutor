@@ -34,7 +34,9 @@ marked `live`, so CI collects them and they self-skip via the `db` fixture when 
 ## Conventions / invariants (do not violate)
 - **Hand-rolled RAG** (ADR 0003) — no LangChain/LlamaIndex; we build the pipeline to learn it.
 - **Provider-agnostic** — grounding logic sits *above* the provider interfaces; swapping models never changes product behavior.
-- **Embedding consistency** (ADR 0018) — index-time and query-time embeddings use the *same* model id, sourced only from `gct.config.ACTIVE_EMBEDDING_MODEL_ID`. Never hardcode it elsewhere.
+- **Embedding consistency** (ADR 0018) — two distinct rules; don't collapse them:
+  - *Which embedder gets constructed* — sourced only from `gct.config.ACTIVE_EMBEDDING_MODEL_ID`. Never hardcode a model id.
+  - *What gets recorded about a run* — `chunks.embedding_model_id` is stamped from `embedder.model_id`, i.e. "the model that **actually produced** the stored vectors" (ADR 0018). **Not** from config: the Retriever's guard compares the stamp against the active embedder, so sourcing both from config would make it compare config to itself and never fire.
 - **The PM-4 seam** — build the ingest pipeline (parse→chunk→embed→index) *pure and separate* from any job/queue/lease machinery, so Slice 2 wraps it instead of rewriting it.
 - **`owner_id` on every row**; retrieval always filters `owner_id AND class_id` (F6/F12).
 - **Citation spine** — source metadata born at parse ①, rendered to `[S#]` labels ②, resolved back to citations ③; the model only ever cites labels we handed it.

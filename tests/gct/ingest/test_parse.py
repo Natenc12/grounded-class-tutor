@@ -252,3 +252,59 @@ class TestSlideNotes:
 
         assert "Speaker notes:" in unit.text
         assert "[Speaker notes]" not in unit.text  # ADR 0015 citation-vocabulary collision
+
+    def test_notes_only_slide_yields_a_unit(self, pptx_factory):
+        path = pptx_factory(
+            "deck.pptx",
+            [None],
+            slide_notes=["Notes are the only content on this slide"],
+        )
+
+        [unit] = parse_file(path)
+
+        assert unit.page_or_slide == 1
+        assert "Notes are the only content on this slide" in unit.text
+
+    def test_file_empty_only_when_no_slide_has_body_or_notes(self, pptx_factory):
+        all_empty_path = pptx_factory("blank.pptx", [None, None], slide_notes=[None, None])
+
+        with pytest.raises(ParseError) as exc_info:
+            parse_file(all_empty_path)
+        assert exc_info.value.reason == "empty"
+
+        notes_only_path = pptx_factory(
+            "notes-only.pptx", [None], slide_notes=["The only content is in the notes"]
+        )
+
+        units = parse_file(notes_only_path)  # must not raise
+
+        assert len(units) == 1
+
+    def test_corrupt_notes_part_keeps_body_text(self, pptx_factory, monkeypatch):
+        import pptx.slide
+
+        path = pptx_factory("deck.pptx", ["Some body text"])
+
+        def _boom(self):
+            raise RuntimeError("simulated corrupt notes part")
+
+        monkeypatch.setattr(pptx.slide.Slide, "has_notes_slide", property(_boom))
+
+        [unit] = parse_file(path)  # degrades (D2), does not raise
+
+        assert "Some body text" in unit.text
+        assert "Speaker notes:" not in unit.text
+
+    def test_notes_do_not_leak_across_slides(self, pptx_factory):
+        path = pptx_factory(
+            "deck.pptx",
+            ["Slide one body", "Slide two body"],
+            slide_notes=["Slide one notes", "Slide two notes"],
+        )
+
+        units = parse_file(path)
+
+        assert "Slide one notes" in units[0].text
+        assert "Slide one notes" not in units[1].text
+        assert "Slide two notes" in units[1].text
+        assert "Slide two notes" not in units[0].text

@@ -117,7 +117,9 @@ def _to_score(distance: float) -> float:
     Watch: a zero vector on either side makes the distance NaN, and `max(0.0, 1.0 - nan)`
     returns nan, not 0.0. Real text cannot produce a zero vector; a test fixture can.
     """
-    raise NotImplementedError
+    # Clamp at 0: pgvector's `<=>` cosine distance ranges [0,2] (not [0,1]), so a bare
+    # `1 - distance` can go negative and break the [0,1] contract ADR 0017 promises (Decision 1).
+    return max(0.0, 1.0 - distance)
 
 
 def retrieve(

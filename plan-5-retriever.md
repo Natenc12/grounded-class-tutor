@@ -278,7 +278,37 @@ One function at a time, purest first. Each names the test that proves it.
 | 5 | `retrieve` — isolation | `test_retrieve_filters_by_owner_and_class` — seed two classes and two owners, assert neither leaks | **The F6/F12 test.** Do not skip. |
 | 6 | `retrieve` — edges | `test_retrieve_empty_class_returns_empty` · `test_retrieve_corpus_smaller_than_k` · `test_retrieve_propagates_embedding_error` | Covers the whole failure table. |
 | 7 | Suite green + `uv run ruff check src/ tests/` | — | Includes the previously-passing ingest suite (fixture hoist). |
-| 8 | **Commit this doc's deletion** (it's tracked), then open the PR | — | `git rm plan-5-retriever.md` |
+| 8 | **Promote the durable decisions into `design/`** — see below | — | Do this BEFORE the deletion commit: this doc is the input. |
+| 9 | **Commit this doc's deletion** (it's tracked), then open the PR | — | `git rm plan-5-retriever.md` |
+
+### Step 8 — the promotion pass (do not skip; this doc is about to be deleted)
+
+Everything in *Resolved decisions* was decided at **prep** time, before a line of this module existed
+— so all of it is **intent**, not verified truth. The build is what tests it. Walk that list now, with
+the code actually working, and sort each one:
+
+- **Survived contact unchanged** → promote if it's durable, drop it if it was build scaffolding.
+- **Changed during the build** → **this is the valuable part.** An ADR that records only the plan is a
+  paraphrase of this file; one that records what the build *taught* you is worth keeping. Write down
+  what you expected, what actually happened, and why the choice moved.
+
+Known candidates (re-judge each against the built code — do not promote on this list's say-so):
+
+| Decision | Proposed home | Still unverified at prep time |
+|---|---|---|
+| **1 — the clamp** | **New ADR 0024**, amending ADR 0017 | The *defect* is verified (pgvector cosine distance really is `[0,2]` — measured). The *fix* is not: once you see real distances, `assert distance <= 1.0` may beat a silent clamp, so the surprise surfaces instead of being floored away. Decide with the data in front of you. |
+| **2 — whole-class `DISTINCT` guard** | `design/components/retriever.md` step 1 | The spec says "assert" without a granularity, and the granularity is what makes roadmap PM-5's "ERRORs the whole class" true. Confirm the mixed-model test actually demonstrates that before writing it down. |
+| **4 — `page_or_slide` → int on read** | `retriever.md` §Interface | One line, completes the spine's type story. |
+| 3 — fixture hoist · `::vector` cast · build order · risks | **nowhere** | Build scaffolding and code-level detail. Already in code comments and the commit message; git history is the right home. Resist promoting these — volume is what makes a design folder stop being read. |
+
+**On ADR 0024 being a new ADR rather than an edit to 0017:** ADR 0017's *reasoning* is sound and
+survives — the seam should speak relevance, not distance. Only one bounded factual claim inside it is
+wrong. Editing in place would erase the evidence that we got it wrong, which is the opposite of what
+ADRs are for. Repo precedent for the amendment style is `ADR 0002`, whose status line reads
+*"accepted — tenancy clause amended 2026-07-04 by ADR 0004"*; mirror that on 0017.
+
+**Spec edits (`retriever.md`) are not optional the way ADRs are.** They describe what the merged code
+*does*. A component spec that disagrees with shipped code is worse than no spec, because it is trusted.
 
 ---
 
@@ -320,7 +350,10 @@ One function at a time, purest first. Each names the test that proves it.
 - [ ] `uv run ruff check src/ tests/` clean.
 - [ ] Isolation test (`owner_id` AND `class_id`) present and genuinely failing without the filter.
 - [ ] Guard test proves the mismatch path raises — verified it fails before the guard exists.
-- [ ] `plan-5-retriever.md` deleted **via a commit**.
+- [ ] **Promotion pass done (step 8):** every *Resolved decision* judged against the built code —
+      promoted, or consciously dropped. Anything that **changed** during the build is written down
+      *as a change*, not silently overwritten. ADR 0017's status line points at its amendment.
+- [ ] `plan-5-retriever.md` deleted **via a commit** — and only after the line above is true.
 - [ ] Self-review of the diff against ADR 0017, ADR 0018, ADR 0008, and `design/components/retriever.md`.
 
 > `understanding/prep-5-retriever.html` is **not** on this list — it lives in gitignored

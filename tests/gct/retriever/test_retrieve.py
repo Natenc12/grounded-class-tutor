@@ -5,18 +5,25 @@
     zero (ADR 0017 + Decision 1).
   - `TestAssertEmbeddingConsistency` - DB-backed. The ADR-0018 guard, including the mixed-model
     case (roadmap PM-5) and the empty-class short-circuit.
+  - `TestRetrieve` - DB-backed, end-to-end through the whole pipeline: ranking + provenance,
+    the F6/F12 isolation filter, and the failure table (empty class, short corpus, provider
+    error).
 """
 from __future__ import annotations
 
 import uuid
+from typing import Sequence
 
 import pytest
 
 from gct.config import ACTIVE_EMBEDDING_MODEL_ID
+from gct.providers.base import TransientEmbeddingError
 from gct.retriever.retrieve import (
     EmbeddingModelMismatchError,
+    RetrievedChunk,
     _assert_embedding_consistency,
     _to_score,
+    retrieve,
 )
 
 
@@ -123,3 +130,159 @@ class TestAssertEmbeddingConsistency:
             )
             is True
         )
+
+
+class CountingEmbeddings:
+    """Wraps an embedder and counts `embed` calls, to prove a call did NOT happen."""
+
+    def __init__(self, inner) -> None:
+        self._inner = inner
+        self.calls = 0
+
+    @property
+    def model_id(self) -> str:
+        return self._inner.model_id
+
+    @property
+    def dim(self) -> int:
+        return self._inner.dim
+
+    def embed(self, texts: Sequence[str]) -> list[list[float]]:
+        self.calls += 1
+        return self._inner.embed(texts)
+
+
+class ExplodingEmbeddings:
+    """Raises `TransientEmbeddingError` on `embed`, as the real adapter does on a rate limit.
+
+    `model_id` mirrors the seeded stamp so the ADR-0018 guard PASSES and the failure lands on
+    the embed step - otherwise the test would prove the wrong thing.
+    """
+
+    def __init__(self, model_id: str, dim: int) -> None:
+        self._model_id = model_id
+        self._dim = dim
+
+    @property
+    def model_id(self) -> str:
+        return self._model_id
+
+    @property
+    def dim(self) -> int:
+        return self._dim
+
+    def embed(self, texts: Sequence[str]) -> list[list[float]]:
+        raise TransientEmbeddingError("rate limited")
+
+
+class TestRetrieve:
+    """The whole pipeline, DB-backed: guard -> embed -> scoped top-k -> scores -> ranked return.
+
+    Angles are chosen well away from zero: a zero vector makes pgvector's `<=>` return NaN,
+    which orders unpredictably AND survives `max(0.0, 1.0 - nan)` as nan (Risk #2).
+    """
+
+    def test_retrieve_returns_ranked_scored_chunks(self, db, ranking_embedder, seed_chunks):
+        """Score-descending, `len <= k`, and provenance carried through intact.
+
+        `ranking_embedder.assign` pins each text to an exact angle, so the expected order is
+        dictated rather than hoped for: the closer a chunk's angle is to the question's, the
+        smaller its cosine distance and the higher its score.
+        """
+        conn, owner_id, class_id = db
+        question = "what is the argument?"
+        ranking_embedder.assign(question, 0.10)
+        # Deliberately seeded out of rank order, so a passing test cannot be insertion order.
+        ranking_embedder.assign("far", 1.30)
+        ranking_embedder.assign("nearest", 0.12)
+        ranking_embedder.assign("middle", 0.60)
+        seeded = seed_chunks(["far", "nearest", "middle"], embedder=ranking_embedder)
+        by_text = {chunk.text: chunk for chunk in seeded}
+
+        results = retrieve(conn, question, owner_id, class_id, embedder=ranking_embedder, k=2)
+
+        assert len(results) == 2  # k caps it, though 3 chunks exist
+        assert all(isinstance(chunk, RetrievedChunk) for chunk in results)
+        assert [chunk.text for chunk in results] == ["nearest", "middle"]
+
+        scores = [chunk.score for chunk in results]
+        assert scores == sorted(scores, reverse=True)
+        assert all(0.0 <= score <= 1.0 for score in scores)
+
+        # Provenance survives the round trip - the citation spine depends on it.
+        for chunk in results:
+            expected = by_text[chunk.text]
+            assert chunk.chunk_id == expected.chunk_id
+            assert chunk.file == expected.file
+            assert chunk.page_or_slide == expected.page_or_slide
+            # The column is `text`; Decision 4 converts back to int on read.
+            assert isinstance(chunk.page_or_slide, int)
+
+    def test_retrieve_filters_by_owner_and_class(self, db, ranking_embedder, seed_chunks):
+        """THE F6/F12 TEST. Neither another CLASS nor another OWNER leaks into these results.
+
+        Built to genuinely fail if the WHERE clause were dropped: both foreign chunks are pinned
+        NEARER the question than the in-scope chunk, so an unscoped search would rank them
+        first - the assertion breaks on content, not merely on length.
+        """
+        conn, owner_id, class_id = db
+        question = "what is the argument?"
+        ranking_embedder.assign(question, 0.10)
+        ranking_embedder.assign("mine", 0.60)  # farthest, yet must be the ONLY result
+        ranking_embedder.assign("other-class", 0.11)
+        ranking_embedder.assign("other-owner", 0.12)
+
+        seed_chunks(["mine"], embedder=ranking_embedder)
+        # Same owner, DIFFERENT class - catches a query scoped on owner_id alone.
+        seed_chunks(["other-class"], embedder=ranking_embedder, class_id=str(uuid.uuid4()))
+        # Different owner, DIFFERENT class - catches a query scoped on class_id alone.
+        seed_chunks(
+            ["other-owner"],
+            embedder=ranking_embedder,
+            owner_id=f"other-owner-{uuid.uuid4()}",
+            class_id=str(uuid.uuid4()),
+        )
+
+        results = retrieve(conn, question, owner_id, class_id, embedder=ranking_embedder, k=5)
+
+        assert [chunk.text for chunk in results] == ["mine"]
+
+    def test_retrieve_empty_class_returns_empty(self, db, ranking_embedder):
+        """An empty/un-ingested class returns [] - and does NOT pay for a query embedding.
+
+        The short-circuit is the point: the guard reports the empty class before step 2, so a
+        class with nothing in it never costs an API call (Decision 2's consequence).
+        """
+        conn, owner_id, class_id = db
+        counting = CountingEmbeddings(ranking_embedder)
+
+        results = retrieve(conn, "anything at all", owner_id, class_id, embedder=counting)
+
+        assert results == []
+        assert counting.calls == 0
+
+    def test_retrieve_corpus_smaller_than_k(self, db, ranking_embedder, seed_chunks):
+        """Fewer chunks than k returns all of them. Short is NOT an error (retriever.md)."""
+        conn, owner_id, class_id = db
+        question = "what is the argument?"
+        ranking_embedder.assign(question, 0.10)
+        seed_chunks(["only-one", "only-two"], embedder=ranking_embedder)
+
+        results = retrieve(conn, question, owner_id, class_id, embedder=ranking_embedder, k=5)
+
+        assert len(results) == 2
+        assert {chunk.text for chunk in results} == {"only-one", "only-two"}
+
+    def test_retrieve_propagates_embedding_error(self, db, ranking_embedder, seed_chunks):
+        """A `TransientEmbeddingError` escapes `retrieve` uncaught - no retry, no swallow.
+
+        ADR 0008: the Retriever does not own a retry budget; the Grounder does. Catching it here
+        would turn a provider outage into an empty result set, which the Grounder cannot tell
+        apart from an empty class.
+        """
+        conn, owner_id, class_id = db
+        seed_chunks(["alpha"], embedder=ranking_embedder)
+        exploding = ExplodingEmbeddings(ranking_embedder.model_id, ranking_embedder.dim)
+
+        with pytest.raises(TransientEmbeddingError):
+            retrieve(conn, "a question", owner_id, class_id, embedder=exploding)

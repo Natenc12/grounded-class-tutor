@@ -194,4 +194,44 @@ def retrieve(
     `conn` MUST come from `gct.db.connect()`: the query vector is a `list[float]` and only
     adapts to `vector(1536)` when the pgvector type is registered on the connection.
     """
-    raise NotImplementedError
+    # 1. Guard FIRST (ADR 0018) - before the paid embed call, so an empty class costs nothing
+    #    and a mismatched class fails before it can produce garbage similarity. A mismatch
+    #    raises out of here; only the empty-class case returns False.
+    if not _assert_embedding_consistency(
+        conn, owner_id=owner_id, class_id=class_id, embedder=embedder
+    ):
+        return []
+
+    # 2. Embed the query with the SAME active embedder. Deliberately NOT wrapped: a
+    #    TransientEmbeddingError propagates untouched, because the retry budget belongs to the
+    #    Grounder, not here (ADR 0008, retriever.md Sec.Failure-modes).
+    q_vec = embedder.embed([question])[0]
+
+    # 3. Scoped top-k. `<=>` (cosine) matches the HNSW `vector_cosine_ops` index and ADR 0017's
+    #    score definition; `::vector` is required because a bare list adapts as
+    #    `double precision[]` and there is no column here to infer the type from.
+    rows = conn.execute(
+        """
+        select chunk_id, text, file, page_or_slide,
+               (embedding <=> %(q_vec)s::vector) as distance
+        from chunks
+        where owner_id = %(owner_id)s and class_id = %(class_id)s::uuid
+        order by distance asc
+        limit %(k)s
+        """,
+        {"q_vec": q_vec, "owner_id": owner_id, "class_id": class_id, "k": k},
+    ).fetchall()
+
+    # 4/5. Distance -> normalized similarity, page_or_slide text -> int (mirroring index.py's
+    #      int -> str on write). ORDER BY distance ASC is already score-desc, since _to_score is
+    #      monotonically decreasing in distance - no re-sort, and NO gate (ADR 0008).
+    return [
+        RetrievedChunk(
+            chunk_id=str(chunk_id),
+            text=text,
+            file=file,
+            page_or_slide=int(page_or_slide),
+            score=_to_score(distance),
+        )
+        for chunk_id, text, file, page_or_slide, distance in rows
+    ]

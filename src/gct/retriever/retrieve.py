@@ -97,7 +97,35 @@ def _assert_embedding_consistency(
     from config would compare config to itself, and the guard could never fire (CLAUDE.md;
     ADR 0018). The mismatch test is what proves this guard is real.
     """
-    raise NotImplementedError
+    # Whole-class DISTINCT, carrying the FULL owner+class scope: the guard is not exempt from
+    # the isolation filter (F6/F12). class_id is a uuid column, owner_id is text - cast at the
+    # SQL boundary, matching ingest/index.py's idiom.
+    rows = conn.execute(
+        """
+        select distinct embedding_model_id
+        from chunks
+        where owner_id = %(owner_id)s and class_id = %(class_id)s::uuid
+        """,
+        {"owner_id": owner_id, "class_id": class_id},
+    ).fetchall()
+
+    stored = {row[0] for row in rows}
+
+    # Zero rows - and ONLY zero rows - means an empty/un-ingested class. Deliberately keyed on
+    # the empty result set rather than any exception, so a real DB error still propagates.
+    if not stored:
+        return False
+
+    # RHS is the ACTIVE EMBEDDER's model_id, never config: config-vs-config could never fire.
+    # One equality catches both the wrong-model case and the mixed-model case (roadmap PM-5).
+    if stored != {embedder.model_id}:
+        raise EmbeddingModelMismatchError(
+            f"class {class_id} has embedding_model_id(s) {sorted(stored)!r}, "
+            f"but the active embedder is {embedder.model_id!r} (ADR 0018). "
+            "Re-index the class with the active embedder; never auto-reconcile."
+        )
+
+    return True
 
 
 def _to_score(distance: float) -> float:

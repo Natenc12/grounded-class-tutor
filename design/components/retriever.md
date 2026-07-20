@@ -4,7 +4,7 @@
 
 > Convention (Phase-4): names the shape + contract; where a choice is locked it **points to an ADR**
 > rather than restating the rationale. Governing ADRs: **0008** (score plumbed, not gated in V1),
-> **0005** (embeddings model + re-index-on-change), **0017** (score = normalized similarity),
+> **0005** (embeddings model + re-index-on-change), **0017** (score = normalized similarity) + **0024** (its clamp),
 > **0018** (embedding-model consistency guard), **0013** (thin provider interfaces). Requirements:
 > **F6** (ask scoped to one class), **F12/N8**
 > (`owner_id` isolation seam), **N1** (recall@k, V3 gate).
@@ -28,14 +28,21 @@ makes **no** answer/refuse/relevance judgment — that is the Grounder's (ADR 00
 
 ## Interface / contract
 ```
-Retriever.retrieve(
-    question: str,
+retrieve(
+    conn:      psycopg.Connection,   # from gct.db.connect() — registers the pgvector adapter
+    question:  str,
     owner_id:  OwnerId,
     class_id:  ClassId,          # F6 — every ask is scoped to ONE class
-    k:         int = <V1 default constant>,   # interface fixed; VALUE empirical (spike)
-) -> [ Chunk{ chunk_id, text, file, page_or_slide, score } ]
+    *,
+    embedder:  Embeddings,       # the ACTIVE embedder; also the guard's comparison target
+    k:         int = DEFAULT_K,  # interface fixed; VALUE empirical (spike)
+) -> [ RetrievedChunk{ chunk_id, text, file, page_or_slide, score } ]
 
-Chunk.score : float in [0,1]     # normalized cosine similarity, higher = more relevant (ADR 0017)
+RetrievedChunk.score         : float in [0,1]  # normalized cosine similarity, higher = more
+                                               # relevant (ADR 0017, clamped per ADR 0024)
+RetrievedChunk.page_or_slide : int             # scalar, never a span (ADR 0019). The column is
+                                               # `text`; converted back to int on read, mirroring
+                                               # ingest/index.py's int -> str on write.
 Returns:     rank order (score desc), length ≤ k, possibly [] (empty/un-ingested class only, in V1)
 ```
 The return shape is exactly the Grounder's `retrieved` input — the two boxes compose directly. `score`
@@ -45,6 +52,19 @@ is the single seam currency (ADR 0017); it is **plumbed but not gated** in V1 (A
 1. **Consistency guard** — assert the corpus's stored `embedding_model_id` == the active embedder's
    `model_id`; **fail loud** on mismatch → Grounder **ERROR**, never a refusal (ADR 0018 / 0016). A
    mismatch means garbage similarity that would otherwise be *silent*.
+   - **Granularity: the whole class, not the returned rows.** A `SELECT DISTINCT embedding_model_id`
+     over the *full* `owner_id AND class_id` scope — the guard is not exempt from the isolation
+     filter. Anything other than exactly `{active model_id}` raises, which catches the wrong-model
+     case and the **mixed**-model case in one check. Mixed is the real foot-gun: a partial re-index
+     leaves one class spanning two vector spaces, and this ERRORs the whole class (roadmap PM-5).
+     Folding the stamp into the top-k query instead would only inspect the *k* rows that came back,
+     leaving a stale chunk ranked *k+1* invisible — the silent corruption ADR 0018 exists to kill.
+   - **Zero rows ⇒ empty/un-ingested class** — nothing stored means nothing to mismatch, so the guard
+     passes vacuously and retrieval returns `[]` **here**, before the paid embed call.
+   - The comparison's right-hand side is **`embedder.model_id`**, never `config`'s active-model
+     constant — sourcing both sides from config compares config to itself and the guard can never
+     fire. A mismatch *test* must be built to discriminate that: seed the stamp with the **config**
+     value and use an embedder whose `model_id` differs, or the test passes against a broken guard.
 2. **Embed query** — `Embeddings.embed([question]) → q_vec` (single vector; ADR 0013), using that
    same active embedder.
 3. **Vector search (scoped)** — pgvector top-k:
@@ -57,8 +77,9 @@ is the single seam currency (ADR 0017); it is **plumbed but not gated** in V1 (A
    ```
    The `WHERE owner_id AND class_id` seam ships in V1 as app-level filtering; V3 turns on RLS
    *underneath* it as enforcement, not a rewrite (F13/N8, ADR 0008-style laddering).
-4. **Convert scores at the boundary** — `score = 1 - distance` → normalized similarity in `[0,1]`,
-   higher-better (ADR 0017). Ordering is unchanged (monotonic).
+4. **Convert scores at the boundary** — `score = max(0, 1 - distance)` → normalized similarity in
+   `[0,1]`, higher-better (ADR 0017, **clamp per ADR 0024**: pgvector's cosine distance runs `[0,2]`,
+   so the un-clamped formula would go negative). Ordering is unchanged (monotonic).
 5. **Return** ranked `Chunk[]` (≤ k). **No re-rank** (that is F11/V4), **no threshold gate** (ADR 0008).
 
 ## Failure modes
@@ -72,7 +93,7 @@ is the single seam currency (ADR 0017); it is **plumbed but not gated** in V1 (A
 
 ## Invariants
 - **Score is normalized similarity** — `[0,1]`, higher = more relevant, converted at this boundary
-  (ADR 0017). Rank order and score are consistent by construction.
+  (ADR 0017, clamped at zero per ADR 0024). Rank order and score are consistent by construction.
 - **Isolation filter from V1** — every retrieval query carries `owner_id AND class_id`; absent scope
   never widens the search. V3 RLS is enforcement over this same seam (F13/N8).
 - **Embedding-model consistency (enforced)** — query- and index-time embeddings are the identical

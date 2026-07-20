@@ -22,7 +22,7 @@ makes **no** answer/refuse/relevance judgment — that is the Grounder's (ADR 00
   meaningless (cross-cutting invariant; ADR 0005 forces a full re-index on any change).
 - **Down — Data layer:** pgvector top-k over `chunks` (embedding + `file`/`page_or_slide` metadata),
   under `WHERE owner_id AND class_id`.
-- **Up — Grounder:** receives ranked `Chunk[]` + scores; owns all downstream judgment (ADR 0008).
+- **Up — Grounder:** receives ranked `RetrievedChunk[]` + scores; owns all downstream judgment (ADR 0008).
 - **Upstream context — ingestion worker:** the `chunks` this box reads are born there (metadata =
   citation-spine honor-point ①); an un-ingested/empty class is why retrieval returns `[]`.
 
@@ -69,18 +69,28 @@ is the single seam currency (ADR 0017); it is **plumbed but not gated** in V1 (A
    same active embedder.
 3. **Vector search (scoped)** — pgvector top-k:
    ```
-   SELECT chunk_id, text, file, page_or_slide, (embedding <=> q_vec) AS distance
+   SELECT chunk_id, text, file, page_or_slide,
+          (embedding <=> :q_vec::vector) AS distance
    FROM chunks
-   WHERE owner_id = :owner_id AND class_id = :class_id
+   WHERE owner_id = :owner_id AND class_id = :class_id::uuid
    ORDER BY distance ASC
    LIMIT :k
    ```
+   Two casts are load-bearing, not decoration. **`::vector`** — a bare `list[float]` parameter adapts
+   as `double precision[]`, and unlike an INSERT there is no column here to infer the target type
+   from, so omitting it fails outright with `UndefinedFunction: operator does not exist: vector <=>
+   double precision[]`. **`::uuid`** — `chunks.class_id` is `uuid` while `owner_id` is `text`, the
+   same boundary-cast idiom `ingest/index.py` uses on the write side. Separately, **`<=>` itself is a
+   contract**, not a preference: the ANN index is built `vector_cosine_ops`, so `<->` (L2) or `<#>`
+   (inner product) would still return ranked rows while silently bypassing the index *and* changing
+   what `score` means relative to ADR 0017.
    The `WHERE owner_id AND class_id` seam ships in V1 as app-level filtering; V3 turns on RLS
    *underneath* it as enforcement, not a rewrite (F13/N8, ADR 0008-style laddering).
 4. **Convert scores at the boundary** — `score = max(0, 1 - distance)` → normalized similarity in
    `[0,1]`, higher-better (ADR 0017, **clamp per ADR 0024**: pgvector's cosine distance runs `[0,2]`,
    so the un-clamped formula would go negative). Ordering is unchanged (monotonic).
-5. **Return** ranked `Chunk[]` (≤ k). **No re-rank** (that is F11/V4), **no threshold gate** (ADR 0008).
+5. **Return** ranked `RetrievedChunk[]` (≤ k). **No re-rank** (that is F11/V4), **no threshold gate**
+   (ADR 0008).
 
 ## Failure modes
 | mode | V1 behavior |

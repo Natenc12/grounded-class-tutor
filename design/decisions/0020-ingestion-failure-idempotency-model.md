@@ -49,7 +49,7 @@ parse → chunk (never-span, ADR 0019) → embed all chunks → prepare rows
 BEGIN                                             # opens only now, with the full row set ready
   DELETE FROM chunks WHERE file_id = :file_id     # old set (re-index case)
   INSERT <full new chunk set>                      # embeddings + (file, page_or_slide) + embedding_model_id
-  UPDATE files SET status = 'ready' WHERE id = :file_id
+  UPDATE files SET status = 'ready' WHERE file_id = :file_id
 COMMIT
 ```
 - The transaction **never spans the embedding-API calls** — holding a connection/locks across ~N

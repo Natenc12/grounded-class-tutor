@@ -55,6 +55,7 @@ def test_compose_propagates_parse_error_on_empty_file(pdf_factory, fake_embedder
         compose(path, OWNER_ID, CLASS_ID, embedder=fake_embedder)
 
 
+@pytest.mark.live
 def test_ingest_file_end_to_end(pdf_factory, fake_embedder, db):
     """The top-level Slice-1 entry: a real file goes through parse→chunk→embed→index and lands as a
     queryable, `ready` file. Returns the minted `file_id`; chunk rows are present under it."""
@@ -74,3 +75,25 @@ def test_ingest_file_end_to_end(pdf_factory, fake_embedder, db):
     ).fetchone()[0]
     # One chunk per short page (text under CHUNK_SIZE_WORDS) — matches the real chunker.
     assert n_chunks == len(chunk_units(parse_file(path)))
+
+
+# --- Fixture reliability (issue #23) ----------------------------------------------------------
+
+
+def test_fake_embedder_is_stable_across_processes(fake_embedder):
+    """`FakeEmbeddings` maps a text to the SAME vector in every process, forever.
+
+    It previously seeded from `hash(text) % 1000`. `hash()` is randomized per process, and the
+    modulo collapsed the space to 1000 buckets — so two distinct chunk texts collided on roughly
+    0.1% of pairs, and when they did, the alignment assertion in
+    `test_compose_stamps_provenance_model_and_embeds_all` passed VACUOUSLY. That flake is worst
+    exactly while the suite is being leaned on daily, which is why #23 replaced it with sha256.
+
+    Assert against a hard-coded expected value (not just self-consistency within one run): a future
+    "improvement" that reintroduces per-process randomization must fail here, loudly.
+    """
+    # sha256(b"hello world")[:6] as a big-endian int — computed once, hardcoded here so a future
+    # regression to a randomized/process-local hash fails loudly instead of just staying "consistent".
+    vector = fake_embedder.embed(["hello world"])[0]
+    assert vector[0] == 203741030093645.0
+    assert vector[1:] == [0.0] * (fake_embedder.dim - 1)

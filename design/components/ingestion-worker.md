@@ -74,16 +74,23 @@ Slow/external work runs with **no transaction open**; the transaction is a short
      "embed all" stays honest, the `embed(texts)→vectors` contract is unchanged (ADR 0013). Batch *sizing*
      for throughput (N6) remains tuning; staying under the cap is contract.
 5. **Prepare rows** in memory — the full chunk set (text + provenance + embedding + model id + scope).
-6. **Index (atomic swap)** — short transaction:
+6. **Index (atomic swap)** — short transaction. An **empty row set never reaches here**: the index
+   write rejects a zero-chunk call outright (see §Failure modes), so `ready` is never published
+   over nothing.
    ```
    BEGIN
-     DELETE FROM chunks WHERE file_id = :file_id     -- old set (re-index case)
+     UPSERT files ... SET status = 'ready' WHERE file_id = :file_id  -- publish signal, same tx
+     DELETE FROM chunks WHERE file_id = :file_id                     -- old set (re-index case)
      INSERT <full new chunk set>
-     UPDATE files SET status = 'ready' WHERE id = :file_id   -- publish signal, same tx
    COMMIT
    ```
    Readers see old-full → new-full, never empty/partial (READ COMMITTED). `status=ready` commits
    **with** the chunks it publishes.
+   The **files row is written first, and that order is FK-forced** — `chunks.file_id` references
+   `files(file_id)`, so the row must exist before the chunk insert. Slice 1's `index_file` upserts it
+   (`INSERT ... ON CONFLICT (file_id) DO UPDATE`) because no API adapter has created it yet; once the
+   Slice 2 worker claims a job, the row already exists as `queued` and the upsert lands on UPDATE —
+   wrap, not rewrite (PM-4 seam).
 
 ## Failure modes
 | mode | class | V1 behavior |
@@ -94,6 +101,7 @@ Slow/external work runs with **no transaction open**; the transaction is a short
 | **Duplicate job delivery** (at-least-once) | infra | safe — idempotent replace re-does the same delete-then-insert; no dedup needed (ADR 0020) |
 | **Re-index of an already-`ready` file** | normal | old full set stays queryable until COMMIT, then swapped atomically — never flickers empty/partial |
 | **Partial embed then failure** | transient | nothing committed; retry reprocesses from scratch (accepted re-embed cost, ADR 0020) |
+| **Zero-chunk row set handed to the index write** | programming error | the index write **raises `ValueError` before opening the transaction** — nothing is written, not even the `files` row. Publishing `ready` over zero chunks would break `status=ready` ⟺ full chunk set queryable. Unreachable through the pipeline (parse fails an empty file first), but the index write is a public entry point and does not trust its caller (#23) |
 
 ## Invariants
 - **Provenance is born at parse and never lost** — every chunk carries `(file, page_or_slide)`;
@@ -101,7 +109,9 @@ Slow/external work runs with **no transaction open**; the transaction is a short
 - **`page_or_slide` is scalar** — never-span guarantees exactly-honest citation provenance with zero
   ripple into the closed Grounder/Retriever/Citation specs (ADR 0019).
 - **No partial index is ever visible** — a file's chunks are all-from-one-successful-run or absent;
-  `status=ready` ⟺ full chunk set committed & queryable (ADR 0020).
+  `status=ready` ⟺ full chunk set committed & queryable (ADR 0020). Held from **both** ends: a write
+  that fails partway rolls back whole (regression-tested on the re-index and first-index paths, #23),
+  and a zero-chunk write is refused before the transaction opens rather than published as `ready`.
 - **Idempotent by construction** — reprocessing a file fully replaces its chunk set; safe under
   at-least-once delivery + lease/reaper reclaim, no dedup keys (ADR 0011/0020).
 - **Transaction wraps the write, not the work** — never held across embedding-API calls (ADR 0020).

@@ -47,7 +47,7 @@ def test_index_file_lands_full_set_and_flips_ready(db):
     chunks = [
         _chunk(owner_id, class_id, "first passage", 1),
         _chunk(owner_id, class_id, "second passage", 2),
-        _chunk(owner_id, class_id, "third passage", 3),
+        _chunk(owner_id, class_id, "third passage", 10),
     ]
 
     index_file(
@@ -69,8 +69,8 @@ def test_index_file_lands_full_set_and_flips_ready(db):
     rows = conn.execute(
         """
         select owner_id, class_id, embedding_model_id, page_or_slide
-        from chunks where file_id = %s::uuid order by page_or_slide
-        """,
+        from chunks where file_id = %s::uuid order by page_or_slide::int
+        """,  # ::int is load-bearing: the column is text, so page 10 sorts before 2 without it.
         (file_id,),
     ).fetchall()
     assert len(rows) == 3
@@ -79,7 +79,7 @@ def test_index_file_lands_full_set_and_flips_ready(db):
         assert str(row_class) == class_id
         assert row_model == MODEL_ID
         assert isinstance(row_page, str)  # int -> text at the SQL boundary
-    assert [r[3] for r in rows] == ["1", "2", "3"]
+    assert [r[3] for r in rows] == ["1", "2", "10"]
 
 
 def test_reindex_replaces_atomically(db):

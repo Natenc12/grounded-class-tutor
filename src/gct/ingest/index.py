@@ -49,7 +49,20 @@ def index_file(
       - uuid columns (`file_id`, `class_id`) -> cast `%s::uuid`; `owner_id` is `text`.
       - `embedding` (`list[float]`) adapts to `vector(1536)` only if the connection registered the
         pgvector type - `conn` MUST come from `gct.db.connect()`.
+
+    Raises `ValueError` if `chunks` is empty: publishing `ready` with no chunks would break
+    `status=ready` ⟺ full chunk set committed & queryable (ADR 0020). The guard runs BEFORE the
+    transaction opens, so nothing is written at all - not even the `files` row.
     """
+    # Empty-set guard: `executemany` over an empty sequence is a no-op, so steps 1-2 below would
+    # commit alone and publish a `ready` file with zero chunks. Raise (not assert): this guard must
+    # hold even under `python -O`, which strips assert statements.
+    if not chunks:
+        raise ValueError(
+            f"index_file called with zero chunks for file_id={file_id}; "
+            "publishing 'ready' with no chunks violates ADR 0020"
+        )
+
     with conn.transaction():
         # 1. Publish the files row as `ready` (upsert). Must precede the chunk insert: chunks FK to
         #    files.file_id. A repeat file_id lands on the UPDATE branch (idempotent re-index).

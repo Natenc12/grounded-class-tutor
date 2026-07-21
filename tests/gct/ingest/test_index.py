@@ -152,4 +152,21 @@ def test_index_file_rejects_empty_chunk_set(db):
     public entry point. Assert the raise AND that no `files` row was created (the guard runs before
     the transaction opens, so there is nothing to roll back).
     """
-    pytest.skip("stub — see plan-23-index-hardening.md, build order step 3")
+    conn, owner_id, class_id = db
+    file_id = str(uuid.uuid4())
+
+    with pytest.raises(ValueError):
+        index_file(
+            conn,
+            file_id=file_id,
+            filename="lecture.pdf",
+            owner_id=owner_id,
+            class_id=class_id,
+            chunks=[],
+        )
+
+    # Nothing published: the guard fires before the transaction opens, so the files upsert never ran.
+    row = conn.execute(
+        "select status from files where file_id = %s::uuid", (file_id,)
+    ).fetchone()
+    assert row is None

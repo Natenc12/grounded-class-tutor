@@ -1,13 +1,16 @@
 """DB-backed tests for the atomic index transaction (issue #4, ADR 0020).
 
 Runs against the real local Postgres via the `db` fixture (seeds a `classes` row, cleans up by
-`owner_id`, skips when the DB is unreachable). Proves the two invariants this box exists to hold:
-the full set lands with `status='ready'` in one shot, and a re-index replaces atomically (no dups).
+`owner_id`, skips when the DB is unreachable). Proves the invariants this box exists to hold: the
+full set lands with `status='ready'` in one shot, a re-index replaces the set cleanly (no dups),
+and — the all-or-nothing half, added by issue #23 — a write that fails partway publishes nothing
+and destroys nothing.
 """
 from __future__ import annotations
 
 import uuid
 
+import psycopg
 import pytest
 
 from gct.config import EMBEDDING_DIM
@@ -82,9 +85,13 @@ def test_index_file_lands_full_set_and_flips_ready(db):
     assert [r[3] for r in rows] == ["1", "2", "10"]
 
 
-def test_reindex_replaces_atomically(db):
+def test_reindex_replaces_the_set(db):
     """Calling twice on the same file_id with a different set leaves ONLY the second set - the
-    all-or-nothing DELETE-then-insert replace, no duplicates (idempotent by construction)."""
+    DELETE-then-insert replace, no duplicates (idempotent by construction).
+
+    Both writes SUCCEED here, so this proves *replacement*, not atomicity — the all-or-nothing
+    guarantee is proven by the mid-write-failure tests below (issue #23).
+    """
     conn, owner_id, class_id = db
     file_id = str(uuid.uuid4())
 
@@ -127,9 +134,45 @@ def test_midwrite_failure_leaves_old_set_intact(db):
     empty or partial (ADR 0020 §3).
 
     The injection must fail mid-`executemany`, NOT before the transaction opens — otherwise this
-    test goes green while proving nothing about atomicity (see plan-23 §Risks).
+    test goes green while proving nothing about atomicity (see plan-23 §Risks). That is why the
+    assertions below are on the SHAPE of the survivors (all three original texts, complete, still
+    `ready`) rather than merely on "something raised": a dimension check moved into Python would
+    still raise, but would prove nothing about the transaction.
     """
-    pytest.skip("stub — see plan-23-index-hardening.md, build order step 5")
+    conn, owner_id, class_id = db
+    file_id = str(uuid.uuid4())
+
+    good = [
+        _chunk(owner_id, class_id, "old-A", 1),
+        _chunk(owner_id, class_id, "old-B", 2),
+        _chunk(owner_id, class_id, "old-C", 3),
+    ]
+    index_file(conn, file_id=file_id, filename="lecture.pdf",
+               owner_id=owner_id, class_id=class_id, chunks=good)
+
+    # Re-index with a doomed set: the MIDDLE chunk's vector is dim 8, not 1536. Rows on BOTH sides
+    # of it are in play, so a leaky transaction would show up as a partial set either way.
+    doomed = [
+        _chunk(owner_id, class_id, "new-A", 1),
+        _chunk(owner_id, class_id, "BAD", 2, dim=8),
+        _chunk(owner_id, class_id, "new-C", 3),
+    ]
+    with pytest.raises(psycopg.errors.DataException):
+        index_file(conn, file_id=file_id, filename="lecture.pdf",
+                   owner_id=owner_id, class_id=class_id, chunks=doomed)
+
+    # Same connection (it stays usable after the rollback — no fresh connection needed).
+    # The OLD set is complete and queryable: the DELETE rolled back with the failed INSERT.
+    texts = conn.execute(
+        "select text from chunks where file_id = %s::uuid order by text", (file_id,)
+    ).fetchall()
+    assert [t[0] for t in texts] == ["old-A", "old-B", "old-C"]
+
+    # And the file is still published — readers see old-full, never empty or partial.
+    status = conn.execute(
+        "select status from files where file_id = %s::uuid", (file_id,)
+    ).fetchone()[0]
+    assert status == "ready"
 
 
 def test_midwrite_failure_on_first_index_publishes_nothing(db):
@@ -139,8 +182,36 @@ def test_midwrite_failure_on_first_index_publishes_nothing(db):
     `status` was already 'ready' before the failure, so asserting it "did not flip" proves nothing;
     on a first index the `files` upsert rolls back with the chunks, so the row is absent entirely.
     `status=ready` ⟺ full chunk set committed & queryable (ADR 0020 §3).
+
+    As above, the injection must fail mid-`executemany`, NOT before the transaction opens — a
+    dimension check moved into Python would raise without ever exercising the rollback, and this
+    test would stay green while proving nothing (see plan-23 §Risks). The load-bearing assertion is
+    the ABSENT `files` row: it can only be absent because the upsert rolled back.
     """
-    pytest.skip("stub — see plan-23-index-hardening.md, build order step 6")
+    conn, owner_id, class_id = db
+    file_id = str(uuid.uuid4())  # fresh — never successfully indexed
+
+    doomed = [
+        _chunk(owner_id, class_id, "new-A", 1),
+        _chunk(owner_id, class_id, "BAD", 2, dim=8),
+        _chunk(owner_id, class_id, "new-C", 3),
+    ]
+    with pytest.raises(psycopg.errors.DataException):
+        index_file(conn, file_id=file_id, filename="lecture.pdf",
+                   owner_id=owner_id, class_id=class_id, chunks=doomed)
+
+    # Nothing published. No chunks...
+    count = conn.execute(
+        "select count(*) from chunks where file_id = %s::uuid", (file_id,)
+    ).fetchone()[0]
+    assert count == 0
+
+    # ...and no `files` row AT ALL: the upsert (step 1) is inside the same transaction as the
+    # insert (step 3), so it rolled back too. `ready` was never published for this file.
+    row = conn.execute(
+        "select status from files where file_id = %s::uuid", (file_id,)
+    ).fetchone()
+    assert row is None
 
 
 def test_index_file_rejects_empty_chunk_set(db):

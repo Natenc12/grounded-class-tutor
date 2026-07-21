@@ -2,8 +2,9 @@
 # Trust is the product, so a red suite must BLOCK merge instead of relying on a
 # "tests pass" claim typed into a PR body. Runs only tests that need no network
 # and no DB: `pytest -m "not live"` (the `live` marker is registered in
-# pyproject.toml and fences off the OpenAI/Postgres tests arriving in later
-# slices — those need a secret + service container and stay out of this gate).
+# pyproject.toml and fences off the DB-backed ingest tests — they need a real
+# Postgres, which this job does not run, so this gate deliberately never
+# proves the write path; see issue #23).
 name: CI
 
 on:

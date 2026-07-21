@@ -31,5 +31,5 @@ line-length = 100
 
 [tool.pytest.ini_options]
 markers = [
-    "live: test requires a live external dependency (OpenAI API key or Postgres). Excluded from the per-PR CI gate, which runs `pytest -m 'not live'` (issue #18). No tests carry this marker yet — it fences off the live/DB tests arriving in later slices.",
+    "live: test requires a live external dependency (OpenAI API key or Postgres). Excluded from the per-PR CI gate, which runs `pytest -m 'not live'` (issue #18). Carried by the DB-backed ingest tests (tests/gct/ingest/test_index.py, test_pipeline.py) so CI deliberately never runs them — a green CI run does not prove the DB write path (issue #23).",
 ]

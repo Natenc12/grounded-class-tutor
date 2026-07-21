@@ -118,7 +118,7 @@ def test_reindex_replaces_the_set(db):
     assert [t[0] for t in texts] == ["new-A", "new-B"]  # only the second set, no leftovers
 
 
-# --- Atomicity + write-path guards (issue #23) — STUBS, not yet implemented -------------------
+# --- Atomicity + write-path guards (issue #23) ------------------------------------------------
 #
 # The two tests above run only SUCCESSFUL writes, so they prove *replacement* and never prove
 # *all-or-nothing*. The gap is load-bearing: `index_file` DELETEs the old chunk set before it
@@ -137,7 +137,7 @@ def test_midwrite_failure_leaves_old_set_intact(db):
     empty or partial (ADR 0020 §3).
 
     The injection must fail mid-`executemany`, NOT before the transaction opens — otherwise this
-    test goes green while proving nothing about atomicity (see plan-23 §Risks). That is why the
+    test goes green while proving nothing about atomicity. That is why the
     assertions below are on the SHAPE of the survivors (all three original texts, complete, still
     `ready`) rather than merely on "something raised": a dimension check moved into Python would
     still raise, but would prove nothing about the transaction.
@@ -189,7 +189,7 @@ def test_midwrite_failure_on_first_index_publishes_nothing(db):
 
     As above, the injection must fail mid-`executemany`, NOT before the transaction opens — a
     dimension check moved into Python would raise without ever exercising the rollback, and this
-    test would stay green while proving nothing (see plan-23 §Risks). The load-bearing assertion is
+    test would stay green while proving nothing. The load-bearing assertion is
     the ABSENT `files` row: it can only be absent because the upsert rolled back.
     """
     conn, owner_id, class_id = db
@@ -222,8 +222,9 @@ def test_midwrite_failure_on_first_index_publishes_nothing(db):
 def test_index_file_rejects_empty_chunk_set(db):
     """`index_file(chunks=[])` raises rather than publishing 'ready' with zero chunks.
 
-    Today it publishes: `executemany` over an empty sequence is a no-op, so the `files` upsert and
-    the DELETE commit alone — contradicting `status=ready` ⟺ full chunk set queryable. Unreachable
+    Before the #23 guard it published: `executemany` over an empty sequence is a no-op, so the
+    `files` upsert and the DELETE committed alone — contradicting `status=ready` ⟺ full chunk set
+    queryable. Unreachable
     via `compose` (`parse_file` raises `ParseError("empty", ...)` first), but `index_file` is a
     public entry point. Assert the raise AND that no `files` row was created (the guard runs before
     the transaction opens, so there is nothing to roll back).

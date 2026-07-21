@@ -13,6 +13,7 @@ Also home to two ingest-pipeline fixtures (issue #4):
 """
 from __future__ import annotations
 
+import hashlib
 import io
 import uuid
 from pathlib import Path
@@ -111,10 +112,11 @@ class FakeEmbeddings:
 
     Satisfies the `providers.base.Embeddings` protocol (`model_id`, `dim`, `embed`). `dim`
     defaults to `EMBEDDING_DIM` (1536) so vectors it returns satisfy the `chunks.embedding
-    vector(1536)` column in the real-DB index tests. Each text maps to a distinct vector
-    (first component = a per-run hash of the text — `hash()` is randomized per process, so it's
-    stable within a test run, not across runs) so a misalignment between input order and stored
-    vectors would show up.
+    vector(1536)` column in the real-DB index tests. Each text maps to a distinct vector (first
+    component = a sha256 digest of the text, taken as a 48-bit big-endian int) so a misalignment
+    between input order and stored vectors would show up. The digest is stable across processes
+    and across time — no `hash()`, no modulo — so the same text always maps to the same vector,
+    everywhere, forever (issue #23).
     """
 
     def __init__(self, model_id: str = "fake-embed-3", dim: int = EMBEDDING_DIM) -> None:
@@ -132,7 +134,8 @@ class FakeEmbeddings:
     def embed(self, texts: Sequence[str]) -> list[list[float]]:
         vectors: list[list[float]] = []
         for text in texts:
-            seed = float(hash(text) % 1000)
+            h = hashlib.sha256(text.encode()).digest()
+            seed = float(int.from_bytes(h[:6], "big"))  # 48 bits, fits float64's mantissa; no modulo
             vectors.append([seed] + [0.0] * (self._dim - 1))
         return vectors
 

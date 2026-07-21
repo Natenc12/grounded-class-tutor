@@ -91,4 +91,8 @@ def test_fake_embedder_is_stable_across_processes(fake_embedder):
     Assert against a hard-coded expected value (not just self-consistency within one run): a future
     "improvement" that reintroduces per-process randomization must fail here, loudly.
     """
-    pytest.skip("stub — see plan-23-index-hardening.md, build order step 1")
+    # sha256(b"hello world")[:6] as a big-endian int — computed once, hardcoded here so a future
+    # regression to a randomized/process-local hash fails loudly instead of just staying "consistent".
+    vector = fake_embedder.embed(["hello world"])[0]
+    assert vector[0] == 203741030093645.0
+    assert vector[1:] == [0.0] * (fake_embedder.dim - 1)

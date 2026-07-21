@@ -74,3 +74,21 @@ def test_ingest_file_end_to_end(pdf_factory, fake_embedder, db):
     ).fetchone()[0]
     # One chunk per short page (text under CHUNK_SIZE_WORDS) — matches the real chunker.
     assert n_chunks == len(chunk_units(parse_file(path)))
+
+
+# --- Fixture reliability (issue #23) — STUB, not yet implemented ------------------------------
+
+
+def test_fake_embedder_is_stable_across_processes(fake_embedder):
+    """`FakeEmbeddings` maps a text to the SAME vector in every process, forever.
+
+    It currently seeds from `hash(text) % 1000`. `hash()` is randomized per process, and the modulo
+    collapses the space to 1000 buckets — so two distinct chunk texts collide on roughly 0.1% of
+    pairs, and when they do, the alignment assertion in
+    `test_compose_stamps_provenance_model_and_embeds_all` passes VACUOUSLY. That flake is worst
+    exactly while the suite is being leaned on daily.
+
+    Assert against a hard-coded expected value (not just self-consistency within one run): a future
+    "improvement" that reintroduces per-process randomization must fail here, loudly.
+    """
+    pytest.skip("stub — see plan-23-index-hardening.md, build order step 1")

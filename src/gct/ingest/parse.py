@@ -101,6 +101,17 @@ def _parse_pdf(path: Path) -> list[ParsedUnit]:
     return units
 
 
+# Separator between a slide's body text and its speaker notes within the same
+# ParsedUnit. Deliberately NOT bracketed. The reason is a nudge, not a collision: the
+# Grounder's validator only parses [S#] tokens out of the MODEL'S ANSWER and range-checks
+# them (design/decisions/0015-grounder-citation-contract-validation.md §②/§③), so a
+# "[Speaker notes]" token in context text would never enter that ladder at all. What it
+# WOULD do is put bracketed tokens in front of the model in the very context where [S#] is
+# the citation vocabulary — and bracket-shaped context invites bracket-shaped output. Cheap
+# to avoid, so avoid it.
+_NOTES_MARKER = "Speaker notes:"
+
+
 def _iter_shapes(shapes):
     """Flatten grouped shapes so text nested inside a PowerPoint group (a common
     authoring pattern) isn't invisible to a top-level `shape.has_text_frame` scan."""
@@ -109,6 +120,23 @@ def _iter_shapes(shapes):
             yield from _iter_shapes(shape.shapes)
         else:
             yield shape
+
+
+def _slide_notes(slide) -> str:
+    """Return a slide's speaker-notes text, or "" if it has none.
+
+    Guards on `has_notes_slide` FIRST: reading `slide.notes_slide` *creates* the notes
+    part as a side effect (verified on python-pptx 1.0.2), so touching it before the
+    check both mutates the in-memory deck and makes a "slide has no notes" test pass for
+    the wrong reason. `notes_text_frame` can also be None on decks from other authoring
+    tools, so it is guarded separately rather than assumed present.
+    """
+    if not slide.has_notes_slide:
+        return ""
+    notes_text_frame = slide.notes_slide.notes_text_frame
+    if notes_text_frame is None:
+        return ""
+    return notes_text_frame.text
 
 
 def _parse_pptx(path: Path) -> list[ParsedUnit]:
@@ -135,9 +163,30 @@ def _parse_pptx(path: Path) -> list[ParsedUnit]:
                         lines.append(line)
             text = "\n".join(lines)
         except Exception as exc:
+            # Body-text failure stays TERMINAL - unchanged by #12.
             raise ParseError(
                 "unparseable", f"could not extract text from {path.name} slide {i}: {exc}"
             ) from exc
+
+        try:
+            notes = _slide_notes(slide)
+        except Exception:
+            # DEGRADE, don't fail (D2): a corrupt notes part on an otherwise readable
+            # deck must not turn into a terminal `unparseable` the student sees as a
+            # refusal. Swallowed deliberately and silently - no logging in V1; Slice 2
+            # owns observability (D3).
+            notes = ""
+
+        if notes.strip():
+            # Body, blank line, marker, notes (D1). Join only the non-empty parts so a
+            # notes-only slide doesn't carry a pointless leading blank block.
+            parts = [p for p in (text, f"{_NOTES_MARKER}\n{notes}") if p.strip()]
+            text = "\n\n".join(parts)
+
+        # Notes ride inside this slide's own unit - one unit per slide, so never-span
+        # (ADR 0019) holds by construction. The emptiness check tests the COMBINED text,
+        # so a notes-only slide still emits a unit (`empty` is a WHOLE-FILE terminal,
+        # ADR 0020).
         if text.strip():
             units.append(ParsedUnit(text=text, file=path.name, page_or_slide=i))
     return units

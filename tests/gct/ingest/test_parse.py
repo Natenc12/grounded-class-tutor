@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import pytest
 
-from gct.ingest.parse import ParsedUnit, ParseError, parse_file
+from gct.ingest.parse import ParsedUnit, ParseError, _slide_notes, parse_file
 
 
 class TestPdfHappyPath:
@@ -194,3 +194,139 @@ class TestTerminalFailures:
             parse_file(path)
 
         assert exc_info.value.reason == "unparseable"
+
+
+class TestSlideNotes:
+    def test_slide_with_no_notes_returns_empty(self, pptx_factory):
+        import pptx
+
+        path = pptx_factory("deck.pptx", ["Some text"])
+        deck = pptx.Presentation(str(path))
+        [slide] = deck.slides
+
+        assert _slide_notes(slide) == ""
+
+    def test_notes_slide_not_created_as_a_side_effect(self, pptx_factory):
+        import pptx
+
+        path = pptx_factory("deck.pptx", ["Some text"])
+        deck = pptx.Presentation(str(path))
+        [slide] = deck.slides
+
+        _slide_notes(slide)
+
+        assert slide.has_notes_slide is False
+
+    def test_slide_with_notes_returns_the_notes_text(self, pptx_factory):
+        import pptx
+
+        path = pptx_factory("deck.pptx", ["Some text"], slide_notes=["Walk the third way slowly"])
+        deck = pptx.Presentation(str(path))
+        [slide] = deck.slides
+
+        assert _slide_notes(slide) == "Walk the third way slowly"
+
+    def test_body_and_notes_merged_into_one_unit(self, pptx_factory):
+        path = pptx_factory(
+            "deck.pptx",
+            ["Aquinas: five ways"],
+            slide_notes=["The third way is the one they always miss"],
+        )
+
+        [unit] = parse_file(path)
+
+        assert unit.page_or_slide == 1
+        body_i = unit.text.index("Aquinas: five ways")
+        marker_i = unit.text.index("Speaker notes:")
+        notes_i = unit.text.index("The third way is the one they always miss")
+        assert body_i < marker_i < notes_i
+
+    def test_notes_marker_present_and_unbracketed(self, pptx_factory):
+        path = pptx_factory(
+            "deck.pptx",
+            ["Aquinas: five ways"],
+            slide_notes=["The third way is the one they always miss"],
+        )
+
+        [unit] = parse_file(path)
+
+        assert "Speaker notes:" in unit.text
+        # Unbracketed on purpose: bracket-shaped context invites bracket-shaped output, in the
+        # one place where [S#] is the citation vocabulary (ADR 0015 §②; see parse._NOTES_MARKER).
+        assert "[Speaker notes]" not in unit.text
+
+    def test_empty_notes_part_adds_no_marker(self, pptx_factory):
+        """A notes part that EXISTS but is empty must not emit a bare, dangling marker.
+
+        Probably the most common shape in a real deck: PowerPoint creates the notes part the
+        moment anyone clicks into the notes pane, so "part present, text empty" is the default
+        state of a deck someone merely looked at. Distinct from the no-notes case
+        (`slide_notes=[None]`), which creates no part at all — here the part is real and
+        `_slide_notes` returns "", so only the `notes.strip()` check stands between the student
+        and an embedded "Speaker notes:" with nothing after it.
+
+        Whitespace-only notes are the same case and covered alongside it.
+        """
+        for label, notes in (("empty", ""), ("whitespace", "   \n  ")):
+            path = pptx_factory(f"deck-{label}.pptx", ["Body text here"], slide_notes=[notes])
+
+            [unit] = parse_file(path)
+
+            assert unit.text == "Body text here", f"{label} notes leaked into the unit"
+            assert "Speaker notes:" not in unit.text
+
+    def test_notes_only_slide_yields_a_unit(self, pptx_factory):
+        path = pptx_factory(
+            "deck.pptx",
+            [None],
+            slide_notes=["Notes are the only content on this slide"],
+        )
+
+        [unit] = parse_file(path)
+
+        assert unit.page_or_slide == 1
+        assert "Notes are the only content on this slide" in unit.text
+
+    def test_file_empty_only_when_no_slide_has_body_or_notes(self, pptx_factory):
+        all_empty_path = pptx_factory("blank.pptx", [None, None], slide_notes=[None, None])
+
+        with pytest.raises(ParseError) as exc_info:
+            parse_file(all_empty_path)
+        assert exc_info.value.reason == "empty"
+
+        notes_only_path = pptx_factory(
+            "notes-only.pptx", [None], slide_notes=["The only content is in the notes"]
+        )
+
+        units = parse_file(notes_only_path)  # must not raise
+
+        assert len(units) == 1
+
+    def test_corrupt_notes_part_keeps_body_text(self, pptx_factory, monkeypatch):
+        import pptx.slide
+
+        path = pptx_factory("deck.pptx", ["Some body text"])
+
+        def _boom(self):
+            raise RuntimeError("simulated corrupt notes part")
+
+        monkeypatch.setattr(pptx.slide.Slide, "has_notes_slide", property(_boom))
+
+        [unit] = parse_file(path)  # degrades (D2), does not raise
+
+        assert "Some body text" in unit.text
+        assert "Speaker notes:" not in unit.text
+
+    def test_notes_do_not_leak_across_slides(self, pptx_factory):
+        path = pptx_factory(
+            "deck.pptx",
+            ["Slide one body", "Slide two body"],
+            slide_notes=["Slide one notes", "Slide two notes"],
+        )
+
+        units = parse_file(path)
+
+        assert "Slide one notes" in units[0].text
+        assert "Slide one notes" not in units[1].text
+        assert "Slide two notes" in units[1].text
+        assert "Slide two notes" not in units[0].text

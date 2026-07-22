@@ -31,5 +31,6 @@ line-length = 100
 
 [tool.pytest.ini_options]
 markers = [
-    "live: test requires a live external dependency (OpenAI API key or Postgres). Excluded from the per-PR CI gate, which runs `pytest -m 'not live'` (issue #18). Carried by the DB-backed ingest tests (tests/gct/ingest/test_index.py, test_pipeline.py) so CI deliberately never runs them — a green CI run does not prove the DB write path (issue #23).",
+    "db: test needs a real Postgres (fake embedders — no network, no cost). Runs locally against the dev DB and in CI against the pgvector service container, after the migrate step. The shared `db` fixture skips locally when Postgres is down, but HARD-FAILS in CI, where the container guarantees one.",
+    "live: test hits a paid external API (OpenAI). Excluded from the per-PR CI gate, which runs `pytest -m 'not live'` (issue #18) — these run locally only, with .env secrets. Distinct from `db` on purpose: conflating them would either spend money in CI or silently fence off free DB coverage.",
 ]

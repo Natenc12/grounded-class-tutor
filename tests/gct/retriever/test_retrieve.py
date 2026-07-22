@@ -59,11 +59,12 @@ class TestToScore:
         assert math.isnan(max(1.0 - nan, 0.0))
 
 
+@pytest.mark.db
 class TestAssertEmbeddingConsistency:
     """The ADR-0018 guard: stored `chunks.embedding_model_id` vs the ACTIVE embedder.
 
-    DB-backed (needs the `db` fixture and real Postgres). Per CLAUDE.md these are NOT marked
-    `live`, so they self-skip in CI - a skip here locally means the DB is down, not a pass.
+    DB-backed (needs the `db` fixture and real Postgres), hence the `db` marker: CI runs these
+    against its service container; a skip here locally means the DB is down, not a pass.
     """
 
     def test_guard_passes_on_matching_model(self, db, ranking_embedder, seed_chunks):
@@ -191,6 +192,7 @@ class ExplodingEmbeddings:
         raise TransientEmbeddingError("rate limited")
 
 
+@pytest.mark.db
 class TestRetrieve:
     """The whole pipeline, DB-backed: guard -> embed -> scoped top-k -> scores -> ranked return.
 

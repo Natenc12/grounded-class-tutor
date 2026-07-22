@@ -42,7 +42,7 @@ def _chunk(
     )
 
 
-@pytest.mark.live
+@pytest.mark.db
 def test_index_file_lands_full_set_and_flips_ready(db):
     """After one call: N chunk rows for the file, `files.status='ready'`, every row carries scope +
     stamp, and `page_or_slide` is stored as text."""
@@ -86,7 +86,7 @@ def test_index_file_lands_full_set_and_flips_ready(db):
     assert [r[3] for r in rows] == ["1", "2", "10"]
 
 
-@pytest.mark.live
+@pytest.mark.db
 def test_reindex_replaces_the_set(db):
     """Calling twice on the same file_id with a different set leaves ONLY the second set - the
     DELETE-then-insert replace, no duplicates (idempotent by construction).
@@ -127,7 +127,7 @@ def test_reindex_replaces_the_set(db):
 # strictly worse than never re-indexing (ADR 0020 §2-3; ingestion-worker.md §Failure modes).
 
 
-@pytest.mark.live
+@pytest.mark.db
 def test_midwrite_failure_leaves_old_set_intact(db):
     """RE-INDEX path: a write that fails partway leaves the OLD chunk set complete and queryable.
 
@@ -178,7 +178,7 @@ def test_midwrite_failure_leaves_old_set_intact(db):
     assert status == "ready"
 
 
-@pytest.mark.live
+@pytest.mark.db
 def test_midwrite_failure_on_first_index_publishes_nothing(db):
     """FIRST-INDEX path: a write that fails partway publishes NOTHING — no chunks, no `files` row.
 
@@ -218,7 +218,7 @@ def test_midwrite_failure_on_first_index_publishes_nothing(db):
     assert row is None
 
 
-@pytest.mark.live
+@pytest.mark.db
 def test_index_file_rejects_empty_chunk_set(db):
     """`index_file(chunks=[])` raises rather than publishing 'ready' with zero chunks.
 

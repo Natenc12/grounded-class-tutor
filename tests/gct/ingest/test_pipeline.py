@@ -55,7 +55,6 @@ def test_compose_propagates_parse_error_on_empty_file(pdf_factory, fake_embedder
         compose(path, OWNER_ID, CLASS_ID, embedder=fake_embedder)
 
 
-@pytest.mark.db
 def test_ingest_file_end_to_end(pdf_factory, fake_embedder, db):
     """The top-level Slice-1 entry: a real file goes through parse→chunk→embed→index and lands as a
     queryable, `ready` file. Returns the minted `file_id`; chunk rows are present under it."""

@@ -15,6 +15,21 @@ import uuid
 import pytest
 
 
+def pytest_collection_modifyitems(items):
+    """Apply the `db` marker to every test that requests the `db` fixture.
+
+    The marker is DERIVED from the dependency, never hand-declared. `--strict-markers` catches a
+    typo'd mark but is blind to a missing one: a new DB-backed test that forgets `@pytest.mark.db`
+    still runs under CI's `-m "not live"`, so nothing goes red — `-m db` just quietly stops
+    collecting it. That drift would surface only when someone trusted the count. Taking the `db`
+    fixture IS what makes a test a db test, so read it off the fixture and leave no second copy of
+    the fact to fall out of sync.
+    """
+    for item in items:
+        if "db" in getattr(item, "fixturenames", ()):
+            item.add_marker("db")
+
+
 def _in_ci() -> bool:
     """True only when CI is affirmatively set.
 

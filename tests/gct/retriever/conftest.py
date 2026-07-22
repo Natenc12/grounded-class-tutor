@@ -19,8 +19,8 @@ from __future__ import annotations
 import hashlib
 import math
 import uuid
+from collections.abc import Sequence
 from dataclasses import dataclass
-from typing import Sequence
 
 import pytest
 
@@ -147,7 +147,7 @@ def seed_chunks(db):
 
         vectors = embedder.embed(list(texts))
         seeded: list[SeededChunk] = []
-        for page, (text, vector) in enumerate(zip(texts, vectors), start=1):
+        for page, (text, vector) in enumerate(zip(texts, vectors, strict=True), start=1):
             row = conn.execute(
                 """
                 insert into chunks

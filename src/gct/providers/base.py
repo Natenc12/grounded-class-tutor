@@ -2,7 +2,8 @@
 citation parsing; these just move text ⇄ vectors and messages ⇄ text."""
 from __future__ import annotations
 
-from typing import Protocol, Sequence
+from collections.abc import Sequence
+from typing import Protocol
 
 # {"role": "system" | "user" | "assistant", "content": "..."}
 Message = dict[str, str]

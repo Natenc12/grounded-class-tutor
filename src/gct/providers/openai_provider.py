@@ -2,7 +2,7 @@
 commitments — the whole point of the interface is that these are swappable."""
 from __future__ import annotations
 
-from typing import Iterator, Sequence
+from collections.abc import Iterator, Sequence
 
 from openai import (
     APIConnectionError,

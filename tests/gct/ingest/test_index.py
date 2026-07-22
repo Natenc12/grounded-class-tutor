@@ -238,7 +238,8 @@ def test_index_file_rejects_empty_chunk_set(db):
             chunks=[],
         )
 
-    # Nothing published: the guard fires before the transaction opens, so the files upsert never ran.
+    # Nothing published: the guard fires before the transaction opens, so the files upsert
+    # never ran.
     row = conn.execute(
         "select status from files where file_id = %s::uuid", (file_id,)
     ).fetchone()

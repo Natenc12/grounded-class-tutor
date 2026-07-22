@@ -2,7 +2,8 @@
 
 `compose` is the no-DB half of the pipeline: parse -> chunk -> embed -> build `PreparedChunk`s.
 Tested with a real generated PDF (`pdf_factory`) and the deterministic `fake_embedder` stub, so no
-network / no Postgres. The DB-backed `index_file`/`ingest_file` tests live elsewhere (test_index.py).
+network / no Postgres. The DB-backed `index_file`/`ingest_file` tests live elsewhere
+(test_index.py).
 """
 from __future__ import annotations
 
@@ -29,7 +30,7 @@ def test_compose_stamps_provenance_model_and_embeds_all(pdf_factory, fake_embedd
     prepared = compose(path, OWNER_ID, CLASS_ID, embedder=fake_embedder)
 
     assert len(prepared) == len(expected_chunks)
-    for p, c in zip(prepared, expected_chunks):
+    for p, c in zip(prepared, expected_chunks, strict=True):
         assert isinstance(p, PreparedChunk)
         # Provenance carried through unchanged (citation spine, honor-point ①).
         assert p.text == c.text
@@ -92,7 +93,8 @@ def test_fake_embedder_is_stable_across_processes(fake_embedder):
     "improvement" that reintroduces per-process randomization must fail here, loudly.
     """
     # sha256(b"hello world")[:6] as a big-endian int — computed once, hardcoded here so a future
-    # regression to a randomized/process-local hash fails loudly instead of just staying "consistent".
+    # regression to a randomized/process-local hash fails loudly instead of just staying
+    # "consistent".
     vector = fake_embedder.embed(["hello world"])[0]
     assert vector[0] == 203741030093645.0
     assert vector[1:] == [0.0] * (fake_embedder.dim - 1)

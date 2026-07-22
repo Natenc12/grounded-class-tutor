@@ -1,10 +1,8 @@
-# Per-PR merge gate: lint + the fast, hermetic test suite (issue #18).
+# Per-PR merge gate: lint + every test that runs for free (issue #18, extended).
 # Trust is the product, so a red suite must BLOCK merge instead of relying on a
-# "tests pass" claim typed into a PR body. Runs only tests that need no network
-# and no DB: `pytest -m "not live"` (the `live` marker is registered in
-# pyproject.toml and fences off the DB-backed ingest tests — they need a real
-# Postgres, which this job does not run, so this gate deliberately never
-# proves the write path; see issue #23).
+# "tests pass" claim typed into a PR body. A pgvector service container gives the
+# job a real Postgres 17, so the DB-backed `db` tests AND the migration run on
+# every PR. Only `live` tests (paid API / network) stay local-only.
 name: CI
 
 on:
@@ -19,19 +17,83 @@ concurrency:
 
 jobs:
   lint-and-test:
-    name: ruff + fast pytest (py3.10)
+    name: ruff + pytest w/ Postgres (py3.10)
     runs-on: ubuntu-latest
+    # State our own floor rather than inheriting the repo default, which is a setting someone can
+    # flip elsewhere: this job only ever reads code, so a write-scoped GITHUB_TOKEN here would be
+    # a standing offer to any dependency that runs in it.
+    permissions:
+      contents: read
     # Pin the interpreter for every uv command below. Without this, `uv python
     # install 3.10` only makes 3.10 available — `uv sync`/`uv run` could still
     # resolve a newer system Python (>=3.10), so the suite might not run on the
     # 3.10 we intend to match locally.
+    # A hung job should fail in minutes, not burn the 360-minute default. The suite runs in ~40s;
+    # anything near 10 minutes means a test is blocked on a Postgres lock, not working hard.
+    timeout-minutes: 10
     env:
       UV_PYTHON: "3.10"
+      DATABASE_URL: postgresql://postgres:postgres@localhost:5432/grounded_class_tutor
+      # Applies --locked to EVERY uv command below, `uv run` included. Two things this buys:
+      # `uv run` re-locks and re-syncs by default, so without it a dep added to pyproject.toml
+      # but never `uv lock`ed gets resolved and installed mid-job — CI goes green against a
+      # dependency set uv.lock does not describe, while a teammate's `uv sync` gets a different
+      # environment. And --locked ASSERTS the lockfile is current (--frozen merely declines to
+      # touch it), so a stale uv.lock is itself a red. Same reproducibility argument as pinning
+      # the pgvector tag, one step later in the job.
+      # NB: --frozen and --locked are mutually exclusive — with this set, passing `--frozen` to
+      # any step below is a hard error ("the argument `--locked` cannot be used with UV_FROZEN").
+      UV_LOCKED: "1"
+    # Sidecar Postgres, matching local: v17 + pgvector, born empty every run so
+    # each job migrates from scratch (no drifting shared state). The health gate
+    # blocks all steps until the DB accepts TCP connections — without it the
+    # migrate step races Postgres's boot and flakes.
+    #
+    # `-h localhost` is load-bearing. The postgres entrypoint runs its init phase
+    # against a TEMPORARY server started with `listen_addresses=''` — socket only,
+    # no TCP listener. A bare `pg_isready` defaults to the socket, so it reports
+    # healthy during init and the gate opens while port 5432 is still dead. Forcing
+    # TCP makes the check fail until the real server is listening, which is the
+    # thing every step below actually connects to.
+    #
+    # The pgvector version is pinned, not floating. `pgvector/pgvector:pg17` is a
+    # moving tag — a new pgvector release republishes it, and the next PR silently
+    # runs against a different extension than the one this gate was validated on,
+    # with no diff to point at when it goes red. A merge gate has to be reproducible
+    # to be worth anything. Bumping is then a deliberate one-line change.
+    #
+    # NB the `-d` in the health command is decorative: `pg_isready` answers from the server's ping
+    # response, before it resolves the database name, so a typo'd POSTGRES_DB still reports healthy
+    # and fails later at the migrate step. That's a red, not a false green — just don't read this
+    # line as proof the database exists.
+    services:
+      postgres:
+        image: pgvector/pgvector:0.8.5-pg17
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: grounded_class_tutor
+        ports: ["5432:5432"]
+        # start-period gives initdb room before failures start counting: the TCP check above stays
+        # (correctly) red through the whole init phase, so without it that phase eats the retry
+        # budget. Boot is ~5s today against a 75s ceiling — the margin is deliberate, not lazy.
+        options: >-
+          --health-cmd "pg_isready -U postgres -d grounded_class_tutor -h localhost"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 15
+          --health-start-period 10s
     steps:
-      - uses: actions/checkout@v4
+      # Third-party actions are pinned to a commit SHA, not a tag, for the same reason the pgvector
+      # image is: `@v4` is mutable and these run arbitrary code in a job holding GITHUB_TOKEN, so a
+      # republished tag would change what executes here with no diff to review. The trailing
+      # comment is the human-readable version — bumping means editing both, deliberately.
+      # (Note `refs/tags/v5` on setup-uv resolves to an annotated TAG object, which Actions will
+      # not accept; the SHA below is the commit that tag points at.)
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
 
       - name: Install uv
-        uses: astral-sh/setup-uv@v5
+        uses: astral-sh/setup-uv@d4b2f3b6ecc6e67c4457f6d3e41ec42d3d0fcb86 # v5.4.2
         with:
           enable-cache: true
 
@@ -41,12 +103,30 @@ jobs:
         run: uv python install 3.10
 
       # `--extra dev` is required: pytest/ruff live in [project.optional-dependencies].dev,
-      # which a bare `uv sync` does NOT install.
+      # which a bare `uv sync` does NOT install (it actively UNINSTALLS them).
+      # Pinning comes from UV_LOCKED above, not a --frozen flag here — the two conflict.
       - name: Sync dependencies
-        run: uv sync --frozen --extra dev
+        run: uv sync --extra dev
 
       - name: Ruff
         run: uv run ruff check
 
-      - name: Fast hermetic tests
+      # Schema drift between migrations/*.sql and the code now fails the PR
+      # instead of only ever being caught on a laptop.
+      #
+      # Applied TWICE on purpose. The container is born empty, so a single pass only ever
+      # exercises the fresh-install path — every `create ... if not exists` takes the create
+      # branch and its no-op branch is never tried. That leaves two green-while-broken holes:
+      # editing an already-applied migration (CI builds the new shape from scratch and passes,
+      # while every existing DB silently keeps the old one), and a future migration whose
+      # `alter table` lacks `if not exists` (fine once, explodes on the re-run that CLAUDE.md
+      # documents as the normal local workflow). The second pass costs ~0.2s and turns both
+      # into a red. It also makes migrate.py's own "idempotent, safe to re-run" claim checked
+      # rather than asserted.
+      - name: Apply migrations (twice — the second pass proves idempotency)
+        run: |
+          uv run python scripts/migrate.py
+          uv run python scripts/migrate.py
+
+      - name: Tests (everything except paid-API `live`)
         run: uv run pytest -m "not live"

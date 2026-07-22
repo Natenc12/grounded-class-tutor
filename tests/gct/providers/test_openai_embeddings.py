@@ -24,7 +24,6 @@ from gct.providers.openai_provider import (
     _sub_batches,
 )
 
-
 # --- Fake OpenAI client -----------------------------------------------------------------------
 # Mimics only the one call our code makes: `client.embeddings.create(model, input, dimensions)`
 # returning `resp.data` (one item per input, each with `.embedding`). It records every batch it

@@ -43,7 +43,9 @@ class TestWordWindows:
         assert windows == [(0, 250), (210, 460), (420, 600)]
         stride = 250 - 40
         starts = [start for start, _ in windows]
-        assert all(b - a == stride for a, b in zip(starts, starts[1:]))
+        # strict=False on purpose: this zips a list against its own tail to walk consecutive
+        # pairs, so the operands differ in length by one BY CONSTRUCTION.
+        assert all(b - a == stride for a, b in zip(starts, starts[1:], strict=False))
         # full-size neighbors physically share `overlap` words
         assert windows[0][1] - windows[1][0] == 40
 
@@ -60,7 +62,10 @@ class TestWordWindows:
         assert _word_windows(460, 250, 40) == [(0, 250), (210, 460)]
 
     def test_rejects_overlap_not_less_than_size(self):
-        """Self-guard: overlap >= size means stride <= 0 -> would loop forever. Assert, don't hang."""
+        """Self-guard: overlap >= size means stride <= 0 -> would loop forever.
+
+        Assert, don't hang.
+        """
         with pytest.raises(AssertionError):
             _word_windows(100, 50, 50)
 

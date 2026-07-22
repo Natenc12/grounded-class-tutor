@@ -7,11 +7,11 @@ The invariant this box exists to hold: a file's chunks are ALL-from-one-run or A
 ⟺ the full chunk set is committed & queryable (ADR 0020 §2-3). The transaction wraps only the write;
 the slow parse/chunk/embed work already ran, with no transaction open.
 
-Idempotent by construction: processing a `file_id` is `DELETE FROM chunks WHERE file_id` then insert
-the full set, so re-running the same `file_id` replaces cleanly with no dedup keys. The `files` row is
-written via upsert (`ON CONFLICT (file_id) DO UPDATE`): first call inserts the minimal row (Slice 1),
-a repeat lands on UPDATE (drives the re-index test, and is what Slice 2 needs when the row pre-exists -
-wrap, not rewrite; PM-4 seam).
+Idempotent by construction: processing a `file_id` is `DELETE FROM chunks WHERE file_id` then
+insert the full set, so re-running the same `file_id` replaces cleanly with no dedup keys. The
+`files` row is written via upsert (`ON CONFLICT (file_id) DO UPDATE`): first call inserts the
+minimal row (Slice 1), a repeat lands on UPDATE (drives the re-index test, and is what Slice 2
+needs when the row pre-exists - wrap, not rewrite; PM-4 seam).
 """
 from __future__ import annotations
 
@@ -33,13 +33,14 @@ def index_file(
     class_id: str,
     chunks: list[PreparedChunk],
 ) -> None:
-    """Atomically write `chunks` for `file_id` and publish the file as `ready`, all in one transaction.
+    """Atomically write `chunks` for `file_id` and publish the file `ready`, in one transaction.
 
     ONE transaction (ADR 0020 §3), in order:
       1. Upsert the `files` row -> `status='ready'`
          (`INSERT ... ON CONFLICT (file_id) DO UPDATE SET status='ready', updated_at=now()`) - must
-         precede the chunk insert to satisfy the `chunks.file_id -> files.file_id` FK. A `classes` row
-         for `class_id` must already exist (caller/fixture seeds it; this box never creates classes).
+         precede the chunk insert to satisfy the `chunks.file_id -> files.file_id` FK. A `classes`
+         row for `class_id` must already exist (caller/fixture seeds it; this box never creates
+         classes).
       2. `DELETE FROM chunks WHERE file_id = :file_id` - drops the old set (idempotent re-index).
       3. `INSERT` the full new chunk set from `chunks`.
     Commit as one unit; on any error nothing is committed (all-or-nothing).

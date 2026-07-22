@@ -13,7 +13,7 @@ from __future__ import annotations
 
 import math
 import uuid
-from typing import Sequence
+from collections.abc import Sequence
 
 import pytest
 
@@ -62,8 +62,9 @@ class TestToScore:
 class TestAssertEmbeddingConsistency:
     """The ADR-0018 guard: stored `chunks.embedding_model_id` vs the ACTIVE embedder.
 
-    DB-backed (needs the `db` fixture and real Postgres). Per CLAUDE.md these are NOT marked
-    `live`, so they self-skip in CI - a skip here locally means the DB is down, not a pass.
+    DB-backed: taking the `db` fixture earns the `db` marker automatically (tests/conftest.py).
+    CI runs these against its service container; a skip here locally means the DB is down,
+    not a pass.
     """
 
     def test_guard_passes_on_matching_model(self, db, ranking_embedder, seed_chunks):

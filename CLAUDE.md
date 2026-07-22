@@ -34,23 +34,32 @@ the product. Full design lives in `design/` — start with `design/START-HERE.md
 
 ## Local dev
 ```sh
-uv sync                                 # install deps into .venv
+uv sync --extra dev                     # deps into .venv — `--extra dev` or you get NO pytest/ruff
 uv run python scripts/migrate.py        # apply migrations/*.sql
 uv run python scripts/smoke_slice0.py   # Slice 0 exit test → "PASS — foundation is wired."
 uv run pytest tests/ -q                 # full suite
-uv run ruff check src/ tests/           # lint
+uv run pytest -m db -q                  # just the Postgres-backed tests (DB must be up)
+uv run pytest -m "not live" -q          # exactly what CI runs
+uv run ruff check                       # lint — no paths, to match CI (it covers scripts/ too)
 ```
+A bare `uv sync` doesn't just skip the dev tools, it **uninstalls** them: `pytest`/`ruff`/`reportlab`
+live in `[project.optional-dependencies].dev`, so the next two commands stop working.
 Postgres 17 is keg-only; its psql/createdb live at `/opt/homebrew/opt/postgresql@17/bin`.
 Secrets (`OPENAI_API_KEY`, `DATABASE_URL`) live in `.env` (gitignored).
-**What "green" is worth.** CI runs `ruff` + `pytest -m "not live"` on every PR (#18). DB-backed tests
-dodge that gate in **two different ways**, and both look green:
-- *Marked* `live` — the ingest write-path tests (`tests/gct/ingest/test_index.py`, `test_pipeline.py`)
-  as of #23. CI deselects them outright and reports the count.
-- *Unmarked* — the retriever suite (`tests/gct/retriever/`) as of #5. CI **collects** these, then the
-  `db` fixture skips them silently because CI has no Postgres.
+**What "green" is worth.** CI runs `ruff`, the migrations, and `pytest -m "not live"` on every PR,
+against a pgvector Postgres 17 service container (#18, extended by #32). Green proves lint, that
+`migrations/*.sql` applies cleanly, and every `db`-marked test — both DB paths, on fake embedders.
+The `db` fixture skips locally when Postgres is down but **hard-fails in CI**, so DB tests can't
+silently skip their way to green. Locally that judgement is still yours: `pytest -m db` reporting
+**skips means Postgres is down, not that the DB path passed.**
 
-So a green CI run proves neither the DB write path nor the read path. Run the suite locally with
-Postgres up and **check that the skip count is zero** — a skip there means the DB is down, not a pass.
+As of #32 **no test is marked `live`**, so `-m "not live"` currently deselects nothing and green
+means the entire suite ran. `live` stays registered for the paid-OpenAI tests arriving with #8.
+When the count goes from zero to one, **two** things break at once, in opposite directions:
+- the marked test stops being covered by CI, silently — the gap this section used to describe;
+- and a test that FORGETS the mark runs in CI against an empty `OPENAI_API_KEY`, spending money
+  or going red for the wrong reason. `db` is immune to this because it's derived from a fixture;
+  `live` is still hand-declared. Derive it the same way when #8 lands.
 
 ## Conventions / invariants (do not violate)
 - **Hand-rolled RAG** (ADR 0003) — no LangChain/LlamaIndex; we build the pipeline to learn it.

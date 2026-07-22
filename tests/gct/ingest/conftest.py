@@ -14,8 +14,8 @@ from __future__ import annotations
 
 import hashlib
 import io
+from collections.abc import Sequence
 from pathlib import Path
-from typing import Sequence
 
 import pytest
 from pptx import Presentation
@@ -159,7 +159,8 @@ class FakeEmbeddings:
         vectors: list[list[float]] = []
         for text in texts:
             h = hashlib.sha256(text.encode()).digest()
-            seed = float(int.from_bytes(h[:6], "big"))  # 48 bits, fits float64's mantissa; no modulo
+            # 48 bits, fits float64's mantissa; no modulo
+            seed = float(int.from_bytes(h[:6], "big"))
             vectors.append([seed] + [0.0] * (self._dim - 1))
         return vectors
 

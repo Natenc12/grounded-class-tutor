@@ -3,13 +3,14 @@ composed as ONE unit that is free of any job/queue/lease machinery (the PM-4 sea
 wraps this whole unit in the worker shell without rewriting it - issue #4, CLAUDE.md invariants).
 
 "Pure" here means *no queue/status/lease coupling*, NOT *no DB*: the index transaction is part of
-this pipeline (`index_file`, in `index.py`). What this module does NOT do: no retry loop, no backoff,
-no `jobs` table - `ParseError` (terminal) and `TransientEmbeddingError` (transient) propagate
-untouched; classifying is upstream's job, *handling* is Slice 2's (ADR 0011 / 0020).
+this pipeline (`index_file`, in `index.py`). What this module does NOT do: no retry loop, no
+backoff, no `jobs` table - `ParseError` (terminal) and `TransientEmbeddingError` (transient)
+propagate untouched; classifying is upstream's job, *handling* is Slice 2's (ADR 0011 / 0020).
 
-`compose` is the in-memory half (no DB); `ingest_file` is the top-level entry Slice 1 calls directly.
-Every chunk row carries `owner_id`/`class_id` (F6/F12 isolation) and `embedding_model_id`, stamped
-from the embedder that produced the vectors (ADR 0018 - the value the Retriever asserts against).
+`compose` is the in-memory half (no DB); `ingest_file` is the top-level entry Slice 1 calls
+directly. Every chunk row carries `owner_id`/`class_id` (F6/F12 isolation) and
+`embedding_model_id`, stamped from the embedder that produced the vectors (ADR 0018 - the value
+the Retriever asserts against).
 """
 from __future__ import annotations
 
@@ -34,8 +35,8 @@ class PreparedChunk:
 
     The in-memory row set assembled BEFORE the index transaction opens (ADR 0020: "full row set in
     hand" before `BEGIN`). `page_or_slide` stays a scalar `int` here (never-span, ADR 0019) and is
-    converted to text at the SQL boundary (the `chunks.page_or_slide` column is `text`). `file_id` is
-    a file-level scalar passed to `index_file` separately (not stamped per chunk); `chunk_id` is
+    converted to text at the SQL boundary (the `chunks.page_or_slide` column is `text`). `file_id`
+    is a file-level scalar passed to `index_file` separately (not stamped per chunk); `chunk_id` is
     DB-generated. This shape is a public contract the Retriever (#5) reads back - do not drift it.
     """
 
@@ -58,13 +59,13 @@ def compose(
     """Parse -> chunk -> embed -> build the full `PreparedChunk` set, in order. Pure: no DB.
 
     Runs `parse_file` -> `chunk_units`, embeds every chunk's text via `embedder.embed` (the adapter
-    owns sub-batching), and zips the vectors back onto the chunks - asserting one vector per chunk so
-    a length/alignment mismatch fails loud rather than mis-citing. Stamps `embedding_model_id` from
-    `embedder.model_id` (ADR 0018) and `owner_id`/`class_id` (F6/F12) onto every row.
+    owns sub-batching), and zips the vectors back onto the chunks - asserting one vector per chunk
+    so a length/alignment mismatch fails loud rather than mis-citing. Stamps `embedding_model_id`
+    from `embedder.model_id` (ADR 0018) and `owner_id`/`class_id` (F6/F12) onto every row.
 
     `ParseError` (terminal) and `TransientEmbeddingError` (transient) propagate untouched - handling
-    is Slice 2's (ADR 0020). An empty parse cannot occur: `parse_file` raises `ParseError("empty", ...)`
-    rather than returning `[]`.
+    is Slice 2's (ADR 0020). An empty parse cannot occur: `parse_file` raises
+    `ParseError("empty", ...)` rather than returning `[]`.
     """
     chunks = chunk_units(parse_file(path))
     vectors = embedder.embed([c.text for c in chunks])
@@ -86,7 +87,11 @@ def compose(
             class_id=class_id,
             embedding_model_id=embedder.model_id,
         )
-        for chunk, vector in zip(chunks, vectors)
+        # strict=True is REDUNDANT here on purpose: the guard above already raised on any length
+        # mismatch, so this can never fire. It's kept because a bare `zip` truncates silently, and
+        # leaving one in the pipeline invites someone to relocate or drop the guard without
+        # noticing that the zip was relying on it. Satisfies B905 without a noqa.
+        for chunk, vector in zip(chunks, vectors, strict=True)
     ]
 
 
@@ -102,8 +107,8 @@ def ingest_file(
 
     Generates `file_id` (`uuid4`) Python-side so the full chunk row set is complete before the index
     transaction opens (ADR 0020), runs `compose`, then hands the rows to `index_file` for the
-    all-or-nothing atomic write (which also creates the minimal `files` row -> `ready`). `conn` must be
-    a connection with the pgvector adapter registered - use `gct.db.connect()`.
+    all-or-nothing atomic write (which also creates the minimal `files` row -> `ready`). `conn`
+    must be a connection with the pgvector adapter registered - use `gct.db.connect()`.
     """
     file_id = str(uuid4())
     chunks = compose(path, owner_id, class_id, embedder=embedder)

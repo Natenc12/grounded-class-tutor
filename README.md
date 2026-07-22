@@ -31,8 +31,8 @@ createdb grounded_class_tutor
 # 2. Config
 cp .env.example .env        # then edit .env: set OPENAI_API_KEY
 
-# 3. Python deps
-uv sync
+# 3. Python deps  (--extra dev, or pytest/ruff are UNINSTALLED — they're an optional extra)
+uv sync --extra dev
 
 # 4. Create the schema, then prove the foundation is wired
 uv run python scripts/migrate.py

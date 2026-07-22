@@ -28,8 +28,15 @@ jobs:
       DATABASE_URL: postgresql://postgres:postgres@localhost:5432/grounded_class_tutor
     # Sidecar Postgres, matching local: v17 + pgvector, born empty every run so
     # each job migrates from scratch (no drifting shared state). The health gate
-    # blocks all steps until the DB accepts connections — without it the migrate
-    # step races Postgres's boot and flakes.
+    # blocks all steps until the DB accepts TCP connections — without it the
+    # migrate step races Postgres's boot and flakes.
+    #
+    # `-h localhost` is load-bearing. The postgres entrypoint runs its init phase
+    # against a TEMPORARY server started with `listen_addresses=''` — socket only,
+    # no TCP listener. A bare `pg_isready` defaults to the socket, so it reports
+    # healthy during init and the gate opens while port 5432 is still dead. Forcing
+    # TCP makes the check fail until the real server is listening, which is the
+    # thing every step below actually connects to.
     services:
       postgres:
         image: pgvector/pgvector:pg17
@@ -39,7 +46,7 @@ jobs:
           POSTGRES_DB: grounded_class_tutor
         ports: ["5432:5432"]
         options: >-
-          --health-cmd "pg_isready -U postgres"
+          --health-cmd "pg_isready -U postgres -d grounded_class_tutor -h localhost"
           --health-interval 5s
           --health-timeout 5s
           --health-retries 10

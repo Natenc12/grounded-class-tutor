@@ -9,6 +9,7 @@ Ingest-specific fixtures (the PDF/PPTX factories, `FakeEmbeddings`) deliberately
 """
 from __future__ import annotations
 
+import os
 import uuid
 
 import pytest
@@ -20,16 +21,21 @@ def db():
 
     `owner_id` is unique per test so teardown can delete exactly this test's rows
     (chunks → files → classes, respecting FKs). Skips the test if the DB is unreachable, so a
-    machine without Postgres doesn't hard-fail the suite.
+    machine without Postgres doesn't hard-fail the suite — but ONLY locally; see below.
 
-    NB (CLAUDE.md): tests using this are NOT marked `live`, so CI collects them and they skip
-    silently when Postgres is absent — a green CI run does not prove this path.
+    Tests using this carry the `db` marker (pyproject.toml), and CI runs them against the
+    pgvector service container after the migrate step.
     """
     try:
         from gct.db import connect
 
         conn = connect()
-    except Exception as exc:  # noqa: BLE001 — any connect failure means "no DB here", skip
+    except Exception as exc:  # noqa: BLE001 — any connect failure means "no DB here"
+        if os.environ.get("CI"):
+            # In CI the service container guarantees a DB, so unreachable means the job is
+            # misconfigured. Skipping would go green with every `db` test unrun — the exact
+            # silent pass the container exists to kill. Fail loud instead.
+            raise RuntimeError(f"CI Postgres service unreachable: {exc}") from exc
         pytest.skip(f"local Postgres unavailable: {exc}")
 
     owner_id = f"test-owner-{uuid.uuid4()}"

@@ -1,10 +1,8 @@
-# Per-PR merge gate: lint + the fast, hermetic test suite (issue #18).
+# Per-PR merge gate: lint + every test that runs for free (issue #18, extended).
 # Trust is the product, so a red suite must BLOCK merge instead of relying on a
-# "tests pass" claim typed into a PR body. Runs only tests that need no network
-# and no DB: `pytest -m "not live"` (the `live` marker is registered in
-# pyproject.toml and fences off the DB-backed ingest tests — they need a real
-# Postgres, which this job does not run, so this gate deliberately never
-# proves the write path; see issue #23).
+# "tests pass" claim typed into a PR body. A pgvector service container gives the
+# job a real Postgres 17, so the DB-backed `db` tests AND the migration run on
+# every PR. Only `live` tests (paid API / network) stay local-only.
 name: CI
 
 on:
@@ -19,7 +17,7 @@ concurrency:
 
 jobs:
   lint-and-test:
-    name: ruff + fast pytest (py3.10)
+    name: ruff + pytest w/ Postgres (py3.10)
     runs-on: ubuntu-latest
     # Pin the interpreter for every uv command below. Without this, `uv python
     # install 3.10` only makes 3.10 available — `uv sync`/`uv run` could still
@@ -27,6 +25,24 @@ jobs:
     # 3.10 we intend to match locally.
     env:
       UV_PYTHON: "3.10"
+      DATABASE_URL: postgresql://postgres:postgres@localhost:5432/grounded_class_tutor
+    # Sidecar Postgres, matching local: v17 + pgvector, born empty every run so
+    # each job migrates from scratch (no drifting shared state). The health gate
+    # blocks all steps until the DB accepts connections — without it the migrate
+    # step races Postgres's boot and flakes.
+    services:
+      postgres:
+        image: pgvector/pgvector:pg17
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: grounded_class_tutor
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
     steps:
       - uses: actions/checkout@v4
 
@@ -48,5 +64,10 @@ jobs:
       - name: Ruff
         run: uv run ruff check
 
-      - name: Fast hermetic tests
+      # Schema drift between migrations/*.sql and the code now fails the PR
+      # instead of only ever being caught on a laptop.
+      - name: Apply migrations
+        run: uv run python scripts/migrate.py
+
+      - name: Tests (everything except paid-API `live`)
         run: uv run pytest -m "not live"

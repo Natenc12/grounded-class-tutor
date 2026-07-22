@@ -87,8 +87,10 @@ def compose(
             class_id=class_id,
             embedding_model_id=embedder.model_id,
         )
-        # strict=True: one vector per chunk is the invariant this comprehension rests on. A short
-        # `vectors` would otherwise truncate silently and publish a partial, ready-looking set.
+        # strict=True is REDUNDANT here on purpose: the guard above already raised on any length
+        # mismatch, so this can never fire. It's kept because a bare `zip` truncates silently, and
+        # leaving one in the pipeline invites someone to relocate or drop the guard without
+        # noticing that the zip was relying on it. Satisfies B905 without a noqa.
         for chunk, vector in zip(chunks, vectors, strict=True)
     ]
 

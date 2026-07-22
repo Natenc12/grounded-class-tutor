@@ -167,6 +167,9 @@ def seed_chunks(db):
     yield _seed
 
     # The db fixture tears down its OWN owner; anything else this seeded is ours to clean.
+    # Rollback first for the same reason as the db fixture's teardown: this finalizer runs
+    # BEFORE db's on the same connection, so an aborted transaction would fail it here too.
+    conn.rollback()
     for owner in seeded_owners - {default_owner}:
         conn.execute("delete from chunks where owner_id = %s", (owner,))
         conn.execute("delete from files where owner_id = %s", (owner,))

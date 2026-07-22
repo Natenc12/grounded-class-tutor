@@ -30,7 +30,11 @@ packages = ["src/gct"]
 line-length = 100
 
 [tool.pytest.ini_options]
+# --strict-markers: an unregistered mark is an ERROR, not a silently-ignored no-op. The whole
+# CI gate is a marker expression, so a typo'd `@pytest.mark.bd` must not quietly under-collect
+# `-m db` while still looking green.
+addopts = ["--strict-markers"]
 markers = [
     "db: test needs a real Postgres (fake embedders — no network, no cost). Runs locally against the dev DB and in CI against the pgvector service container, after the migrate step. The shared `db` fixture skips locally when Postgres is down, but HARD-FAILS in CI, where the container guarantees one.",
-    "live: test hits a paid external API (OpenAI). Excluded from the per-PR CI gate, which runs `pytest -m 'not live'` (issue #18) — these run locally only, with .env secrets. Distinct from `db` on purpose: conflating them would either spend money in CI or silently fence off free DB coverage.",
+    "live: test hits a paid external API (OpenAI). Excluded from the per-PR CI gate, which runs `pytest -m 'not live'` (issue #18) — these run locally only, with .env secrets. NO test carries this yet: the write-path tests that used to were really `db` tests mis-labelled, and the first true carrier will be the #8 ask-smoke. Kept registered because that gate has to exist BEFORE the first paid test lands, not after. Distinct from `db` on purpose: conflating them would either spend money in CI or silently fence off free DB coverage.",
 ]

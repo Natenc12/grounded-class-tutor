@@ -45,9 +45,13 @@ Secrets (`OPENAI_API_KEY`, `DATABASE_URL`) live in `.env` (gitignored).
 **What "green" is worth.** CI runs `ruff`, the migrations, and `pytest -m "not live"` on every PR,
 against a pgvector Postgres 17 service container (#18, extended by #32). Green proves lint, that
 `migrations/*.sql` applies cleanly, and every `db`-marked test — both DB paths, on fake embedders.
-It does **not** prove anything `live`-marked (paid OpenAI calls) — those run locally only, with
-`.env` secrets. The `db` fixture skips locally when Postgres is down but **hard-fails in CI**, so
-DB tests can't silently skip their way to green.
+The `db` fixture skips locally when Postgres is down but **hard-fails in CI**, so DB tests can't
+silently skip their way to green.
+
+As of #33 **no test is marked `live`**, so `-m "not live"` currently deselects nothing and green
+means the entire suite ran. `live` stays registered for the paid-OpenAI tests arriving with #8 —
+the moment one lands, CI stops covering it and the gap re-opens silently. That is the thing to
+re-check when the count of `live` tests goes from zero to one.
 
 ## Conventions / invariants (do not violate)
 - **Hand-rolled RAG** (ADR 0003) — no LangChain/LlamaIndex; we build the pipeline to learn it.

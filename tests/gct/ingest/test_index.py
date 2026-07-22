@@ -1,7 +1,8 @@
 """DB-backed tests for the atomic index transaction (issue #4, ADR 0020).
 
 Runs against the real local Postgres via the `db` fixture (seeds a `classes` row, cleans up by
-`owner_id`, skips when the DB is unreachable). Proves the invariants this box exists to hold: the
+`owner_id`, skips *locally* when the DB is unreachable — but hard-fails in CI, where the service
+container guarantees one). Proves the invariants this box exists to hold: the
 full set lands with `status='ready'` in one shot, a re-index replaces the set cleanly (no dups),
 and — the all-or-nothing half, added by issue #23 — a write that fails partway publishes nothing
 and destroys nothing.

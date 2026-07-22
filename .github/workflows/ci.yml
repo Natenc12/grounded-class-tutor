@@ -23,9 +23,22 @@ jobs:
     # install 3.10` only makes 3.10 available — `uv sync`/`uv run` could still
     # resolve a newer system Python (>=3.10), so the suite might not run on the
     # 3.10 we intend to match locally.
+    # A hung job should fail in minutes, not burn the 360-minute default. The suite runs in ~40s;
+    # anything near 10 minutes means a test is blocked on a Postgres lock, not working hard.
+    timeout-minutes: 10
     env:
       UV_PYTHON: "3.10"
       DATABASE_URL: postgresql://postgres:postgres@localhost:5432/grounded_class_tutor
+      # Applies --locked to EVERY uv command below, `uv run` included. Two things this buys:
+      # `uv run` re-locks and re-syncs by default, so without it a dep added to pyproject.toml
+      # but never `uv lock`ed gets resolved and installed mid-job — CI goes green against a
+      # dependency set uv.lock does not describe, while a teammate's `uv sync` gets a different
+      # environment. And --locked ASSERTS the lockfile is current (--frozen merely declines to
+      # touch it), so a stale uv.lock is itself a red. Same reproducibility argument as pinning
+      # the pgvector tag, one step later in the job.
+      # NB: --frozen and --locked are mutually exclusive — with this set, passing `--frozen` to
+      # any step below is a hard error ("the argument `--locked` cannot be used with UV_FROZEN").
+      UV_LOCKED: "1"
     # Sidecar Postgres, matching local: v17 + pgvector, born empty every run so
     # each job migrates from scratch (no drifting shared state). The health gate
     # blocks all steps until the DB accepts TCP connections — without it the
@@ -70,17 +83,30 @@ jobs:
         run: uv python install 3.10
 
       # `--extra dev` is required: pytest/ruff live in [project.optional-dependencies].dev,
-      # which a bare `uv sync` does NOT install.
+      # which a bare `uv sync` does NOT install (it actively UNINSTALLS them).
+      # Pinning comes from UV_LOCKED above, not a --frozen flag here — the two conflict.
       - name: Sync dependencies
-        run: uv sync --frozen --extra dev
+        run: uv sync --extra dev
 
       - name: Ruff
         run: uv run ruff check
 
       # Schema drift between migrations/*.sql and the code now fails the PR
       # instead of only ever being caught on a laptop.
-      - name: Apply migrations
-        run: uv run python scripts/migrate.py
+      #
+      # Applied TWICE on purpose. The container is born empty, so a single pass only ever
+      # exercises the fresh-install path — every `create ... if not exists` takes the create
+      # branch and its no-op branch is never tried. That leaves two green-while-broken holes:
+      # editing an already-applied migration (CI builds the new shape from scratch and passes,
+      # while every existing DB silently keeps the old one), and a future migration whose
+      # `alter table` lacks `if not exists` (fine once, explodes on the re-run that CLAUDE.md
+      # documents as the normal local workflow). The second pass costs ~0.2s and turns both
+      # into a red. It also makes migrate.py's own "idempotent, safe to re-run" claim checked
+      # rather than asserted.
+      - name: Apply migrations (twice — the second pass proves idempotency)
+        run: |
+          uv run python scripts/migrate.py
+          uv run python scripts/migrate.py
 
       - name: Tests (everything except paid-API `live`)
         run: uv run pytest -m "not live"

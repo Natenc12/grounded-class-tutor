@@ -12,7 +12,10 @@ from __future__ import annotations
 import os
 import uuid
 
+import psycopg
 import pytest
+
+from gct.db import connect
 
 
 def pytest_collection_modifyitems(items):
@@ -24,6 +27,10 @@ def pytest_collection_modifyitems(items):
     collecting it. That drift would surface only when someone trusted the count. Taking the `db`
     fixture IS what makes a test a db test, so read it off the fixture and leave no second copy of
     the fact to fall out of sync.
+
+    Note the edge this CANNOT cover: a test that reaches Postgres by calling `gct.db.connect()`
+    itself, rather than taking the fixture, gets no mark, no teardown, and no CI hard-fail.
+    Nothing in the suite does that today — take the fixture and it stays true.
     """
     for item in items:
         if "db" in getattr(item, "fixturenames", ()):
@@ -45,17 +52,22 @@ def db():
     """Yield `(conn, owner_id, class_id)` on the real local Postgres with a seeded class row.
 
     `owner_id` is unique per test so teardown can delete exactly this test's rows
-    (chunks → files → classes, respecting FKs). Skips the test if the DB is unreachable, so a
+    (chunks → files → classes, respecting FKs). Skips the test if the DB is UNREACHABLE, so a
     machine without Postgres doesn't hard-fail the suite — but ONLY locally; see below.
 
     Tests using this carry the `db` marker (pyproject.toml), and CI runs them against the
     pgvector service container after the migrate step.
+
+    The catch is deliberately narrow. `connect()` does `psycopg.connect()` and THEN
+    `register_vector()`, so a broad `except Exception` would render "you forgot to run
+    migrate.py" (`vector type not found in the database`) as "local Postgres unavailable" and
+    skip — a silent green blaming the wrong thing, which is the failure this fixture exists to
+    kill. Only `OperationalError` means "no DB here"; everything else is a real error and must
+    surface as one.
     """
     try:
-        from gct.db import connect
-
         conn = connect()
-    except Exception as exc:  # noqa: BLE001 — any connect failure means "no DB here"
+    except psycopg.OperationalError as exc:
         if _in_ci():
             # In CI the service container guarantees a DB, so unreachable means the job is
             # misconfigured. Skipping would go green with every `db` test unrun — the exact
@@ -73,12 +85,17 @@ def db():
         conn.commit()
         yield conn, owner_id, class_id
     finally:
-        # A test that errored mid-statement leaves the connection in an aborted transaction, and
-        # Postgres then refuses every later command — including these deletes, which would bury
-        # the test's own failure under InFailedSqlTransaction. Clear that state first.
-        conn.rollback()
-        conn.execute("delete from chunks where owner_id = %s", (owner_id,))
-        conn.execute("delete from files where owner_id = %s", (owner_id,))
-        conn.execute("delete from classes where owner_id = %s", (owner_id,))
-        conn.commit()
-        conn.close()
+        # `close()` gets its own finally: if the rollback or any delete below raises (a poisoned
+        # connection, a lock wait), the rest of this block is skipped, and without the nesting the
+        # connection would leak AND the teardown error would mask the test's real failure.
+        try:
+            # A test that errored mid-statement leaves the connection in an aborted transaction,
+            # and Postgres then refuses every later command — including these deletes, which would
+            # bury the test's own failure under InFailedSqlTransaction. Clear that state first.
+            conn.rollback()
+            conn.execute("delete from chunks where owner_id = %s", (owner_id,))
+            conn.execute("delete from files where owner_id = %s", (owner_id,))
+            conn.execute("delete from classes where owner_id = %s", (owner_id,))
+            conn.commit()
+        finally:
+            conn.close()

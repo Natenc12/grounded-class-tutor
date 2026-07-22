@@ -102,10 +102,13 @@ def _parse_pdf(path: Path) -> list[ParsedUnit]:
 
 
 # Separator between a slide's body text and its speaker notes within the same
-# ParsedUnit. Deliberately NOT bracketed: the Grounder renders labeled context as
-# "[S1] (lecture-3.pdf, p.4)" and validates the [S#] tokens the model cites back
-# (design/decisions/0015-grounder-citation-contract-validation.md §②), so a "[Speaker
-# notes]" token would put parse output into the citation validator's own vocabulary.
+# ParsedUnit. Deliberately NOT bracketed. The reason is a nudge, not a collision: the
+# Grounder's validator only parses [S#] tokens out of the MODEL'S ANSWER and range-checks
+# them (design/decisions/0015-grounder-citation-contract-validation.md §②/§③), so a
+# "[Speaker notes]" token in context text would never enter that ladder at all. What it
+# WOULD do is put bracketed tokens in front of the model in the very context where [S#] is
+# the citation vocabulary — and bracket-shaped context invites bracket-shaped output. Cheap
+# to avoid, so avoid it.
 _NOTES_MARKER = "Speaker notes:"
 
 

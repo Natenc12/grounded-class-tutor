@@ -251,7 +251,29 @@ class TestSlideNotes:
         [unit] = parse_file(path)
 
         assert "Speaker notes:" in unit.text
-        assert "[Speaker notes]" not in unit.text  # ADR 0015 citation-vocabulary collision
+        # Unbracketed on purpose: bracket-shaped context invites bracket-shaped output, in the
+        # one place where [S#] is the citation vocabulary (ADR 0015 §②; see parse._NOTES_MARKER).
+        assert "[Speaker notes]" not in unit.text
+
+    def test_empty_notes_part_adds_no_marker(self, pptx_factory):
+        """A notes part that EXISTS but is empty must not emit a bare, dangling marker.
+
+        Probably the most common shape in a real deck: PowerPoint creates the notes part the
+        moment anyone clicks into the notes pane, so "part present, text empty" is the default
+        state of a deck someone merely looked at. Distinct from the no-notes case
+        (`slide_notes=[None]`), which creates no part at all — here the part is real and
+        `_slide_notes` returns "", so only the `notes.strip()` check stands between the student
+        and an embedded "Speaker notes:" with nothing after it.
+
+        Whitespace-only notes are the same case and covered alongside it.
+        """
+        for label, notes in (("empty", ""), ("whitespace", "   \n  ")):
+            path = pptx_factory(f"deck-{label}.pptx", ["Body text here"], slide_notes=[notes])
+
+            [unit] = parse_file(path)
+
+            assert unit.text == "Body text here", f"{label} notes leaked into the unit"
+            assert "Speaker notes:" not in unit.text
 
     def test_notes_only_slide_yields_a_unit(self, pptx_factory):
         path = pptx_factory(

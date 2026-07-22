@@ -1,7 +1,12 @@
 # CLAUDE.md — Grounded Class Tutor
 
-Auto-loaded each session. Keep the **Current status** section updated as slices complete — it's how a
-cold session (or a collaborator) learns where we are.
+Auto-loaded each session. Sections are ordered **most stable first**; *Current status* at the bottom is
+the only part expected to churn.
+
+**Keep status thin — it must not restate the issue board.** The board is the single writer for what's
+done and what's ready; duplicating it here creates two writers for one fact and they always diverge
+(this file once listed a merged issue as ready to pick up). Update this file when a *slice's shape*
+changes, not when an issue closes.
 
 ## What this is
 A RAG study tutor: answers a student's question from **their own uploaded course materials**, cited to
@@ -17,6 +22,16 @@ the product. Full design lives in `design/` — start with `design/START-HERE.md
 - **Models:** OpenAI behind a swappable provider layer (ADR 0004/0013) — `text-embedding-3-small` (dim 1536), `gpt-4o-mini`. Defaults, not commitments.
 - **Tooling:** `uv` (deps + venv). React SPA arrives in Slice 4.
 
+## Where things live
+| Path | What |
+|---|---|
+| `src/gct/` | the library — the product |
+| `scripts/` | thin peer callers (`migrate.py`, `smoke_slice0.py`) |
+| `tests/gct/` | the test suite |
+| `design/` | current truth: ADRs, component specs, data model |
+| `.claude/skills/roadmap-to-issues/` | the one in-repo skill — projects a roadmap slice into issues |
+| `understanding/` | Nate's own notes — gitignored, never project truth |
+
 ## Local dev
 ```sh
 uv sync                                 # install deps into .venv
@@ -27,9 +42,11 @@ uv run ruff check src/ tests/           # lint
 ```
 Postgres 17 is keg-only; its psql/createdb live at `/opt/homebrew/opt/postgresql@17/bin`.
 Secrets (`OPENAI_API_KEY`, `DATABASE_URL`) live in `.env` (gitignored).
-**CI runs `ruff` + `pytest -m "not live"` on every PR** (#18). Note the DB-backed ingest tests are *not*
-marked `live`, so CI collects them and they self-skip via the `db` fixture when Postgres is unreachable
-— a green CI run does **not** prove the DB path. Run the suite locally before trusting it.
+**What "green" is worth.** CI runs `ruff` + `pytest -m "not live"` on every PR (#18). The DB-backed
+ingest tests (`tests/gct/ingest/test_index.py`, `test_pipeline.py`) carry the `live` marker as of #23,
+so **CI never runs them** — and tests without it still self-skip via the `db` fixture when Postgres is
+unreachable. Either way a green CI run does **not** prove the DB write path. Run the suite locally, and
+check the skip count, before trusting it.
 
 ## Conventions / invariants (do not violate)
 - **Hand-rolled RAG** (ADR 0003) — no LangChain/LlamaIndex; we build the pipeline to learn it.
@@ -42,26 +59,28 @@ marked `live`, so CI collects them and they self-skip via the `db` fixture when 
 - **Citation spine** — source metadata born at parse ①, rendered to `[S#]` labels ②, resolved back to citations ③; the model only ever cites labels we handed it.
 
 ## Current status
-**Slice 0 — Foundation: COMPLETE** (schema + provider interfaces + embedding-consistency anchor).
-DB migrated & verified (4 tables, vector column, scope + HNSW indexes). Smoke test passes fully green
-(`PASS — foundation is wired.`) — db, live embeddings (`text-embedding-3-small`, dim 1536), and live
-generation (`gpt-4o-mini`) all confirmed end-to-end.
+**Slice 0 — Foundation: COMPLETE.** Schema + provider interfaces + the embedding-consistency anchor;
+4 tables, vector column, scope + HNSW indexes, smoke test green end-to-end against live models.
 
-**Slice 1 — the tracer bullet: IN PROGRESS.** ingest ONE real file inline (parse→chunk→embed→index, no
-queue) → Retriever → Grounder → cited answer / refusal, script-driven, shipping `eval/questions.jsonl`
-(~12-question smoke suite). This is the differentiator, proven before any HTTP/UI. See `design/roadmap.md`
-and `design/components/{grounder,retriever,ingestion-worker}.md`.
+**Slice 1 — the tracer bullet: IN PROGRESS.** Ingest ONE real file inline (parse→chunk→embed→index, no
+queue) → Retriever → Grounder → cited answer / refusal, script-driven, over `eval/questions.jsonl`.
+The differentiator, proven before any HTTP/UI. See `design/roadmap.md` and
+`design/components/{grounder,retriever,ingestion-worker}.md`.
 
-**The write path is done end-to-end** (#4): `ingest_file(path, owner_id, class_id, embedder=, conn=)`
-takes a real PDF/PPTX to a `ready`, queryable, provenance-carrying chunk set in one atomic transaction —
-pure of any job/queue/lease machinery, so Slice 2 wraps it rather than rewriting it (PM-4 seam, ADR 0020).
-**What's left before the Slice 1 exit gate is the read path:** #5 Retriever → #6 Grounder → #8 ask-smoke.
+- **Write path: done end-to-end** (#4). `ingest_file(path, owner_id, class_id, embedder=, conn=)` takes
+  a real PDF/PPTX to a `ready`, queryable, provenance-carrying chunk set in one atomic transaction —
+  pure of job/queue machinery, so Slice 2 wraps it rather than rewriting it (PM-4 seam, ADR 0020).
+- **Read path: what's left.** #5 Retriever → #6 Grounder → #8 ask-smoke, in that order.
+- **Exit gate:** `ask(class, question)` returns a cited answer for an in-corpus question and an honest
+  refusal for an out-of-corpus one, demonstrated over the smoke suite.
 
-**Slice 1 work is on the GitHub issue board** — [epic #9](https://github.com/Natenc12/grounded-class-tutor/issues/9)
-(dependency graph + ready-frontier). Generated from this roadmap by the `/roadmap-to-issues` skill; see
-`design/HANDOFF.md` → *Working the issue board* for the ready-frontier / claim-by-assign / reconcile rules.
-Ready to pick up now: #5 retriever · #12 parse-notes · #13 parse-tables · #23 index-hardening.
-Done (merged): #1 parse · #2 chunk · #3 embed-adapter · #4 pipeline · #7 eval-suite · #18 CI.
-Parked for Slice 2: #24 index-publish-columns — the re-index `DO UPDATE` set-list leaves `failed_reason`
-and scope columns stale. Unreachable in Slice 1; deferred because the right *location* depends on the
-Slice 2 worker's claim path (see the issue). Do not pull it onto the Slice 1 frontier.
+**The board is the source of truth for what's ready** — [epic #9](https://github.com/Natenc12/grounded-class-tutor/issues/9)
+has the dependency graph. `gh issue list --repo Natenc12/grounded-class-tutor --state open` for the
+current frontier; `design/HANDOFF.md` → *Working the issue board* for the ready-frontier /
+claim-by-assign / reconcile rules.
+
+**Standing warning — do not pull #24 onto the Slice 1 frontier.** `index-publish-columns` (the re-index
+`DO UPDATE` set-list leaving `failed_reason` and scope columns stale) is unreachable in Slice 1 and
+parked for Slice 2: the right *location* for the fix depends on the Slice 2 worker's claim path, so
+doing it now means guessing at a component that doesn't exist. This is the kind of thing the board
+can't tell you on its own, which is why it lives here.

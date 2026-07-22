@@ -42,11 +42,15 @@ uv run ruff check src/ tests/           # lint
 ```
 Postgres 17 is keg-only; its psql/createdb live at `/opt/homebrew/opt/postgresql@17/bin`.
 Secrets (`OPENAI_API_KEY`, `DATABASE_URL`) live in `.env` (gitignored).
-**What "green" is worth.** CI runs `ruff` + `pytest -m "not live"` on every PR (#18). The DB-backed
-ingest tests (`tests/gct/ingest/test_index.py`, `test_pipeline.py`) carry the `live` marker as of #23,
-so **CI never runs them** — and tests without it still self-skip via the `db` fixture when Postgres is
-unreachable. Either way a green CI run does **not** prove the DB write path. Run the suite locally, and
-check the skip count, before trusting it.
+**What "green" is worth.** CI runs `ruff` + `pytest -m "not live"` on every PR (#18). DB-backed tests
+dodge that gate in **two different ways**, and both look green:
+- *Marked* `live` — the ingest write-path tests (`tests/gct/ingest/test_index.py`, `test_pipeline.py`)
+  as of #23. CI deselects them outright and reports the count.
+- *Unmarked* — the retriever suite (`tests/gct/retriever/`) as of #5. CI **collects** these, then the
+  `db` fixture skips them silently because CI has no Postgres.
+
+So a green CI run proves neither the DB write path nor the read path. Run the suite locally with
+Postgres up and **check that the skip count is zero** — a skip there means the DB is down, not a pass.
 
 ## Conventions / invariants (do not violate)
 - **Hand-rolled RAG** (ADR 0003) — no LangChain/LlamaIndex; we build the pipeline to learn it.
@@ -70,7 +74,9 @@ The differentiator, proven before any HTTP/UI. See `design/roadmap.md` and
 - **Write path: done end-to-end** (#4). `ingest_file(path, owner_id, class_id, embedder=, conn=)` takes
   a real PDF/PPTX to a `ready`, queryable, provenance-carrying chunk set in one atomic transaction —
   pure of job/queue machinery, so Slice 2 wraps it rather than rewriting it (PM-4 seam, ADR 0020).
-- **Read path: what's left.** #5 Retriever → #6 Grounder → #8 ask-smoke, in that order.
+- **Read path: half done.** Retriever shipped (#5) — `retrieve()` returns scoped, ranked
+  `RetrievedChunk[]` with normalized scores, the exact shape the Grounder consumes. Remaining:
+  #6 Grounder → #8 ask-smoke, in that order.
 - **Exit gate:** `ask(class, question)` returns a cited answer for an in-corpus question and an honest
   refusal for an out-of-corpus one, demonstrated over the smoke suite.
 

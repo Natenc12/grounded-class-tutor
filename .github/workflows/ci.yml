@@ -37,9 +37,15 @@ jobs:
     # healthy during init and the gate opens while port 5432 is still dead. Forcing
     # TCP makes the check fail until the real server is listening, which is the
     # thing every step below actually connects to.
+    #
+    # The pgvector version is pinned, not floating. `pgvector/pgvector:pg17` is a
+    # moving tag — a new pgvector release republishes it, and the next PR silently
+    # runs against a different extension than the one this gate was validated on,
+    # with no diff to point at when it goes red. A merge gate has to be reproducible
+    # to be worth anything. Bumping is then a deliberate one-line change.
     services:
       postgres:
-        image: pgvector/pgvector:pg17
+        image: pgvector/pgvector:0.8.5-pg17
         env:
           POSTGRES_USER: postgres
           POSTGRES_PASSWORD: postgres

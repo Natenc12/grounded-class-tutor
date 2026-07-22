@@ -15,6 +15,16 @@ import uuid
 import pytest
 
 
+def _in_ci() -> bool:
+    """True only when CI is affirmatively set.
+
+    Truthiness on the raw value is wrong here: plenty of tooling exports `CI=false` or `CI=0`
+    to mean "not CI", and a bare `if os.environ.get("CI")` reads those as CI — turning the
+    fixture's local skip-when-Postgres-is-down courtesy into a hard error on a laptop.
+    """
+    return os.environ.get("CI", "").strip().lower() in {"1", "true", "yes", "on"}
+
+
 @pytest.fixture
 def db():
     """Yield `(conn, owner_id, class_id)` on the real local Postgres with a seeded class row.
@@ -31,7 +41,7 @@ def db():
 
         conn = connect()
     except Exception as exc:  # noqa: BLE001 — any connect failure means "no DB here"
-        if os.environ.get("CI"):
+        if _in_ci():
             # In CI the service container guarantees a DB, so unreachable means the job is
             # misconfigured. Skipping would go green with every `db` test unrun — the exact
             # silent pass the container exists to kill. Fail loud instead.

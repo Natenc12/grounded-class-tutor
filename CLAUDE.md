@@ -42,15 +42,12 @@ uv run ruff check src/ tests/           # lint
 ```
 Postgres 17 is keg-only; its psql/createdb live at `/opt/homebrew/opt/postgresql@17/bin`.
 Secrets (`OPENAI_API_KEY`, `DATABASE_URL`) live in `.env` (gitignored).
-**What "green" is worth.** CI runs `ruff` + `pytest -m "not live"` on every PR (#18). DB-backed tests
-dodge that gate in **two different ways**, and both look green:
-- *Marked* `live` — the ingest write-path tests (`tests/gct/ingest/test_index.py`, `test_pipeline.py`)
-  as of #23. CI deselects them outright and reports the count.
-- *Unmarked* — the retriever suite (`tests/gct/retriever/`) as of #5. CI **collects** these, then the
-  `db` fixture skips them silently because CI has no Postgres.
-
-So a green CI run proves neither the DB write path nor the read path. Run the suite locally with
-Postgres up and **check that the skip count is zero** — a skip there means the DB is down, not a pass.
+**What "green" is worth.** CI runs `ruff`, the migrations, and `pytest -m "not live"` on every PR,
+against a pgvector Postgres 17 service container (#18, extended by #32). Green proves lint, that
+`migrations/*.sql` applies cleanly, and every `db`-marked test — both DB paths, on fake embedders.
+It does **not** prove anything `live`-marked (paid OpenAI calls) — those run locally only, with
+`.env` secrets. The `db` fixture skips locally when Postgres is down but **hard-fails in CI**, so
+DB tests can't silently skip their way to green.
 
 ## Conventions / invariants (do not violate)
 - **Hand-rolled RAG** (ADR 0003) — no LangChain/LlamaIndex; we build the pipeline to learn it.

@@ -1,10 +1,15 @@
 """Configuration + the embedding-consistency anchor (ADR 0018).
 
-The one rule that must never be violated: index-time and query-time embeddings use the
-*identical* model + version, or similarity search is meaningless. We enforce that by making
-this module the SINGLE source of the active embedder id. The write path stamps
-`chunks.embedding_model_id` from it; the read path (Slice 1's Retriever) asserts equality
-against it. Never hardcode the model id anywhere else.
+The invariant: index-time and query-time embeddings use the *identical* model + version, or
+similarity search is meaningless. Two distinct rules enforce it — don't collapse them:
+
+  - *Which embedder gets constructed* is sourced only from `ACTIVE_EMBEDDING_MODEL_ID`, here.
+    Never hardcode the model id anywhere else.
+  - *What gets recorded about a run* is NOT sourced from here: `chunks.embedding_model_id` is
+    stamped from `embedder.model_id` — the model that ACTUALLY produced the stored vectors —
+    and the Retriever's guard compares that stamp against the active embedder's `model_id`.
+    Sourcing both sides from config would make the guard compare config to itself and never
+    fire (ADR 0018; the mismatch test in tests/gct/retriever/ proves the guard is real).
 """
 from __future__ import annotations
 

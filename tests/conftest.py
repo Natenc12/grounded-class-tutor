@@ -42,6 +42,10 @@ def db():
         conn.commit()
         yield conn, owner_id, class_id
     finally:
+        # A test that errored mid-statement leaves the connection in an aborted transaction, and
+        # Postgres then refuses every later command — including these deletes, which would bury
+        # the test's own failure under InFailedSqlTransaction. Clear that state first.
+        conn.rollback()
         conn.execute("delete from chunks where owner_id = %s", (owner_id,))
         conn.execute("delete from files where owner_id = %s", (owner_id,))
         conn.execute("delete from classes where owner_id = %s", (owner_id,))

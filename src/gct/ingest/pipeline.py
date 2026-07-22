@@ -24,9 +24,6 @@ from gct.ingest.index import index_file
 from gct.ingest.parse import parse_file
 from gct.providers.base import Embeddings
 
-# Implementations wire these as they build (kept out of the skeleton to stay import/lint-green):
-#   compose  -> gct.ingest.parse.parse_file, gct.ingest.chunk.chunk_units
-#   ingest_file -> uuid.uuid4, gct.ingest.index.index_file
 # NB: pipeline importing index_file at runtime is fine - index.py imports PreparedChunk only under
 # TYPE_CHECKING, so the edge is one-directional (no circular import).
 

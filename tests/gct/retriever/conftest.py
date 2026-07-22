@@ -5,7 +5,7 @@ Two things the retriever tests need that nothing else in the repo provides:
   - `ranking_embedder` — an `Embeddings` stub whose vectors have genuinely DIFFERENT
     DIRECTIONS, so cosine distance is meaningful and rank order is deterministic and
     assertable. The ingest suite's `FakeEmbeddings` cannot do this: it returns
-    `[hash(text) % 1000] + [0.0] * 1535`, i.e. positive scalar multiples of one direction,
+    `[sha256_digest(text)] + [0.0] * 1535`, i.e. positive scalar multiples of one direction,
     and cosine ignores magnitude — every pairwise distance is 0.
 
   - `seed_chunks` — inserts `chunks` rows directly via SQL. Retriever tests exercise the

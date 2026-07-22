@@ -11,6 +11,7 @@
 """
 from __future__ import annotations
 
+import math
 import uuid
 from typing import Sequence
 
@@ -41,6 +42,21 @@ class TestToScore:
         d1, d2 = 0.3, 0.9
         assert d1 < d2
         assert _to_score(d1) >= _to_score(d2)
+
+    def test_to_score_clamps_nan_to_zero(self):
+        """A NaN distance yields 0.0, not NaN - and that depends on `max`'s ARGUMENT ORDER.
+
+        A zero vector on either side makes pgvector's `<=>` return NaN. Every comparison against
+        NaN is False, so `max` keeps whichever argument it saw first: `max(0.0, 1.0 - nan)` is
+        0.0, but the more natural-reading `max(1.0 - nan, 0.0)` is nan. This test exists so that
+        rewrite fails loudly instead of leaking nan into `RetrievedChunk.score`, which ADR 0017
+        contracts as [0,1] and the Grounder consumes.
+        """
+        nan = float("nan")
+        assert _to_score(nan) == 0.0
+        assert not math.isnan(_to_score(nan))
+        # The rewrite this guards against, shown to be genuinely different:
+        assert math.isnan(max(1.0 - nan, 0.0))
 
 
 class TestAssertEmbeddingConsistency:
@@ -272,6 +288,21 @@ class TestRetrieve:
 
         assert len(results) == 2
         assert {chunk.text for chunk in results} == {"only-one", "only-two"}
+
+    def test_retrieve_rejects_nonpositive_k(self, db, ranking_embedder, seed_chunks):
+        """`k < 1` raises rather than returning [] - because [] means "empty class" downstream.
+
+        `k=0` used to give `LIMIT 0` -> [] from a perfectly healthy class, and the Grounder
+        short-circuits [] to a canned REFUSAL (ADR 0016), so the student would be told their
+        class is empty when it is not. `k=-1` used to leak a raw psycopg
+        `InvalidRowCountInLimitClause`. Both are now one loud ValueError.
+        """
+        conn, owner_id, class_id = db
+        seed_chunks(["alpha", "beta"], embedder=ranking_embedder)
+
+        for bad_k in (0, -1):
+            with pytest.raises(ValueError):
+                retrieve(conn, "a question", owner_id, class_id, embedder=ranking_embedder, k=bad_k)
 
     def test_retrieve_propagates_embedding_error(self, db, ranking_embedder, seed_chunks):
         """A `TransientEmbeddingError` escapes `retrieve` uncaught - no retry, no swallow.

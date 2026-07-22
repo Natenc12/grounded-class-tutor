@@ -142,8 +142,13 @@ def _to_score(distance: float) -> float:
 
     Clamping is monotonic, so ADR 0017's "ordering is unaffected" property still holds.
 
-    Watch: a zero vector on either side makes the distance NaN, and `max(0.0, 1.0 - nan)`
-    returns nan, not 0.0. Real text cannot produce a zero vector; a test fixture can.
+    ARGUMENT ORDER IS LOAD-BEARING - do not rewrite this as `max(1.0 - distance, 0.0)`, which
+    reads more naturally and is NOT equivalent. A zero vector on either side makes pgvector's
+    distance NaN, and every comparison against NaN is False, so `max` simply keeps whichever
+    argument it saw first: `max(0.0, 1.0 - nan)` is 0.0, while the swapped `max(1.0 - nan, 0.0)`
+    is nan. Only this order keeps the [0,1] contract - a nan score would flow straight into the
+    Grounder. Real text cannot produce a zero vector; a test fixture can. Pinned by
+    `test_to_score_clamps_nan_to_zero`.
     """
     # Clamp at 0: pgvector's `<=>` cosine distance ranges [0,2] (not [0,1]), so a bare
     # `1 - distance` can go negative and break the [0,1] contract ADR 0017 promises (Decision 1).
@@ -191,9 +196,21 @@ def retrieve(
     Returns `[]` ONLY for an empty/un-ingested class (see module docstring). A corpus smaller
     than `k` returns all of it - short, not an error.
 
+    `k < 1` raises `ValueError`. That guard exists to protect the `[]` contract, not for tidiness:
+    `k=0` would make `LIMIT 0` return no rows from a perfectly healthy class, and the Grounder
+    short-circuits `[] -> canned REFUSAL` (ADR 0016, grounder.md), so the student would be told
+    their class is empty when it is not. `k=-1` would otherwise leak a raw psycopg
+    `InvalidRowCountInLimitClause` out of a public function.
+
     `conn` MUST come from `gct.db.connect()`: the query vector is a `list[float]` and only
     adapts to `vector(1536)` when the pgvector type is registered on the connection.
     """
+    # 0. `k < 1` is a caller bug, and a silent one: `LIMIT 0` returns [] from a healthy class,
+    #    which the Grounder cannot tell apart from an empty class and turns into a REFUSAL.
+    #    Fail loud here rather than let a bad k impersonate the empty-class signal.
+    if k < 1:
+        raise ValueError(f"k must be >= 1, got {k!r}")
+
     # 1. Guard FIRST (ADR 0018) - before the paid embed call, so an empty class costs nothing
     #    and a mismatched class fails before it can produce garbage similarity. A mismatch
     #    raises out of here; only the empty-class case returns False.

@@ -100,6 +100,7 @@ is the single seam currency (ADR 0017); it is **plumbed but not gated** in V1 (A
 | **Embedding-provider error / timeout** | propagate as a transport error → surfaces as Grounder **ERROR** (never a refusal; ADR 0016). Retrieval itself does not retry — the ask-level retry budget lives in the Grounder. |
 | **Embedding-model mismatch** (query model ≠ index model) | **caught** by the consistency guard (step 1) → fail loud → Grounder ERROR (ADR 0018). Was the one silent, high-downside mode; now guarded. |
 | **Low-relevance results present but returned anyway** | **by design in V1** — no floor; the refusal burden is wholly the Grounder's (see invariant below). |
+| **`k < 1`** (caller bug) | `ValueError`, before any DB or embedding work. Guards the `[]` contract above: `LIMIT 0` would return `[]` from a *healthy* class, which the Grounder cannot distinguish from an empty one and turns into a REFUSAL — a bad `k` must never impersonate the empty-class signal. |
 
 ## Invariants
 - **Score is normalized similarity** — `[0,1]`, higher = more relevant, converted at this boundary

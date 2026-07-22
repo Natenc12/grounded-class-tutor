@@ -28,7 +28,9 @@ providers never changes product behavior.
 ```
 Grounder.answer(
     question: str,
-    retrieved: [ Chunk{ chunk_id, text, file, page_or_slide, score } ],   # rank order; score not gated in V1
+    retrieved: [ RetrievedChunk{ chunk_id, text, file, page_or_slide, score } ],  # rank order; score not gated in V1
+                                   # ^ the Retriever's shipped return type (gct.retriever.retrieve,
+                                   #   issue #5) — one name for one type across the seam.
     owner_id: OwnerId,
 ) -> GrounderResult
 

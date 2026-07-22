@@ -1,7 +1,8 @@
 # 0017. Retriever score seam — normalized cosine similarity, converted at the boundary
 
 - **Date:** 2026-07-04
-- **Status:** accepted
+- **Status:** accepted — **range claim amended 2026-07-20 by ADR 0024** (pgvector cosine distance is
+  `[0,2]`, so the conversion clamps at zero; the seam rationale below stands unchanged)
 
 ## Context
 ADR 0008 placed the relevance filter at the **Grounder** seam and decided the Retriever always emits

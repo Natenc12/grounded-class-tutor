@@ -332,7 +332,7 @@ class TestRetryBudget:
         assert result.state is GrounderState.INTEGRITY_FLAGGED
 
     def test_never_exceeds_the_budget(self, chunks, scripted):
-        """The stub raises on an unscripted call, so a third attempt fails the test loudly."""
+        """Two failing replies are scripted; a third call would run off the end and fail here."""
         generator = scripted(
             "no labels here.\nCOVERAGE: complete", "still no labels.\nCOVERAGE: complete"
         )
@@ -341,6 +341,20 @@ class TestRetryBudget:
 
         assert generator.call_count == MAX_GENERATION_ATTEMPTS
         assert result.state is GrounderState.INTEGRITY_FLAGGED
+
+    def test_over_budget_is_not_swallowed_by_the_broad_except(self, chunks, scripted):
+        """The test above only bites if the stub's guard can escape `answer()`. This proves it.
+
+        `answer()` catches broad `Exception` around `generate()` on purpose - the thin provider
+        seam can't enumerate a provider's error types (ADR 0013). An over-budget guard raising a
+        plain Exception would therefore be caught and re-reported as `state=ERROR`, and a
+        3-attempts-per-ask regression would arrive disguised as a provider outage. The stub uses
+        `pytest.fail`, whose `Failed` derives from BaseException and passes straight through.
+        """
+        one_short = scripted("no labels here.\nCOVERAGE: complete")  # budget is 2, script is 1
+
+        with pytest.raises(pytest.fail.Exception):
+            answer("q", chunks(2), "owner-1", generator=one_short)
 
 
 class TestIntegrityFlagged:

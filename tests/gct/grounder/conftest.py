@@ -33,9 +33,16 @@ class ScriptedGeneration:
     Mixing the two in one script is the point - `[TransientGenerationError(...), "good reply"]`
     is exactly the retry-once path, and nothing else exercises it.
 
-    Running off the end of the script is an AssertionError, never a silent default: a test that
+    Running off the end of the script fails the test, never returns a silent default: a test that
     scripts two replies is asserting the budget stops at two, and a stub that quietly kept
     answering would turn a budget regression into a green run.
+
+    That over-budget signal MUST NOT be a plain `Exception`, and this is not a style choice.
+    `answer()` deliberately catches broad `Exception` around `generate()` (a thin provider seam
+    can't enumerate a provider's error types - ADR 0013), so an `AssertionError` raised here
+    would be swallowed and re-reported as a tidy `state=ERROR`: a budget regression would come
+    back looking like a provider outage. `pytest.fail` raises pytest's own `Failed`, which
+    derives from `BaseException` and therefore travels straight through that except clause.
     """
 
     def __init__(self, *script: str | Exception, model_id: str = "fake-gen-1") -> None:
@@ -54,7 +61,7 @@ class ScriptedGeneration:
     def generate(self, messages: Sequence[Message]) -> str:
         self.calls.append(list(messages))
         if not self._script:
-            raise AssertionError(
+            pytest.fail(
                 f"generate() called {len(self.calls)} time(s) but only "
                 f"{len(self.calls) - 1} reply/replies were scripted - the caller exceeded "
                 "its generation budget"

@@ -18,7 +18,7 @@ from ..config import (
     EMBEDDING_DIM,
     load_settings,
 )
-from .base import Message, TransientEmbeddingError
+from .base import Message, TransientEmbeddingError, TransientGenerationError
 
 # OpenAI's "try again" errors: rate limit (429), timeout, server (5xx), network drop. Anything
 # else (bad key, malformed request, permission, not found) is terminal — retrying is futile, so
@@ -128,7 +128,14 @@ class OpenAIGeneration:
         return self._model_id
 
     def generate(self, messages: Sequence[Message]) -> str:
-        resp = self._client.chat.completions.create(
-            model=self._model_id, messages=list(messages)
-        )
+        # Same classification as `embed` above, and for the same reason: the Grounder's retry
+        # budget (ADR 0015/0016) has to know which failures are worth a second attempt, and it
+        # cannot import `openai` to find out without dragging provider specifics above the seam
+        # (ADR 0013). Terminal errors stay unwrapped and surface as a Grounder ERROR unretried.
+        try:
+            resp = self._client.chat.completions.create(
+                model=self._model_id, messages=list(messages)
+            )
+        except _TRANSIENT_OPENAI_ERRORS as err:
+            raise TransientGenerationError(str(err)) from err
         return resp.choices[0].message.content or ""

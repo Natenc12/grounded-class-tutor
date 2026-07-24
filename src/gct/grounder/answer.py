@@ -172,7 +172,18 @@ Rules:
 # The coverage marker, parsed out of free text - a convention WE impose and parse ourselves, not
 # a provider structured-output feature (ADR 0013/0014). Case-insensitive and whitespace-tolerant
 # because a formatting slip is not a grounding failure; it should not cost a retry.
-_COVERAGE_RE = re.compile(r"^[ \t]*COVERAGE:[ \t]*(?P<body>.*?)[ \t]*$", re.IGNORECASE | re.M)
+#
+# The optional `**`/`__` wrapper is that same principle, applied to the slip chat models actually
+# make: they bold a trailing protocol line constantly. Rejecting `**COVERAGE: complete**` would
+# spend the retry and land on INTEGRITY_FLAGGED, which ADR 0023 scores as a FAIL - so a purely
+# cosmetic habit could turn #8's whole smoke suite red and read as a grounding problem. This is
+# tolerance of PRESENTATION, not of the contract: the marker, its keyword, and its body grammar
+# are all still required exactly. The `[S#]` label regex below stays strict for the opposite
+# reason - there, a generous match would hide real format drift rather than absorb a slip.
+_COVERAGE_RE = re.compile(
+    r"^[ \t]*(?:\*\*|__)?[ \t]*COVERAGE:[ \t]*(?P<body>.*?)[ \t]*(?:\*\*|__)?[ \t]*$",
+    re.IGNORECASE | re.M,
+)
 _GAPS_PREFIX_RE = re.compile(r"^gaps\s*:\s*(?P<gaps>.+)$", re.IGNORECASE | re.S)
 
 # One ordinal per bracket, matching prompt rule 2. Kept deliberately strict: a generous regex
@@ -186,9 +197,10 @@ _LABEL_RE = re.compile(r"\[S(?P<ordinal>\d+)\]")
 class _ParsedAnswer:
     """One generation attempt, text-parsed. Internal - never leaves this module."""
 
-    prose: str  # the reply minus the coverage line, stripped
+    prose: str  # the reply minus EVERY coverage line, stripped
     ordinals: list[int]  # every [S#] found in prose, in order, duplicates kept
-    coverage: Coverage | None  # None means the marker was missing or unparseable
+    coverage: Coverage | None  # None unless EXACTLY ONE marker was found and parsed
+    marker_count: int  # how many coverage lines the model emitted; the contract asks for 1
 
 
 def _build_labeled_context(
@@ -247,22 +259,32 @@ def _parse_coverage(body: str) -> Coverage | None:
 def _parse(raw: str) -> _ParsedAnswer:
     """④ Text-parse one reply into prose + `[S#]` ordinals + coverage (ADR 0013).
 
-    The LAST coverage line wins and is cut out of the prose - last, because the contract asks for
-    it as the final line, so a model that restates the format mid-answer (or emits a stray
-    "COVERAGE:" while quoting these rules) does not shadow the real one. Ordinals are read from
-    the PROSE ONLY, after that cut: a label mentioned inside the coverage statement describes
-    what is missing, and counting it as a citation would let a gap masquerade as support.
+    EVERY coverage line is cut from the prose, and coverage only parses when there was EXACTLY
+    ONE. Both halves matter, and an earlier version of this function had neither:
+
+      - **Cut them all.** Removing only the marker we selected left the others in
+        `answer_prose` - internal protocol text rendered onto the trust surface, the one place
+        it must never appear.
+      - **One marker, or none of them counts.** Picking a winner among disagreeing markers is a
+        guess, and `COVERAGE: gaps: …` followed by `COVERAGE: complete` would resolve, silently,
+        to a clean GROUNDED over an answer whose own coverage statement enumerated a gap. That is
+        precisely the direction ADR 0014 forbids failing in. Reporting `None` here routes the
+        reply through `_validate` -> retry -> INTEGRITY_FLAGGED instead: uncertain, flagged,
+        never clean. `marker_count` is carried so the failure can be named exactly.
+
+    Ordinals are read from the PROSE ONLY, after the cut: a label mentioned inside a coverage
+    statement describes what is MISSING, and counting it as a citation would let a declared gap
+    masquerade as support.
     """
     matches = list(_COVERAGE_RE.finditer(raw))
-    if matches:
-        marker = matches[-1]
-        coverage = _parse_coverage(marker.group("body"))
-        prose = (raw[: marker.start()] + raw[marker.end() :]).strip()
-    else:
-        coverage = None
-        prose = raw.strip()
+    # Cut every marker, not just the one we read - `sub` over the same pattern that found them,
+    # so the two can never disagree about what a marker line is.
+    prose = _COVERAGE_RE.sub("", raw).strip()
+    coverage = _parse_coverage(matches[0].group("body")) if len(matches) == 1 else None
     ordinals = [int(m.group("ordinal")) for m in _LABEL_RE.finditer(prose)]
-    return _ParsedAnswer(prose=prose, ordinals=ordinals, coverage=coverage)
+    return _ParsedAnswer(
+        prose=prose, ordinals=ordinals, coverage=coverage, marker_count=len(matches)
+    )
 
 
 def _validate(parsed: _ParsedAnswer, n_sources: int) -> list[str]:
@@ -274,7 +296,10 @@ def _validate(parsed: _ParsedAnswer, n_sources: int) -> list[str]:
         load-bearing: empty prose with a gap list is the DEGENERATE REFUSAL (ADR 0008/0014), the
         mechanism working, not failing - tripping the guard on it would turn every honest
         decline into an integrity flag and drive false-refusal (N3) through the roof;
-      - **coverage marker present + parseable.**
+      - **coverage marker present, parseable, and SINGULAR.** Two markers is not a fourth rung -
+        it is this one: a marker we cannot identify unambiguously is not "present", any more than
+        an unparseable one is. Choosing between disagreeing markers would be a guess, and the
+        guess that reads best (`complete`) is the unsafe one.
 
     What is NOT here, deliberately: per-claim citation presence (needs claim segmentation - V3
     judge) and claim<->chunk entailment (semantic - N2/N4). Adding a fourth rung here quietly
@@ -290,7 +315,14 @@ def _validate(parsed: _ParsedAnswer, n_sources: int) -> list[str]:
     if parsed.prose and not parsed.ordinals:
         reasons.append("answer prose asserts claims with no citation labels at all")
 
-    if parsed.coverage is None:
+    # One rung, two shapes - reported separately so the telemetry says which slip happened, and
+    # `elif` so a double marker isn't also reported as "missing" (it is the opposite problem).
+    if parsed.marker_count > 1:
+        reasons.append(
+            f"{parsed.marker_count} coverage markers emitted; exactly one is required, and "
+            "choosing between them would be a guess"
+        )
+    elif parsed.coverage is None:
         reasons.append("coverage marker missing or unparseable")
 
     return reasons

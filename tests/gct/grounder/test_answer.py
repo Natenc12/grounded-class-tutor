@@ -165,28 +165,77 @@ class TestParse:
         """
         assert _parse(raw).coverage is None
 
-    def test_last_marker_wins_and_labels_come_from_prose_only(self):
+    def test_labels_come_from_prose_only_not_from_the_gap_list(self):
         """A gap that mentions `[S3]` must not count as a citation.
 
         The coverage statement describes what is MISSING; reading its labels as citations would
-        let a declared gap masquerade as support and turn a PARTIAL into a false GROUNDED.
-        Taking the LAST marker covers a model that restates the format before using it.
+        let a declared gap masquerade as support and turn a PARTIAL into a false GROUNDED. The
+        prose assertion is not decoration - the marker line has to be GONE from the text the
+        student reads, and an ordinals-only assertion would pass while it leaked.
         """
         raw = (
-            "COVERAGE: complete\n"
-            "Actually, only this part is supported [S1].\n"
-            "COVERAGE: gaps: nothing in [S3] addresses the rest"
+            "Only this part is supported [S1].\nCOVERAGE: gaps: nothing in [S3] addresses the rest"
         )
         parsed = _parse(raw)
 
+        assert parsed.prose == "Only this part is supported [S1]."
         assert parsed.ordinals == [1]
         assert parsed.coverage == Coverage(
             complete=False, gaps=["nothing in [S3] addresses the rest"]
         )
 
+    def test_every_marker_line_is_cut_from_the_prose(self):
+        """No `COVERAGE:` line survives into `answer_prose`, however many there are.
+
+        Cutting only the marker we READ left the others in the prose - internal protocol text
+        rendered onto the trust surface, which is the one place it must never appear.
+        """
+        parsed = _parse(
+            "COVERAGE: complete\nActually only this is supported [S1].\nCOVERAGE: gaps: the rest"
+        )
+
+        assert parsed.prose == "Actually only this is supported [S1]."
+        assert "COVERAGE" not in parsed.prose
+        assert parsed.marker_count == 2
+
+    def test_more_than_one_marker_refuses_to_pick_a_winner(self):
+        """Two markers -> coverage is None, so validation fails and the retry ladder runs.
+
+        Picking a winner is a guess, and the guess that reads best (`complete`) is the unsafe
+        one - see the end-to-end test in TestIntegrityFlagged for what that used to produce.
+        """
+        parsed = _parse("Claim [S1].\nCOVERAGE: gaps: nothing on Navaho\nCOVERAGE: complete")
+
+        assert parsed.coverage is None
+        assert parsed.marker_count == 2
+
     def test_marker_is_case_and_whitespace_tolerant(self):
         """A formatting slip is not a grounding failure and should not cost a retry."""
         assert _parse("X [S1].\n  coverage:   Complete  ").coverage == Coverage(True, [])
+
+    @pytest.mark.parametrize(
+        "marker",
+        [
+            "**COVERAGE: complete**",
+            "__COVERAGE: complete__",
+            "  **COVERAGE:  complete**  ",
+        ],
+    )
+    def test_bolded_marker_is_accepted(self, marker):
+        """Bolding a trailing protocol line is the slip chat models actually make.
+
+        Same principle as the case/whitespace tolerance above, applied where it will really bite:
+        an INTEGRITY_FLAGGED answer scores as a FAIL under ADR 0023, so a purely cosmetic habit
+        could turn #8's whole smoke suite red and read as a grounding problem. The contract is
+        untouched - keyword and body grammar are still required exactly, and the `[S#]` regex
+        stays strict, because there a generous match would hide drift instead of absorbing it.
+        """
+        assert _parse(f"X [S1].\n{marker}").coverage == Coverage(complete=True, gaps=[])
+
+    def test_bolded_gap_list_is_accepted_without_swallowing_the_body(self):
+        parsed = _parse("X [S1].\n**COVERAGE: gaps: the proof; the exam date**")
+
+        assert parsed.coverage == Coverage(complete=False, gaps=["the proof", "the exam date"])
 
     def test_repeated_label_is_kept_as_written(self):
         """`_parse` reports what the model wrote; de-duplication belongs to resolution."""
@@ -210,6 +259,17 @@ class TestValidate:
 
         assert len(reasons) == 1
         assert "no citation" in reasons[0]
+
+    def test_double_marker_is_caught_and_named_as_such(self):
+        """Reported as "two markers", not as "missing" - they are opposite problems, and the
+        telemetry is the only place the difference is visible."""
+        raw = "Claim [S1].\nCOVERAGE: gaps: nothing on Navaho\nCOVERAGE: complete"
+
+        reasons = _validate(_parse(raw), n_sources=2)
+
+        assert len(reasons) == 1
+        assert "2 coverage markers" in reasons[0]
+        assert "missing" not in reasons[0]
 
     def test_zero_citation_guard_does_not_fire_on_an_honest_refusal(self):
         """Empty prose + gaps is the mechanism WORKING, not failing.
@@ -403,6 +463,44 @@ class TestIntegrityFlagged:
 
         assert result.state is GrounderState.INTEGRITY_FLAGGED
         assert result.integrity.ok is False
+
+    def test_disagreeing_double_marker_never_resolves_to_a_clean_grounded(self, chunks, scripted):
+        """The round-1 review's regression, pinned end to end (q003 provenance).
+
+        This exact reply used to come back GROUNDED, with `COVERAGE: gaps: nothing on Navaho`
+        still sitting in the prose the student reads - an answer whose own coverage statement
+        enumerated a gap, presented as fully grounded, carrying protocol text on the trust
+        surface. Two failures from one parse bug, and both are asserted here: the state, and the
+        prose.
+        """
+        reply = (
+            "Cosmogony is the emergence of world order [S1].\n"
+            "COVERAGE: gaps: nothing on Navaho\n"
+            "COVERAGE: complete"
+        )
+
+        result = answer("q", chunks(2), "owner-1", generator=scripted(reply, reply))
+
+        assert result.state is GrounderState.INTEGRITY_FLAGGED
+        assert result.answer_prose == "Cosmogony is the emergence of world order [S1]."
+        assert "COVERAGE" not in result.answer_prose
+        # No trustworthy statement about coverage survived, so we claim none.
+        assert result.coverage == Coverage(complete=False, gaps=[])
+        assert "2 coverage markers" in result.integrity.reasons[0]
+
+    def test_a_marker_restated_mid_answer_is_flagged_not_silently_partial(self, chunks, scripted):
+        """The variant `_parse`'s own docstring predicted: a model that restates the format
+        before using it. It leaked the same way, just landing on PARTIAL instead of GROUNDED."""
+        reply = (
+            "COVERAGE: complete\n"
+            "Actually, only this part is supported [S1].\n"
+            "COVERAGE: gaps: the rest"
+        )
+
+        result = answer("q", chunks(2), "owner-1", generator=scripted(reply, reply))
+
+        assert result.state is GrounderState.INTEGRITY_FLAGGED
+        assert result.answer_prose == "Actually, only this part is supported [S1]."
 
     def test_a_structural_failure_never_lands_on_grounded(self, chunks, scripted):
         """The fail-safe invariant, stated as its own test (ADR 0014).

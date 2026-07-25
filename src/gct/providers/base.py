@@ -20,6 +20,21 @@ class TransientEmbeddingError(Exception):
     """
 
 
+class TransientGenerationError(Exception):
+    """A retryable generation failure (rate limit / timeout / server / network).
+
+    The generation-side mirror of `TransientEmbeddingError`, and it exists for the same reason:
+    an adapter catches its provider's "try again" errors and re-raises this, so callers never
+    touch provider-specific exception types. Terminal errors (bad key, malformed request) are
+    NOT wrapped - they propagate untouched, since retrying them is futile.
+
+    The one asymmetry with the embedding side: the retry budget that consumes THIS lives in the
+    Grounder (`gct.grounder.answer`, at most 2 generation attempts per ask - ADR 0015/0016), not
+    in the Slice-2 worker. The Grounder sits on the synchronous read path and owns the whole
+    ask-level budget, so it is the box that has to tell "retry once" from "give up and ERROR".
+    """
+
+
 class Embeddings(Protocol):
     """Turn text into vectors. The active implementation's `model_id` is the ADR 0018
     invariant subject — it gets stamped onto every chunk and asserted at query time."""

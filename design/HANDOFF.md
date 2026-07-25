@@ -67,7 +67,9 @@ GitHub issues for the active slice are generated from this roadmap by the `/road
 (`.claude/skills/`). Each slice has an **epic** issue (dependency graph + child checklist + open flags) —
 that's the board's home base. Three conventions keep it honest:
 - **Pick from the ready-frontier.** Only take issues labeled `ready` (no open blockers). `blocked` means a
-  dependency isn't closed yet — leave it. The epic lists what's pickable *now*.
+  dependency isn't closed yet — leave it. The epic lists what's pickable *now*. This rule is only as good
+  as the labels, and the labels are only recomputed for issues the skill created — see *How far the
+  recompute reaches* below before trusting a `blocked` on a hand-filed row.
 - **Claim by assigning yourself** on GitHub before you start. That's the lock — there is no `wip` label; an
   assignee means someone's on it.
 - **Reconcile after you close.** Closing a blocking issue does **not** auto-flip its dependents to `ready` —
@@ -75,6 +77,15 @@ that's the board's home base. Three conventions keep it honest:
   dry-run preview, `--create` to apply): it flips `blocked→ready` as deps close, re-ticks the epic, and adds
   any new tasks — without duplicating existing ones (idempotent by hidden marker). Skip this and the labels
   go stale and stop being trustworthy.
+  - **How far the recompute reaches — the marker is also the limit.** Idempotency is by hidden
+    `<!-- gct:slice-N:slug -->` marker, and only issues the skill *created* carry one. Its reconcile fetches
+    `--label slice-N` and matches on that marker, so a **hand-filed** chore or spike is never fetched and
+    keeps whatever label a human last set — re-running the skill will not correct it, however many times you
+    run it. Recompute covers the slice's own tasks plus the epic; everything else is yours to maintain by
+    hand. So `ready` on a skill-owned row is a fact, and `blocked` on a hand-filed row is only a hint —
+    open it and check. Two consequences worth knowing: a dependency written as a **phase** ("Slice 4
+    complete") can never auto-clear, because no close event corresponds to it; and if you want a hand-filed
+    issue to be machine-checkable later, give it a `Depends on: #N` line naming a real issue or PR.
 
 Dependencies + file footprints (`Touches:`) live in each issue body; disjoint footprints = safe to work in
 parallel. The skill reads CLAUDE.md **Current status** to know which slice to project — keep that current.

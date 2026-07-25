@@ -69,7 +69,8 @@ directions:
 
 `db` is immune to both because `pytest_collection_modifyitems` derives it from the fixture — derive
 `live` the same way the moment a paid test exists. How many carriers there are *today* is a fetched
-fact, not one this file stores: `uv run pytest -m live -q --collect-only`.
+fact, not one this file stores: `uv run pytest -m live -q --collect-only`. Exit **5**
+(`no tests collected`) is pytest reporting *zero carriers* — that's an answer, not a broken command.
 
 ## Conventions / invariants (do not violate)
 - **Hand-rolled RAG** (ADR 0003) — no LangChain/LlamaIndex; we build the pipeline to learn it.
@@ -82,6 +83,11 @@ fact, not one this file stores: `uv run pytest -m live -q --collect-only`.
 - **Citation spine** — source metadata born at parse ①, rendered to `[S#]` labels ②, resolved back to citations ③; the model only ever cites labels we handed it.
 
 ## Current status
+The slice name below is **stored, not derived** — the one deliberate exception to the rule above.
+`/roadmap-to-issues` reads this section to know which slice to project and halts if it disagrees with
+`design/roadmap.md`, so deriving it away would leave that skill with no anchor. It moves ~5 times in the
+project's life, which is the declared floor. Everything finer-grained than a slice still belongs on the board.
+
 **Slice 0 — Foundation: COMPLETE.** Schema + provider interfaces + the embedding-consistency anchor;
 4 tables, vector column, scope + HNSW indexes, smoke test green end-to-end against live models.
 
@@ -109,11 +115,11 @@ gh issue list --repo Natenc12/grounded-class-tutor --state open --json number,ti
         | "#\(.number) [\([.labels[].name]|join(","))] \(.title)"'
 ```
 
-`ready` rows sort first, so the frontier is on line one. No slice filter on purpose: every row carries
-its own slice label, so work parked for a later slice reports itself instead of being invisible — it
-just sorts below the pickable work. The **epic for the current slice** carries the dependency graph,
-the ready-frontier, and the open design flags — it is whichever row above is labeled `epic`
-(add `--label epic` to isolate it), never a number written down here. `ready` vs `blocked` labels are
-recomputed by `/roadmap-to-issues` whenever an issue closes — run it after a merge and the board
-advances itself. `design/HANDOFF.md` → *Working the issue board* has the claim-by-assign / reconcile
-rules, including which rows are pickable.
+`ready` rows sort first, so the frontier is on line one. No slice filter on purpose: later-slice and
+cross-cutting work reports itself instead of being invisible — it just sorts below the pickable work.
+Most rows carry a `slice-N` label; chores and spikes may not, so read the title. The **epic for the
+current slice** carries the dependency graph, the ready-frontier, and the open design flags — it is
+whichever row above is labeled `epic` (add `--label epic` to isolate it), never a number written down
+here. Re-run `/roadmap-to-issues` after a merge and the board advances itself. `design/HANDOFF.md` →
+*Working the issue board* is the single writer for the claim-by-assign / reconcile rules — including
+which rows are pickable, and how far the recompute actually reaches.

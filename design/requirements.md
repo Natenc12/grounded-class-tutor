@@ -94,6 +94,22 @@ is demonstrable.)
   before the V3 gate.
 - **N9 · V2 · P1** — Uploaded files stored privately (Supabase Storage, per-user access); no public
   URLs.
+- **N13 · V1 · P1 — Corpus content is data, never instruction.** Uploaded materials are *untrusted
+  input*: a slide or PDF can contain text shaped like a command, and the Grounder feeds retrieved
+  chunks straight into the prompt. Retrieved text must be delimited and labeled as **quoted source
+  material**, and the system prompt must state that anything inside a source block is never an
+  instruction. This bites at **V1, not at deploy** — it is an answer-trust property, and trust is
+  the product. Complements ADR 0015: that validates what the model *returns*; this constrains what
+  it is *given*. (At dogfood scale the only uploader is the dogfooder, hence P1 — escalates to P0
+  at V2, when someone else can upload.)
+- **N14 · V2 · P0 — Provider credentials are server-side only.** At deploy the API key moves from a
+  local gitignored `.env` to server-side secret storage. No browser code path ever holds it, and
+  rotation is a config change, not a code change.
+- **N15 · V2 · P0 — The ask path is not an open-ended way to spend money.** Deployed, both `ask` and
+  ingest cost real API spend per call — and auth does not arrive until V3 (F13), so **V2 is
+  deployed without a user gate by design**. Needs a per-caller rate limit plus a hard account-level
+  spend ceiling; exceeding either **fails closed with a clear message**, never degrades silently.
+  (Distinct from N7, which is cost *efficiency* via model routing — this is cost *abuse*.)
 
 ### UX
 - **N10 · V1 · P0** — Low-friction upload; clear "ready to ask" signal (ties to F3).

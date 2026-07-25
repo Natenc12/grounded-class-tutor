@@ -5,8 +5,13 @@ the only part expected to churn.
 
 **Keep status thin — it must not restate the issue board.** The board is the single writer for what's
 done and what's ready; duplicating it here creates two writers for one fact and they always diverge
-(this file once listed a merged issue as ready to pick up). Update this file when a *slice's shape*
-changes, not when an issue closes.
+(this file once listed a merged issue as ready to pick up, and later still named a merged issue as the
+next thing to build). Update this file when a *slice's shape* changes, not when an issue closes.
+
+**Slice granularity is the floor.** Any fact here that changes when a single issue closes is a bug in
+this file — it belongs on the board, which recomputes itself. A pointer cannot go stale; only a copy
+can. If `gh` is unavailable you get *no* status rather than *wrong* status, which is the better
+failure: a missing fact prompts a query, a stale one gets confidently built on.
 
 ## What this is
 A RAG study tutor: answers a student's question from **their own uploaded course materials**, cited to
@@ -80,19 +85,28 @@ queue) → Retriever → Grounder → cited answer / refusal, script-driven, ove
 The differentiator, proven before any HTTP/UI. See `design/roadmap.md` and
 `design/components/{grounder,retriever,ingestion-worker}.md`.
 
-- **Write path: done end-to-end** (#4). `ingest_file(path, owner_id, class_id, embedder=, conn=)` takes
-  a real PDF/PPTX to a `ready`, queryable, provenance-carrying chunk set in one atomic transaction —
-  pure of job/queue machinery, so Slice 2 wraps it rather than rewriting it (PM-4 seam, ADR 0020).
-- **Read path: half done.** Retriever shipped (#5) — `retrieve()` returns scoped, ranked
-  `RetrievedChunk[]` with normalized scores, the exact shape the Grounder consumes. Remaining:
-  #6 Grounder → #8 ask-smoke, in that order.
-- **Exit gate:** `ask(class, question)` returns a cited answer for an in-corpus question and an honest
+The seams it draws, which later slices wrap rather than rewrite:
+- **Write path** — `ingest_file(path, owner_id, class_id, embedder=, conn=)` takes a real PDF/PPTX to a
+  `ready`, queryable, provenance-carrying chunk set in one atomic transaction, pure of job/queue
+  machinery (PM-4 seam, ADR 0020).
+- **Read path** — `retrieve()` returns scoped, ranked `RetrievedChunk[]` with normalized scores;
+  `answer()` consumes exactly that shape and returns one of five states, deciding cite/partial/refuse
+  and validating everything the model returned (ADR 0014/0015/0016).
+- **Exit gate** — `ask(class, question)` returns a cited answer for an in-corpus question and an honest
   refusal for an out-of-corpus one, demonstrated over the smoke suite.
 
-**The board is the source of truth for what's ready** — [epic #9](https://github.com/Natenc12/grounded-class-tutor/issues/9)
-has the dependency graph. `gh issue list --repo Natenc12/grounded-class-tutor --state open` for the
-current frontier; `design/HANDOFF.md` → *Working the issue board* for the ready-frontier /
-claim-by-assign / reconcile rules.
+**Issue-level state is NOT recorded in this file.** Never write "#N is done" or "#N is next" here — it
+is wrong within the week, and this file is not the writer of that fact. Fetch it instead:
+
+```sh
+gh issue list --repo Natenc12/grounded-class-tutor --state open --label slice-1 \
+  --json number,title,labels --jq '.[] | "#\(.number) [\([.labels[].name]|join(","))] \(.title)"'
+```
+
+[Epic #9](https://github.com/Natenc12/grounded-class-tutor/issues/9) carries the dependency graph, the
+ready-frontier, and the open design flags. `ready` vs `blocked` labels are recomputed by
+`/roadmap-to-issues` whenever an issue closes — run it after a merge and the board advances itself.
+`design/HANDOFF.md` → *Working the issue board* has the claim-by-assign / reconcile rules.
 
 **Standing warning — do not pull #24 onto the Slice 1 frontier.** `index-publish-columns` (the re-index
 `DO UPDATE` set-list leaving `failed_reason` and scope columns stale) is unreachable in Slice 1 and

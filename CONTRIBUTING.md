@@ -83,9 +83,11 @@ comments as you address them so the reviewer knows what to re-check.
 
 ### 8. Merge when approved
 
-GitHub gives you a merge button once someone approves. **Use "Squash and merge"** — this
-collapses all your in-progress commits into one clean commit on `main`. Keeps main's history
-readable (one entry per feature) instead of noisy (twenty WIP commits per feature).
+GitHub gives you a merge button once someone approves. **Use "Create a merge commit"** — this
+lands your branch's commits on `main` as they are, joined by a merge commit that marks the PR
+boundary. We deliberately keep the full per-PR history: you can see how a feature came together
+commit by commit, and `git log --first-parent main` still reads as one entry per PR when you
+want the clean view. Don't squash — collapsing a PR to one commit throws that history away.
 
 ### 9. Delete the branch
 
@@ -107,8 +109,9 @@ Focus on things that matter:
   citation spine. These are the load-bearing rules; PRs must not break them.
 
 Skip:
-- **Style nits** — indentation, quote choice, line length. If we add a linter later, those get
-  auto-checked. Reviewing them by hand is a waste of everyone's time.
+- **Style nits** — indentation, quote choice, line length. Ruff auto-checks these on every PR;
+  run `uv run ruff check` locally before pushing. Reviewing them by hand is a waste of
+  everyone's time.
 - **Bikeshedding.** If you'd solve it two different ways and both are fine, don't argue about
   it in the PR. Approve it.
 
@@ -144,15 +147,19 @@ Cheap and disposable — you make one per change, delete after merging.
 **main** — the branch everyone treats as the "official" version of the code. The invariant
 we're protecting: main should always work, always pass the smoke test.
 
-**squash merge** — collapsing all a PR's commits into one clean commit on main when you merge.
-Keeps main's history readable.
+**merge commit** — the merge style we use: a PR's commits land on main unchanged, joined by a
+commit marking the PR boundary. The full log shows every commit; `git log --first-parent main`
+shows roughly one entry per PR. (The alternative, *squash merge*, collapses a PR into a single
+commit — we don't use it going forward, because it discards the step-by-step history. This rule
+was settled in July 2026; you'll see some squashed PRs in the history before that.)
 
 **diff** — the set of changes in a PR. GitHub shows it as red (deleted) + green (added) lines.
 Reviewers read the diff.
 
 **linter** — a tool that reads your code without running it and flags likely problems
-(unused imports, inconsistent style, obvious mistakes). We haven't added one yet; if we do,
-it'll be [Ruff](https://docs.astral.sh/ruff/).
+(unused imports, inconsistent style, obvious mistakes). We use
+[Ruff](https://docs.astral.sh/ruff/): CI runs `uv run ruff check` on every PR, so run it
+locally before you push.
 
 **style bikeshedding** — arguing in a PR about tabs vs spaces, quote style, comma placement.
 All trivial, all preferences. Waste of review time. A linter with agreed rules ends these

@@ -37,9 +37,9 @@
 5. **components/** — make-or-break build specs, in this order:
    **grounder.md** (the trust core) → **retriever.md** (read path) → **ingestion-worker.md** (write path).
 6. **roadmap.md** — the V1 build sequence (Slices 0–4) + the two-pass spike slate.
-7. **eval/questions.jsonl** *(author in Slice 1)* — the smoke-suite benchmark; the differentiator's only V1 test.
+7. **eval/questions.jsonl** — the smoke-suite benchmark (authored; grows over the project's life, ADR 0021); the differentiator's only V1 test.
 8. **pre-mortem.md** — the adversarial ledger (PM-1…PM-5) behind this handoff.
-9. **decisions/** — ADRs 0001–0023; the "why." Consult when a choice looks arbitrary.
+9. **decisions/** — the numbered ADRs; the "why." Consult when a choice looks arbitrary.
 
 ## Build order (first slice → full system)  *(full detail: roadmap.md)*
 - **Slice 0 — Foundation:** migrate `classes · files · chunks · jobs`; `Embeddings`/`Generation` interfaces
@@ -103,7 +103,7 @@ parallel. The skill reads CLAUDE.md **Current status** to know which slice to pr
       data shapes = data-model.md.
 - [x] **Success criteria are testable.** V1 "done" = upload→ingest→cited answer→refuse over the smoke suite,
       now *scoreable* via ADR 0023. N1–N4 carry numeric V3 bars.
-- [x] **Key tradeoffs recorded as ADRs.** 0001–0023.
+- [x] **Key tradeoffs recorded as ADRs.** See `decisions/`.
 - [x] **Assumptions & explicit non-goals stated.** Scope boundary (ADR 0002); V1 crude-grounding ladder
       (ADR 0004); carried assumptions below.
 

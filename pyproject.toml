@@ -42,9 +42,11 @@ select = ["E", "F", "I", "B", "UP"]
 # --strict-markers: applying an unregistered mark is an ERROR, not a silently-ignored no-op. It
 #   guards mark APPLICATION — here, the one `add_marker("db")` call in tests/conftest.py, which
 #   would otherwise accept a typo'd name and quietly under-collect `-m db`. It does NOT validate
-#   `-m` EXPRESSIONS: `pytest -m "not livee"` collects all 82 without a word of complaint, so the
-#   gate string in .github/workflows/ci.yml is unguarded and fails OPEN. Nothing in pytest can
-#   check that string; only a collected-count floor could. Know which half you're covered on.
+#   `-m` EXPRESSIONS: `pytest -m "not livee"` matches every test and deselects nothing, without a
+#   word of complaint — so the gate string in .github/workflows/ci.yml is unguarded and fails OPEN.
+#   Nothing in pytest can check that string; only a collected-count floor could. Deliberately no
+#   count written here: the number a filter collects is something you run, not something a comment
+#   remembers. Know which half you're covered on.
 # --strict-config: an unknown or misspelled key in this very section is a hard ERROR instead of a
 #   warning nobody reads (`markers` typo'd as `marker` would silently un-register both marks).
 #   One blind spot it cannot cover, by construction: a typo in `addopts` ITSELF, since that's the
@@ -52,5 +54,5 @@ select = ["E", "F", "I", "B", "UP"]
 addopts = ["--strict-markers", "--strict-config"]
 markers = [
     "db: test needs a real Postgres (fake embedders — no network, no cost). Runs locally against the dev DB and in CI against the pgvector service container, after the migrate step. The shared `db` fixture skips locally when Postgres is down, but HARD-FAILS in CI, where the container guarantees one. NOT hand-applied: `pytest_collection_modifyitems` in tests/conftest.py adds it to anything requesting the `db` fixture, so the mark can't drift from the dependency.",
-    "live: test hits a paid external API (OpenAI). Excluded from the per-PR CI gate, which runs `pytest -m 'not live'` (issue #18) — these run locally only, with .env secrets. NO test carries this yet: the write-path tests that used to were really `db` tests mis-labelled, and the first true carrier will be the #8 ask-smoke. Kept registered because that gate has to exist BEFORE the first paid test lands, not after. Distinct from `db` on purpose: conflating them would either spend money in CI or silently fence off free DB coverage. UNLIKE `db`, this mark is hand-declared with nothing deriving it, and it fails in the dangerous direction: a paid test that FORGETS the mark runs in CI. Derive it from an OpenAI-client fixture the way `db` is derived when #8 lands.",
+    "live: test hits a paid external API (OpenAI). Excluded from the per-PR CI gate, which runs `pytest -m 'not live'` (added in #18) — these run locally only, with .env secrets. Registered ahead of its first carrier on purpose: the gate has to exist BEFORE a paid test lands, not after. Distinct from `db` deliberately — conflating them would either spend money in CI or silently fence off free DB coverage. UNLIKE `db`, which `pytest_collection_modifyitems` derives from a fixture, this mark is hand-declared with nothing deriving it, so it fails in the dangerous direction: a paid test that FORGETS the mark runs in CI against an empty key. Derive it from an OpenAI-client fixture the same way the moment a paid test exists. How many tests carry it right now is a fetched fact, not one recorded here: `uv run pytest -m live -q --collect-only`.",
 ]

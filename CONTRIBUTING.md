@@ -149,8 +149,9 @@ we're protecting: main should always work, always pass the smoke test.
 
 **merge commit** — the merge style we use: a PR's commits land on main unchanged, joined by a
 commit marking the PR boundary. The full log shows every commit; `git log --first-parent main`
-shows one entry per PR. (The alternative, *squash merge*, collapses a PR into a single commit —
-we don't use it, because it discards the step-by-step history.)
+shows roughly one entry per PR. (The alternative, *squash merge*, collapses a PR into a single
+commit — we don't use it going forward, because it discards the step-by-step history. This rule
+was settled in July 2026; you'll see some squashed PRs in the history before that.)
 
 **diff** — the set of changes in a PR. GitHub shows it as red (deleted) + green (added) lines.
 Reviewers read the diff.

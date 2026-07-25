@@ -41,7 +41,10 @@ programmatically before any HTTP or UI exists. Two facts drive the order:
     Slice 2 becomes a rewrite instead of a wrap.
   - Parse (metadata born, honor-point ①) · chunk (contract ADR 0019, never-span) · Retriever
     (`owner_id AND class_id`, ranked chunks + scores, ADR 0017) · Grounder (labeled context →
-    generate → resolve citations → partial-support/refuse, ADR 0008 / 0014–0016).
+    generate → resolve citations → partial-support/refuse, ADR 0008 / 0014–0016). The labeling step
+    is where **N13** lands — source blocks are quoted material, never instructions. **A retrofit, not
+    a build step:** the labeling shipped with this slice but the trust clause did not, so N13 carries
+    its own issue rather than being derived from this row.
 - **Ships with it — `eval/questions.jsonl` (ADR 0021 / F15):** the tracer needs a bench; the bench
   needs the tracer. Seed **~12-question smoke suite** (`suites:["smoke"]`), in-corpus + out-of-corpus.
 - **Provisional defaults:** parser pypdf + python-pptx · chunking fixed-size + overlap · k=5 · GPT.
@@ -109,6 +112,8 @@ tracer against the smoke suite — spec fixes the *shape* (ADR 0014–0016), not
 ## Bridge to V2 / V3 (turn-ons, already shaped)
 - **V2 — deploy:** Postgres→Supabase (C4, no data-layer rewrite), file staging→Object Storage
   (ADR 0010), broker swap for the job queue (ADR 0011), PWA. Latency/throughput bars (N5/N6).
+  Deploy is also where the exposure requirements turn on: secrets server-side (N14) and rate limit +
+  spend ceiling on the ask path (N15) — V2 is reachable *before* auth lands in V3, by design.
 - **V3 — evaluate + accounts (the real quality gate):** formal **eval harness = automated scoring over
   the *same* `eval/questions.jsonl`** (ADR 0021) — N1 recall@k/precision@k (Retriever telemetry),
   N2 faithfulness, N3 refusal calibration, N4 citation correctness; auth + RLS on (F13/N8, enforcement

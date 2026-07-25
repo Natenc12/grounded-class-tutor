@@ -30,7 +30,7 @@
 
 ## Reading order (manifest — pointers into the artifacts)
 1. **vision.md** — why this exists, who it's for, scope.
-2. **requirements.md** — F1–F15 / N1–N12 (tagged V1/V2/V3, P0/P1) + success-criteria rollup.
+2. **requirements.md** — F1–F15 / N1–N15 (tagged V1/V2/V3, P0/P1) + success-criteria rollup.
 3. **architecture.md** — system shape, component map, data flows, the **citation spine** (3 honor points),
    cross-cutting invariants.
 4. **data-model.md** — the row shapes (`classes · files · chunks · jobs`); single source of truth for the schema.

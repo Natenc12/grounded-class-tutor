@@ -94,6 +94,23 @@ is demonstrable.)
   before the V3 gate.
 - **N9 · V2 · P1** — Uploaded files stored privately (Supabase Storage, per-user access); no public
   URLs.
+- **N13 · V1 · P1 — Source blocks are quoted data, never instruction.** Uploaded materials are
+  *untrusted input*: a slide can contain text shaped like a command. The system prompt must state
+  that anything inside a labeled `[S#]` source block is content to cite, never an instruction to
+  obey. Extends ADR 0015, whose ② owns the labeled-context format. **Mitigation, not prevention** — a
+  prompt clause lowers the hit rate, it does not close the hole; scored alongside N2/N3 once the eval
+  harness exists (V3). (P1 only because the sole uploader at dogfood scale is the dogfooder — P0
+  at V2.)
+- **N14 · V2 · P0 — Provider credentials are server-side only.** At deploy the API key moves from a
+  local gitignored `.env` to server-side secret storage. No browser code path ever holds it, and
+  rotation is a config change, not a code change.
+- **N15 · V2 · P0 — The ask path is not an open-ended way to spend money.** Deployed, both `ask` and
+  ingest cost real API spend per call — and auth does not arrive until V3 (F13), so a V2 deploy has
+  no **application-level** user gate (ADR 0004 rejects auth-from-day-one explicitly; a
+  platform-layer gate is not ruled out). Needs a per-caller rate limit plus a hard
+  **provider-account (billing)** spend ceiling — not a per-user one, which V2 cannot express;
+  exceeding either **fails closed with a clear message**, never degrades silently.
+  (Distinct from N7, which is cost *efficiency* via model routing — this is cost *abuse*.)
 
 ### UX
 - **N10 · V1 · P0** — Low-friction upload; clear "ready to ask" signal (ties to F3).
@@ -116,7 +133,8 @@ is demonstrable.)
 ## How we'll know it's working (rollup)
 - **V1 done** = the grounded core runs locally end-to-end: upload → ingest → **cited answer** →
   **refuses** when the corpus doesn't cover it. Demoable, not yet measured.
-- **V2 done** = the same, deployed and phone-usable.
+- **V2 done** = the same, deployed and phone-usable, with provider credentials server-side (N14) and
+  the ask path rate-limited + spend-capped, failing closed (N15).
 - **V3 done (the real quality gate)** = on the real corpus, **N1 recall@k ≥ 0.85, N2 faithfulness
   ≥ 0.90, N3 refusal ≥ 0.90 / false-refusal ≤ 0.10, N4 citations ≥ 0.95**, plus F13/N8 isolation
   proven by an adversarial cross-user read that fails closed.

@@ -189,9 +189,11 @@ Rules:
 #     **COVERAGE:** complete      **COVERAGE**: complete        (keyword only)
 #
 # Covering only the whole-line form would leave the two keyword-only forms failing, which is the
-# gap this comment used to have. Anchoring both ends is what keeps the trailing slot safe: it can
-# only match emphasis with nothing but blanks after it, so a body that genuinely ends in `_` or
-# `*` (`gaps: nothing on foo_bar`) forces the engine to keep expanding and survives intact.
+# gap this comment used to have. The `$` is what keeps the trailing slot safe: `_` and `*` occur
+# inside ordinary words, so a candidate parse always exists where the body stops early and hands
+# one to that slot - anchoring rejects it, because whatever the slot matches must be the last
+# thing on the line. `gaps: nothing on foo_bar` therefore survives intact. A body whose LAST
+# character is `_` or `*` does lose it, and that is fine: gap text is free text.
 #
 # NOT admitted: a leading bullet or heading (`- COVERAGE:`, `## COVERAGE:`), which change what the
 # line IS in markdown rather than how it looks, and the contract asks for a bare final line; nor

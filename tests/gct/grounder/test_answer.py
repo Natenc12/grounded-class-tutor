@@ -260,11 +260,20 @@ class TestParse:
 
         assert parsed.coverage == Coverage(complete=False, gaps=["the proof", "the exam date"])
 
-    def test_a_body_ending_in_an_emphasis_char_is_not_truncated(self):
-        """The trailing slot is anchored, so it can only eat emphasis at the very end of the line.
+    def test_an_emphasis_char_inside_the_body_is_not_truncated(self):
+        """The trailing emphasis slot can only match at the very END of the line.
 
-        Without the `$` anchor a non-greedy body would stop at the first `_` it could hand to that
-        slot, and `foo_bar` would silently become `foo` - a gap statement quietly rewritten.
+        That slot is a real hazard, because `_` and `*` occur inside ordinary words: while
+        matching `foo_bar` the engine genuinely tries `body='gaps: nothing on foo'` and hands the
+        `_` to the slot. `$` is what rejects that candidate - whatever the slot matches has to be
+        the last thing on the line, and `bar; the exam` follows it - so the body is forced to keep
+        expanding and `foo_bar` survives intact.
+
+        (Deleting `$` does NOT truncate at the `_`. It is worse and louder: every piece after the
+        non-greedy body is optional, so the empty body already satisfies the pattern and EVERY
+        marker parses to `''`. A body whose LAST character is `_` or `*` does lose it to the slot,
+        which is accepted - gap text is free text, and no gap statement changes meaning for want
+        of a trailing asterisk.)
         """
         parsed = _parse("X [S1].\nCOVERAGE: gaps: nothing on foo_bar; the exam")
 

@@ -10,8 +10,9 @@ product. See [`design/START-HERE.md`](design/START-HERE.md) for the full picture
 
 **Slice 1 — Tracer bullet: in progress** — the grounding loop end-to-end (parse → chunk → embed →
 index → retrieve → ground → cited answer / refusal), driven by a script.
-[Epic #9](https://github.com/Natenc12/grounded-class-tutor/issues/9) tracks what's merged and
-what's ready to pick up — the board is the single writer for that, so this file doesn't restate it.
+[The open epic](https://github.com/Natenc12/grounded-class-tutor/issues?q=is%3Aopen+label%3Aepic)
+tracks what's merged and what's ready to pick up — the board is the single writer for that, so this
+file doesn't restate it.
 
 See [`design/roadmap.md`](design/roadmap.md) for the full build sequence.
 

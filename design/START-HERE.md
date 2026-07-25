@@ -68,7 +68,7 @@ then package it up). It's done — the design is finished and ready to build.
 Two things that'll save you confusion:
 - **ADRs** ("Architecture Decision Records", the numbered files in `decisions/`) each record *one*
   decision and *why* — e.g. "we're hand-rolling RAG instead of using a framework, because we want to
-  learn the fundamentals." There are 23 of them. You don't read them front to back; you consult one
+  learn the fundamentals." There are a couple dozen. You don't read them front to back; you consult one
   when a choice looks arbitrary and you want the reasoning.
 - **The ADRs and `architecture.md` are the current truth. `vision.md` is the origin story** — the
   first proposal. A few specifics changed after it was written (e.g. it names Claude + Supabase from

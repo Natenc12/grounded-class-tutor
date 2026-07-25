@@ -59,9 +59,18 @@ Clamping is monotonic, so 0017's "ordering is unaffected" property still holds.
   `text-embedding-3-small` ever yields an anti-correlated chunk over real course material is
   **unknown** — worth a look when the spike (ADR 0022) puts real distance distributions in front of
   us, since it also bears on where τ can sit.
-- **`NaN` is not handled and is not defended against.** A zero vector on either side makes `<=>`
-  return `NaN`, and `max(0.0, 1.0 - nan)` returns `nan`, not `0.0` — it passes the clamp untouched
-  and orders unpredictably. Real text cannot produce a zero vector through the ingest path; a test
-  fixture can, which is exactly how the ingest suite's `FakeEmbeddings` would break a ranking test.
-  Left unguarded deliberately in V1: the only reachable cause would be a provider returning a zero
-  vector, which is a provider-layer failure, not a scoring one.
+- **`NaN` is clamped to `0.0` — by argument order, not by an explicit guard.** A zero vector on
+  either side makes `<=>` return `NaN`. Every comparison against `NaN` is false, so Python's `max`
+  keeps the first argument it saw: `max(0.0, 1.0 - nan)` returns `0.0`, while the swapped
+  `max(1.0 - nan, 0.0)` would return `nan` and let it flow into the Grounder. The shipped code uses
+  the safe order deliberately — `retrieve.py` marks the argument order as load-bearing, and
+  `test_to_score_clamps_nan_to_zero` pins it (including proving the swapped rewrite fails). No
+  `isnan` guard exists, and none is needed while that order holds. Real text cannot produce a zero
+  vector through the ingest path; a test fixture can, which is exactly how the ingest suite's
+  `FakeEmbeddings` would break a ranking test.
+
+  *Corrected 2026-07-26:* this bullet originally claimed `max(0.0, 1.0 - nan)` returns `nan` and
+  "passes the clamp untouched" — the opposite of Python's actual behavior and of the shipped,
+  test-pinned code. Left as a recorded correction rather than silently rewritten, per this ADR's
+  own amendment ethos: a reader who "fixed" the argument order citing the old text would have
+  introduced the exact bug it described.

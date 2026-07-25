@@ -33,6 +33,11 @@ data/dogfood/**
 !data/dogfood/**/
 !data/dogfood/**/manifest.md
 
+# --- Review / decision artifacts ---
+# Lavish interactive briefs (.lavish/pr-<N>-review.html etc). Generated, single-session,
+# and they quote issue and PR state that goes stale — the same failure CLAUDE.md warns about.
+.lavish/
+
 # --- Personal understanding log ---
 # Nate's own comprehension notes + glossary, in his words — not project truth.
 # Personal for now; drop this line if it ever becomes a shared team artifact.

@@ -5,8 +5,15 @@ the only part expected to churn.
 
 **Keep status thin — it must not restate the issue board.** The board is the single writer for what's
 done and what's ready; duplicating it here creates two writers for one fact and they always diverge
-(this file once listed a merged issue as ready to pick up). Update this file when a *slice's shape*
-changes, not when an issue closes.
+(this file once listed a merged issue as ready to pick up, and later still named a merged issue as the
+next thing to build). Update this file when a *slice's shape* changes, not when an issue closes.
+
+**Slice granularity is the floor.** Any fact here that changes when a single issue closes is a bug in
+this file — it belongs on the board, which recomputes itself. A *derived* pointer cannot go stale; a
+pointer that spells out its target — an issue number, a slice label — expires exactly like a copy
+does. Fetch the target, don't name it. If `gh` is unavailable you get *no* status rather than *wrong*
+status, which is the better failure: a missing fact prompts a query, a stale one gets confidently
+built on.
 
 ## What this is
 A RAG study tutor: answers a student's question from **their own uploaded course materials**, cited to
@@ -53,13 +60,17 @@ The `db` fixture skips locally when Postgres is down but **hard-fails in CI**, s
 silently skip their way to green. Locally that judgement is still yours: `pytest -m db` reporting
 **skips means Postgres is down, not that the DB path passed.**
 
-As of #32 **no test is marked `live`**, so `-m "not live"` currently deselects nothing and green
-means the entire suite ran. `live` stays registered for the paid-OpenAI tests arriving with #8.
-When the count goes from zero to one, **two** things break at once, in opposite directions:
-- the marked test stops being covered by CI, silently — the gap this section used to describe;
-- and a test that FORGETS the mark runs in CI against an empty `OPENAI_API_KEY`, spending money
-  or going red for the wrong reason. `db` is immune to this because it's derived from a fixture;
-  `live` is still hand-declared. Derive it the same way when #8 lands.
+`live` marks a test that hits a paid API, and is excluded from the CI gate. It is hand-declared with
+nothing deriving it, and it fails in the dangerous direction — **two** ways at once, in opposite
+directions:
+- a test that FORGETS the mark runs in CI against an empty `OPENAI_API_KEY`, spending money or going
+  red for the wrong reason;
+- and a test that carries it stops being covered by CI, silently.
+
+`db` is immune to both because `pytest_collection_modifyitems` derives it from the fixture — derive
+`live` the same way the moment a paid test exists. How many carriers there are *today* is a fetched
+fact, not one this file stores: `uv run pytest -m live -q --collect-only`. Exit **5**
+(`no tests collected`) is pytest reporting *zero carriers* — that's an answer, not a broken command.
 
 ## Conventions / invariants (do not violate)
 - **Hand-rolled RAG** (ADR 0003) — no LangChain/LlamaIndex; we build the pipeline to learn it.
@@ -72,6 +83,12 @@ When the count goes from zero to one, **two** things break at once, in opposite 
 - **Citation spine** — source metadata born at parse ①, rendered to `[S#]` labels ②, resolved back to citations ③; the model only ever cites labels we handed it.
 
 ## Current status
+The slice name below is **stored, not derived** — a deliberate exception to the rule above.
+`/roadmap-to-issues` reads this section to know which slice to project and halts if it disagrees with
+`design/roadmap.md`, so deriving it away would remove the anchor it reads by default. It moves only a
+handful of times in the project's life, which is the declared floor. Everything finer-grained than a
+slice still belongs on the board.
+
 **Slice 0 — Foundation: COMPLETE.** Schema + provider interfaces + the embedding-consistency anchor;
 4 tables, vector column, scope + HNSW indexes, smoke test green end-to-end against live models.
 
@@ -80,22 +97,32 @@ queue) → Retriever → Grounder → cited answer / refusal, script-driven, ove
 The differentiator, proven before any HTTP/UI. See `design/roadmap.md` and
 `design/components/{grounder,retriever,ingestion-worker}.md`.
 
-- **Write path: done end-to-end** (#4). `ingest_file(path, owner_id, class_id, embedder=, conn=)` takes
-  a real PDF/PPTX to a `ready`, queryable, provenance-carrying chunk set in one atomic transaction —
-  pure of job/queue machinery, so Slice 2 wraps it rather than rewriting it (PM-4 seam, ADR 0020).
-- **Read path: half done.** Retriever shipped (#5) — `retrieve()` returns scoped, ranked
-  `RetrievedChunk[]` with normalized scores, the exact shape the Grounder consumes. Remaining:
-  #6 Grounder → #8 ask-smoke, in that order.
-- **Exit gate:** `ask(class, question)` returns a cited answer for an in-corpus question and an honest
+The seams it draws, which later slices wrap rather than rewrite:
+- **Write path** — `ingest_file(path, owner_id, class_id, embedder=, conn=)` takes a real PDF/PPTX to a
+  `ready`, queryable, provenance-carrying chunk set in one atomic transaction, pure of job/queue
+  machinery (PM-4 seam, ADR 0020).
+- **Read path** — `retrieve()` returns scoped, ranked `RetrievedChunk[]` with normalized scores;
+  `answer()` consumes exactly that shape and returns one of five states, deciding cite/partial/refuse
+  and validating everything the model returned (ADR 0014/0015/0016).
+- **Exit gate** — `ask(class, question)` returns a cited answer for an in-corpus question and an honest
   refusal for an out-of-corpus one, demonstrated over the smoke suite.
 
-**The board is the source of truth for what's ready** — [epic #9](https://github.com/Natenc12/grounded-class-tutor/issues/9)
-has the dependency graph. `gh issue list --repo Natenc12/grounded-class-tutor --state open` for the
-current frontier; `design/HANDOFF.md` → *Working the issue board* for the ready-frontier /
-claim-by-assign / reconcile rules.
+**Issue-level state is NOT recorded in this file.** Never write "#N is done" or "#N is next" here — it
+is wrong within the week, and this file is not the writer of that fact. Fetch it instead:
 
-**Standing warning — do not pull #24 onto the Slice 1 frontier.** `index-publish-columns` (the re-index
-`DO UPDATE` set-list leaving `failed_reason` and scope columns stale) is unreachable in Slice 1 and
-parked for Slice 2: the right *location* for the fix depends on the Slice 2 worker's claim path, so
-doing it now means guessing at a component that doesn't exist. This is the kind of thing the board
-can't tell you on its own, which is why it lives here.
+```sh
+gh issue list --repo Natenc12/grounded-class-tutor --state open --json number,title,labels \
+  --jq 'sort_by([.labels[].name]|index("ready")==null)[]
+        | "#\(.number) [\([.labels[].name]|join(","))] \(.title)"'
+```
+
+`ready` rows sort first, so the frontier is on line one. No slice filter on purpose: later-slice and
+cross-cutting work reports itself instead of being invisible — it just sorts below the pickable work.
+A `slice-N` label is not guaranteed — chores and spikes may carry none, so open the row rather than
+inferring its slice from the listing. The **epic for the current slice** carries the dependency graph,
+the ready-frontier, and the open design flags — it is whichever row above is labeled `epic`
+(add `--label epic` to isolate it), never a number written down here. Re-run `/roadmap-to-issues` after
+**closing** a blocking issue — closed, not merely merged — and the board advances itself.
+`design/HANDOFF.md` →
+*Working the issue board* is the single writer for the claim-by-assign / reconcile rules — including
+which rows are pickable, and how far the recompute actually reaches.

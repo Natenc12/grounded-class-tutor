@@ -216,9 +216,20 @@ class TestParse:
     @pytest.mark.parametrize(
         "marker",
         [
+            # the whole line wrapped
             "**COVERAGE: complete**",
             "__COVERAGE: complete__",
             "  **COVERAGE:  complete**  ",
+            "*COVERAGE: complete*",
+            # the KEYWORD wrapped - both places the closing delimiter can fall
+            "**COVERAGE:** complete",
+            "**COVERAGE**: complete",
+            "__COVERAGE:__ complete",
+            "*COVERAGE:* complete",
+            "  **COVERAGE:**   Complete  ",
+            # the body wrapped on its own
+            "COVERAGE: **complete**",
+            "**COVERAGE**: **complete**",
         ],
     )
     def test_bolded_marker_is_accepted(self, marker):
@@ -229,13 +240,59 @@ class TestParse:
         could turn #8's whole smoke suite red and read as a grounding problem. The contract is
         untouched - keyword and body grammar are still required exactly, and the `[S#]` regex
         stays strict, because there a generous match would hide drift instead of absorbing it.
+
+        A model that decides to bold this line picks among these forms arbitrarily, so accepting
+        only the whole-line one would still fail for a purely cosmetic reason - which is why the
+        keyword-wrapped forms are here rather than left to be discovered by #8 going red.
         """
         assert _parse(f"X [S1].\n{marker}").coverage == Coverage(complete=True, gaps=[])
 
-    def test_bolded_gap_list_is_accepted_without_swallowing_the_body(self):
-        parsed = _parse("X [S1].\n**COVERAGE: gaps: the proof; the exam date**")
+    @pytest.mark.parametrize(
+        "marker",
+        [
+            "**COVERAGE: gaps: the proof; the exam date**",
+            "**COVERAGE:** gaps: the proof; the exam date",
+            "**COVERAGE**: gaps: the proof; the exam date",
+        ],
+    )
+    def test_bolded_gap_list_is_accepted_without_swallowing_the_body(self, marker):
+        parsed = _parse(f"X [S1].\n{marker}")
 
         assert parsed.coverage == Coverage(complete=False, gaps=["the proof", "the exam date"])
+
+    def test_a_body_ending_in_an_emphasis_char_is_not_truncated(self):
+        """The trailing slot is anchored, so it can only eat emphasis at the very end of the line.
+
+        Without the `$` anchor a non-greedy body would stop at the first `_` it could hand to that
+        slot, and `foo_bar` would silently become `foo` - a gap statement quietly rewritten.
+        """
+        parsed = _parse("X [S1].\nCOVERAGE: gaps: nothing on foo_bar; the exam")
+
+        assert parsed.coverage == Coverage(complete=False, gaps=["nothing on foo_bar", "the exam"])
+
+    @pytest.mark.parametrize(
+        "marker",
+        [
+            "**COVERAGE:** mostly",  # body grammar is still exact
+            "- COVERAGE: complete",  # a list item, not a bare final line
+            "## COVERAGE: complete",  # a heading, ditto
+            "**COVERAGE:** **complete**",  # two emphasis openers back to back
+        ],
+    )
+    def test_the_tolerance_stops_at_presentation(self, marker):
+        """Where the line is drawn, pinned so that moving it has to be deliberate.
+
+        We absorb emphasis around the keyword, the body, or the whole line. We do NOT absorb a
+        changed body grammar (that is the contract), a bullet or heading (those change what the
+        line IS in markdown, and the contract asks for a bare final line), or arbitrary runs of
+        emphasis - past that point we would be stripping markdown soup and would stop noticing
+        real format drift, which is the signal the strictness exists to preserve.
+
+        If #8's smoke suite shows the model actually emitting one of these, widen the regex and
+        delete the case - but do it on evidence, the way `grounder.md` makes marker syntax a
+        spike deliverable, not on a guess.
+        """
+        assert _parse(f"X [S1].\n{marker}").coverage is None
 
     def test_repeated_label_is_kept_as_written(self):
         """`_parse` reports what the model wrote; de-duplication belongs to resolution."""

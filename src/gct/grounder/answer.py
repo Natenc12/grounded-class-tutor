@@ -173,15 +173,36 @@ Rules:
 # a provider structured-output feature (ADR 0013/0014). Case-insensitive and whitespace-tolerant
 # because a formatting slip is not a grounding failure; it should not cost a retry.
 #
-# The optional `**`/`__` wrapper is that same principle, applied to the slip chat models actually
+# The optional emphasis wrappers are that same principle, applied to the slip chat models actually
 # make: they bold a trailing protocol line constantly. Rejecting `**COVERAGE: complete**` would
 # spend the retry and land on INTEGRITY_FLAGGED, which ADR 0023 scores as a FAIL - so a purely
 # cosmetic habit could turn #8's whole smoke suite red and read as a grounding problem. This is
 # tolerance of PRESENTATION, not of the contract: the marker, its keyword, and its body grammar
 # are all still required exactly. The `[S#]` label regex below stays strict for the opposite
 # reason - there, a generous match would hide real format drift rather than absorb a slip.
+#
+# There is an emphasis slot at each of the FOUR positions markdown can legally put one around the
+# keyword, because a model that bolds this line picks between them arbitrarily and all four are
+# the same slip:
+#
+#     COVERAGE: complete          **COVERAGE: complete**        (whole line)
+#     **COVERAGE:** complete      **COVERAGE**: complete        (keyword only)
+#
+# Covering only the whole-line form would leave the two keyword-only forms failing, which is the
+# gap this comment used to have. Anchoring both ends is what keeps the trailing slot safe: it can
+# only match emphasis with nothing but blanks after it, so a body that genuinely ends in `_` or
+# `*` (`gaps: nothing on foo_bar`) forces the engine to keep expanding and survives intact.
+#
+# NOT admitted: a leading bullet or heading (`- COVERAGE:`, `## COVERAGE:`), which change what the
+# line IS in markdown rather than how it looks, and the contract asks for a bare final line; nor
+# two emphasis openers back to back (`**COVERAGE:** **complete**`, keyword and body each wrapped),
+# which is where absorbing presentation would turn into stripping markdown soup - and a parser that
+# strips anything stops reporting the format drift this strictness exists to surface. That boundary
+# is pinned by a test, so #8 can move it on evidence rather than anyone moving it on a guess.
+_EMPH = r"(?:\*\*|__|\*|_)"
 _COVERAGE_RE = re.compile(
-    r"^[ \t]*(?:\*\*|__)?[ \t]*COVERAGE:[ \t]*(?P<body>.*?)[ \t]*(?:\*\*|__)?[ \t]*$",
+    rf"^[ \t]*{_EMPH}?[ \t]*COVERAGE[ \t]*{_EMPH}?[ \t]*:[ \t]*{_EMPH}?[ \t]*"
+    rf"(?P<body>.*?)[ \t]*{_EMPH}?[ \t]*$",
     re.IGNORECASE | re.M,
 )
 _GAPS_PREFIX_RE = re.compile(r"^gaps\s*:\s*(?P<gaps>.+)$", re.IGNORECASE | re.S)

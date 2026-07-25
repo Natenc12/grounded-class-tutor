@@ -83,10 +83,11 @@ fact, not one this file stores: `uv run pytest -m live -q --collect-only`. Exit 
 - **Citation spine** — source metadata born at parse ①, rendered to `[S#]` labels ②, resolved back to citations ③; the model only ever cites labels we handed it.
 
 ## Current status
-The slice name below is **stored, not derived** — the one deliberate exception to the rule above.
+The slice name below is **stored, not derived** — a deliberate exception to the rule above.
 `/roadmap-to-issues` reads this section to know which slice to project and halts if it disagrees with
-`design/roadmap.md`, so deriving it away would leave that skill with no anchor. It moves ~5 times in the
-project's life, which is the declared floor. Everything finer-grained than a slice still belongs on the board.
+`design/roadmap.md`, so deriving it away would remove the anchor it reads by default. It moves only a
+handful of times in the project's life, which is the declared floor. Everything finer-grained than a
+slice still belongs on the board.
 
 **Slice 0 — Foundation: COMPLETE.** Schema + provider interfaces + the embedding-consistency anchor;
 4 tables, vector column, scope + HNSW indexes, smoke test green end-to-end against live models.
@@ -117,9 +118,11 @@ gh issue list --repo Natenc12/grounded-class-tutor --state open --json number,ti
 
 `ready` rows sort first, so the frontier is on line one. No slice filter on purpose: later-slice and
 cross-cutting work reports itself instead of being invisible — it just sorts below the pickable work.
-Most rows carry a `slice-N` label; chores and spikes may not, so read the title. The **epic for the
-current slice** carries the dependency graph, the ready-frontier, and the open design flags — it is
-whichever row above is labeled `epic` (add `--label epic` to isolate it), never a number written down
-here. Re-run `/roadmap-to-issues` after a merge and the board advances itself. `design/HANDOFF.md` →
+A `slice-N` label is not guaranteed — chores and spikes may carry none, so open the row rather than
+inferring its slice from the listing. The **epic for the current slice** carries the dependency graph,
+the ready-frontier, and the open design flags — it is whichever row above is labeled `epic`
+(add `--label epic` to isolate it), never a number written down here. Re-run `/roadmap-to-issues` after
+**closing** a blocking issue — closed, not merely merged — and the board advances itself.
+`design/HANDOFF.md` →
 *Working the issue board* is the single writer for the claim-by-assign / reconcile rules — including
 which rows are pickable, and how far the recompute actually reaches.

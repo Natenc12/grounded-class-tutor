@@ -66,8 +66,10 @@ Clamping is monotonic, so 0017's "ordering is unaffected" property still holds.
   the safe order deliberately — `retrieve.py` marks the argument order as load-bearing, and
   `test_to_score_clamps_nan_to_zero` pins it (including proving the swapped rewrite fails). No
   `isnan` guard exists, and none is needed while that order holds. Real text cannot produce a zero
-  vector through the ingest path; a test fixture can, which is exactly how the ingest suite's
-  `FakeEmbeddings` would break a ranking test.
+  vector through the ingest path; only a hand-built fixture can. (The original bullet blamed the
+  ingest suite's `FakeEmbeddings` here — also wrong: that fixture never emits a zero vector. Its
+  sha256-anchored vectors all share one direction, which breaks ranking tests by making every
+  distance `0`, not `NaN` — its own docstring says so.)
 
   *Corrected 2026-07-26:* this bullet originally claimed `max(0.0, 1.0 - nan)` returns `nan` and
   "passes the clamp untouched" — the opposite of Python's actual behavior and of the shipped,

@@ -9,9 +9,11 @@ done and what's ready; duplicating it here creates two writers for one fact and 
 next thing to build). Update this file when a *slice's shape* changes, not when an issue closes.
 
 **Slice granularity is the floor.** Any fact here that changes when a single issue closes is a bug in
-this file — it belongs on the board, which recomputes itself. A pointer cannot go stale; only a copy
-can. If `gh` is unavailable you get *no* status rather than *wrong* status, which is the better
-failure: a missing fact prompts a query, a stale one gets confidently built on.
+this file — it belongs on the board, which recomputes itself. A *derived* pointer cannot go stale; a
+pointer that spells out its target — an issue number, a slice label — expires exactly like a copy
+does. Fetch the target, don't name it. If `gh` is unavailable you get *no* status rather than *wrong*
+status, which is the better failure: a missing fact prompts a query, a stale one gets confidently
+built on.
 
 ## What this is
 A RAG study tutor: answers a student's question from **their own uploaded course materials**, cited to
@@ -58,13 +60,16 @@ The `db` fixture skips locally when Postgres is down but **hard-fails in CI**, s
 silently skip their way to green. Locally that judgement is still yours: `pytest -m db` reporting
 **skips means Postgres is down, not that the DB path passed.**
 
-As of #32 **no test is marked `live`**, so `-m "not live"` currently deselects nothing and green
-means the entire suite ran. `live` stays registered for the paid-OpenAI tests arriving with #8.
-When the count goes from zero to one, **two** things break at once, in opposite directions:
-- the marked test stops being covered by CI, silently — the gap this section used to describe;
-- and a test that FORGETS the mark runs in CI against an empty `OPENAI_API_KEY`, spending money
-  or going red for the wrong reason. `db` is immune to this because it's derived from a fixture;
-  `live` is still hand-declared. Derive it the same way when #8 lands.
+`live` marks a test that hits a paid API, and is excluded from the CI gate. It is hand-declared with
+nothing deriving it, and it fails in the dangerous direction — **two** ways at once, in opposite
+directions:
+- a test that FORGETS the mark runs in CI against an empty `OPENAI_API_KEY`, spending money or going
+  red for the wrong reason;
+- and a test that carries it stops being covered by CI, silently.
+
+`db` is immune to both because `pytest_collection_modifyitems` derives it from the fixture — derive
+`live` the same way the moment a paid test exists. How many carriers there are *today* is a fetched
+fact, not one this file stores: `uv run pytest -m live -q --collect-only`.
 
 ## Conventions / invariants (do not violate)
 - **Hand-rolled RAG** (ADR 0003) — no LangChain/LlamaIndex; we build the pipeline to learn it.
@@ -99,17 +104,16 @@ The seams it draws, which later slices wrap rather than rewrite:
 is wrong within the week, and this file is not the writer of that fact. Fetch it instead:
 
 ```sh
-gh issue list --repo Natenc12/grounded-class-tutor --state open --label slice-1 \
-  --json number,title,labels --jq '.[] | "#\(.number) [\([.labels[].name]|join(","))] \(.title)"'
+gh issue list --repo Natenc12/grounded-class-tutor --state open --json number,title,labels \
+  --jq 'sort_by([.labels[].name]|index("ready")==null)[]
+        | "#\(.number) [\([.labels[].name]|join(","))] \(.title)"'
 ```
 
-[Epic #9](https://github.com/Natenc12/grounded-class-tutor/issues/9) carries the dependency graph, the
-ready-frontier, and the open design flags. `ready` vs `blocked` labels are recomputed by
-`/roadmap-to-issues` whenever an issue closes — run it after a merge and the board advances itself.
-`design/HANDOFF.md` → *Working the issue board* has the claim-by-assign / reconcile rules.
-
-**Standing warning — do not pull #24 onto the Slice 1 frontier.** `index-publish-columns` (the re-index
-`DO UPDATE` set-list leaving `failed_reason` and scope columns stale) is unreachable in Slice 1 and
-parked for Slice 2: the right *location* for the fix depends on the Slice 2 worker's claim path, so
-doing it now means guessing at a component that doesn't exist. This is the kind of thing the board
-can't tell you on its own, which is why it lives here.
+`ready` rows sort first, so the frontier is on line one. No slice filter on purpose: every row carries
+its own slice label, so work parked for a later slice reports itself instead of being invisible — it
+just sorts below the pickable work. The **epic for the current slice** carries the dependency graph,
+the ready-frontier, and the open design flags — it is whichever row above is labeled `epic`
+(add `--label epic` to isolate it), never a number written down here. `ready` vs `blocked` labels are
+recomputed by `/roadmap-to-issues` whenever an issue closes — run it after a merge and the board
+advances itself. `design/HANDOFF.md` → *Working the issue board* has the claim-by-assign / reconcile
+rules, including which rows are pickable.

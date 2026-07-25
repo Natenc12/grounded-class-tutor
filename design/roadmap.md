@@ -42,7 +42,9 @@ programmatically before any HTTP or UI exists. Two facts drive the order:
   - Parse (metadata born, honor-point ①) · chunk (contract ADR 0019, never-span) · Retriever
     (`owner_id AND class_id`, ranked chunks + scores, ADR 0017) · Grounder (labeled context →
     generate → resolve citations → partial-support/refuse, ADR 0008 / 0014–0016). The labeling step
-    is also where **N13** lands — source blocks are quoted material, never instructions.
+    is where **N13** lands — source blocks are quoted material, never instructions. **A retrofit, not
+    a build step:** the labeling shipped with this slice but the trust clause did not, so N13 carries
+    its own issue rather than being derived from this row.
 - **Ships with it — `eval/questions.jsonl` (ADR 0021 / F15):** the tracer needs a bench; the bench
   needs the tracer. Seed **~12-question smoke suite** (`suites:["smoke"]`), in-corpus + out-of-corpus.
 - **Provisional defaults:** parser pypdf + python-pptx · chunking fixed-size + overlap · k=5 · GPT.

@@ -138,10 +138,13 @@ def retrieval_hit(
     `expected_sources` chunk in the retrieved top-k" - singular, and phrased as membership.
 
     All-match was considered and REJECTED, on two grounds. (1) It silently couples the metric to
-    k: q001 is the only multi-source row in the suite today, with two expected sources against
-    `DEFAULT_K = 5`, so an all-match rule would make one question's score depend on the top-k
-    budget in a way the other eleven don't - the spikes tune k, and a metric that moves with the
-    lever it is measuring cannot rank it. (2) A missed second leg is not lost signal: the answer
+    k: two rows in the suite carry multiple expected sources today (q001, and q003 since its
+    2026-07-27 curation), each with two sources against `DEFAULT_K = 5`, so an all-match rule would
+    make those two questions' scores depend on the top-k budget in a way the other ten don't - the
+    spikes tune k, and a metric that moves with the lever it is measuring cannot rank it. The count
+    is not load-bearing (the argument holds for any number of such rows); it is stated exactly
+    because a stale one reads as a reason to revisit a settled decision.
+    (2) A missed second leg is not lost signal: the answer
     is then supported in part, which surfaces as PARTIAL in the grounding signal. Two signals
     already cover the case, and this is precisely §1's promise that retrieval misses "surface
     here regardless of the final state" while completeness lives in the other column.

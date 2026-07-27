@@ -6,8 +6,12 @@ file "grows in question count and suite coverage; its shape never changes", and 
 read the IDENTICAL file. So this loader is written for that longevity in two opposite directions
 at once, and both are deliberate:
 
-  - **Strict about the nine fields ADR 0021 §3 names.** A missing or misspelled key is a hard
-    ValueError, not a default. Defaulting is the invisible failure: `suites` typo'd as `suite`
+  - **Strict about the PRESENCE of the nine fields ADR 0021 §3 names** - and about the TYPE only
+    where a wrong type would change a verdict (`expectation`, `expected_sources`, `suites`,
+    `tags`). The five free-text scalars are coerced with `str()`, not type-checked: `"id": 42`
+    loads as `"42"`, which is harmless because nothing branches on their content. A missing or
+    misspelled key is a hard ValueError, not a default. Defaulting is the invisible failure:
+    `suites` typo'd as `suite`
     would silently become `[]`, the smoke filter would drop that question, and the run would
     report a clean rate over a suite that quietly shrank. A benchmark that loses questions
     without saying so stops being a benchmark - the whole point of ADR 0021 is comparability
@@ -189,7 +193,12 @@ def load_questions(path: str | Path, *, suite: str | None = None) -> list[EvalQu
             raise _fail(path, lineno, qid, f"missing required field(s): {', '.join(missing)}")
 
         expectation = row["expectation"]
-        if expectation not in EXPECTATIONS:
+        # `isinstance` FIRST, and not for tidiness: `expectation not in EXPECTATIONS` hashes the
+        # value against a frozenset, so a JSON array or object here raises `TypeError:
+        # unhashable type` - escaping this module's one documented error shape (a `ValueError`
+        # naming file, line and id) and, because `ask_smoke._load` catches only
+        # `(OSError, ValueError)`, surfacing as a raw traceback instead of `SETUP FAILED`.
+        if not isinstance(expectation, str) or expectation not in EXPECTATIONS:
             # The load-bearing validation. `expectation` is the key `scoring.score_state` reads,
             # and an unrecognised value there is unscoreable - caught HERE, at the file, where the
             # error can point at the line to fix, rather than deep in a run that already paid for

@@ -219,3 +219,31 @@ class TestForwardCompatibility:
         path = write_jsonl(tmp_path, GOOD_ROW)
 
         assert len(load_questions(str(path))) == 1
+
+
+class TestNonStringExpectation:
+    """A non-string `expectation` must still raise this module's ONE error shape.
+
+    `expectation not in EXPECTATIONS` hashes against a frozenset, so a JSON array or object here
+    raised `TypeError: unhashable type` — escaping the documented `ValueError` that names file,
+    line and id. It mattered downstream: `ask_smoke._load` catches only `(OSError, ValueError)`,
+    so the runner showed a raw traceback instead of its `SETUP FAILED` message.
+    """
+
+    @pytest.mark.parametrize("bad", [[], {}, ["answer"], {"v": "answer"}])
+    def test_unhashable_expectation_raises_value_error_with_locators(self, tmp_path, bad):
+        row = {
+            "id": "q001", "question": "x", "class": "c", "expectation": bad,
+            "expected_sources": [], "answer_notes": "", "suites": ["smoke"],
+            "tags": [], "added": "2026-01-01",
+        }
+        path = tmp_path / "questions.jsonl"
+        path.write_text(json.dumps(row) + "\n", encoding="utf-8")
+
+        with pytest.raises(ValueError) as err:
+            load_questions(path)
+
+        message = str(err.value)
+        assert "q001" in message          # the id, to search for
+        assert ":1:" in message           # the line, to open the file at
+        assert "expectation" in message

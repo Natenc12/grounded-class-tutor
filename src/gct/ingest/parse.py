@@ -73,10 +73,41 @@ def parse_file(path: str | Path) -> list[ParsedUnit]:
     else:
         raise ParseError("unsupported", f"unsupported file type: {suffix or '(none)'}")
 
+    units = _strip_nul(units)
+
     if not units:
         raise ParseError("empty", f"no extractable text in {path.name}")
 
     return units
+
+
+def _strip_nul(units: list[ParsedUnit]) -> list[ParsedUnit]:
+    """Drop NUL (0x00) bytes from every unit's text, and drop units with nothing else left.
+
+    NUL is never legitimate course-material text - it is extraction junk (the real carrier: OCR
+    debris on `Livingston Cosmogony.pdf` p.11 of the dogfood corpus). It matters because Postgres
+    `text` columns reject it outright: `index_file`'s insert dies with `psycopg.DataError:
+    PostgreSQL text fields cannot contain NUL`, AFTER the whole file was parsed, chunked, and
+    embedded - money spent, transaction rolled back, file unindexable. Scrubbing belongs HERE, at
+    the chokepoint where provenance is born, so every downstream consumer (chunker, embedder,
+    index, retrieval, the model's context) sees the same clean text; scrubbing at the DB boundary
+    instead would stamp the corpus with text that differs from what was embedded.
+
+    Applied in `parse_file` AFTER format dispatch - one rule for both formats - though only PDFs
+    can actually carry it: PPTX bodies are XML 1.0, which cannot represent NUL at all. A unit that
+    is nothing but NULs (with whitespace) is dropped exactly like an empty page, and a whole file
+    of them lands on the existing `empty` terminal (ADR 0020's taxonomy, no new failure kind).
+    """
+    cleaned: list[ParsedUnit] = []
+    for unit in units:
+        text = unit.text.replace("\x00", "")
+        if text.strip():
+            cleaned.append(
+                ParsedUnit(text=text, file=unit.file, page_or_slide=unit.page_or_slide)
+                if text != unit.text
+                else unit
+            )
+    return cleaned
 
 
 def _parse_pdf(path: Path) -> list[ParsedUnit]:

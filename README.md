@@ -38,4 +38,5 @@ uv sync --extra dev
 # 4. Create the schema, then prove the foundation is wired
 uv run python scripts/migrate.py
 uv run python scripts/smoke_slice0.py   # expect: "PASS — foundation is wired."
+uv run python scripts/ask_smoke.py      # Slice 1 exit gate — SPENDS MONEY (real models)
 ```

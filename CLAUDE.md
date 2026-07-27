@@ -33,7 +33,7 @@ the product. Full design lives in `design/` — start with `design/START-HERE.md
 | Path | What |
 |---|---|
 | `src/gct/` | the library — the product |
-| `scripts/` | thin peer callers (`migrate.py`, `smoke_slice0.py`) |
+| `scripts/` | thin peer callers (`migrate.py`, `smoke_slice0.py`, `ask_smoke.py`) |
 | `tests/gct/` | the test suite |
 | `design/` | current truth: ADRs, component specs, data model |
 | `.claude/skills/roadmap-to-issues/` | the one in-repo skill — projects a roadmap slice into issues |
@@ -44,6 +44,7 @@ the product. Full design lives in `design/` — start with `design/START-HERE.md
 uv sync --extra dev                     # deps into .venv — `--extra dev` or you get NO pytest/ruff
 uv run python scripts/migrate.py        # apply migrations/*.sql
 uv run python scripts/smoke_slice0.py   # Slice 0 exit test → "PASS — foundation is wired."
+uv run python scripts/ask_smoke.py      # Slice 1 exit gate — SPENDS MONEY (real models, real corpus)
 uv run pytest tests/ -q                 # full suite
 uv run pytest -m db -q                  # just the Postgres-backed tests (DB must be up)
 uv run pytest -m "not live" -q          # exactly what CI runs
@@ -60,17 +61,20 @@ The `db` fixture skips locally when Postgres is down but **hard-fails in CI**, s
 silently skip their way to green. Locally that judgement is still yours: `pytest -m db` reporting
 **skips means Postgres is down, not that the DB path passed.**
 
-`live` marks a test that hits a paid API, and is excluded from the CI gate. It is hand-declared with
-nothing deriving it, and it fails in the dangerous direction — **two** ways at once, in opposite
-directions:
+`live` marks a test that hits a paid API, and is excluded from the CI gate. Like `db`, it is
+**derived, never hand-declared**: `pytest_collection_modifyitems` in `tests/conftest.py` applies it to
+any test taking a `live_*` fixture. Constructing a real provider client through such a fixture is what
+makes a test paid, so the mark cannot drift from the dependency.
+
+Hand-declaring it failed in the dangerous direction — **two** ways at once, in opposite directions:
 - a test that FORGETS the mark runs in CI against an empty `OPENAI_API_KEY`, spending money or going
   red for the wrong reason;
 - and a test that carries it stops being covered by CI, silently.
 
-`db` is immune to both because `pytest_collection_modifyitems` derives it from the fixture — derive
-`live` the same way the moment a paid test exists. How many carriers there are *today* is a fetched
-fact, not one this file stores: `uv run pytest -m live -q --collect-only`. Exit **5**
-(`no tests collected`) is pytest reporting *zero carriers* — that's an answer, not a broken command.
+Deriving removes both, and leaves one edge it cannot see: a test that builds a provider client
+**inline** rather than through a fixture. New paid tests MUST take a `live_*` fixture — the same "take
+the fixture and it stays true" rule `db` has. How many carriers there are *today* is a fetched fact,
+not one this file stores: `uv run pytest -m live -q --collect-only`.
 
 ## Conventions / invariants (do not violate)
 - **Hand-rolled RAG** (ADR 0003) — no LangChain/LlamaIndex; we build the pipeline to learn it.

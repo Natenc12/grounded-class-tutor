@@ -107,8 +107,14 @@ def ingest_file(
 
     Generates `file_id` (`uuid4`) Python-side so the full chunk row set is complete before the index
     transaction opens (ADR 0020), runs `compose`, then hands the rows to `index_file` for the
-    all-or-nothing atomic write (which also creates the minimal `files` row -> `ready`). `conn`
-    must be a connection with the pgvector adapter registered - use `gct.db.connect()`.
+    all-or-nothing atomic write (which also creates the minimal `files` row -> `ready`).
+
+    `conn` must satisfy TWO requirements, not one:
+      - the pgvector adapter is registered - use `gct.db.connect()`;
+      - it is NOT already inside a transaction (ADR 0025). Otherwise `index_file`'s transaction
+        degrades to a savepoint and this function returns having committed nothing - the chunk set
+        is invisible to every other connection and dies with the caller's outer transaction. See
+        `index_file`'s docstring for the full precondition and how to satisfy it.
     """
     file_id = str(uuid4())
     chunks = compose(path, owner_id, class_id, embedder=embedder)

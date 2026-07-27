@@ -45,6 +45,20 @@ def index_file(
       3. `INSERT` the full new chunk set from `chunks`.
     Commit as one unit; on any error nothing is committed (all-or-nothing).
 
+    PRECONDITION ON `conn` - the publication half of that guarantee is CONDITIONAL (ADR 0025):
+    `conn` MUST NOT already be inside a transaction. psycopg opens an implicit transaction on a
+    connection's first statement, and `Connection.transaction()` checks the state - already
+    `INTRANS` means the block below issues a SAVEPOINT rather than BEGIN, and releasing a savepoint
+    commits NOTHING. This function then returns successfully having published nothing: the rows are
+    visible only to this connection, and any later rollback destroys them. Atomicity survives (a
+    savepoint rollback still discards exactly its own writes); PUBLICATION does not.
+    Satisfy it with a fresh connection, `conn.autocommit = True`, or an explicit commit since the
+    last statement. `scripts/ask_smoke.py` uses autocommit; a Slice 2 worker MUST COMMIT ITS CLAIM
+    before ingesting on the same connection (`components/ingestion-worker.md`, step 1) - leasing a
+    job is a write, so the lease alone is enough to trigger this.
+    Deliberately not guarded here: a runtime check would depend on statement order inside the
+    caller rather than on caller intent, so it would fire on benign code (ADR 0025, Alternatives).
+
     SQL-boundary conversions (schema quirks, migrations/0001_init.sql):
       - `page_or_slide` int -> text (`chunks.page_or_slide` is `text`).
       - uuid columns (`file_id`, `class_id`) -> cast `%s::uuid`; `owner_id` is `text`.

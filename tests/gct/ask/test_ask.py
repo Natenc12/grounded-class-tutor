@@ -345,3 +345,109 @@ class TestNesting:
         assert isinstance(result.result.coverage.gaps, list)
         assert isinstance(result.result.integrity.reasons, list)
         assert result.result.error is None
+
+
+class TestRetrievalRan:
+    """`retrieval_ran` — the flag that tells "we looked and missed" from "we never looked".
+
+    The eval runner scores a retrieval MISS and a retrieval that NEVER RAN differently, and it
+    cannot: `retrieved` is `[]` in both cases. An empty class genuinely retrieved nothing (a
+    measured miss); a retrieval-side ERROR never produced a set at all. Scoring the second as the
+    first reports a recall failure that did not happen, and drags infra outages into the metric
+    the chunking/k/embedder bake-offs rank on (ADR 0023 §1).
+    """
+
+    def test_healthy_retrieval_reports_it_ran(self, db, ranking_embedder, seed_class, scripted):
+        """The default. Anything that reached the Grounder ran retrieval, by definition."""
+        conn, owner_id, class_id = db
+        # Two chunks, because GOOD_REPLY cites [S1] AND [S2] — a reply naming a label the context
+        # does not have is an integrity failure, and the retry would eat the scripted budget.
+        seed_class(
+            [
+                "the argument from design reasons from apparent order to a designer",
+                "its analogy is to a watch found upon a heath",
+            ],
+            embedder=ranking_embedder,
+        )
+
+        result = ask(conn, QUESTION, owner_id, class_id,
+                     embedder=ranking_embedder, generator=scripted(GOOD_REPLY))
+
+        assert result.result.state is GrounderState.GROUNDED
+        assert result.retrieval_ran is True
+
+    def test_empty_class_ran_retrieval_and_is_a_measured_miss(
+        self, db, ranking_embedder, scripted
+    ):
+        """THE DISCRIMINATING CASE: `retrieved == []` but retrieval absolutely did run.
+
+        This is why the flag cannot be replaced by `not result.retrieved`. An un-ingested class
+        returns an empty top-k, and that IS the measurement — the corpus does not cover it. If
+        this reported `retrieval_ran=False` the runner would drop a real miss out of the recall
+        denominator and inflate the hit rate toward 1.0 by discarding exactly the rows that
+        should pull it down.
+        """
+        conn, owner_id, class_id = db  # nothing seeded
+        generator = scripted()
+
+        result = ask(conn, QUESTION, owner_id, class_id,
+                     embedder=ranking_embedder, generator=generator)
+
+        assert result.retrieved == []
+        assert result.retrieval_ran is True          # ran, and missed
+        assert result.result.state is GrounderState.REFUSAL
+        assert generator.call_count == 0             # canned refusal, nothing paid for
+
+    def test_embedding_mismatch_reports_retrieval_never_ran(
+        self, db, ranking_embedder, seed_class, scripted
+    ):
+        conn, owner_id, class_id = db
+        # Same discriminating stamp as the mismatch test above: the corpus is labelled with the
+        # ACTIVE model id, which is not this embedder's own.
+        seed_class(["some real content"], embedder=ranking_embedder,
+                   model_id=ACTIVE_EMBEDDING_MODEL_ID)
+
+        result = ask(conn, QUESTION, owner_id, class_id,
+                     embedder=ranking_embedder, generator=scripted())
+
+        assert result.result.state is GrounderState.ERROR
+        assert result.retrieved == []
+        assert result.retrieval_ran is False
+
+    def test_transient_query_embed_reports_retrieval_never_ran(
+        self, db, ranking_embedder, seed_class, scripted
+    ):
+        conn, owner_id, class_id = db
+        seed_class(["some real content"], embedder=ranking_embedder)
+        exploding = BrokenEmbeddings(
+            ranking_embedder, TransientEmbeddingError("429 slow down")
+        )
+
+        result = ask(conn, QUESTION, owner_id, class_id,
+                     embedder=exploding, generator=scripted())
+
+        assert result.result.state is GrounderState.ERROR
+        assert result.retrieved == []
+        assert result.retrieval_ran is False
+
+
+class TestErrorShapeTwin:
+    """`ask._retrieval_error` is a deliberate local twin of `answer._error` (ask.py docstring).
+
+    That duplication is justified there as "if the ERROR shape ever changes, both sites change
+    together — which the ERROR tests on either side will force." As written that was NOT true:
+    each suite asserted its own module's fields, so one side could drift with only its own test
+    updated. This is the test that actually forces it.
+    """
+
+    def test_both_modules_build_field_identical_error_results(self):
+        from gct.ask import _retrieval_error
+        from gct.grounder.answer import _error
+
+        ours = _retrieval_error("some_kind", "some message")
+        theirs = _error("some_kind", "some message")
+
+        assert ours == theirs, (
+            "ask._retrieval_error and answer._error have drifted. ADR 0016's ERROR shape has one "
+            "meaning; keep the twins field-identical or collapse them."
+        )

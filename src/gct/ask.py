@@ -70,10 +70,24 @@ class AskResult:
 
     `[]` when retrieval returned nothing (empty/un-ingested class, retriever.md) AND on the two
     ERROR paths below, where retrieval never produced a set at all.
+
+    `retrieval_ran` is what tells those two `[]` cases apart, and it exists because `retrieved`
+    alone CANNOT. An empty class retrieves nothing and that is a MEASURED MISS - we looked and the
+    corpus did not have it. A retrieval-side ERROR never looked at all, and scoring it as a miss
+    reports a recall failure that never happened (ADR 0023 Sec.1: the retrieval signal is defined
+    over questions where retrieval actually ran). The eval runner needs a tri-state - hit / miss /
+    not-applicable - and this flag is the third state's only honest source.
+
+    Set at the SITE THAT KNOWS, not inferred downstream. A consumer could today derive the same
+    fact as `state is ERROR and not retrieved`, because `answer()` short-circuits an empty set to
+    REFUSAL and so can never pair ERROR with `[]` itself - but that is an inference about ANOTHER
+    module's internals, true by coincidence of two contracts rather than by declaration. A flag
+    written on the error path cannot become wrong; the inference silently can.
     """
 
     result: GrounderResult
     retrieved: list[RetrievedChunk]
+    retrieval_ran: bool = True
 
 
 def _retrieval_error(kind: str, message: str) -> GrounderResult:
@@ -173,6 +187,7 @@ def ask(
         return AskResult(
             result=_retrieval_error(ERROR_KIND_EMBEDDING_MISMATCH, str(err)),
             retrieved=[],
+            retrieval_ran=False,
         )
     except TransientEmbeddingError as err:
         # The query embed failed retryably. We do not retry it (ADR 0016 - the budget is
@@ -183,6 +198,7 @@ def ask(
                 ERROR_KIND_PROVIDER_TRANSIENT, f"query embedding failed: {err}"
             ),
             retrieved=[],
+            retrieval_ran=False,
         )
 
     # `retrieved` is passed on AND returned - the same list, so what the eval runner scores is

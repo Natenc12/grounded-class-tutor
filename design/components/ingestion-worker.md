@@ -57,7 +57,22 @@ path meet on this row. `page_or_slide` is **scalar** by the never-span rule (ADR
 ## Internal approach (pipeline)
 Slow/external work runs with **no transaction open**; the transaction is a short local swap once a
 *complete, valid* row set is in hand (ADR 0020).
-1. **Claim** the job (ADR 0011); set `status=processing`.
+
+> **The claim transaction must COMMIT before step 2 begins (ADR 0025).** Leasing the job is a write,
+> so it opens a transaction on the worker's connection; carrying that transaction into the pipeline
+> turns step 6's `conn.transaction()` into a mere SAVEPOINT, and the file's chunks are then published
+> only when the *worker's* outer transaction commits — invisible to readers and destructible by any
+> later failure until then. It also holds the connection open across every embedding round-trip,
+> which is the hazard the paragraph above already forbids. Both failures have one cause and one fix:
+> claim, commit, then process on a connection that is not in a transaction. Slice 1's runner does
+> this with `conn.autocommit = True`; a worker may instead commit the claim explicitly.
+>
+> This is sharper than a tidiness rule. ADR 0020 makes the reaper safe by arguing a crash-mid-
+> `processing` job "committed nothing" — but under savepoint nesting a *successful* run has also
+> committed nothing, so success and crash stop being distinguishable by DB state, which is the only
+> signal the reaper reads.
+
+1. **Claim** the job (ADR 0011); set `status=processing`, **and commit it** — see the note above.
 2. **Parse** staged bytes → text + structure (pypdf / python-pptx / `unstructured` — tooling is a
    spike). **Source metadata (file, page/slide) is born here** — honor-point ① (F2). Unparseable /
    password-protected / zero-text → **terminal failure** (ADR 0020), no retry.

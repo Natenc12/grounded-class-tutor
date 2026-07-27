@@ -1,7 +1,10 @@
 # 0020. Ingestion failure & idempotency — retryable/terminal split, all-or-nothing replace, index-write-only transaction
 
 - **Date:** 2026-07-04
-- **Status:** accepted
+- **Status:** accepted — **publication claim amended 2026-07-27 by ADR 0025** (§2–3's "commits its
+  entire chunk set" holds only if the caller's connection is not already in a transaction; psycopg
+  turns a nested `conn.transaction()` into a SAVEPOINT that commits nothing. The atomicity and
+  index-write-only reasoning below stand unchanged)
 
 ## Context
 `architecture.md` locked the async substrate (ADR 0011: DB-backed `jobs` + in-process poll worker,

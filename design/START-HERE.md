@@ -1,10 +1,11 @@
 # START HERE — Grounded Class Tutor
 
-**Who this is for:** the three of us building this together. Nate worked through the whole design
-one-on-one with an AI architect, so if you're just joining, you have zero context — and that's fine.
-This doc's only job is to get you from "no idea" to "I understand what we're building, why, and where
-to dig in." **You don't need to read the whole design to start** — read Part 1, and go into Part 2
-when you're ready to build.
+**Who this is for:** anyone landing on this repo cold — a reviewer, a fellow engineer, a future
+collaborator. Zero context is the expected starting point, not a gap: Nate worked through the whole
+design one-on-one with an AI architect (more on that below), so even someone joining the team starts
+from scratch. This doc's only job is to get you from "no idea" to "I understand what we're building,
+why, and where to dig in." **You don't need to read the whole design to start** — read Part 1, then
+go into Part 2 when you want the implementation-level detail.
 
 > **A note on using AI:** the design lives in a pile of markdown docs (`vision.md`, `architecture.md`,
 > the `components/` specs, the `decisions/` folder, etc.). Any of them can be pasted into Claude or
@@ -123,7 +124,7 @@ You do **not** need all of these before contributing. Start at the top; go as de
 5. **`components/`** — *(whoever owns that piece)* deep build specs for the three make-or-break parts:
    **grounder.md** (the trust core) → **retriever.md** (the read path) → **ingestion-worker.md** (the
    write path).
-6. **`roadmap.md`** — *(everyone before we start)* the build sequence, slice by slice.
+6. **`roadmap.md`** — *(everyone, before starting)* the build sequence, slice by slice.
 7. **`HANDOFF.md`** — the dense, complete build manifest. It's written in shorthand for an AI assistant —
    **paste it (or a slice of it) into Claude when you're implementing** and it'll have the full picture.
 8. **`pre-mortem.md`** / **`decisions/`** — the stress-test and the "why" behind every choice. Consult, don't read cover-to-cover.

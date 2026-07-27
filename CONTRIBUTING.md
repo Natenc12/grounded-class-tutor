@@ -2,7 +2,7 @@
 
 This is our playbook for not stepping on each other's changes and for making our reviews teach us something.
 
-It's close to how professional teams work, with a couple of shortcuts because we're just a group of three.
+It's close to how professional teams work, with a couple of shortcuts sized for a small team.
 
 Boring on purpose. Follow it and we'll be faster, not slower.
 

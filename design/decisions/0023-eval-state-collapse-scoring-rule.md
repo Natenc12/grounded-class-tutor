@@ -1,7 +1,7 @@
 # 0023. Eval scoring — two-signal, with the 5 Grounder states scored against `expectation`
 
 - **Date:** 2026-07-04
-- **Status:** **accepted** (ratified by Nate, 2026-07-04, PM-1 — supersedes the provisional collapse first drafted this session)
+- **Status:** **accepted** (ratified by Nate, 2026-07-04, PM-1 — supersedes an earlier provisional collapse rule)
 
 ## Context
 Pre-mortem finding **PM-1**. The Grounder emits five states — `GROUNDED | PARTIAL | REFUSAL |

@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import importlib.util
 import io
+import uuid
 from pathlib import Path
 
 import pytest
@@ -26,6 +27,7 @@ from reportlab.pdfgen import canvas
 
 from gct.config import EMBEDDING_DIM
 from gct.eval.questions import EvalQuestion, ExpectedSource
+from gct.ingest.pipeline import ingest_file
 
 # Import the script by PATH rather than by package name: `scripts/` is deliberately not a package
 # (ADR 0009 - the scripts are peers of the library, not part of it), so there is nothing to
@@ -154,8 +156,6 @@ class TestConvergeCorpus:
         )
         # Ingest alpha.pdf a SECOND time - the real-world failure, reproduced exactly: a fresh
         # file_id, so the delete-by-file_id idempotency never fires.
-        from gct.ingest.pipeline import ingest_file
-
         ingest_file(corpus / "alpha.pdf", owner_id, class_id,
                     embedder=FakeEmbeddings(), conn=conn)
 
@@ -262,6 +262,62 @@ class TestSetupValidityGuards:
         assert all(isinstance(page, int) for _, page in indexed)
         # And the real suite's shape: a page the corpus does not have is simply absent.
         assert ("alpha.pdf", 99) not in indexed
+
+    def test_indexed_pages_is_scoped_to_this_owner_and_class(self, db, corpus, tmp_path):
+        """The F6/F12 isolation filter, pinned — the assertion the other test CANNOT make.
+
+        Found by mutation: deleting `where owner_id AND class_id` from `_indexed_pages` left the
+        whole suite green, because nothing planted a `(file, page)` pair that ONLY the scope filter
+        excludes. An unscoped read is not a cosmetic breach: another owner's page would satisfy the
+        setup guard, the run would proceed, and retrieval — which IS scoped — could never return it,
+        so the bench would post `hit=no` forever and blame retrieval. That is precisely the
+        bad-ground-truth-reported-as-a-system-failure outcome the guard exists to prevent.
+
+        The Retriever's own consistency guard carries the same rule for the same reason
+        (`retriever.md`: "the guard is not exempt from the isolation filter").
+        """
+        conn, owner_id, class_id = db
+        ask_smoke._converge_corpus(
+            conn, owner_id=owner_id, class_id=class_id, corpus_dir=corpus,
+            embedder=FakeEmbeddings(),
+        )
+
+        # A SECOND owner/class carrying a filename+page that exists nowhere in the first.
+        other_owner = f"other-owner-{uuid.uuid4()}"
+        other_class = str(uuid.uuid4())
+        other_dir = tmp_path / "other"
+        other_dir.mkdir()
+        write_pdf(other_dir / "someone-elses.pdf", ["a page belonging to another owner"])
+        try:
+            conn.execute(
+                "insert into classes (class_id, owner_id, name) values (%s::uuid, %s, %s)",
+                (other_class, other_owner, "other class"),
+            )
+            ingest_file(
+                other_dir / "someone-elses.pdf", other_owner, other_class,
+                embedder=FakeEmbeddings(), conn=conn,
+            )
+
+            indexed = ask_smoke._indexed_pages(conn, owner_id=owner_id, class_id=class_id)
+
+            assert ("alpha.pdf", 1) in indexed, "own rows must still be there"
+            assert ("someone-elses.pdf", 1) not in indexed, (
+                "_indexed_pages leaked another owner's page — the owner_id/class_id filter is gone"
+            )
+
+            # Same class_id, different owner, and vice versa: BOTH halves of the predicate matter.
+            assert ask_smoke._indexed_pages(
+                conn, owner_id=other_owner, class_id=class_id
+            ) == set()
+            assert ask_smoke._indexed_pages(
+                conn, owner_id=owner_id, class_id=other_class
+            ) == set()
+        finally:
+            # The `db` fixture tears down ITS owner only, so this one cleans up after itself.
+            conn.execute("delete from chunks where owner_id = %s", (other_owner,))
+            conn.execute("delete from files where owner_id = %s", (other_owner,))
+            conn.execute("delete from classes where owner_id = %s", (other_owner,))
+            conn.commit()
 
     def test_refuse_rows_are_allowed_to_have_no_sources(self):
         """The same emptiness is CORRECT out-of-corpus - `expected_sources` is in-corpus only

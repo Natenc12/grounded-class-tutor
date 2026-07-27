@@ -138,12 +138,15 @@ def retrieval_hit(
     `expected_sources` chunk in the retrieved top-k" - singular, and phrased as membership.
 
     All-match was considered and REJECTED, on two grounds. (1) It silently couples the metric to
-    k: two rows in the suite carry multiple expected sources today (q001, and q003 since its
-    2026-07-27 curation), each with two sources against `DEFAULT_K = 5`, so an all-match rule would
-    make those two questions' scores depend on the top-k budget in a way the other ten don't - the
-    spikes tune k, and a metric that moves with the lever it is measuring cannot rank it. The count
-    is not load-bearing (the argument holds for any number of such rows); it is stated exactly
-    because a stale one reads as a reason to revisit a settled decision.
+    k: a row carrying MULTIPLE expected sources would have its score depend on the top-k budget in
+    a way a single-source row does not - the spikes tune k, and a metric that moves with the lever
+    it is measuring cannot rank it.
+
+    This deliberately does NOT say how many such rows exist. An earlier version stored that census
+    ("q001 is the only multi-source row in the suite today") and the q003 curation falsified it in
+    the same branch; restating the census with the new number would only reset the clock on the
+    same failure. The argument never needed a count - the count needed maintaining. If you want
+    one, derive it: rows where `len(expected_sources) > 1` in eval/questions.jsonl.
     (2) A missed second leg is not lost signal: the answer
     is then supported in part, which surfaces as PARTIAL in the grounding signal. Two signals
     already cover the case, and this is precisely §1's promise that retrieval misses "surface

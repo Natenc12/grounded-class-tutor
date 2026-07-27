@@ -282,16 +282,18 @@ def _require_expected_files(
     # cannot be hit — and the page is the half this corpus is actively ambiguous about, since
     # `Livingston Cosmogony.pdf` index-page 4 is PRINTED "200". Writing 200 there would post
     # `hit=no` on q007 with the report blaming retrieval.
-    # It also catches a `ready` files row whose chunks were deleted (the WARN branch below prints
-    # a two-step remediation; stop between the steps and you are in exactly that state): such a
-    # file contributes no pages, so every source naming it lands here rather than being scored as
-    # a retrieval regression.
-    # Exact only where it can be: on a MULTI-source row the any-match rule means one good entry
-    # still hits, so a bad entry there weakens the ground truth without moving the metric. Both
-    # are worth stopping for; only the single-source case is a guaranteed permanent miss.
+    # It also catches a `ready` files row whose chunks were deleted (the WARN branch in
+    # `_converge_corpus` above prints a two-step remediation; stop between the steps and you are in
+    # exactly that state): such a file contributes no pages, so every source naming it lands here
+    # rather than being scored as a retrieval regression.
+    # The two cases differ in CONSEQUENCE, not in whether to stop, so the message names which one
+    # you have. On a SINGLE-source row an unindexed page is a guaranteed permanent miss. On a
+    # MULTI-source row the any-match rule means a surviving good entry still hits, so the metric
+    # holds while the ground truth quietly weakens - worth stopping for, but an author who reads
+    # "cannot be hit" and knows their run scored fine deserves to be told which of the two it is.
     unindexed = sorted(
         {
-            (source.file, source.page_or_slide)
+            (question.id, source.file, source.page_or_slide, len(question.expected_sources) > 1)
             for question in questions
             for source in question.expected_sources
             if (source.file, source.page_or_slide) not in indexed
@@ -300,7 +302,13 @@ def _require_expected_files(
     if unindexed:
         raise SetupError(
             "the suite expects source page(s) that carry no indexed chunk: "
-            + ", ".join(f"{name!r} p.{page}" for name, page in unindexed)
+            + ", ".join(
+                f"{qid} -> {name!r} p.{page}"
+                + (" (multi-source row: any-match would still hit, so this weakens the ground "
+                   "truth rather than the metric)" if multi else " (single-source row: a "
+                   "guaranteed permanent miss)")
+                for qid, name, page, multi in unindexed
+            )
             + " — retrieval cannot hit a page the corpus does not have, and scoring that as a "
             "miss reports a retrieval failure that is really bad ground truth"
         )

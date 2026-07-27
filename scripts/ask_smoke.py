@@ -1,0 +1,651 @@
+"""Slice 1 exit test — the smoke-suite runner (issue #8).
+
+Proves the differentiator end to end, over REAL course materials and REAL models: every question
+in `eval/questions.jsonl` goes through `gct.ask.ask()`, and the run passes only if at least one
+in-corpus question came back GROUNDED (a cited answer) and at least one out-of-corpus question came
+back REFUSAL (an honest decline). Everything else it prints — the ADR 0023 rate vector — is the
+crude bench Spike Pass 1 ranks on, not a release gate (ADR 0023 §5).
+
+A THIN peer caller (ADR 0009): this script wires providers, converges the corpus, loops, and
+prints. Every METRIC it reports is computed in `gct` — the scoring table is `gct.eval.scoring`,
+the five states are the Grounder's, the retrieval check is `retrieval_hit`. If you find yourself
+adding a scoring rule here, it belongs one layer down, where V3 can execute the same definition.
+
+"Metric", not "judgment", and the narrowing is deliberate: the exit GATE below is computed here,
+on purpose. It is issue #8's one-time acceptance ceremony, not an ADR 0023 measurement, and V3
+will never re-execute it — pushing it into `gct` would enshrine a slice-exit ritual in the library
+forever. Setup VALIDITY rules (is this run scoreable at all?) likewise belong here: they are facts
+about a corpus and a directory, which the core has no access to and no opinion about.
+
+Run (needs a migrated DB, `.env` secrets, and the corpus files present — this SPENDS MONEY):
+
+    uv run python scripts/ask_smoke.py
+    uv run python scripts/ask_smoke.py --suite smoke --k 5
+
+Exit codes: 0 the gate passed · 1 the gate failed · 2 setup failed (no corpus, no questions, a
+question naming a file the corpus does not have).
+"""
+from __future__ import annotations
+
+import argparse
+from pathlib import Path
+from uuid import uuid4
+
+import psycopg
+
+from gct.ask import AskResult, ask
+from gct.db import connect
+from gct.eval.questions import EXPECTATION_ANSWER, EXPECTATION_REFUSE, EvalQuestion, load_questions
+from gct.eval.scoring import (
+    EvalMetrics,
+    EvalRecord,
+    compute_metrics,
+    retrieval_hit,
+    score_state,
+)
+from gct.grounder.answer import GrounderResult, GrounderState
+from gct.ingest.pipeline import ingest_file
+from gct.providers.base import Embeddings
+from gct.providers.openai_provider import OpenAIEmbeddings, OpenAIGeneration
+from gct.retriever.retrieve import DEFAULT_K
+
+DEFAULT_OWNER = "nate-dogfood"
+DEFAULT_CORPUS_DIR = "data/dogfood/religion"
+DEFAULT_QUESTIONS = "eval/questions.jsonl"
+DEFAULT_SUITE = "smoke"
+
+# The extensions `gct.ingest.parse` handles. Kept as data so the census and the ingest loop walk
+# the SAME set — a corpus file the census counts but never ingests would read as a silent gap.
+CORPUS_GLOBS = ("*.pdf", "*.pptx")
+
+# What `data/dogfood/religion/manifest.md` says the default corpus parses to: 7+8+8 slides and
+# 15+14 pages. PRINTED FOR THE EYE, never compared against: chunking re-packs parsed units into
+# chunks (ingest/chunk.py), so chunks != units is the expected relationship, not a discrepancy.
+# Stale-by-construction if the corpus changes — which is why nothing branches on it.
+MANIFEST_PARSED_UNITS = 52
+MANIFEST_FILES = 5
+
+EXIT_OK = 0
+EXIT_GATE_FAILED = 1
+EXIT_SETUP = 2
+
+
+class SetupError(RuntimeError):
+    """The bench cannot honestly run: no corpus, no questions, a missing expected file.
+
+    Distinct from a failed gate. A gate failure is a RESULT (the system answered badly); this is
+    the run never having been valid — scoring it would report a rate over a suite that quietly
+    lost its ground truth. Exits 2 so a caller can tell "it ran and lost" from "it never ran".
+    """
+
+
+# --- setup: questions, class, corpus convergence ----------------------------------------------
+
+
+def _resolve_class(conn: psycopg.Connection, owner_id: str, slug: str) -> str:
+    """Find (or create) the `classes` row this suite's questions are scoped to; return its id.
+
+    `classes` has no unique constraint on `(owner_id, name)`, so a duplicate is physically
+    possible and is refused rather than resolved: picking either one would split the corpus across
+    two class_ids, and every count printed below would then be over half a class.
+    """
+    rows = conn.execute(
+        "select class_id from classes where owner_id = %(owner_id)s and name = %(name)s",
+        {"owner_id": owner_id, "name": slug},
+    ).fetchall()
+
+    if len(rows) > 1:
+        raise SetupError(
+            f"owner {owner_id!r} has {len(rows)} classes named {slug!r} "
+            f"({[str(r[0]) for r in rows]}) — the corpus is split; drop the extras first"
+        )
+    if rows:
+        # str, not the psycopg UUID: every `gct` signature downstream types class_id as `str` and
+        # casts `%s::uuid` at the SQL boundary.
+        return str(rows[0][0])
+
+    class_id = str(uuid4())
+    with conn.transaction():
+        conn.execute(
+            """
+            insert into classes (class_id, owner_id, name)
+            values (%(class_id)s::uuid, %(owner_id)s, %(name)s)
+            """,
+            {"class_id": class_id, "owner_id": owner_id, "name": slug},
+        )
+    print(f"  created class {slug!r} for owner {owner_id!r} — class_id={class_id}")
+    return class_id
+
+
+def _ready_rows(
+    conn: psycopg.Connection, owner_id: str, class_id: str, filename: str
+) -> list[tuple[str, int]]:
+    """Every `ready` files row for this filename in this class, as `(file_id, chunk_count)`.
+
+    Keyed on FILENAME because that is the only identity the corpus directory and the DB share:
+    `file_id` is minted fresh by each `ingest_file` call and is not derived from the path.
+    Non-`ready` rows are excluded — `index_file` publishes `ready` inside the same transaction as
+    the chunk insert (ADR 0020), so in Slice 1 a non-ready row means a file with no chunks, which
+    must not count as ingested.
+    """
+    rows = conn.execute(
+        """
+        select f.file_id, count(c.chunk_id)
+        from files f
+        left join chunks c on c.file_id = f.file_id
+        where f.owner_id = %(owner_id)s
+          and f.class_id = %(class_id)s::uuid
+          and f.filename = %(filename)s
+          and f.status = 'ready'
+        group by f.file_id
+        order by f.created_at
+        """,
+        {"owner_id": owner_id, "class_id": class_id, "filename": filename},
+    ).fetchall()
+    return [(str(file_id), int(count)) for file_id, count in rows]
+
+
+def _converge_corpus(
+    conn: psycopg.Connection,
+    *,
+    owner_id: str,
+    class_id: str,
+    corpus_dir: Path,
+    embedder: Embeddings,
+) -> dict[str, int]:
+    """Bring the class to "every corpus file ingested exactly once". Returns filename -> chunks.
+
+    PER FILE, not all-or-nothing, and that is the whole point. `ingest_file` mints a FRESH
+    `file_id` on every call (pipeline.py), and `index_file`'s idempotency is delete-by-file_id —
+    so it can only ever replace a set within one file_id, never across runs. A runner that
+    ingested unconditionally would therefore ADD a complete duplicate chunk set every time it ran:
+    the class doubles, retrieval fills its top-k with copies of one slide, and the census silently
+    inflates. Convergence (check, then ingest only what is missing) is what makes this script safe
+    to re-run, which a bench has to be.
+    """
+    paths = sorted(
+        {path for pattern in CORPUS_GLOBS for path in corpus_dir.glob(pattern)},
+        key=lambda p: p.name,
+    )
+    if not paths:
+        raise SetupError(
+            f"no {' / '.join(CORPUS_GLOBS)} files in {corpus_dir} — the dogfood corpus is "
+            "gitignored (manifest.md lists what to drop in)"
+        )
+
+    ready: dict[str, int] = {}
+    for path in paths:
+        rows = _ready_rows(conn, owner_id, class_id, path.name)
+
+        if len(rows) > 1:
+            # Not fatal, but never silent: N ready rows means the file was ingested N times, so
+            # every chunk exists N times. Retrieval still works and still cites the right page —
+            # it just spends its top-k budget on near-identical neighbours, and every count below
+            # is multiplied. We do NOT auto-delete: dropping chunk sets is not a bench's call.
+            total = sum(count for _, count in rows)
+            print(f"  !! WARN  {path.name}: {len(rows)} ready `files` rows, {total} chunks total")
+            print(f"           file_ids: {', '.join(file_id for file_id, _ in rows)}")
+            print("           this file was ingested more than once — its chunks are DUPLICATED, "
+                  "the census below is inflated,")
+            print("           and retrieval's top-k will be crowded with copies. To fix: delete "
+                  "the extra file_ids' chunks rows,")
+            print("           then those files rows (chunks FK -> files, so chunks go first).")
+            ready[path.name] = total
+            continue
+
+        if rows:
+            _file_id, count = rows[0]
+            print(f"  {path.name}: already ingested ({count} chunks)")
+            ready[path.name] = count
+            continue
+
+        print(f"  {path.name}: ingesting (parse -> chunk -> embed -> index) ...", flush=True)
+        file_id = ingest_file(path, owner_id, class_id, embedder=embedder, conn=conn)
+        count = conn.execute(
+            "select count(*) from chunks where file_id = %(file_id)s::uuid",
+            {"file_id": file_id},
+        ).fetchone()[0]
+        print(f"  {path.name}: ingested — {count} chunks (file_id={file_id})")
+        ready[path.name] = int(count)
+
+    return ready
+
+
+def _indexed_pages(
+    conn: psycopg.Connection, *, owner_id: str, class_id: str
+) -> set[tuple[str, int]]:
+    """Every `(file, page_or_slide)` this class actually has an indexed chunk for.
+
+    The exact pair `retrieval_hit` compares against, read back from the same scope retrieval will
+    search. `page_or_slide` is `text` in the column and `int` everywhere else, so it converts here —
+    the same boundary conversion `retriever.retrieve` does on read.
+    """
+    rows = conn.execute(
+        """
+        select distinct file, page_or_slide from chunks
+        where owner_id = %(owner_id)s and class_id = %(class_id)s::uuid
+        """,
+        {"owner_id": owner_id, "class_id": class_id},
+    ).fetchall()
+    return {(file, int(page)) for file, page in rows}
+
+
+def _require_expected_files(
+    questions: list[EvalQuestion],
+    ready: dict[str, int],
+    indexed: set[tuple[str, int]],
+) -> None:
+    """Every source the suite cites must be in the corpus, `ready` — or the run is not scoreable.
+
+    Hard failure, not a warning: `retrieval_hit` compares `(file, page_or_slide)` pairs, so a file
+    that was never ingested scores as a MISS on every question that cites it — an honest-looking
+    0% recall that is really a missing file. That is the one way this bench could report a system
+    failure that never happened.
+    """
+    # An in-corpus question with NO expected sources is unscoreable on the retrieval signal, and
+    # unscoreable SILENTLY: `retrieval_hit([], ...)` returns None (correct - that is the
+    # out-of-corpus "not applicable" answer), `compute_metrics` drops None rows from the
+    # denominator (correct), and the loop below iterates SOURCES, so a row carrying none
+    # contributes nothing to check. Four correct behaviours compose into a hole: the row leaves
+    # the recall denominator with no warning, and `retrieval_hit_rate` reports a clean rate over a
+    # suite that quietly shrank - the exact failure `gct.eval.scoring`'s docstrings are built to
+    # prevent, in the one place no guard covered. Caught here because it is a fact about the eval
+    # FILE, which the loader deliberately does not judge (questions.py: "does not judge CONTENT").
+    sourceless = [
+        question.id
+        for question in questions
+        if question.expectation == EXPECTATION_ANSWER and not question.expected_sources
+    ]
+    if sourceless:
+        raise SetupError(
+            "in-corpus question(s) carry no 'expected_sources': "
+            + ", ".join(repr(qid) for qid in sourceless)
+            + " — they would leave the retrieval denominator silently, inflating hit rate"
+        )
+
+    expected = sorted(
+        {source.file for question in questions for source in question.expected_sources}
+    )
+    missing = [name for name in expected if name not in ready]
+    if missing:
+        raise SetupError(
+            "the suite expects sources from file(s) that are not ingested in this class: "
+            + ", ".join(repr(name) for name in missing)
+            + " — retrieval cannot hit a file the corpus does not have"
+        )
+
+    # And the PAGE, not just the file. `retrieval_hit` compares the whole `(file, page_or_slide)`
+    # pair, so a page carrying no indexed chunk is exactly as unhittable as a missing file — the
+    # check above just projects the pair down to its filename and throws the other half away.
+    # This is the third face of one bug: the sourceless-row guard above, the missing-file guard
+    # above it, and this all close the same hole — a clean-looking rate over ground truth that
+    # cannot be hit — and the page is the half this corpus is actively ambiguous about, since
+    # `Livingston Cosmogony.pdf` index-page 4 is PRINTED "200". Writing 200 there would post
+    # `hit=no` on q007 with the report blaming retrieval.
+    # It also catches a `ready` files row whose chunks were deleted (the WARN branch in
+    # `_converge_corpus` above prints a two-step remediation; stop between the steps and you are in
+    # exactly that state): such a file contributes no pages, so every source naming it lands here
+    # rather than being scored as a retrieval regression.
+    # The two cases differ in CONSEQUENCE, not in whether to stop, so the message names which one
+    # you have. On a SINGLE-source row an unindexed page is a guaranteed permanent miss. On a
+    # MULTI-source row the any-match rule means a surviving good entry still hits, so the metric
+    # holds while the ground truth quietly weakens - worth stopping for, but an author who reads
+    # "cannot be hit" and knows their run scored fine deserves to be told which of the two it is.
+    unindexed = sorted(
+        {
+            (question.id, source.file, source.page_or_slide, len(question.expected_sources) > 1)
+            for question in questions
+            for source in question.expected_sources
+            if (source.file, source.page_or_slide) not in indexed
+        }
+    )
+    if unindexed:
+        raise SetupError(
+            "the suite expects source page(s) that carry no indexed chunk: "
+            + ", ".join(
+                f"{qid} -> {name!r} p.{page}"
+                + (" (multi-source row: any-match would still hit, so this weakens the ground "
+                   "truth rather than the metric)" if multi else " (single-source row: a "
+                   "guaranteed permanent miss)")
+                for qid, name, page, multi in unindexed
+            )
+            + " — retrieval cannot hit a page the corpus does not have, and scoring that as a "
+            "miss reports a retrieval failure that is really bad ground truth"
+        )
+
+
+def _print_census(
+    conn: psycopg.Connection, *, owner_id: str, class_id: str, ready: dict[str, int]
+) -> None:
+    """One line of ground truth about what the questions below are actually being asked of."""
+    total_chunks = conn.execute(
+        """
+        select count(*) from chunks
+        where owner_id = %(owner_id)s and class_id = %(class_id)s::uuid
+        """,
+        {"owner_id": owner_id, "class_id": class_id},
+    ).fetchone()[0]
+    print(
+        f"  census: {len(ready)} file(s) ready — {sum(ready.values())} chunks across them, "
+        f"{total_chunks} in the class"
+    )
+    print(
+        f"  reference: manifest.md describes {MANIFEST_FILES} files / {MANIFEST_PARSED_UNITS} "
+        "parsed units — chunks re-pack units, so these differ by design (not checked)"
+    )
+
+
+# --- report -----------------------------------------------------------------------------------
+
+
+def _clip(text: str, limit: int = 80) -> str:
+    """Flatten whitespace and cut to `limit` — a per-question line has to stay one line."""
+    flat = " ".join(text.split())
+    return flat if len(flat) <= limit else flat[: limit - 3] + "..."
+
+
+def _detail(result: GrounderResult) -> str:
+    """The one interesting field for THIS state — what a human scans the line for.
+
+    Deliberately state-dependent: citations are the evidence on an answer, but on a REFUSAL the
+    interesting fact is what the model said it could not cover, and on an ERROR it is the kind.
+    """
+    if result.state is GrounderState.ERROR and result.error is not None:
+        return f"error: {result.error.kind} — {_clip(result.error.message)}"
+    if result.state is GrounderState.INTEGRITY_FLAGGED:
+        reasons = result.integrity.reasons
+        first = _clip(reasons[0]) if reasons else "(no reason recorded)"
+        return f"integrity: {first} ({len(reasons)} reason(s))"
+    if result.state is GrounderState.REFUSAL:
+        gaps = result.coverage.gaps
+        return f"gaps: {_clip('; '.join(gaps))}" if gaps else "gaps: (none stated)"
+    if not result.citations:
+        return "citations: (none)"
+    # Unique (file, page) in citation order — two labels can resolve to the same page, and the
+    # line is about WHICH PAGES the answer rests on, not how many labels it used.
+    seen: list[str] = []
+    for citation in result.citations:
+        rendered = f"{citation.file} p.{citation.page_or_slide}"
+        if rendered not in seen:
+            seen.append(rendered)
+    return "citations: " + ", ".join(seen)
+
+
+def _print_question_line(question: EvalQuestion, result: AskResult, record: EvalRecord) -> None:
+    hit = {True: "yes", False: "no", None: "n/a"}[record.hit]
+    outcome = score_state(record.state, record.expectation).value
+    print(
+        f"  {question.id:<5} {question.expectation:<7} {record.state.value:<18} "
+        f"hit={hit:<4} outcome={outcome:<9} {_detail(result.result)}",
+        flush=True,
+    )
+
+
+def _pct(rate: float | None) -> str:
+    """A rate, or `n/a` — NEVER 0%. `_rate` returns None for an empty denominator, and rendering
+    that as 0% would make "we scored nothing" look like "we scored everything and failed"."""
+    return "  n/a" if rate is None else f"{rate * 100:5.1f}%"
+
+
+def _rate_line(label: str, rate: float | None, numerator: int, denominator: int) -> None:
+    """Every rate prints beside the counts it came from (ADR 0023 §3 / GroundingCounts).
+
+    The suite is 8 in-corpus and 4 out-of-corpus, so one question moves a rate by 12.5 or 25
+    points. A bare "75%" invites reading that noise as a result; "75.0%  6/8" does not.
+    """
+    print(f"    {label:<26} {_pct(rate)}   {numerator}/{denominator}")
+
+
+def _print_summary(metrics: EvalMetrics) -> None:
+    answer, refuse = metrics.answer, metrics.refuse
+    print("\nSummary — ADR 0023 rate vector (crude spike-ranking bench, NOT a quality verdict):")
+
+    print(f"  in-corpus (expectation=answer)   N_scored={answer.scored} "
+          f"of {answer.total} asked, {answer.error} excluded as ERROR")
+    _rate_line("grounded_pass_rate", metrics.grounded_pass_rate, answer.grounded, answer.scored)
+    _rate_line("partial_rate", metrics.partial_rate, answer.partial, answer.scored)
+    _rate_line("false_refusal_rate", metrics.false_refusal_rate, answer.refusal, answer.scored)
+    _rate_line(
+        "integrity_flag_rate", metrics.integrity_flag_rate, answer.integrity_flagged, answer.scored
+    )
+
+    print(f"  out-of-corpus (expectation=refuse)   N_scored={refuse.scored} "
+          f"of {refuse.total} asked, {refuse.error} excluded as ERROR")
+    _rate_line("correct_refusal_rate", metrics.correct_refusal_rate, refuse.refusal, refuse.scored)
+    _rate_line("hallucination_rate", metrics.hallucination_rate, refuse.hallucinated, refuse.scored)
+    _rate_line(
+        "refuse_integrity_flag_rate",
+        metrics.refuse_integrity_flag_rate,
+        refuse.integrity_flagged,
+        refuse.scored,
+    )
+
+    print("  retrieval (in-corpus only — the other, unconflated signal):")
+    _rate_line(
+        "retrieval_hit_rate",
+        metrics.retrieval_hit_rate,
+        metrics.retrieval.hits,
+        metrics.retrieval.applicable,
+    )
+    # The denominator is MEASURED rows, not in-corpus rows: a retrieval-side ERROR sets
+    # `retrieval_ran=False`, the row drops out of `applicable`, and `7/7` then prints identically
+    # to a full `8/8` over a different suite. The error count above cannot disambiguate it — a
+    # GENERATION-side ERROR leaves `retrieval_ran` True, so it shrinks N_scored but NOT this
+    # denominator, and a reader seeing `error_count=1` beside `7/7` cannot tell which one lost the
+    # row. Say the shortfall out loud instead; a rate over a suite that quietly shrank is the one
+    # failure this whole bench is built not to have.
+    if metrics.retrieval.applicable < metrics.answer.total:
+        short = metrics.answer.total - metrics.retrieval.applicable
+        print(
+            f"      ^^ measured over {metrics.retrieval.applicable} of {metrics.answer.total} "
+            f"in-corpus question(s) — {short} never ran retrieval (retrieval-side ERROR), so this "
+            "rate is NOT comparable to a full-suite run"
+        )
+
+    # ALWAYS printed, including at zero. ERROR leaves N_scored, so errors silently shrink every
+    # denominator above — a run where 6 of 8 in-corpus questions errored can post a perfect 2/2.
+    # The absence of this line is exactly what would hide that FAIL->ERROR escape hatch.
+    print("  health (excluded from ranking, never from the report):")
+    _rate_line(
+        "error_count / error_rate",
+        metrics.error_rate,
+        metrics.error_count,
+        answer.total + refuse.total,
+    )
+
+
+def _print_gate(records: list[EvalRecord], metrics: EvalMetrics) -> bool:
+    """Issue #8's acceptance criterion, read minimally, plus the counts behind the demo claim."""
+    grounded = sum(
+        1
+        for r in records
+        if r.expectation == EXPECTATION_ANSWER and r.state is GrounderState.GROUNDED
+    )
+    refused = sum(
+        1
+        for r in records
+        if r.expectation == EXPECTATION_REFUSE and r.state is GrounderState.REFUSAL
+    )
+    passed = grounded >= 1 and refused >= 1
+
+    answer, refuse = metrics.answer, metrics.refuse
+    # The split is printed INSIDE the fused count, never just the sum. A run of 1 GROUNDED + 7
+    # PARTIAL reads "8/8" and then "PASS" — literally accurate and completely misleading, since
+    # PARTIAL is the TRACKED bucket that is explicitly not a pass (ADR 0023 §2). §5 names folding
+    # TRACKED into PASS as the erosion it exists to prevent, and the last line is what a human
+    # actually skims.
+    print(
+        f"\n  cited answers (GROUNDED+PARTIAL): {answer.grounded + answer.partial}/{answer.total}"
+        f" ({answer.grounded} GROUNDED + {answer.partial} PARTIAL)"
+        f"  ·  honest refusals: {refuse.refusal}/{refuse.total}"
+    )
+    verdict = "PASS" if passed else "FAIL"
+    print(
+        f"{verdict} — exit gate (>=1 in-corpus GROUNDED, >=1 out-of-corpus REFUSAL): "
+        f"GROUNDED={grounded}, REFUSAL={refused}"
+    )
+    return passed
+
+
+# --- wiring -----------------------------------------------------------------------------------
+
+
+def _parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
+    parser.add_argument("--owner", default=DEFAULT_OWNER, help="owner_id every row is scoped to")
+    parser.add_argument(
+        "--corpus-dir", default=DEFAULT_CORPUS_DIR, help="directory of .pdf/.pptx to converge"
+    )
+    parser.add_argument("--questions", default=DEFAULT_QUESTIONS, help="the eval JSONL (ADR 0021)")
+    parser.add_argument("--suite", default=DEFAULT_SUITE, help="suite name to filter on")
+    parser.add_argument(
+        "--k",
+        type=int,
+        default=DEFAULT_K,
+        help=f"retriever top-k (default {DEFAULT_K}, the retriever's own DEFAULT_K)",
+    )
+    args = parser.parse_args()
+    # Range-checked HERE, before the DB opens or a single file is embedded. `retrieve()` rejects
+    # k < 1 correctly and `ask()` correctly declines to convert caller bugs into a tidy ERROR - so
+    # without this the raise lands mid-loop, AFTER the corpus was paid for, and exits 1: the code
+    # this script documents as "the gate failed". A typo must not be indistinguishable from a
+    # system that answered badly. `parser.error` exits 2, matching EXIT_SETUP.
+    if args.k < 1:
+        parser.error(f"--k must be >= 1, got {args.k}")
+    return args
+
+
+def _load(path: str, suite: str) -> list[EvalQuestion]:
+    """Load + suite-filter, converting a bad file into a setup failure rather than a traceback."""
+    try:
+        questions = load_questions(path, suite=suite)
+    except (OSError, ValueError) as err:
+        raise SetupError(f"cannot read {path}: {err}") from err
+    if not questions:
+        raise SetupError(f"no questions in suite {suite!r} in {path}")
+    return questions
+
+
+def main() -> int:
+    args = _parse_args()
+    print(f"Slice 1 smoke — suite={args.suite!r} k={args.k} owner={args.owner!r}")
+
+    try:
+        questions = _load(args.questions, args.suite)
+        slugs = {question.class_slug for question in questions}
+        if len(slugs) > 1:
+            # V1 scope: one ask is scoped to one class, so one run is one class. A multi-class
+            # suite would need a class_id per question and a per-class census - not a loop tweak.
+            raise SetupError(f"suite spans {len(slugs)} classes {sorted(slugs)}; V1 runs one")
+        slug = slugs.pop()
+
+        corpus_dir = Path(args.corpus_dir)
+        if not corpus_dir.is_dir():
+            raise SetupError(f"corpus dir {corpus_dir} does not exist")
+
+        # Built ONCE, for the whole run: one OpenAI client, one connection. The embedder in
+        # particular must be the same object on both sides of the seam - ingest STAMPS
+        # `embedding_model_id` from it and the Retriever ASSERTS the stamp against it (ADR 0018).
+        embedder = OpenAIEmbeddings()
+        generator = OpenAIGeneration()
+
+        with connect() as conn:
+            # AUTOCOMMIT, and it is load-bearing — not a style choice.
+            #
+            # psycopg opens an implicit transaction on the first statement, so WITHOUT this the
+            # very first read (`_resolve_class`'s SELECT) leaves the connection INTRANS for the
+            # rest of the run. `index_file`'s `with conn.transaction()` then degrades from
+            # BEGIN/COMMIT to a mere SAVEPOINT: nothing is durable until this block exits cleanly,
+            # so ANY later raise — a missing expected file, a bad key on question 1, Ctrl-C —
+            # rolls back every embedding the run already PAID FOR. That silently downgrades ADR
+            # 0020's per-file atomicity to per-run and falsifies `_converge_corpus`'s promise that
+            # this script is safe to re-run.
+            #
+            # Autocommit fixes it at the mechanism rather than per call site: the implicit
+            # transaction never opens, so `index_file`'s block is the real top-level transaction
+            # ADR 0020 §3 describes (still atomic — a failure inside it still rolls back its own
+            # writes). A trailing `conn.commit()` after each ingest would also work, but leaves the
+            # hazard live for the next writer who forgets one.
+            #
+            # It also keeps the connection IDLE across the question loop below. ADR 0020 §3 warns
+            # in bold against holding a transaction open across API round-trips; without this the
+            # read path reopens one at `_print_census` and holds it through every paid embed and
+            # generation.
+            conn.autocommit = True
+
+            print(f"\nSetup — class {slug!r}, corpus {corpus_dir}:")
+            class_id = _resolve_class(conn, args.owner, slug)
+            ready = _converge_corpus(
+                conn,
+                owner_id=args.owner,
+                class_id=class_id,
+                corpus_dir=corpus_dir,
+                embedder=embedder,
+            )
+            _require_expected_files(
+                questions,
+                ready,
+                _indexed_pages(conn, owner_id=args.owner, class_id=class_id),
+            )
+            _print_census(conn, owner_id=args.owner, class_id=class_id, ready=ready)
+
+            # The tiny closure the loop drives: providers, connection and scope are wired once
+            # here, so the loop below reads as "ask each question" and nothing else.
+            def ask_one(question: str) -> AskResult:
+                return ask(
+                    conn,
+                    question,
+                    args.owner,
+                    class_id,
+                    embedder=embedder,
+                    generator=generator,
+                    k=args.k,
+                )
+
+            print(f"\nAsking {len(questions)} question(s):")
+            records: list[EvalRecord] = []
+            for question in questions:
+                # NOT wrapped in try/except. A raise out of ask() is a TERMINAL provider error or
+                # our own bug (ask.py's error boundary converts exactly two retrieval-side
+                # exceptions and lets everything else through). Logging it and continuing would
+                # drop the question from the denominator and report a clean rate over a suite that
+                # quietly shrank - the one failure this whole bench is built not to have.
+                result = ask_one(question.question)
+
+                # `result.result.state` is read HERE, once, in the open - and nothing else from
+                # the GrounderResult crosses into scoring. That is the R6 warning made physical:
+                # a REFUSAL can carry `coverage.complete=True` (grounder/answer.py `_decide`
+                # documents the incoherent combination), so anything scoring on coverage would
+                # read a refusal as a covered answer. EvalRecord cannot see coverage at all.
+                record = EvalRecord(
+                    expectation=question.expectation,
+                    state=result.result.state,
+                    # Tri-state, and BOTH sources of `None` are needed. `retrieval_hit` supplies
+                    # one (a refuse row has no expected_sources - nothing to check). `ask()`
+                    # supplies the other via `retrieval_ran`: on the two retrieval-side ERROR
+                    # paths no top-k was ever produced, and scoring that as a miss would report a
+                    # recall failure that never happened. Without this branch every such row lands
+                    # as `hit=False` - a MEASURED miss - and a run degraded by an outage posts
+                    # `retrieval_hit_rate 0%`, indistinguishable from a genuine retrieval
+                    # regression (ADR 0023 §1 defines the signal over questions where retrieval
+                    # actually ran).
+                    hit=(
+                        retrieval_hit(question.expected_sources, result.retrieved)
+                        if result.retrieval_ran
+                        else None
+                    ),
+                )
+                records.append(record)
+                _print_question_line(question, result, record)
+
+            metrics = compute_metrics(records)
+            _print_summary(metrics)
+            return EXIT_OK if _print_gate(records, metrics) else EXIT_GATE_FAILED
+
+    except SetupError as err:
+        print(f"\nSETUP FAILED — {err}")
+        return EXIT_SETUP
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

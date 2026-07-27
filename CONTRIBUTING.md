@@ -167,4 +167,5 @@ debates once.
 
 **smoke test** — a quick check that the system's fundamentals work end-to-end. Ours is
 `scripts/smoke_slice0.py` for Slice 0 — expect `"PASS — foundation is wired."` before you
-push.
+push. Slice 1's equivalent is `scripts/ask_smoke.py` (the exit gate over `eval/questions.jsonl`),
+which hits real models and **spends money** — run it deliberately, not on every push.

@@ -330,3 +330,64 @@ class TestSlideNotes:
         assert "Slide one notes" not in units[1].text
         assert "Slide two notes" in units[1].text
         assert "Slide two notes" not in units[0].text
+
+
+class TestNulSanitization:
+    """NUL (0x00) never leaves `parse_file` - the write path's one Postgres-fatal character.
+
+    The real carrier is OCR junk on `Livingston Cosmogony.pdf` p.11 (dogfood corpus): one NUL
+    that survived parse and chunking, was embedded (money spent), and then killed `index_file`'s
+    insert with `psycopg.DataError: PostgreSQL text fields cannot contain NUL` - all-or-nothing
+    rollback, file unindexable. These tests pin the fix at its chokepoint.
+
+    The carrier cannot be synthesized honestly: reportlab substitutes NUL before it reaches the
+    PDF bytes (it round-trips as a glyph-box, verified), and PPTX bodies are XML 1.0, which
+    cannot represent NUL at all. So the format parser is PATCHED to emit the poisoned units -
+    which also pins the sanitizer's LOCATION: it must live in `parse_file`, after format
+    dispatch, where every format's output passes through it.
+    """
+
+    def _poisoned(self, texts, file="scan.pdf"):
+        return [
+            ParsedUnit(text=text, file=file, page_or_slide=i)
+            for i, text in enumerate(texts, start=1)
+        ]
+
+    def test_nul_is_stripped_from_unit_text(self, monkeypatch, tmp_path):
+        import gct.ingest.parse as parse_mod
+
+        units = self._poisoned(["clean page", "ocr\x00junk\x00here"])
+        monkeypatch.setattr(parse_mod, "_parse_pdf", lambda path: units)
+        (tmp_path / "scan.pdf").write_bytes(b"%PDF-")  # dispatch is by suffix; content unused
+
+        out = parse_file(tmp_path / "scan.pdf")
+
+        assert [u.text for u in out] == ["clean page", "ocrjunkhere"]
+        # Provenance is untouched by the scrub - same file, same page numbers.
+        assert [(u.file, u.page_or_slide) for u in out] == [("scan.pdf", 1), ("scan.pdf", 2)]
+
+    def test_nul_only_unit_is_dropped_like_an_empty_page(self, monkeypatch, tmp_path):
+        import gct.ingest.parse as parse_mod
+
+        units = self._poisoned(["\x00\x00 \x00", "real content"])
+        monkeypatch.setattr(parse_mod, "_parse_pdf", lambda path: units)
+        (tmp_path / "scan.pdf").write_bytes(b"%PDF-")
+
+        out = parse_file(tmp_path / "scan.pdf")
+
+        # The all-NUL page vanishes; the survivor keeps ITS OWN page number (no renumbering),
+        # exactly like the existing blank-page behavior.
+        assert [(u.text, u.page_or_slide) for u in out] == [("real content", 2)]
+
+    def test_whole_file_of_nul_lands_on_the_empty_terminal(self, monkeypatch, tmp_path):
+        import gct.ingest.parse as parse_mod
+
+        units = self._poisoned(["\x00", "\x00 \x00"])
+        monkeypatch.setattr(parse_mod, "_parse_pdf", lambda path: units)
+        (tmp_path / "scan.pdf").write_bytes(b"%PDF-")
+
+        with pytest.raises(ParseError) as excinfo:
+            parse_file(tmp_path / "scan.pdf")
+
+        # The existing `empty` terminal, not a new failure kind (ADR 0020's taxonomy is closed).
+        assert excinfo.value.reason == "empty"

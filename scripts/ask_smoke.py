@@ -7,9 +7,15 @@ back REFUSAL (an honest decline). Everything else it prints — the ADR 0023 rat
 crude bench Spike Pass 1 ranks on, not a release gate (ADR 0023 §5).
 
 A THIN peer caller (ADR 0009): this script wires providers, converges the corpus, loops, and
-prints. Every judgment it reports is computed in `gct` — the scoring table is `gct.eval.scoring`,
+prints. Every METRIC it reports is computed in `gct` — the scoring table is `gct.eval.scoring`,
 the five states are the Grounder's, the retrieval check is `retrieval_hit`. If you find yourself
-adding a rule here, it belongs one layer down, where V3 can execute the same definition.
+adding a scoring rule here, it belongs one layer down, where V3 can execute the same definition.
+
+"Metric", not "judgment", and the narrowing is deliberate: the exit GATE below is computed here,
+on purpose. It is issue #8's one-time acceptance ceremony, not an ADR 0023 measurement, and V3
+will never re-execute it — pushing it into `gct` would enshrine a slice-exit ritual in the library
+forever. Setup VALIDITY rules (is this run scoreable at all?) likewise belong here: they are facts
+about a corpus and a directory, which the core has no access to and no opinion about.
 
 Run (needs a migrated DB, `.env` secrets, and the corpus files present — this SPENDS MONEY):
 
@@ -213,6 +219,27 @@ def _require_expected_files(questions: list[EvalQuestion], ready: dict[str, int]
     0% recall that is really a missing file. That is the one way this bench could report a system
     failure that never happened.
     """
+    # An in-corpus question with NO expected sources is unscoreable on the retrieval signal, and
+    # unscoreable SILENTLY: `retrieval_hit([], ...)` returns None (correct - that is the
+    # out-of-corpus "not applicable" answer), `compute_metrics` drops None rows from the
+    # denominator (correct), and the loop below iterates SOURCES, so a row carrying none
+    # contributes nothing to check. Four correct behaviours compose into a hole: the row leaves
+    # the recall denominator with no warning, and `retrieval_hit_rate` reports a clean rate over a
+    # suite that quietly shrank - the exact failure `gct.eval.scoring`'s docstrings are built to
+    # prevent, in the one place no guard covered. Caught here because it is a fact about the eval
+    # FILE, which the loader deliberately does not judge (questions.py: "does not judge CONTENT").
+    sourceless = [
+        question.id
+        for question in questions
+        if question.expectation == EXPECTATION_ANSWER and not question.expected_sources
+    ]
+    if sourceless:
+        raise SetupError(
+            "in-corpus question(s) carry no 'expected_sources': "
+            + ", ".join(repr(qid) for qid in sourceless)
+            + " — they would leave the retrieval denominator silently, inflating hit rate"
+        )
+
     expected = sorted(
         {source.file for question in questions for source in question.expected_sources}
     )
@@ -366,8 +393,14 @@ def _print_gate(records: list[EvalRecord], metrics: EvalMetrics) -> bool:
     passed = grounded >= 1 and refused >= 1
 
     answer, refuse = metrics.answer, metrics.refuse
+    # The split is printed INSIDE the fused count, never just the sum. A run of 1 GROUNDED + 7
+    # PARTIAL reads "8/8" and then "PASS" — literally accurate and completely misleading, since
+    # PARTIAL is the TRACKED bucket that is explicitly not a pass (ADR 0023 §2). §5 names folding
+    # TRACKED into PASS as the erosion it exists to prevent, and the last line is what a human
+    # actually skims.
     print(
         f"\n  cited answers (GROUNDED+PARTIAL): {answer.grounded + answer.partial}/{answer.total}"
+        f" ({answer.grounded} GROUNDED + {answer.partial} PARTIAL)"
         f"  ·  honest refusals: {refuse.refusal}/{refuse.total}"
     )
     verdict = "PASS" if passed else "FAIL"
@@ -395,7 +428,15 @@ def _parse_args() -> argparse.Namespace:
         default=DEFAULT_K,
         help=f"retriever top-k (default {DEFAULT_K}, the retriever's own DEFAULT_K)",
     )
-    return parser.parse_args()
+    args = parser.parse_args()
+    # Range-checked HERE, before the DB opens or a single file is embedded. `retrieve()` rejects
+    # k < 1 correctly and `ask()` correctly declines to convert caller bugs into a tidy ERROR - so
+    # without this the raise lands mid-loop, AFTER the corpus was paid for, and exits 1: the code
+    # this script documents as "the gate failed". A typo must not be indistinguishable from a
+    # system that answered badly. `parser.error` exits 2, matching EXIT_SETUP.
+    if args.k < 1:
+        parser.error(f"--k must be >= 1, got {args.k}")
+    return args
 
 
 def _load(path: str, suite: str) -> list[EvalQuestion]:
@@ -433,6 +474,29 @@ def main() -> int:
         generator = OpenAIGeneration()
 
         with connect() as conn:
+            # AUTOCOMMIT, and it is load-bearing — not a style choice.
+            #
+            # psycopg opens an implicit transaction on the first statement, so WITHOUT this the
+            # very first read (`_resolve_class`'s SELECT) leaves the connection INTRANS for the
+            # rest of the run. `index_file`'s `with conn.transaction()` then degrades from
+            # BEGIN/COMMIT to a mere SAVEPOINT: nothing is durable until this block exits cleanly,
+            # so ANY later raise — a missing expected file, a bad key on question 1, Ctrl-C —
+            # rolls back every embedding the run already PAID FOR. That silently downgrades ADR
+            # 0020's per-file atomicity to per-run and falsifies `_converge_corpus`'s promise that
+            # this script is safe to re-run.
+            #
+            # Autocommit fixes it at the mechanism rather than per call site: the implicit
+            # transaction never opens, so `index_file`'s block is the real top-level transaction
+            # ADR 0020 §3 describes (still atomic — a failure inside it still rolls back its own
+            # writes). A trailing `conn.commit()` after each ingest would also work, but leaves the
+            # hazard live for the next writer who forgets one.
+            #
+            # It also keeps the connection IDLE across the question loop below. ADR 0020 §3 warns
+            # in bold against holding a transaction open across API round-trips; without this the
+            # read path reopens one at `_print_census` and holds it through every paid embed and
+            # generation.
+            conn.autocommit = True
+
             print(f"\nSetup — class {slug!r}, corpus {corpus_dir}:")
             class_id = _resolve_class(conn, args.owner, slug)
             ready = _converge_corpus(
@@ -476,8 +540,20 @@ def main() -> int:
                 record = EvalRecord(
                     expectation=question.expectation,
                     state=result.result.state,
-                    # Already tri-state: None for a refuse row (no expected_sources), never False.
-                    hit=retrieval_hit(question.expected_sources, result.retrieved),
+                    # Tri-state, and BOTH sources of `None` are needed. `retrieval_hit` supplies
+                    # one (a refuse row has no expected_sources - nothing to check). `ask()`
+                    # supplies the other via `retrieval_ran`: on the two retrieval-side ERROR
+                    # paths no top-k was ever produced, and scoring that as a miss would report a
+                    # recall failure that never happened. Without this branch every such row lands
+                    # as `hit=False` - a MEASURED miss - and a run degraded by an outage posts
+                    # `retrieval_hit_rate 0%`, indistinguishable from a genuine retrieval
+                    # regression (ADR 0023 §1 defines the signal over questions where retrieval
+                    # actually ran).
+                    hit=(
+                        retrieval_hit(question.expected_sources, result.retrieved)
+                        if result.retrieval_ran
+                        else None
+                    ),
                 )
                 records.append(record)
                 _print_question_line(question, result, record)

@@ -142,3 +142,104 @@ refusal carries. **Matters later:** worth a prompt-side look in the same pass as
 Stable across both: **zero hallucinations, 4/4 honest refusals, zero integrity flags, zero errors,
 and 8/8 retrieval** — the trust-critical column did not move. All the variance sits in the
 assert/decline decision on in-corpus questions. The exit gate passed both times.
+
+---
+
+## 2026-07-27 — fourth live run, plus the first attribution/entailment spot-check
+
+Run 4 of the gate (post second-review fixes): `grounded_pass_rate` **87.5% (7/8)**, `partial_rate`
+0%, `false_refusal_rate` 12.5% (q005 again), `correct_refusal_rate` 100% (4/4),
+`hallucination_rate` 0%, `integrity_flag_rate` 0%, `retrieval_hit_rate` **100% (8/8)**,
+`error_count` 0. Gate PASSED. Nothing new in the vector; q006 landed GROUNDED again (it is the
+±12.5-point mover, see above), q005 is now a **five-time** reproduction.
+
+### `integrity.ok=True` means structural honesty, NOT completeness of attribution — observed
+*(Nate's observation from his own run; reproduced under probe and recorded here with evidence.)*
+
+The **mechanism** is already settled doctrine and is not new: ADR 0015 says V1 catches only the
+**coarse** zero-citation case (non-empty prose with *zero* labels), because per-claim presence needs
+claim segmentation; `grounder.md` §Failure-modes and `answer.py::_validate` both say the same. What
+was never recorded is that it **actually fires on this corpus**, and how much of an answer it can
+let through.
+
+Measured on **q008** ("According to Charles H. Long, what is one of the oldest and most widespread
+religious symbols…"), 2026-07-27, sentence-split probe over the returned prose:
+
+```
+q008  state=GROUNDED  integrity.ok=True  coverage.complete=True  gaps=[]
+  [UNCITED] One of the oldest and most widespread religious symbols, according to Charles H.
+  [UNCITED] Long, is the symbol of Mother Earth.
+  [UNCITED] This symbolism arises because of the homology between creation and woman; …
+  [CITED  ] The earth itself is likened to a woman, … [S1][S3]
+  sentences=4  uncited=3  labels_used=['[S1]', '[S3]']
+```
+
+**Three of four sentences carried no label, and the answer still scored GROUNDED.** The coarse guard
+is satisfied by the *one* labelled sentence, so nothing fires. Note what this means against ADR 0014's
+central rule — "assert a claim only if you can attach a valid `[S#]`; anything you cannot label goes
+into the coverage statement instead": those three sentences escape **both** halves. They are neither
+labelled nor declared as gaps, and `coverage` still reads `complete`. So on this corpus **GROUNDED
+means "at least one claim is attributed and the marker parsed", not "every claim is attributed."**
+
+**Matters later — and this is the cheaper half of the V3 faithfulness problem.** Two different holes
+are usually spoken of together; they are not the same and do not cost the same to close:
+
+| hole | what is wrong | what detecting it needs |
+|---|---|---|
+| per-claim citation **presence** (this entry) | a claim carries no label at all | claim segmentation only — **no judge** |
+| claim↔chunk **entailment** (N2/N4, ADR 0014's accepted limitation) | the cited chunk doesn't support the claim | a judge / semantic eval — V3 |
+
+ADR 0015 ruled per-claim presence "not feasible in text-parse V1", and as an **enforcement** rung
+that still stands (a sentence splitter deciding what gets INTEGRITY_FLAGGED would misfire on lists,
+headings, and transitional prose). But the probe above shows a crude splitter is already good enough
+to **measure** it. An `uncited_sentence_rate` alongside the ADR 0023 vector would be spike telemetry,
+not a validation rung — it would have surfaced this without a judge and without changing any state.
+Not proposed as a decision here; flagged as available cheaply if Spike Pass 1 wants it.
+
+### First actual entailment spot-check: the cited answers are faithful (3 of 3 checked)
+Nothing in any prior pass had ever compared an answer's prose against the text of the chunks it
+cited — V1 guarantees structure, not truth (ADR 0014), so the question was simply left open. Checked
+by hand for q001, q006, q008 by printing each citation's stored chunk text beside the prose:
+
+- **q001** — the five-type taxonomy is near-verbatim from S1/S2 (Lecture 19 s.2 + Lecture 18 s.4).
+- **q006** — the objective/subjective contrast quotes Lecture 20 s.6 directly; the "meaning over
+  factual correctness" gloss is supported by s.7's discussion prompt.
+- **q008** — supported, *including the three uncited sentences above*: S1's text contains "one of the
+  oldest and most widespread of religious symbols is the symbol of Mother Earth… It is the woman who
+  bears children; it is she who experiences the mysteries of birth, growth, and change."
+
+**This is a spot-check of three answers on one run, not a measurement** — it says the mechanism is
+not obviously broken, and it is the first evidence in either direction. Note the interaction worth
+carrying: q008's *uncited* claims were nonetheless *entailed*, so the two holes above are genuinely
+independent — an answer can fail attribution while passing faithfulness, which is exactly why a
+single "is it grounded?" number could never separate them.
+
+### PARTIAL's root-cause ambiguity is disambiguated by the OTHER signal — and PARTIAL has never fired
+*(Nate's observation: a PARTIAL means either the corpus genuinely lacks the rest, or retrieval missed
+a chunk that exists — bad chunking, k too small, weak embedder.)*
+
+The ambiguity itself **is already recorded**, verbatim, in ADR 0023's Context: "*its root cause is
+ambiguous — 'corpus genuinely partial' vs. 'retrieval missed a chunk that exists' — and the Grounder
+cannot tell them apart*." That is the whole reason §2 refuses to collapse PARTIAL into PASS.
+
+What ADR 0023 does **not** say, and what is worth having written down as a reading procedure: **the
+two-signal split is precisely the instrument that separates those two causes.** The Grounder alone
+cannot, but the pair can —
+
+| state | `hit` | reads as |
+|---|---|---|
+| PARTIAL | **yes** | the expected chunk WAS in the top-k and the model still declared a gap → **generation/prompt** lever |
+| PARTIAL | **no** | the expected chunk never reached the model → **chunking / k / embedder** lever |
+
+with one caveat that ties to the any-match rule (`scoring.retrieval_hit`): on a **multi-source** row
+(q001, and q003 since its curation) `hit=yes` only means *at least one* expected source arrived, so
+`PARTIAL + hit=yes` there can still be an honest corpus gap on the *other* leg. The discriminator is
+clean on single-source rows — 6 of the 8 in-corpus questions today.
+
+**And the table has never been exercised: `partial_rate` is 0.0% on all four live runs.** The bucket
+ADR 0023 spends most of its length protecting has not fired once on this corpus. Every in-corpus
+question so far resolves all-or-nothing — GROUNDED, or a flat REFUSAL (q005). **Matters later:** a
+spike-ranking instrument whose most carefully-designed signal is empty is ranking on a narrower basis
+than its design assumes, and the same q005-shaped question that produces a flat refusal today is the
+one most likely to produce a PARTIAL under a tuned prompt. Worth watching in Spike Pass 1 rather than
+acting on now.

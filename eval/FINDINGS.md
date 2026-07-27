@@ -28,6 +28,16 @@ chunk granularity is tuned or expected_sources reflects PDF coverage.
 **Curation candidate (open, Nate's call):** add `Livingston Cosmogony.pdf` p.2 as a second
 expected source on q003 — under the any-match hit rule that turns the misleading `hit=no` into an
 honest `hit=yes`.
+> **2026-07-27 — RESOLVED, applied.** Nate approved the curation; `eval/questions.jsonl` q003 now
+> carries both sources. Verified before editing rather than on the strength of this entry: the
+> parsed text of `Livingston Cosmogony.pdf` p.2 contains the definition nearly verbatim against
+> q003's `answer_notes` ("an account of the emergence or creation of world order … intimately tied
+> to basic concerns about the natural and social order, the status of the gods and humankind, and
+> human action"). Measured effect on the next live run: q003 `hit=no → hit=yes`, and
+> `retrieval_hit_rate` 7/8 → **8/8**. The page-numbering question this entry left implicit is also
+> settled — `expected_sources` uses the **PDF page index**, matching what `parse_file` stamps
+> (Livingston index-page 4 carries the Nut/Geb/Shu passage q007 expects, while its *printed* label
+> is "200"). So the original `hit=no` was ground-truth incompleteness, not a numbering artifact.
 
 ### Broad survey/title slides act as attractors — especially for out-of-corpus questions
 First noticed by Nate while prototyping (title slides surfacing for everything, and for refusal
@@ -75,3 +85,60 @@ cleanup: a refusal question's top-5 contained the same slide three times. The sm
 detects and WARNs on this state; the duplicates were removed (corpus back to 122 chunks).
 **Matters later:** this is live ammunition for Slice 2's idempotent write path (and #24's
 re-index semantics) — the failure is not hypothetical.
+
+---
+
+## 2026-07-27 — two verification runs after the PR #44 review fixes
+
+Same corpus (122 chunks, already converged — both runs re-ingested nothing), same suite, same
+`k=5`, same models, back to back. Run against the post-review code: autocommit at wiring,
+`retrieval_ran` plumbed, the q003 curation applied.
+
+### The primary ranking metric moved 12.5 points between two identical runs
+`grounded_pass_rate` read **75.0% (6/8)** on run 1 and **87.5% (7/8)** on run 2, with **no input
+changed between them** — same questions, same corpus, same k, same model. The mover was **q006**
+("How does Lecture 20 contrast the scientific and existential perspectives on truth?"): REFUSAL on
+run 1, GROUNDED on run 2 citing Lecture 20 s.6 + s.7 — the s.6 the eval file names. Retrieval was
+identical (`hit=yes` both times), so this is purely generation-side non-determinism crossing the
+assert/decline boundary.
+
+**Why this is the most important entry in this file.** ADR 0023 §4 says ranking is
+distribution-based, and §5 says the bench exists to RANK bake-off candidates. This is the first
+measurement of its **noise floor**, and the noise floor is one whole question: on an 8-question
+in-corpus suite, one flip is 12.5 points. **A spike that beats another by less than ~12.5 points on
+a single run of this suite has not been shown to beat it at all.** That is a property of n=8, not of
+the model — the fix is more questions or repeated runs, both of which cost money, which is exactly
+the trade Spike Pass 1 has to make deliberately rather than discover mid-bake-off.
+**Matters later:** before the first bake-off, decide the protocol — best-of-N, mean-of-N, or a
+larger suite. Comparing two spikes on one run each is currently not sound.
+
+### q005 is now a four-time reproduction — the one genuinely consistent in-corpus miss
+REFUSAL on the PR's original run and on both runs here (gaps: "specific claims made by 'Creation
+Science'", "how it argues its validity"), always with `hit=yes` — retrieval keeps handing the model
+Lecture 20 s.2 and the model keeps declining to state what the slide attributes. Unlike q006 this
+does not flip. **Matters later:** this is the clean target for Spike Pass 1's generation/prompt
+lever — a definitional-by-attribution question where the assertion bar reads as too cautious.
+
+### A REFUSAL can state no gaps at all
+Run 1's q006 refusal printed `gaps: (none stated)` — a decline that names nothing missing. Not an
+integrity failure (the coverage marker parsed; `integrity_flag_rate` was 0% across both runs), and
+the Grounder reports the model's statement unrewritten by design. But a refusal with an empty gap
+list tells the student nothing about *what* their materials lack, which is the one useful thing a
+refusal carries. **Matters later:** worth a prompt-side look in the same pass as q005 — and note
+`_detail`'s "(none stated)" rendering existed for exactly this shape and had never fired before.
+
+### The metric vector, both runs
+| metric | run 1 | run 2 |
+|---|---|---|
+| grounded_pass_rate | 75.0% (6/8) | **87.5% (7/8)** |
+| false_refusal_rate | 25.0% (2/8) | 12.5% (1/8) |
+| partial_rate | 0.0% | 0.0% |
+| integrity_flag_rate | 0.0% | 0.0% |
+| correct_refusal_rate | **100%** (4/4) | **100%** (4/4) |
+| hallucination_rate | 0.0% (0/4) | 0.0% (0/4) |
+| retrieval_hit_rate | **100%** (8/8) | **100%** (8/8) |
+| error_count | 0 | 0 |
+
+Stable across both: **zero hallucinations, 4/4 honest refusals, zero integrity flags, zero errors,
+and 8/8 retrieval** — the trust-critical column did not move. All the variance sits in the
+assert/decline decision on in-corpus questions. The exit gate passed both times.

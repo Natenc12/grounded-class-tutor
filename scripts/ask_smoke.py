@@ -211,8 +211,31 @@ def _converge_corpus(
     return ready
 
 
-def _require_expected_files(questions: list[EvalQuestion], ready: dict[str, int]) -> None:
-    """Every file the suite cites must be in the corpus, `ready` — or the run is not scoreable.
+def _indexed_pages(
+    conn: psycopg.Connection, *, owner_id: str, class_id: str
+) -> set[tuple[str, int]]:
+    """Every `(file, page_or_slide)` this class actually has an indexed chunk for.
+
+    The exact pair `retrieval_hit` compares against, read back from the same scope retrieval will
+    search. `page_or_slide` is `text` in the column and `int` everywhere else, so it converts here —
+    the same boundary conversion `retriever.retrieve` does on read.
+    """
+    rows = conn.execute(
+        """
+        select distinct file, page_or_slide from chunks
+        where owner_id = %(owner_id)s and class_id = %(class_id)s::uuid
+        """,
+        {"owner_id": owner_id, "class_id": class_id},
+    ).fetchall()
+    return {(file, int(page)) for file, page in rows}
+
+
+def _require_expected_files(
+    questions: list[EvalQuestion],
+    ready: dict[str, int],
+    indexed: set[tuple[str, int]],
+) -> None:
+    """Every source the suite cites must be in the corpus, `ready` — or the run is not scoreable.
 
     Hard failure, not a warning: `retrieval_hit` compares `(file, page_or_slide)` pairs, so a file
     that was never ingested scores as a MISS on every question that cites it — an honest-looking
@@ -249,6 +272,37 @@ def _require_expected_files(questions: list[EvalQuestion], ready: dict[str, int]
             "the suite expects sources from file(s) that are not ingested in this class: "
             + ", ".join(repr(name) for name in missing)
             + " — retrieval cannot hit a file the corpus does not have"
+        )
+
+    # And the PAGE, not just the file. `retrieval_hit` compares the whole `(file, page_or_slide)`
+    # pair, so a page carrying no indexed chunk is exactly as unhittable as a missing file — the
+    # check above just projects the pair down to its filename and throws the other half away.
+    # This is the third face of one bug: the sourceless-row guard above, the missing-file guard
+    # above it, and this all close the same hole — a clean-looking rate over ground truth that
+    # cannot be hit — and the page is the half this corpus is actively ambiguous about, since
+    # `Livingston Cosmogony.pdf` index-page 4 is PRINTED "200". Writing 200 there would post
+    # `hit=no` on q007 with the report blaming retrieval.
+    # It also catches a `ready` files row whose chunks were deleted (the WARN branch below prints
+    # a two-step remediation; stop between the steps and you are in exactly that state): such a
+    # file contributes no pages, so every source naming it lands here rather than being scored as
+    # a retrieval regression.
+    # Exact only where it can be: on a MULTI-source row the any-match rule means one good entry
+    # still hits, so a bad entry there weakens the ground truth without moving the metric. Both
+    # are worth stopping for; only the single-source case is a guaranteed permanent miss.
+    unindexed = sorted(
+        {
+            (source.file, source.page_or_slide)
+            for question in questions
+            for source in question.expected_sources
+            if (source.file, source.page_or_slide) not in indexed
+        }
+    )
+    if unindexed:
+        raise SetupError(
+            "the suite expects source page(s) that carry no indexed chunk: "
+            + ", ".join(f"{name!r} p.{page}" for name, page in unindexed)
+            + " — retrieval cannot hit a page the corpus does not have, and scoring that as a "
+            "miss reports a retrieval failure that is really bad ground truth"
         )
 
 
@@ -365,6 +419,20 @@ def _print_summary(metrics: EvalMetrics) -> None:
         metrics.retrieval.hits,
         metrics.retrieval.applicable,
     )
+    # The denominator is MEASURED rows, not in-corpus rows: a retrieval-side ERROR sets
+    # `retrieval_ran=False`, the row drops out of `applicable`, and `7/7` then prints identically
+    # to a full `8/8` over a different suite. The error count above cannot disambiguate it — a
+    # GENERATION-side ERROR leaves `retrieval_ran` True, so it shrinks N_scored but NOT this
+    # denominator, and a reader seeing `error_count=1` beside `7/7` cannot tell which one lost the
+    # row. Say the shortfall out loud instead; a rate over a suite that quietly shrank is the one
+    # failure this whole bench is built not to have.
+    if metrics.retrieval.applicable < metrics.answer.total:
+        short = metrics.answer.total - metrics.retrieval.applicable
+        print(
+            f"      ^^ measured over {metrics.retrieval.applicable} of {metrics.answer.total} "
+            f"in-corpus question(s) — {short} never ran retrieval (retrieval-side ERROR), so this "
+            "rate is NOT comparable to a full-suite run"
+        )
 
     # ALWAYS printed, including at zero. ERROR leaves N_scored, so errors silently shrink every
     # denominator above — a run where 6 of 8 in-corpus questions errored can post a perfect 2/2.
@@ -506,7 +574,11 @@ def main() -> int:
                 corpus_dir=corpus_dir,
                 embedder=embedder,
             )
-            _require_expected_files(questions, ready)
+            _require_expected_files(
+                questions,
+                ready,
+                _indexed_pages(conn, owner_id=args.owner, class_id=class_id),
+            )
             _print_census(conn, owner_id=args.owner, class_id=class_id, ready=ready)
 
             # The tiny closure the loop drives: providers, connection and scope are wired once

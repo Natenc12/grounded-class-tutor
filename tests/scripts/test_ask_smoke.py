@@ -196,8 +196,12 @@ class TestResolveClass:
             ask_smoke._resolve_class(conn, owner_id, "dupe")
 
 
+# The `(file, page)` pairs a corpus is pretending to have, for the guard's page census.
+INDEXED = {("present.pdf", 1), ("present.pdf", 2), ("present.pdf", 3)}
+
+
 class TestSetupValidityGuards:
-    """Both guards answer one question: is this run SCOREABLE at all?"""
+    """The guards answer one question: is this run SCOREABLE at all?"""
 
     def test_missing_expected_file_is_refused(self):
         """A file the corpus lacks scores as a MISS on every question citing it - an
@@ -205,7 +209,7 @@ class TestSetupValidityGuards:
         questions = [question("q001", "answer", [("absent.pdf", 1)])]
 
         with pytest.raises(ask_smoke.SetupError, match="not ingested"):
-            ask_smoke._require_expected_files(questions, {"present.pdf": 3})
+            ask_smoke._require_expected_files(questions, {"present.pdf": 3}, INDEXED)
 
     def test_in_corpus_question_without_sources_is_refused(self):
         """The silent-denominator hole: `retrieval_hit([], ...)` returns None, `compute_metrics`
@@ -214,7 +218,50 @@ class TestSetupValidityGuards:
         questions = [question("q009", "answer", [])]
 
         with pytest.raises(ask_smoke.SetupError, match="no 'expected_sources'"):
-            ask_smoke._require_expected_files(questions, {"present.pdf": 3})
+            ask_smoke._require_expected_files(questions, {"present.pdf": 3}, INDEXED)
+
+    def test_expected_page_with_no_indexed_chunk_is_refused(self):
+        """The page half of the pair, which the file-level check throws away.
+
+        `retrieval_hit` compares `(file, page_or_slide)`, so a page carrying no chunk is exactly as
+        unhittable as a missing file — and it is the half this corpus is ambiguous about, since
+        `Livingston Cosmogony.pdf` index-page 4 is PRINTED "200". Unguarded, writing 200 there posts
+        `hit=no` forever with the report blaming retrieval.
+        """
+        questions = [question("q007", "answer", [("present.pdf", 99)])]
+
+        with pytest.raises(ask_smoke.SetupError, match="no indexed chunk"):
+            ask_smoke._require_expected_files(questions, {"present.pdf": 3}, INDEXED)
+
+    def test_ready_file_whose_chunks_were_deleted_is_refused(self):
+        """A `ready` files row with zero chunks reads as "already ingested" to `_converge_corpus`,
+        so the filename IS in `ready` and the file-level check passes. It contributes no pages,
+        which is what this catches. Reachable from the duplicate-ingest WARN's own two-step
+        remediation ("delete the chunks rows, then those files rows") if you stop in between.
+        """
+        questions = [question("q001", "answer", [("emptied.pdf", 1)])]
+
+        with pytest.raises(ask_smoke.SetupError, match="no indexed chunk"):
+            ask_smoke._require_expected_files(questions, {"emptied.pdf": 0}, INDEXED)
+
+    def test_indexed_pages_reads_back_the_pair_retrieval_compares(self, db, corpus):
+        """`_indexed_pages` must return exactly the `(file, int page)` shape `retrieval_hit` uses.
+
+        The column is `text`, so a missing conversion would make every census check a false alarm.
+        """
+        conn, owner_id, class_id = db
+        ask_smoke._converge_corpus(
+            conn, owner_id=owner_id, class_id=class_id, corpus_dir=corpus,
+            embedder=FakeEmbeddings(),
+        )
+
+        indexed = ask_smoke._indexed_pages(conn, owner_id=owner_id, class_id=class_id)
+
+        assert ("alpha.pdf", 1) in indexed and ("alpha.pdf", 2) in indexed
+        assert ("beta.pdf", 1) in indexed
+        assert all(isinstance(page, int) for _, page in indexed)
+        # And the real suite's shape: a page the corpus does not have is simply absent.
+        assert ("alpha.pdf", 99) not in indexed
 
     def test_refuse_rows_are_allowed_to_have_no_sources(self):
         """The same emptiness is CORRECT out-of-corpus - `expected_sources` is in-corpus only
@@ -224,7 +271,7 @@ class TestSetupValidityGuards:
             question("q010", "refuse", []),
         ]
 
-        ask_smoke._require_expected_files(questions, {"present.pdf": 3})  # must not raise
+        ask_smoke._require_expected_files(questions, {"present.pdf": 3}, INDEXED)  # must not raise
 
 
 class TestExitGate:

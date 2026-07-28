@@ -14,10 +14,8 @@ Boring on purpose. Follow it and we'll be faster, not slower.
 least one other person on the team reviews and approves before it merges.
 
 Why:
-- Three people writing to the same file at once is how projects break silently.
+- Several people writing to the same file at once is how projects break silently.
 - The reviewer learns what you built, so knowledge doesn't stay siloed in one head.
-- If we ever get asked "how does your team review code?" in an interview, this is a real answer
-  we can give.
 
 `main` should always work — always pass the smoke test. If a PR breaks it, we roll back and try
 again rather than "fixing it forward."

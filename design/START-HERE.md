@@ -67,6 +67,9 @@ detail for the tricky parts) → **roadmap** (what to build in what order) → *
 then package it up). It's done — the design is finished and ready to build.
 
 Two things that'll save you confusion:
+- **"Done" above means the design phase, not the build.** The docs are finished and ready to build
+  from — that's not the same claim as "the product is built." See the roadmap's current slice for
+  where building actually stands.
 - **ADRs** ("Architecture Decision Records", the numbered files in `decisions/`) each record *one*
   decision and *why* — e.g. "we're hand-rolling RAG instead of using a framework, because we want to
   learn the fundamentals." There are a couple dozen. You don't read them front to back; you consult one
@@ -144,7 +147,9 @@ You do **not** need all of these before contributing. Start at the top; go as de
   model) with evidence.
 
 ## The one caveat to keep honest
-The design is **build-ready, but not yet validated.** Meaning: we know *what* to build, but whether the
-grounding and refusals are actually *good* is an open empirical question until Slice 1 + Spike Pass 1
-prove it on real course materials. Don't read "it builds and demos" as "it's trustworthy" — that's the
-one thing we have to *earn* with evidence, not assume. It's also the most interesting part of the project.
+"It builds and demos" was never the same claim as "it's trustworthy" — that's the one thing we have to
+*earn* with evidence, not assume. Slice 1 ran the grounding loop against real course materials and
+recorded what happened — see [`eval/FINDINGS.md`](../eval/FINDINGS.md) for the actual measurements
+(retrieval hit rate, hallucination rate, honest-refusal rate, and where the noise floor sits), not a
+restated verdict here. Read that file, or the open issue board, for where things currently stand —
+this caveat is about the *kind* of claim to trust, not a snapshot of a number that will move.

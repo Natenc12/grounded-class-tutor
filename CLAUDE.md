@@ -96,9 +96,10 @@ slice still belongs on the board.
 **Slice 0 — Foundation: COMPLETE.** Schema + provider interfaces + the embedding-consistency anchor;
 4 tables, vector column, scope + HNSW indexes, smoke test green end-to-end against live models.
 
-**Slice 1 — the tracer bullet: IN PROGRESS.** Ingest ONE real file inline (parse→chunk→embed→index, no
+**Slice 1 — the tracer bullet: COMPLETE.** Ingest ONE real file inline (parse→chunk→embed→index, no
 queue) → Retriever → Grounder → cited answer / refusal, script-driven, over `eval/questions.jsonl`.
-The differentiator, proven before any HTTP/UI. See `design/roadmap.md` and
+The differentiator, proven on real course materials before any HTTP/UI — see `eval/FINDINGS.md` for
+what the live runs showed. See `design/roadmap.md` and
 `design/components/{grounder,retriever,ingestion-worker}.md`.
 
 The seams it draws, which later slices wrap rather than rewrite:

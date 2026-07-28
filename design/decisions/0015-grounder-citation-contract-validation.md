@@ -80,4 +80,3 @@ confusable — this is a hard requirement on the answer surface, extending N11.
 - Still open for the Grounder spec: the remaining runtime failure modes — **empty retrieval** (no
   chunks handed in → degenerate refusal path) and **provider error/timeout** bubbling from the thin
   generation interface (0013).
-```

@@ -24,8 +24,8 @@ Chosen because it's product-determined, not defaulted: the two things that actua
 backend — **ingestion/parsing** (`unstructured`, pypdf, python-pptx) and the **V3 eval ecosystem** —
 are overwhelmingly Python-native, while model/embedding/DB calls are language-agnostic HTTP.
 - **vs TypeScript/Node** — would unify language with the React frontend, but parsing is weaker in JS
-  and the eval tooling is thinner; those are core to *this* product. Confirmed with Nate that Python
-  fluency is fine, so ecosystem fit wins. (A TS frontend + Python backend split is standard and clean.)
+  and the eval tooling is thinner; those are core to *this* product. Team Python fluency isn't a
+  blocker, so ecosystem fit wins. (A TS frontend + Python backend split is standard and clean.)
 
 ### Backend framework — **FastAPI**
 Best-in-class Python API layer: async (matters for I/O-bound LLM/embedding calls), Pydantic typing,

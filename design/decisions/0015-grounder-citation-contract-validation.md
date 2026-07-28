@@ -73,10 +73,10 @@ confusable — this is a hard requirement on the answer surface, extending N11.
   refusal (degenerate — empty prose), and **integrity-flagged** (validation failed after retry).
   The integrity-flagged state is **new** relative to ADR 0012's five P0 surfaces — treat it as a
   *state-variant of the existing answer surface*, not a sixth screen; reconcile with 0012 and note
-  the N11 extension (verified-vs-flagged must be visually distinct). **Flag for Nate.**
+  the N11 extension (verified-vs-flagged must be visually distinct). **Open — tracked in #49**, to be
+  settled before the Slice 4 client lands.
 - Adds a small deterministic validation + retry loop to the Grounder — spec it as part of the
   component design; emit validation-failure counts as spike telemetry.
 - Still open for the Grounder spec: the remaining runtime failure modes — **empty retrieval** (no
   chunks handed in → degenerate refusal path) and **provider error/timeout** bubbling from the thin
   generation interface (0013).
-```

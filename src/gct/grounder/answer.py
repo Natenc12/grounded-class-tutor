@@ -451,6 +451,11 @@ def _error(kind: str, message: str) -> GrounderResult:
     what the corpus covers, because we never got an answer to judge. Presenting this as "your
     materials don't cover this" would conflate an infra failure with a corpus judgment and would
     also poison the N3 refusal metric with non-grounding events.
+
+    `integrity.ok=True` for the fourth field: nothing was generated, so nothing failed validation.
+    An ERROR is not a structural defect, and flagging it as one would put infra events into the
+    integrity telemetry that exists to measure prompt drift. `ask._retrieval_error` builds the
+    identical shape on the retrieval side and points here for all four.
     """
     return GrounderResult(
         state=GrounderState.ERROR,

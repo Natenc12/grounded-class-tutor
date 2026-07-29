@@ -112,6 +112,11 @@ The seams it draws, which later slices wrap rather than rewrite:
 - **Exit gate** — `ask(class, question)` returns a cited answer for an in-corpus question and an honest
   refusal for an out-of-corpus one, demonstrated over the smoke suite.
 
+**Spike Pass 1 — validation, not optimization: CURRENT.** On the tracer + seed smoke suite, run
+**chunking + generation only** and confirm the differentiator actually grounds and refuses — before
+Slices 2–4 thicken the skeleton (ADR 0022, `design/roadmap.md` → *Spike Pass 1*). A red result here is
+a cheap design signal; that is the point of running it now rather than later.
+
 **Issue-level state is NOT recorded in this file.** Never write "#N is done" or "#N is next" here — it
 is wrong within the week, and this file is not the writer of that fact. Fetch it instead:
 

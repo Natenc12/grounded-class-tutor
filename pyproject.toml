@@ -15,7 +15,10 @@ dependencies = [
 [project.optional-dependencies]
 dev = [
     "pytest>=8.0",
-    "ruff>=0.6",
+    # Bounded, unlike the floors above: CI gates `ruff format --check`, and ruff's formatter
+    # style is allowed to change across minor releases — the ceiling keeps a routine
+    # `uv lock --upgrade` from reddening that gate with no repo change.
+    "ruff~=0.15.20",
     "reportlab>=5.0.0",
 ]
 

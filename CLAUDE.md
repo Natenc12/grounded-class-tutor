@@ -49,6 +49,7 @@ uv run pytest tests/ -q                 # full suite
 uv run pytest -m db -q                  # just the Postgres-backed tests (DB must be up)
 uv run pytest -m "not live" -q          # exactly what CI runs
 uv run ruff check                       # lint — no paths, to match CI (it covers scripts/ too)
+uv run ruff format                      # formatting — writes; CI gates the same run as `--check`
 ```
 A bare `uv sync` doesn't just skip the dev tools, it **uninstalls** them: `pytest`/`ruff`/`reportlab`
 live in `[project.optional-dependencies].dev`, so the next two commands stop working.

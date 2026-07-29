@@ -130,9 +130,8 @@ Slow/external work runs with **no transaction open**; the transaction is a short
   (regression-tested on the re-index and first-index paths, #23), and a zero-chunk write is refused
   before the transaction opens rather than published as `ready`. **Atomicity is unconditional;
   PUBLICATION is not** — it needs a third thing this box cannot enforce, a caller whose connection
-  is not already inside a transaction (ADR 0025). A worker MUST commit its lease before ingesting on
-  the same connection: leasing a job is a write, so the lease alone opens the transaction that
-  degrades `index_file`'s block to a savepoint, publishing nothing while returning successfully.
+  is not already inside a transaction. §Internal approach step 1 states that precondition and what
+  it costs a worker to get wrong.
 - **Idempotent by construction** — reprocessing a file fully replaces its chunk set; safe under
   at-least-once delivery + lease/reaper reclaim, no dedup keys (ADR 0011/0020).
 - **Transaction wraps the write, not the work** — never held across embedding-API calls (ADR 0020).

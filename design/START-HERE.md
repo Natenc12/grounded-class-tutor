@@ -66,9 +66,9 @@ Nate designed this with an AI architect over six phases, roughly: **vision** (wh
 detail for the tricky parts) → **roadmap** (what to build in what order) → **pre-mortem + handoff** (stress-test,
 then package it up). It's done — the design is finished and ready to build.
 
-Two things that'll save you confusion:
+Three things that'll save you confusion:
 - **"Done" above means the design phase, not the build.** The docs are finished and ready to build
-  from — that's not the same claim as "the product is built." See the roadmap's current slice for
+  from — that's not the same claim as "the product is built." See `CLAUDE.md` → *Current status* for
   where building actually stands.
 - **ADRs** ("Architecture Decision Records", the numbered files in `decisions/`) each record *one*
   decision and *why* — e.g. "we're hand-rolling RAG instead of using a framework, because we want to
@@ -151,5 +151,6 @@ You do **not** need all of these before contributing. Start at the top; go as de
 *earn* with evidence, not assume. Slice 1 ran the grounding loop against real course materials and
 recorded what happened — see [`eval/FINDINGS.md`](../eval/FINDINGS.md) for the actual measurements
 (retrieval hit rate, hallucination rate, honest-refusal rate, and where the noise floor sits), not a
-restated verdict here. Read that file, or the open issue board, for where things currently stand —
-this caveat is about the *kind* of claim to trust, not a snapshot of a number that will move.
+restated verdict here. Spike Pass 1 — the pass that puts those numbers under deliberate pressure —
+hasn't run yet. Read that file, or the open issue board, for where things currently stand — this
+caveat is about the *kind* of claim to trust, not a snapshot of a number that will move.

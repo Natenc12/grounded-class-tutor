@@ -63,7 +63,8 @@ def index_file(
         pgvector type - `conn` MUST come from `gct.db.connect()`.
 
     Raises `ValueError` if `chunks` is empty: publishing `ready` with no chunks would break
-    `status=ready` ⟺ full chunk set committed & queryable (ADR 0020/0025). The guard runs BEFORE the
+    `status=ready` ⟺ full chunk set committed & queryable (ADR 0020, publication conditional per
+    ADR 0025). The guard runs BEFORE the
     transaction opens, so nothing is written at all - not even the `files` row.
     """
     # Empty-set guard: `executemany` over an empty sequence is a no-op, so steps 1-2 below would

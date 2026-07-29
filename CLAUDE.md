@@ -96,9 +96,10 @@ slice still belongs on the board.
 **Slice 0 — Foundation: COMPLETE.** Schema + provider interfaces + the embedding-consistency anchor;
 4 tables, vector column, scope + HNSW indexes, smoke test green end-to-end against live models.
 
-**Slice 1 — the tracer bullet: IN PROGRESS.** Ingest ONE real file inline (parse→chunk→embed→index, no
+**Slice 1 — the tracer bullet: COMPLETE.** Ingest ONE real file inline (parse→chunk→embed→index, no
 queue) → Retriever → Grounder → cited answer / refusal, script-driven, over `eval/questions.jsonl`.
-The differentiator, proven before any HTTP/UI. See `design/roadmap.md` and
+The differentiator, proven on real course materials before any HTTP/UI — see `eval/FINDINGS.md` for
+what the live runs showed. See `design/roadmap.md` and
 `design/components/{grounder,retriever,ingestion-worker}.md`.
 
 The seams it draws, which later slices wrap rather than rewrite:
@@ -110,6 +111,11 @@ The seams it draws, which later slices wrap rather than rewrite:
   and validating everything the model returned (ADR 0014/0015/0016).
 - **Exit gate** — `ask(class, question)` returns a cited answer for an in-corpus question and an honest
   refusal for an out-of-corpus one, demonstrated over the smoke suite.
+
+**Spike Pass 1 — validation, not optimization: CURRENT.** On the tracer + seed smoke suite, run
+**chunking + generation only** and confirm the differentiator actually grounds and refuses — before
+Slices 2–4 thicken the skeleton (ADR 0022, `design/roadmap.md` → *Spike Pass 1*). A red result here is
+a cheap design signal; that is the point of running it now rather than later.
 
 **Issue-level state is NOT recorded in this file.** Never write "#N is done" or "#N is next" here — it
 is wrong within the week, and this file is not the writer of that fact. Fetch it instead:

@@ -111,6 +111,13 @@ jobs:
       - name: Ruff
         run: uv run ruff check
 
+      # Formatting is a separate gate from lint: `ruff check` never reformats, so before this
+      # step layout was whatever each PR happened to type, and review time went to it. `--check`
+      # only reports — it never writes — so a red here means "run `uv run ruff format`", not a
+      # mystery. The one-time flush that made this green is the commit before it.
+      - name: Ruff format
+        run: uv run ruff format --check .
+
       # Schema drift between migrations/*.sql and the code now fails the PR
       # instead of only ever being caught on a laptop.
       #

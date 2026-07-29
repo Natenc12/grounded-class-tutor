@@ -36,15 +36,9 @@ def index_file(
 ) -> None:
     """Atomically write `chunks` for `file_id` and publish the file `ready`, in one transaction.
 
-    ONE transaction (ADR 0020 §3), in order:
-      1. Upsert the `files` row -> `status='ready'`
-         (`INSERT ... ON CONFLICT (file_id) DO UPDATE SET status='ready', updated_at=now()`) - must
-         precede the chunk insert to satisfy the `chunks.file_id -> files.file_id` FK. A `classes`
-         row for `class_id` must already exist (caller/fixture seeds it; this box never creates
-         classes).
-      2. `DELETE FROM chunks WHERE file_id = :file_id` - drops the old set (idempotent re-index).
-      3. `INSERT` the full new chunk set from `chunks`.
-    Commit as one unit; on any error nothing is committed (all-or-nothing).
+    ONE transaction (ADR 0020 §3): upsert `files` -> `ready`, drop this file's old chunks, insert
+    the new set. Commit as one unit; on any error nothing is committed. A `classes` row for
+    `class_id` must already exist - this box never creates classes.
 
     PRECONDITION ON `conn` - the publication half of that guarantee is CONDITIONAL (ADR 0025):
     `conn` MUST NOT already be inside a transaction. psycopg opens an implicit transaction on a
@@ -95,8 +89,7 @@ def index_file(
             "delete from chunks where file_id = %(file_id)s::uuid",
             {"file_id": file_id},
         )
-        # 3. Insert the full new set. page_or_slide int -> text; ids cast ::uuid at the boundary;
-        #    embedding (list[float]) adapts to vector(1536) via the registered pgvector type.
+        # 3. Insert the full new set (SQL-boundary conversions per the docstring).
         with conn.cursor() as cur:
             cur.executemany(
                 """

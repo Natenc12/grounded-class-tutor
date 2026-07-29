@@ -87,6 +87,7 @@ not one this file stores: `uv run pytest -m live -q --collect-only`.
 - **The PM-4 seam** — build the ingest pipeline (parse→chunk→embed→index) *pure and separate* from any job/queue/lease machinery, so Slice 2 wraps it instead of rewriting it.
 - **`owner_id` on every row**; retrieval always filters `owner_id AND class_id` (F6/F12).
 - **Citation spine** — source metadata born at parse ①, rendered to `[S#]` labels ②, resolved back to citations ③; the model only ever cites labels we handed it.
+- **Cite ADRs, don't re-argue them.** A comment may name an ADR and state what the code must do; restating the ADR's *argument* makes the comment a second writer for that fact, and the copy is the one that drifts. `_to_score` spent nine days insisting its clamp deviated from ADR 0017 — ADR 0024 had already ratified it. Same reasoning as *Current status* below: a pointer that spells out its target expires exactly like a copy does. This is **not** a density limit. Depth is welcome wherever the code cannot hold the fact itself — non-obvious runtime behavior, a rejected alternative, an invariant a future edit would silently break. `grounder/answer.py` is the reference for how deep that can honestly go.
 
 ## Current status
 The slice name below is **stored, not derived** — a deliberate exception to the rule above.

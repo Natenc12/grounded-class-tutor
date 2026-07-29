@@ -79,11 +79,9 @@ class AskResult:
     over questions where retrieval actually ran). The eval runner needs a tri-state - hit / miss /
     not-applicable - and this flag is the third state's only honest source.
 
-    Set at the SITE THAT KNOWS, not inferred downstream. A consumer could today derive the same
-    fact as `state is ERROR and not retrieved`, because `answer()` short-circuits an empty set to
-    REFUSAL and so can never pair ERROR with `[]` itself - but that is an inference about ANOTHER
-    module's internals, true by coincidence of two contracts rather than by declaration. A flag
-    written on the error path cannot become wrong; the inference silently can.
+    Set at the SITE THAT KNOWS, not inferred downstream. `state is ERROR and not retrieved` would
+    derive the same fact today, but only by coincidence of two other modules' contracts. A flag
+    written on the error path cannot become wrong; that inference silently can.
     """
 
     result: GrounderResult
@@ -94,17 +92,10 @@ class AskResult:
 def _retrieval_error(kind: str, message: str) -> GrounderResult:
     """A retrieval-side failure, shaped as the Grounder's transport-level ERROR (ADR 0016).
 
-    Field-for-field the same discipline as `answer.py`'s private `_error()`: no prose, no
-    citations, `coverage.complete=False` with NO gaps, and `integrity.ok=True`. Every one of
-    those is load-bearing in the same way it is there - we make NO claim about what the corpus
-    covers, because we never got an answer to judge, and listing a gap here would state a corpus
-    judgment we did not earn (and would poison the N3 false-refusal metric with infra events).
-    `integrity.ok=True` because nothing was generated, so nothing failed validation.
-
-    Deliberately a local twin rather than an import of `answer._error`: reaching into another
-    module's underscore-private helper would make its internals our dependency, and this is a
-    handful of literal fields. If the ERROR shape ever changes, both sites change together -
-    which the ERROR tests on either side will force.
+    Field-for-field the same shape as `answer.py`'s private `_error()`, for the reasons documented
+    there. A local twin rather than an import of another module's underscore-private helper: that
+    would make its internals our dependency, and this is a handful of literal fields. If the ERROR
+    shape changes, both sites change together - which the ERROR tests on either side will force.
     """
     return GrounderResult(
         state=GrounderState.ERROR,
@@ -128,12 +119,10 @@ def ask(
 ) -> AskResult:
     """Answer `question` from this owner's class corpus, cited - or decline honestly.
 
-    PUBLIC CONTRACT (issue #8). The parameter order and style mirror `retrieve()` exactly -
-    `conn` first, providers keyword-only - for its reasons, not for symmetry's sake: the
-    positional four are the ASK (who is asking what, about which class), while `embedder` and
-    `generator` are INJECTED COLLABORATORS, and keyword-only is what keeps them from being passed
-    by accident and what keeps the tests offline. `k` defaults to the Retriever's `DEFAULT_K`,
-    imported rather than re-declared so the tuned value has one home (retriever.md Sec.Open).
+    PUBLIC CONTRACT (issue #8). Parameter style mirrors `retrieve()`: the positional four are the
+    ASK, while `embedder` and `generator` are INJECTED COLLABORATORS - keyword-only so they can't
+    be passed by accident, and so the tests stay offline. `k` defaults to the Retriever's
+    `DEFAULT_K`, imported rather than re-declared so the tuned value has one home.
 
     The happy path is three lines and no decisions:
         retrieve(...) -> answer(question, retrieved, owner_id, generator=generator) -> AskResult

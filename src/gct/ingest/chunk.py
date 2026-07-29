@@ -58,10 +58,8 @@ class TextChunk:
 def chunk_units(units: list[ParsedUnit]) -> list[TextChunk]:
     """Chunk every parsed unit into `TextChunk`s, in order, under the never-span contract.
 
-    For each `ParsedUnit`, split its text into fixed-size + overlap word windows and emit one
-    `TextChunk` per window, each stamped with that unit's `(file, page_or_slide)`. Units are
-    processed independently (never merge text across units -> never-span for free). Chunks are
-    returned grouped per source unit, preserving unit order.
+    Units are chunked INDEPENDENTLY - never merging text across them - which is what makes
+    never-span hold for free. Chunks come back grouped per source unit, in unit order.
 
     A unit whose text is shorter than `CHUNK_SIZE_WORDS` yields exactly ONE chunk (the whole
     unit). A unit with real text always yields >= 1 chunk.
@@ -75,10 +73,8 @@ def chunk_units(units: list[ParsedUnit]) -> list[TextChunk]:
 def _chunk_one(unit: ParsedUnit) -> list[TextChunk]:
     """Chunk a single unit's text into `TextChunk`s carrying that unit's provenance.
 
-    Split `unit.text` on whitespace into words, window them via `_word_windows`, and for each
-    window build a `TextChunk(text=" ".join(window_words), file=unit.file,
-    page_or_slide=unit.page_or_slide)`. Simple/flattening join (loses newline structure) is part
-    of the locked provisional whitespace-word strategy (see module docstring, ADR 0019 / 0021).
+    The whitespace split + join FLATTENS newline structure. That is part of the provisional
+    whitespace-word strategy, not an oversight (see module docstring, ADR 0019 / 0021).
     """
     words = unit.text.split()
     windows = _word_windows(len(words), CHUNK_SIZE_WORDS, CHUNK_OVERLAP_WORDS)

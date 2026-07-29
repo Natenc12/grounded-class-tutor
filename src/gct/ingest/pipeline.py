@@ -59,10 +59,9 @@ def compose(
 ) -> list[PreparedChunk]:
     """Parse -> chunk -> embed -> build the full `PreparedChunk` set, in order. Pure: no DB.
 
-    Runs `parse_file` -> `chunk_units`, embeds every chunk's text via `embedder.embed` (the adapter
-    owns sub-batching), and zips the vectors back onto the chunks - asserting one vector per chunk
-    so a length/alignment mismatch fails loud rather than mis-citing. Stamps `embedding_model_id`
-    from `embedder.model_id` (ADR 0018) and `owner_id`/`class_id` (F6/F12) onto every row.
+    Sub-batching is the embedding adapter's job, not this one's. `embedding_model_id` is stamped
+    from `embedder.model_id` - the model that ACTUALLY produced the vectors, never from config
+    (ADR 0018); `owner_id`/`class_id` go on every row (F6/F12).
 
     `ParseError` (terminal) and `TransientEmbeddingError` (transient) propagate untouched - handling
     is Slice 2's (ADR 0020). An empty parse cannot occur: `parse_file` raises

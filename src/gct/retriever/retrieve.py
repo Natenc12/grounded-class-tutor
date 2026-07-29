@@ -67,7 +67,7 @@ class RetrievedChunk:
     text: str
     file: str
     page_or_slide: int
-    score: float  # normalized similarity in [0,1], higher = more relevant (ADR 0017)
+    score: float  # normalized similarity in [0,1], higher = more relevant (ADR 0017/0024)
 
 
 def _assert_embedding_consistency(
@@ -79,19 +79,13 @@ def _assert_embedding_consistency(
 ) -> bool:
     """Guard the ADR-0018 invariant for this class. Returns False when the class is empty.
 
-    Runs `SELECT DISTINCT embedding_model_id FROM chunks WHERE owner_id AND class_id` and
-    compares the result against the ACTIVE EMBEDDER:
-      - empty set   -> the class has no chunks -> return False, so the caller returns []
-                       WITHOUT paying for a query embedding. `[]` for an empty/un-ingested class
-                       is the documented behavior (retriever.md Sec.Failure-modes).
-      - exactly {embedder.model_id} -> return True.
-      - anything else -> raise `EmbeddingModelMismatchError`. This one check catches BOTH the
-                       wrong-model case and the MIXED-model case, which is the real foot-gun:
-                       swapping the embedder without re-indexing every file leaves a class with
-                       mixed stamps, and the guard then ERRORs the whole class (roadmap PM-5).
+    An empty class returns False so the caller returns `[]` WITHOUT paying for a query embedding
+    (retriever.md Sec.Failure-modes); a stamp that doesn't match raises.
 
     A whole-class DISTINCT is the point - folding the stamp into the top-k query instead would
-    only inspect the k rows that came back, leaving a stale chunk ranked k+1 invisible.
+    only inspect the k rows that came back, leaving a stale chunk ranked k+1 invisible. It also
+    catches the MIXED-model case, which is the real foot-gun: swapping the embedder without
+    re-indexing every file leaves a class with mixed stamps (roadmap PM-5).
 
     CRITICAL: the comparison's right-hand side is `embedder.model_id` - the model that ACTUALLY
     produced the stored vectors - NOT `config.ACTIVE_EMBEDDING_MODEL_ID`. Sourcing both sides
@@ -130,18 +124,11 @@ def _assert_embedding_consistency(
 
 
 def _to_score(distance: float) -> float:
-    """Cosine distance -> normalized similarity in [0,1], higher = more relevant (ADR 0017).
+    """Cosine distance -> normalized similarity in [0,1], higher = more relevant (ADR 0024).
 
-    `score = max(0.0, 1.0 - distance)`.
-
-    The clamp is load-bearing and NOT what ADR 0017 literally writes. pgvector's `<=>` returns
-    cosine distance in [0, 2] (verified: opposite vectors give exactly 2), so the ADR's bare
-    `1 - cosine_distance` yields [-1, 1] - contradicting the [0,1] range the same ADR promises
-    downstream. Flooring at 0 keeps both the formula and the contract: a negative cosine means
-    "semantically opposite", which for a RELEVANCE seam is indistinguishable from "not
-    relevant", so nothing V3's `score >= tau` would ever want to tell apart is lost.
-
-    Clamping is monotonic, so ADR 0017's "ordering is unaffected" property still holds.
+    The clamp is the amendment: pgvector's `<=>` ranges [0,2], so a bare `1 - distance` would
+    yield [-1,1] and break the range downstream binds to (ADR 0024, which amends ADR 0017's
+    range claim). Clamping is monotonic, so ordering is unaffected.
 
     ARGUMENT ORDER IS LOAD-BEARING - do not rewrite this as `max(1.0 - distance, 0.0)`, which
     reads more naturally and is NOT equivalent. A zero vector on either side makes pgvector's
@@ -151,8 +138,6 @@ def _to_score(distance: float) -> float:
     Grounder. Real text cannot produce a zero vector; a test fixture can. Pinned by
     `test_to_score_clamps_nan_to_zero`.
     """
-    # Clamp at 0: pgvector's `<=>` cosine distance ranges [0,2] (not [0,1]), so a bare
-    # `1 - distance` can go negative and break the [0,1] contract ADR 0017 promises (Decision 1).
     return max(0.0, 1.0 - distance)
 
 
@@ -171,28 +156,8 @@ def retrieve(
     first and `embedder` keyword-only mirrors `ingest.pipeline.ingest_file`, so the read path
     reads like the write path.
 
-    Pipeline, in order:
-      1. `_assert_embedding_consistency` (ADR 0018). False -> return [] immediately, before any
-         embedding call. Raises on mismatch.
-      2. Embed the query via the SAME active embedder: `embedder.embed([question])[0]`
-         (ADR 0013). `TransientEmbeddingError` propagates untouched - no retry here.
-      3. Scoped pgvector top-k:
-             SELECT chunk_id, text, file, page_or_slide,
-                    (embedding <=> %(q_vec)s::vector) AS distance
-             FROM chunks WHERE owner_id = %(owner_id)s AND class_id = %(class_id)s::uuid
-             ORDER BY distance ASC LIMIT %(k)s
-         The `<=>` operator is load-bearing, not cosmetic: the HNSW index is built
-         `vector_cosine_ops`, so `<->` or `<#>` would silently bypass it AND change what the
-         score means relative to ADR 0017.
-         The `::vector` cast is REQUIRED, not decorative - verified during prep. A bare
-         `list[float]` parameter adapts as `double precision[]`, and there is no column in a
-         `<=>` expression to infer the target type from, so it fails with:
-             UndefinedFunction: operator does not exist: vector <=> double precision[]
-         (`index.py`'s INSERT gets away without a cast only because the COLUMN supplies the
-         type.) Casting at the SQL boundary matches the `%(class_id)s::uuid` idiom already in
-         `index.py`; `pgvector.Vector(q_vec)` works identically but adds an import.
-      4. Convert each distance via `_to_score`, and `page_or_slide` text -> int.
-      5. Return in rank order (score desc), length <= k.
+    Guard (ADR 0018) BEFORE the paid embed call, then a scoped pgvector top-k. A
+    `TransientEmbeddingError` from the query embed propagates untouched - no retry here.
 
     Returns `[]` ONLY for an empty/un-ingested class (see module docstring). A corpus smaller
     than `k` returns all of it - short, not an error.
@@ -225,9 +190,13 @@ def retrieve(
     #    Grounder, not here (ADR 0008, retriever.md Sec.Failure-modes).
     q_vec = embedder.embed([question])[0]
 
-    # 3. Scoped top-k. `<=>` (cosine) matches the HNSW `vector_cosine_ops` index and ADR 0017's
-    #    score definition; `::vector` is required because a bare list adapts as
-    #    `double precision[]` and there is no column here to infer the type from.
+    # 3. Scoped top-k. Two load-bearing details in this SQL:
+    #    - `<=>` (cosine) matches the HNSW `vector_cosine_ops` index, so `<->` or `<#>` would
+    #      silently bypass it AND change what the score means (ADR 0017/0024).
+    #    - `::vector` is REQUIRED. A bare `list[float]` adapts as `double precision[]` and a
+    #      `<=>` expression has no column to infer the target type from, so it fails with
+    #      `UndefinedFunction: operator does not exist: vector <=> double precision[]`.
+    #      (`index.py`'s INSERT needs no cast only because the COLUMN supplies the type.)
     rows = conn.execute(
         """
         select chunk_id, text, file, page_or_slide,

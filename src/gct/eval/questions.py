@@ -11,11 +11,9 @@ at once, and both are deliberate:
     `tags`). The five free-text scalars are coerced with `str()`, not type-checked: `"id": 42`
     loads as `"42"`, which is harmless because nothing branches on their content. A missing or
     misspelled key is a hard ValueError, not a default. Defaulting is the invisible failure:
-    `suites` typo'd as `suite`
-    would silently become `[]`, the smoke filter would drop that question, and the run would
-    report a clean rate over a suite that quietly shrank. A benchmark that loses questions
-    without saying so stops being a benchmark - the whole point of ADR 0021 is comparability
-    across the life of the project.
+    `suites` typo'd as `suite` would silently become `[]`, the smoke filter would drop that
+    question, and the run would report a clean rate over a suite that quietly shrank. A benchmark
+    that loses questions without saying so stops being a benchmark.
   - **Tolerant of fields it does not know.** Unknown keys are ignored, because V3 adds structure
     (ADR 0021 §2/§5) and the V1 loader must not go red the day someone lands a V3 field in the
     same file. Additive change is the file's designed growth path.
@@ -193,16 +191,15 @@ def load_questions(path: str | Path, *, suite: str | None = None) -> list[EvalQu
             raise _fail(path, lineno, qid, f"missing required field(s): {', '.join(missing)}")
 
         expectation = row["expectation"]
+        # Checked HERE, at the file, so an unscoreable value points at the line to fix rather than
+        # failing deep in a run that already paid for retrieval and generation.
+        #
         # `isinstance` FIRST, and not for tidiness: `expectation not in EXPECTATIONS` hashes the
         # value against a frozenset, so a JSON array or object here raises `TypeError:
         # unhashable type` - escaping this module's one documented error shape (a `ValueError`
         # naming file, line and id) and, because `ask_smoke._load` catches only
         # `(OSError, ValueError)`, surfacing as a raw traceback instead of `SETUP FAILED`.
         if not isinstance(expectation, str) or expectation not in EXPECTATIONS:
-            # The load-bearing validation. `expectation` is the key `scoring.score_state` reads,
-            # and an unrecognised value there is unscoreable - caught HERE, at the file, where the
-            # error can point at the line to fix, rather than deep in a run that already paid for
-            # retrieval and generation.
             raise _fail(
                 path,
                 lineno,

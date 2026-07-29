@@ -4,8 +4,10 @@ in-memory row set becomes the queryable, provenance-carrying `chunks` set the Re
 
 The invariant this box exists to hold: a file's chunks are ALL-from-one-run or ABSENT, and
 `files.status='ready'` flips inside the SAME transaction as the chunk insert - so `status=ready`
-⟺ the full chunk set is committed & queryable (ADR 0020 §2-3). The transaction wraps only the write;
-the slow parse/chunk/embed work already ran, with no transaction open.
+⟺ the full chunk set is committed & queryable (ADR 0020 §2-3), GIVEN the caller precondition in
+`index_file`'s docstring. Atomicity is unconditional; PUBLICATION is not (ADR 0025 amends 0020's
+unconditional claim). The transaction wraps only the write; the slow parse/chunk/embed work
+already ran, with no transaction open.
 
 Idempotent by construction: processing a `file_id` is `DELETE FROM chunks WHERE file_id` then
 insert the full set, so re-running the same `file_id` replaces cleanly with no dedup keys. The
@@ -36,15 +38,9 @@ def index_file(
 ) -> None:
     """Atomically write `chunks` for `file_id` and publish the file `ready`, in one transaction.
 
-    ONE transaction (ADR 0020 §3), in order:
-      1. Upsert the `files` row -> `status='ready'`
-         (`INSERT ... ON CONFLICT (file_id) DO UPDATE SET status='ready', updated_at=now()`) - must
-         precede the chunk insert to satisfy the `chunks.file_id -> files.file_id` FK. A `classes`
-         row for `class_id` must already exist (caller/fixture seeds it; this box never creates
-         classes).
-      2. `DELETE FROM chunks WHERE file_id = :file_id` - drops the old set (idempotent re-index).
-      3. `INSERT` the full new chunk set from `chunks`.
-    Commit as one unit; on any error nothing is committed (all-or-nothing).
+    ONE transaction (ADR 0020 §3): upsert `files` -> `ready`, drop this file's old chunks, insert
+    the new set. Commit as one unit; on any error nothing is committed. A `classes` row for
+    `class_id` must already exist - this box never creates classes.
 
     PRECONDITION ON `conn` - the publication half of that guarantee is CONDITIONAL (ADR 0025):
     `conn` MUST NOT already be inside a transaction. psycopg opens an implicit transaction on a
@@ -67,7 +63,8 @@ def index_file(
         pgvector type - `conn` MUST come from `gct.db.connect()`.
 
     Raises `ValueError` if `chunks` is empty: publishing `ready` with no chunks would break
-    `status=ready` ⟺ full chunk set committed & queryable (ADR 0020). The guard runs BEFORE the
+    `status=ready` ⟺ full chunk set committed & queryable (ADR 0020, publication conditional per
+    ADR 0025). The guard runs BEFORE the
     transaction opens, so nothing is written at all - not even the `files` row.
     """
     # Empty-set guard: `executemany` over an empty sequence is a no-op, so steps 1-2 below would
@@ -95,8 +92,7 @@ def index_file(
             "delete from chunks where file_id = %(file_id)s::uuid",
             {"file_id": file_id},
         )
-        # 3. Insert the full new set. page_or_slide int -> text; ids cast ::uuid at the boundary;
-        #    embedding (list[float]) adapts to vector(1536) via the registered pgvector type.
+        # 3. Insert the full new set (SQL-boundary conversions per the docstring).
         with conn.cursor() as cur:
             cur.executemany(
                 """

@@ -136,7 +136,8 @@ def test_reindex_replaces_the_set(db):
 # *all-or-nothing*. The gap is load-bearing: `index_file` DELETEs the old chunk set before it
 # INSERTs the new one, which is safe only under the transaction. If that transaction ever stopped
 # holding, a mid-write failure would destroy the old chunks AND fail to write the new ones —
-# strictly worse than never re-indexing (ADR 0020 §2-3; ingestion-worker.md §Failure modes).
+# strictly worse than never re-indexing (ADR 0020 §2-3, publication half amended by ADR 0025;
+# ingestion-worker.md §Failure modes).
 
 
 def test_midwrite_failure_leaves_old_set_intact(db):
@@ -145,7 +146,8 @@ def test_midwrite_failure_leaves_old_set_intact(db):
     Index a good 3-chunk set and commit, then re-index with a set whose MIDDLE chunk carries a
     wrong-dimension vector (`_chunk(..., dim=8)`). Assert the raise, then assert all three original
     texts are still present and `status` is still 'ready' — readers see old-full → new-full, never
-    empty or partial (ADR 0020 §3).
+    empty or partial (ADR 0020 §3; publication conditional per ADR 0025, which this test does not
+    exercise - see the first-index test below).
 
     The injection must fail mid-`executemany`, NOT before the transaction opens — otherwise this
     test goes green while proving nothing about atomicity. That is why the
@@ -207,7 +209,11 @@ def test_midwrite_failure_on_first_index_publishes_nothing(db):
     This is the path on which the status half of the invariant is actually provable. On a re-index
     `status` was already 'ready' before the failure, so asserting it "did not flip" proves nothing;
     on a first index the `files` upsert rolls back with the chunks, so the row is absent entirely.
-    `status=ready` ⟺ full chunk set committed & queryable (ADR 0020 §3).
+    What this proves is the ATOMICITY half of `status=ready` ⟺ full chunk set committed & queryable
+    (ADR 0020 §3), which ADR 0025 leaves unconditional. It does NOT prove the PUBLICATION half, and
+    cannot: savepoint writes are fully visible to the connection that made them, so a test asserting
+    through the same `conn` passes whether or not the caller precondition held (ADR 0025, "invisible
+    to the existing tests, by construction" - catching it needs a SECOND connection).
 
     As above, the injection must fail mid-`executemany`, NOT before the transaction opens — a
     dimension check moved into Python would raise without ever exercising the rollback, and this

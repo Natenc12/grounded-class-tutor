@@ -140,17 +140,14 @@ def retrieval_hit(
     All-match was considered and REJECTED, on two grounds. (1) It silently couples the metric to
     k: a row carrying MULTIPLE expected sources would have its score depend on the top-k budget in
     a way a single-source row does not - the spikes tune k, and a metric that moves with the lever
-    it is measuring cannot rank it.
+    it is measuring cannot rank it. (2) A missed second leg is not lost signal: the answer is then
+    supported in part, which surfaces as PARTIAL in the grounding signal. Two signals already cover
+    the case, and this is precisely §1's promise that retrieval misses "surface here regardless of
+    the final state" while completeness lives in the other column.
 
-    This deliberately does NOT say how many such rows exist. An earlier version stored that census
-    ("q001 is the only multi-source row in the suite today") and the q003 curation falsified it in
-    the same branch; restating the census with the new number would only reset the clock on the
-    same failure. The argument never needed a count - the count needed maintaining. If you want
-    one, derive it: rows where `len(expected_sources) > 1` in eval/questions.jsonl.
-    (2) A missed second leg is not lost signal: the answer
-    is then supported in part, which surfaces as PARTIAL in the grounding signal. Two signals
-    already cover the case, and this is precisely §1's promise that retrieval misses "surface
-    here regardless of the final state" while completeness lives in the other column.
+    How many multi-source rows exist is deliberately NOT recorded here - derive it if you need it
+    (rows where `len(expected_sources) > 1` in eval/questions.jsonl). The argument never needed a
+    count; a count would need maintaining.
 
     Equality is EXACT on both fields. Same file, wrong page is a miss - a citation to the wrong
     page is wrong, not approximately right (the never-span honesty guarantee, ADR 0019).

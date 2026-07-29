@@ -451,6 +451,15 @@ def _error(kind: str, message: str) -> GrounderResult:
     what the corpus covers, because we never got an answer to judge. Presenting this as "your
     materials don't cover this" would conflate an infra failure with a corpus judgment and would
     also poison the N3 refusal metric with non-grounding events.
+
+    `integrity.ok=True`: nothing was generated, so nothing failed validation. An ERROR is not a
+    structural defect, and `ok=False` here would misreport one - not in the metrics, which key on
+    `state` and exclude ERROR entirely (ADR 0023 §2; `eval/scoring.py` never reads this field), but
+    to any human or client reading the result, where an unexplained `ok=False` carrying no reasons
+    is exactly the ambiguity `Integrity` exists to remove.
+
+    `ask._retrieval_error` builds this identical shape on the retrieval side and points here for
+    every field - keep the two docstrings in sync with `TestErrorShapeTwin`, which compares all six.
     """
     return GrounderResult(
         state=GrounderState.ERROR,

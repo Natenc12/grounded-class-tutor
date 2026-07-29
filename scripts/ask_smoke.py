@@ -126,8 +126,9 @@ def _ready_rows(
     Keyed on FILENAME because that is the only identity the corpus directory and the DB share:
     `file_id` is minted fresh by each `ingest_file` call and is not derived from the path.
     Non-`ready` rows are excluded — `index_file` publishes `ready` inside the same transaction as
-    the chunk insert (ADR 0020), so in Slice 1 a non-ready row means a file with no chunks, which
-    must not count as ingested.
+    the chunk insert (ADR 0020, publication conditional per ADR 0025 - satisfied here by the
+    autocommit at wiring), so in Slice 1 a non-ready row means a file with no chunks, which must
+    not count as ingested.
     """
     rows = conn.execute(
         """
@@ -578,6 +579,10 @@ def main() -> int:
             # ADR 0020 §3 describes (still atomic — a failure inside it still rolls back its own
             # writes). A trailing `conn.commit()` after each ingest would also work, but leaves the
             # hazard live for the next writer who forgets one.
+            #
+            # This line IS how this script satisfies `index_file`'s caller precondition — ADR 0025,
+            # which amends ADR 0020's unconditional publication claim and names this script's
+            # autocommit as the way it is met. Do not remove it without reading that ADR.
             #
             # It also keeps the connection IDLE across the question loop below. ADR 0020 §3 warns
             # in bold against holding a transaction open across API round-trips; without this the

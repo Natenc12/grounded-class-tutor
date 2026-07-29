@@ -7,6 +7,7 @@ keeps the FK-ordered teardown (chunks -> files -> classes) from drifting between
 
 Ingest-specific fixtures (the PDF/PPTX factories, `FakeEmbeddings`) deliberately stayed put.
 """
+
 from __future__ import annotations
 
 import os

@@ -1,5 +1,6 @@
 """OpenAI implementations of the provider interfaces (ADR 0005 / 0007). Defaults, not
 commitments — the whole point of the interface is that these are swappable."""
+
 from __future__ import annotations
 
 from collections.abc import Iterator, Sequence
@@ -66,9 +67,7 @@ def _sub_batches(texts: Sequence[str]) -> Iterator[list[str]]:
         est = _est_tokens(text)
         # Flush before adding if this text would breach either cap (skip when batch is empty, so
         # an oversized lone text isn't dropped — it goes out on its own next).
-        if batch and (
-            len(batch) >= _EMBED_INPUT_CAP or batch_tokens + est > _EMBED_TOKEN_BUDGET
-        ):
+        if batch and (len(batch) >= _EMBED_INPUT_CAP or batch_tokens + est > _EMBED_TOKEN_BUDGET):
             yield batch
             batch = []
             batch_tokens = 0

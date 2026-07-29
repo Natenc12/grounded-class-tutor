@@ -3,6 +3,7 @@
 Pure function under test - no files, no DB. Fixtures are hand-built `ParsedUnit` lists.
 Mirrors the happy-paths / boundaries / provenance shape of test_parse.py.
 """
+
 from __future__ import annotations
 
 import pytest
@@ -135,10 +136,16 @@ class TestNeverSpanProvenance:
 
     def test_no_chunk_mixes_two_units(self):
         """Given two units on different pages, no chunk's text contains words from both."""
-        a = ParsedUnit(text=" ".join(f"a{i}" for i in range(CHUNK_SIZE_WORDS * 2)),
-                       file="doc.pdf", page_or_slide=1)
-        b = ParsedUnit(text=" ".join(f"b{i}" for i in range(CHUNK_SIZE_WORDS * 2)),
-                       file="doc.pdf", page_or_slide=2)
+        a = ParsedUnit(
+            text=" ".join(f"a{i}" for i in range(CHUNK_SIZE_WORDS * 2)),
+            file="doc.pdf",
+            page_or_slide=1,
+        )
+        b = ParsedUnit(
+            text=" ".join(f"b{i}" for i in range(CHUNK_SIZE_WORDS * 2)),
+            file="doc.pdf",
+            page_or_slide=2,
+        )
 
         for chunk in chunk_units([a, b]):
             prefixes = {word[0] for word in chunk.text.split()}

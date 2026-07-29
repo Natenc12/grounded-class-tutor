@@ -1,14 +1,15 @@
 """Tests for the retriever's pipeline stages (issue #5).
 
-  - `TestToScore` - pure, no DB, no network. `_to_score` maps pgvector's `<=>` cosine distance
-    (real range [0,2], not the ADR's assumed [0,1]) to a normalized [0,1] similarity, clamped at
-    zero (ADR 0017 + Decision 1).
-  - `TestAssertEmbeddingConsistency` - DB-backed. The ADR-0018 guard, including the mixed-model
-    case (roadmap PM-5) and the empty-class short-circuit.
-  - `TestRetrieve` - DB-backed, end-to-end through the whole pipeline: ranking + provenance,
-    the F6/F12 isolation filter, and the failure table (empty class, short corpus, provider
-    error).
+- `TestToScore` - pure, no DB, no network. `_to_score` maps pgvector's `<=>` cosine distance
+  (real range [0,2], not the ADR's assumed [0,1]) to a normalized [0,1] similarity, clamped at
+  zero (ADR 0017 + Decision 1).
+- `TestAssertEmbeddingConsistency` - DB-backed. The ADR-0018 guard, including the mixed-model
+  case (roadmap PM-5) and the empty-class short-circuit.
+- `TestRetrieve` - DB-backed, end-to-end through the whole pipeline: ranking + provenance,
+  the F6/F12 isolation filter, and the failure table (empty class, short corpus, provider
+  error).
 """
+
 from __future__ import annotations
 
 import math

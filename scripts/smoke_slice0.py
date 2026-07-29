@@ -3,6 +3,7 @@
   2. both provider interfaces round-trip (embedding has the right dim + model_id; generation
      returns text).
 Run after scripts/migrate.py, with DATABASE_URL and OPENAI_API_KEY set in .env."""
+
 from __future__ import annotations
 
 from gct.config import ACTIVE_EMBEDDING_MODEL_ID, EMBEDDING_DIM

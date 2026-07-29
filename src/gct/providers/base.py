@@ -1,5 +1,6 @@
 """Provider interfaces (ADR 0013). Deliberately thin: the Grounder owns the prompt and the
 citation parsing; these just move text ⇄ vectors and messages ⇄ text."""
+
 from __future__ import annotations
 
 from collections.abc import Sequence

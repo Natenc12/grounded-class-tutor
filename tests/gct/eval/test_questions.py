@@ -233,9 +233,15 @@ class TestNonStringExpectation:
     @pytest.mark.parametrize("bad", [[], {}, ["answer"], {"v": "answer"}])
     def test_unhashable_expectation_raises_value_error_with_locators(self, tmp_path, bad):
         row = {
-            "id": "q001", "question": "x", "class": "c", "expectation": bad,
-            "expected_sources": [], "answer_notes": "", "suites": ["smoke"],
-            "tags": [], "added": "2026-01-01",
+            "id": "q001",
+            "question": "x",
+            "class": "c",
+            "expectation": bad,
+            "expected_sources": [],
+            "answer_notes": "",
+            "suites": ["smoke"],
+            "tags": [],
+            "added": "2026-01-01",
         }
         path = tmp_path / "questions.jsonl"
         path.write_text(json.dumps(row) + "\n", encoding="utf-8")
@@ -244,6 +250,6 @@ class TestNonStringExpectation:
             load_questions(path)
 
         message = str(err.value)
-        assert "q001" in message          # the id, to search for
-        assert ":1:" in message           # the line, to open the file at
+        assert "q001" in message  # the id, to search for
+        assert ":1:" in message  # the line, to open the file at
         assert "expectation" in message

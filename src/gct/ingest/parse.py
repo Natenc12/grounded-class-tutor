@@ -12,6 +12,7 @@ retry policy, this module never does.
 Tooling (pypdf / python-pptx) is a spike choice (design/components/ingestion-worker.md
 §"spec/spike line") - swappable without changing the `ParsedUnit` contract.
 """
+
 from __future__ import annotations
 
 from dataclasses import dataclass

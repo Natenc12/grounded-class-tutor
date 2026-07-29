@@ -22,6 +22,7 @@ rests on the Grounder's judgment (retriever.md Sec."The V1 no-floor invariant").
 Both DB queries here carry the full `owner_id AND class_id` scope - the consistency guard is not
 exempt from the isolation filter (F6/F12).
 """
+
 from __future__ import annotations
 
 from dataclasses import dataclass

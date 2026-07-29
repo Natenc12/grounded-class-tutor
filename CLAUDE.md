@@ -56,8 +56,9 @@ live in `[project.optional-dependencies].dev`, so the next two commands stop wor
 Postgres 17 is keg-only; its psql/createdb live at `/opt/homebrew/opt/postgresql@17/bin`.
 Secrets (`OPENAI_API_KEY`, `DATABASE_URL`) live in `.env` (gitignored).
 **What "green" is worth.** CI runs `ruff`, the migrations, and `pytest -m "not live"` on every PR,
-against a pgvector Postgres 17 service container (#18, extended by #32). Green proves lint, that
-`migrations/*.sql` applies cleanly, and every `db`-marked test — both DB paths, on fake embedders.
+against a pgvector Postgres 17 service container (#18, extended by #32). Green proves lint, formatting
+(#34), that `migrations/*.sql` applies cleanly, and every `db`-marked test — both DB paths, on fake
+embedders.
 The `db` fixture skips locally when Postgres is down but **hard-fails in CI**, so DB tests can't
 silently skip their way to green. Locally that judgement is still yours: `pytest -m db` reporting
 **skips means Postgres is down, not that the DB path passed.**

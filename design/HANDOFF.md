@@ -25,8 +25,10 @@
   throughout, local Postgres V1 → Supabase V2 with no data-layer rewrite (C4) · index-time and query-time
   embeddings **must** be the identical model+version (invariant) · V1 = single hardcoded user, no auth, no
   deploy (F12/ADR 0004) · validate on **real** course materials, not synthetic (C5).
-- **Where to start:** Slice 0 (schema + provider interfaces), then Slice 1 (the synchronous tracer bullet)
-  — that's the differentiator, proven programmatically before any HTTP or UI exists.
+- **Where to start:** whatever phase `CLAUDE.md` → *Current status* names — the slices below are the
+  full arc, not a to-do list to begin at the top of. The order was Slice 0 (schema + provider
+  interfaces), then Slice 1 (the synchronous tracer bullet) — that's the differentiator, proven
+  programmatically before any HTTP or UI exists.
 
 ## Reading order (manifest — pointers into the artifacts)
 1. **vision.md** — why this exists, who it's for, scope.

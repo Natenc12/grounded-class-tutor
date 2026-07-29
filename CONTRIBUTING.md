@@ -108,8 +108,8 @@ Focus on things that matter:
 
 Skip:
 - **Style nits** — indentation, quote choice, line length. Ruff auto-checks these on every PR;
-  run `uv run ruff check` locally before pushing. Reviewing them by hand is a waste of
-  everyone's time.
+  run `uv run ruff check` and `uv run ruff format` locally before pushing. Reviewing them by
+  hand is a waste of everyone's time.
 - **Bikeshedding.** If you'd solve it two different ways and both are fine, don't argue about
   it in the PR. Approve it.
 
@@ -156,8 +156,10 @@ Reviewers read the diff.
 
 **linter** — a tool that reads your code without running it and flags likely problems
 (unused imports, inconsistent style, obvious mistakes). We use
-[Ruff](https://docs.astral.sh/ruff/): CI runs `uv run ruff check` on every PR, so run it
-locally before you push.
+[Ruff](https://docs.astral.sh/ruff/): CI runs both `uv run ruff check` (lint) and
+`uv run ruff format --check .` (formatting) on every PR, so run `uv run ruff check` and
+`uv run ruff format` locally before you push — the local form rewrites your files rather than
+only reporting.
 
 **style bikeshedding** — arguing in a PR about tabs vs spaces, quote style, comma placement.
 All trivial, all preferences. Waste of review time. A linter with agreed rules ends these

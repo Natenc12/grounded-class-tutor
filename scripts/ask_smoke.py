@@ -25,6 +25,7 @@ Run (needs a migrated DB, `.env` secrets, and the corpus files present — this 
 Exit codes: 0 the gate passed · 1 the gate failed · 2 setup failed (no corpus, no questions, a
 question naming a file the corpus does not have).
 """
+
 from __future__ import annotations
 
 import argparse
@@ -185,10 +186,14 @@ def _converge_corpus(
             total = sum(count for _, count in rows)
             print(f"  !! WARN  {path.name}: {len(rows)} ready `files` rows, {total} chunks total")
             print(f"           file_ids: {', '.join(file_id for file_id, _ in rows)}")
-            print("           this file was ingested more than once — its chunks are DUPLICATED, "
-                  "the census below is inflated,")
-            print("           and retrieval's top-k will be crowded with copies. To fix: delete "
-                  "the extra file_ids' chunks rows,")
+            print(
+                "           this file was ingested more than once — its chunks are DUPLICATED, "
+                "the census below is inflated,"
+            )
+            print(
+                "           and retrieval's top-k will be crowded with copies. To fix: delete "
+                "the extra file_ids' chunks rows,"
+            )
             print("           then those files rows (chunks FK -> files, so chunks go first).")
             ready[path.name] = total
             continue
@@ -304,9 +309,12 @@ def _require_expected_files(
             "the suite expects source page(s) that carry no indexed chunk: "
             + ", ".join(
                 f"{qid} -> {name!r} p.{page}"
-                + (" (multi-source row: any-match would still hit, so this weakens the ground "
-                   "truth rather than the metric)" if multi else " (single-source row: a "
-                   "guaranteed permanent miss)")
+                + (
+                    " (multi-source row: any-match would still hit, so this weakens the ground "
+                    "truth rather than the metric)"
+                    if multi
+                    else " (single-source row: a guaranteed permanent miss)"
+                )
                 for qid, name, page, multi in unindexed
             )
             + " — retrieval cannot hit a page the corpus does not have, and scoring that as a "
@@ -400,8 +408,10 @@ def _print_summary(metrics: EvalMetrics) -> None:
     answer, refuse = metrics.answer, metrics.refuse
     print("\nSummary — ADR 0023 rate vector (crude spike-ranking bench, NOT a quality verdict):")
 
-    print(f"  in-corpus (expectation=answer)   N_scored={answer.scored} "
-          f"of {answer.total} asked, {answer.error} excluded as ERROR")
+    print(
+        f"  in-corpus (expectation=answer)   N_scored={answer.scored} "
+        f"of {answer.total} asked, {answer.error} excluded as ERROR"
+    )
     _rate_line("grounded_pass_rate", metrics.grounded_pass_rate, answer.grounded, answer.scored)
     _rate_line("partial_rate", metrics.partial_rate, answer.partial, answer.scored)
     _rate_line("false_refusal_rate", metrics.false_refusal_rate, answer.refusal, answer.scored)
@@ -409,8 +419,10 @@ def _print_summary(metrics: EvalMetrics) -> None:
         "integrity_flag_rate", metrics.integrity_flag_rate, answer.integrity_flagged, answer.scored
     )
 
-    print(f"  out-of-corpus (expectation=refuse)   N_scored={refuse.scored} "
-          f"of {refuse.total} asked, {refuse.error} excluded as ERROR")
+    print(
+        f"  out-of-corpus (expectation=refuse)   N_scored={refuse.scored} "
+        f"of {refuse.total} asked, {refuse.error} excluded as ERROR"
+    )
     _rate_line("correct_refusal_rate", metrics.correct_refusal_rate, refuse.refusal, refuse.scored)
     _rate_line("hallucination_rate", metrics.hallucination_rate, refuse.hallucinated, refuse.scored)
     _rate_line(

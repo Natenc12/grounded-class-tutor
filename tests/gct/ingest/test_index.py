@@ -7,6 +7,7 @@ full set lands with `status='ready'` in one shot, a re-index replaces the set cl
 and — the all-or-nothing half, added by issue #23 — a write that fails partway publishes nothing
 and destroys nothing.
 """
+
 from __future__ import annotations
 
 import uuid
@@ -106,10 +107,22 @@ def test_reindex_replaces_the_set(db):
         _chunk(owner_id, class_id, "new-B", 2),
     ]
 
-    index_file(conn, file_id=file_id, filename="lecture.pdf",
-               owner_id=owner_id, class_id=class_id, chunks=first)
-    index_file(conn, file_id=file_id, filename="lecture.pdf",
-               owner_id=owner_id, class_id=class_id, chunks=second)
+    index_file(
+        conn,
+        file_id=file_id,
+        filename="lecture.pdf",
+        owner_id=owner_id,
+        class_id=class_id,
+        chunks=first,
+    )
+    index_file(
+        conn,
+        file_id=file_id,
+        filename="lecture.pdf",
+        owner_id=owner_id,
+        class_id=class_id,
+        chunks=second,
+    )
 
     texts = conn.execute(
         "select text from chunks where file_id = %s::uuid order by text", (file_id,)
@@ -148,8 +161,14 @@ def test_midwrite_failure_leaves_old_set_intact(db):
         _chunk(owner_id, class_id, "old-B", 2),
         _chunk(owner_id, class_id, "old-C", 3),
     ]
-    index_file(conn, file_id=file_id, filename="lecture.pdf",
-               owner_id=owner_id, class_id=class_id, chunks=good)
+    index_file(
+        conn,
+        file_id=file_id,
+        filename="lecture.pdf",
+        owner_id=owner_id,
+        class_id=class_id,
+        chunks=good,
+    )
 
     # Re-index with a doomed set: the MIDDLE chunk's vector is dim 8, not 1536. Rows on BOTH sides
     # of it are in play, so a leaky transaction would show up as a partial set either way.
@@ -159,8 +178,14 @@ def test_midwrite_failure_leaves_old_set_intact(db):
         _chunk(owner_id, class_id, "new-C", 3),
     ]
     with pytest.raises(psycopg.errors.DataException):
-        index_file(conn, file_id=file_id, filename="lecture.pdf",
-                   owner_id=owner_id, class_id=class_id, chunks=doomed)
+        index_file(
+            conn,
+            file_id=file_id,
+            filename="lecture.pdf",
+            owner_id=owner_id,
+            class_id=class_id,
+            chunks=doomed,
+        )
 
     # Same connection (it stays usable after the rollback — no fresh connection needed).
     # The OLD set is complete and queryable: the DELETE rolled back with the failed INSERT.
@@ -198,8 +223,14 @@ def test_midwrite_failure_on_first_index_publishes_nothing(db):
         _chunk(owner_id, class_id, "new-C", 3),
     ]
     with pytest.raises(psycopg.errors.DataException):
-        index_file(conn, file_id=file_id, filename="lecture.pdf",
-                   owner_id=owner_id, class_id=class_id, chunks=doomed)
+        index_file(
+            conn,
+            file_id=file_id,
+            filename="lecture.pdf",
+            owner_id=owner_id,
+            class_id=class_id,
+            chunks=doomed,
+        )
 
     # Nothing published. No chunks...
     count = conn.execute(
@@ -209,9 +240,7 @@ def test_midwrite_failure_on_first_index_publishes_nothing(db):
 
     # ...and no `files` row AT ALL: the upsert (step 1) is inside the same transaction as the
     # insert (step 3), so it rolled back too. `ready` was never published for this file.
-    row = conn.execute(
-        "select status from files where file_id = %s::uuid", (file_id,)
-    ).fetchone()
+    row = conn.execute("select status from files where file_id = %s::uuid", (file_id,)).fetchone()
     assert row is None
 
 
@@ -240,7 +269,5 @@ def test_index_file_rejects_empty_chunk_set(db):
 
     # Nothing published: the guard fires before the transaction opens, so the files upsert
     # never ran.
-    row = conn.execute(
-        "select status from files where file_id = %s::uuid", (file_id,)
-    ).fetchone()
+    row = conn.execute("select status from files where file_id = %s::uuid", (file_id,)).fetchone()
     assert row is None

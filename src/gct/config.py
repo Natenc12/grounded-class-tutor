@@ -11,6 +11,7 @@ similarity search is meaningless. Two distinct rules enforce it — don't collap
     Sourcing both sides from config would make the guard compare config to itself and never
     fire (ADR 0018; the mismatch test in tests/gct/retriever/ proves the guard is real).
 """
+
 from __future__ import annotations
 
 import os

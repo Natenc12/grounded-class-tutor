@@ -49,14 +49,16 @@ uv run pytest tests/ -q                 # full suite
 uv run pytest -m db -q                  # just the Postgres-backed tests (DB must be up)
 uv run pytest -m "not live" -q          # exactly what CI runs
 uv run ruff check                       # lint — no paths, to match CI (it covers scripts/ too)
+uv run ruff format                      # formatting — writes; CI gates the same run as `--check`
 ```
 A bare `uv sync` doesn't just skip the dev tools, it **uninstalls** them: `pytest`/`ruff`/`reportlab`
 live in `[project.optional-dependencies].dev`, so the next two commands stop working.
 Postgres 17 is keg-only; its psql/createdb live at `/opt/homebrew/opt/postgresql@17/bin`.
 Secrets (`OPENAI_API_KEY`, `DATABASE_URL`) live in `.env` (gitignored).
 **What "green" is worth.** CI runs `ruff`, the migrations, and `pytest -m "not live"` on every PR,
-against a pgvector Postgres 17 service container (#18, extended by #32). Green proves lint, that
-`migrations/*.sql` applies cleanly, and every `db`-marked test — both DB paths, on fake embedders.
+against a pgvector Postgres 17 service container (#18, extended by #32). Green proves lint, formatting
+(#34), that `migrations/*.sql` applies cleanly, and every `db`-marked test — both DB paths, on fake
+embedders.
 The `db` fixture skips locally when Postgres is down but **hard-fails in CI**, so DB tests can't
 silently skip their way to green. Locally that judgement is still yours: `pytest -m db` reporting
 **skips means Postgres is down, not that the DB path passed.**

@@ -1,5 +1,6 @@
 """Apply every migrations/*.sql in filename order. Idempotent (the SQL uses IF NOT EXISTS),
 so re-running is safe. Plain SQL by design — hand-rolled, no Alembic weight in V1 (ADR 0003)."""
+
 from __future__ import annotations
 
 import pathlib

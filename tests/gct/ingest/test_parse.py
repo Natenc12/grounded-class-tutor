@@ -4,6 +4,7 @@ Covers the honor-point ① contract: PDF/PPTX happy paths, per-page/slide unit
 boundaries (never-span, ADR 0019), provenance stamping, and each terminal-failure
 case (ADR 0020).
 """
+
 from __future__ import annotations
 
 import pytest

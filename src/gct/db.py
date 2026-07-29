@@ -1,5 +1,6 @@
 """Postgres access. A thin helper now; the data layer stays local Postgres in V1 and swaps to
 Supabase in V2 with no rewrite (C4 / ADR 0006)."""
+
 from __future__ import annotations
 
 import psycopg

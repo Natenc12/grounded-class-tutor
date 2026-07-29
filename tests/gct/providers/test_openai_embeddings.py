@@ -6,6 +6,7 @@ Two halves:
   proving order/length end-to-end, empty-input short-circuit, and transient-vs-terminal error
   classification (`TransientEmbeddingError`, ADR 0011 / 0013).
 """
+
 from __future__ import annotations
 
 from dataclasses import dataclass

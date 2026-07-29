@@ -4,8 +4,10 @@ in-memory row set becomes the queryable, provenance-carrying `chunks` set the Re
 
 The invariant this box exists to hold: a file's chunks are ALL-from-one-run or ABSENT, and
 `files.status='ready'` flips inside the SAME transaction as the chunk insert - so `status=ready`
-⟺ the full chunk set is committed & queryable (ADR 0020 §2-3). The transaction wraps only the write;
-the slow parse/chunk/embed work already ran, with no transaction open.
+⟺ the full chunk set is committed & queryable (ADR 0020 §2-3), GIVEN the caller precondition in
+`index_file`'s docstring. Atomicity is unconditional; PUBLICATION is not (ADR 0025 amends 0020's
+unconditional claim). The transaction wraps only the write; the slow parse/chunk/embed work
+already ran, with no transaction open.
 
 Idempotent by construction: processing a `file_id` is `DELETE FROM chunks WHERE file_id` then
 insert the full set, so re-running the same `file_id` replaces cleanly with no dedup keys. The
@@ -61,7 +63,7 @@ def index_file(
         pgvector type - `conn` MUST come from `gct.db.connect()`.
 
     Raises `ValueError` if `chunks` is empty: publishing `ready` with no chunks would break
-    `status=ready` ⟺ full chunk set committed & queryable (ADR 0020). The guard runs BEFORE the
+    `status=ready` ⟺ full chunk set committed & queryable (ADR 0020/0025). The guard runs BEFORE the
     transaction opens, so nothing is written at all - not even the `files` row.
     """
     # Empty-set guard: `executemany` over an empty sequence is a no-op, so steps 1-2 below would

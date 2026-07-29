@@ -92,10 +92,15 @@ class AskResult:
 def _retrieval_error(kind: str, message: str) -> GrounderResult:
     """A retrieval-side failure, shaped as the Grounder's transport-level ERROR (ADR 0016).
 
-    Field-for-field the same shape as `answer.py`'s private `_error()`, for the reasons documented
-    there. A local twin rather than an import of another module's underscore-private helper: that
-    would make its internals our dependency, and this is a handful of literal fields. If the ERROR
-    shape changes, both sites change together - which the ERROR tests on either side will force.
+    Field-for-field the same shape as `answer.py`'s private `_error()`: no prose, no citations,
+    `coverage.complete=False` with NO gaps - for the reasons documented there. Plus one that
+    `_error`'s docstring does not state: `integrity.ok=True` because nothing was generated, so
+    nothing failed validation.
+
+    A local twin rather than an import of another module's underscore-private helper: that would
+    make its internals our dependency, and this is a handful of literal fields. If the ERROR shape
+    changes, both sites change together - forced by `TestErrorShapeTwin` in `tests/gct/ask/`, which
+    exists because the per-suite field assertions did NOT force it.
     """
     return GrounderResult(
         state=GrounderState.ERROR,

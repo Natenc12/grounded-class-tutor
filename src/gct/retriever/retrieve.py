@@ -67,7 +67,7 @@ class RetrievedChunk:
     text: str
     file: str
     page_or_slide: int
-    score: float  # normalized similarity in [0,1], higher = more relevant (ADR 0017/0024)
+    score: float  # normalized similarity in [0,1], higher-better (ADR 0017, clamped per ADR 0024)
 
 
 def _assert_embedding_consistency(
@@ -124,11 +124,13 @@ def _assert_embedding_consistency(
 
 
 def _to_score(distance: float) -> float:
-    """Cosine distance -> normalized similarity in [0,1], higher = more relevant (ADR 0024).
+    """Cosine distance -> normalized similarity in [0,1], higher-better (ADR 0017, clamped per
+    ADR 0024).
 
-    The clamp is the amendment: pgvector's `<=>` ranges [0,2], so a bare `1 - distance` would
-    yield [-1,1] and break the range downstream binds to (ADR 0024, which amends ADR 0017's
-    range claim). Clamping is monotonic, so ordering is unaffected.
+    The seam and the range are ADR 0017's; only the clamp is ADR 0024's, which amends 0017's
+    range claim and leaves its reasoning intact. pgvector's `<=>` ranges [0,2], so a bare
+    `1 - distance` would yield [-1,1] and break the range downstream binds to. Clamping is
+    monotonic, so ordering is unaffected.
 
     ARGUMENT ORDER IS LOAD-BEARING - do not rewrite this as `max(1.0 - distance, 0.0)`, which
     reads more naturally and is NOT equivalent. A zero vector on either side makes pgvector's
@@ -159,8 +161,8 @@ def retrieve(
     Guard (ADR 0018) BEFORE the paid embed call, then a scoped pgvector top-k. A
     `TransientEmbeddingError` from the query embed propagates untouched - no retry here.
 
-    Returns `[]` ONLY for an empty/un-ingested class (see module docstring). A corpus smaller
-    than `k` returns all of it - short, not an error.
+    Returns in rank order (score desc), length <= k. `[]` ONLY for an empty/un-ingested class
+    (see module docstring). A corpus smaller than `k` returns all of it - short, not an error.
 
     `k < 1` raises `ValueError`. That guard exists to protect the `[]` contract, not for tidiness:
     `k=0` would make `LIMIT 0` return no rows from a perfectly healthy class, and the Grounder
@@ -192,11 +194,13 @@ def retrieve(
 
     # 3. Scoped top-k. Two load-bearing details in this SQL:
     #    - `<=>` (cosine) matches the HNSW `vector_cosine_ops` index, so `<->` or `<#>` would
-    #      silently bypass it AND change what the score means (ADR 0017/0024).
+    #      silently bypass it AND change what the score means (ADR 0017).
     #    - `::vector` is REQUIRED. A bare `list[float]` adapts as `double precision[]` and a
     #      `<=>` expression has no column to infer the target type from, so it fails with
     #      `UndefinedFunction: operator does not exist: vector <=> double precision[]`.
     #      (`index.py`'s INSERT needs no cast only because the COLUMN supplies the type.)
+    #      The cast is preferred over `pgvector.Vector(q_vec)`, which works identically but adds
+    #      an import - a settled choice, not an oversight.
     rows = conn.execute(
         """
         select chunk_id, text, file, page_or_slide,

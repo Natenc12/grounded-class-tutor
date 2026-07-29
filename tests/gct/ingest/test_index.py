@@ -207,7 +207,8 @@ def test_midwrite_failure_on_first_index_publishes_nothing(db):
     This is the path on which the status half of the invariant is actually provable. On a re-index
     `status` was already 'ready' before the failure, so asserting it "did not flip" proves nothing;
     on a first index the `files` upsert rolls back with the chunks, so the row is absent entirely.
-    `status=ready` ⟺ full chunk set committed & queryable (ADR 0020 §3).
+    `status=ready` ⟺ full chunk set committed & queryable (ADR 0020 §3, publication conditional on
+    the caller precondition per ADR 0025 - which this test satisfies with its own connection).
 
     As above, the injection must fail mid-`executemany`, NOT before the transaction opens — a
     dimension check moved into Python would raise without ever exercising the rollback, and this

@@ -1,8 +1,8 @@
 """Tests for the retriever's pipeline stages (issue #5).
 
 - `TestToScore` - pure, no DB, no network. `_to_score` maps pgvector's `<=>` cosine distance
-  (real range [0,2], not the ADR's assumed [0,1]) to a normalized [0,1] similarity, clamped at
-  zero (ADR 0017 + Decision 1).
+  (real range [0,2]) to a normalized [0,1] similarity, clamped at zero (ADR 0017, clamped per
+  ADR 0024 - which amended 0017's range claim precisely because [0,2] breaks a bare `1 - d`).
 - `TestAssertEmbeddingConsistency` - DB-backed. The ADR-0018 guard, including the mixed-model
   case (roadmap PM-5) and the empty-class short-circuit.
 - `TestRetrieve` - DB-backed, end-to-end through the whole pipeline: ranking + provenance,
@@ -51,7 +51,7 @@ class TestToScore:
         NaN is False, so `max` keeps whichever argument it saw first: `max(0.0, 1.0 - nan)` is
         0.0, but the more natural-reading `max(1.0 - nan, 0.0)` is nan. This test exists so that
         rewrite fails loudly instead of leaking nan into `RetrievedChunk.score`, which ADR 0017
-        contracts as [0,1] and the Grounder consumes.
+        contracts as [0,1] (clamped per ADR 0024) and the Grounder consumes.
         """
         nan = float("nan")
         assert _to_score(nan) == 0.0

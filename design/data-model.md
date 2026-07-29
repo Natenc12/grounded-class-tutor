@@ -38,7 +38,7 @@ truth `GET /files/:id` returns — distinct from the `jobs` row, which is the ex
 | `class_id` | uuid FK → classes | scope (F6) |
 | `filename` | text | original name (e.g. `lecture-3.pdf`); source of the chunk's citation label |
 | `staging_ref` | text | pointer into file staging (local dir V1 → Object Storage V2, ADR 0010) |
-| `status` | enum | `queued · processing · ready · failed` (F3, ADR 0011). **`ready` ⟺ full chunk set committed** (flipped inside the index transaction, ADR 0020) |
+| `status` | enum | `queued · processing · ready · failed` (F3, ADR 0011). **`ready` ⟺ full chunk set committed** (flipped inside the index transaction — ADR 0020, publication conditional per ADR 0025 on the caller not already being in a transaction) |
 | `failed_reason` | enum \| null | populated on `failed`; **terminal** (`unparseable · protected · unsupported · empty`) vs **transient_exhausted** (ADR 0020); drives the actionable UI message |
 | `created_at` / `updated_at` | timestamptz | |
 
@@ -58,8 +58,10 @@ atomic replace (ADR 0020), read by the Retriever. This row is where the write pa
 | `embedding_model_id` | text | the ADR 0018 stamp — the Retriever **asserts** this == active embedder, fails loud |
 | `created_at` | timestamptz | |
 
-- **Not stored: `score`.** Similarity is **computed at query time** (`1 - cosine_distance`, ADR 0017);
-  it is a per-query property, never a column.
+- **Not stored: `score`.** Similarity is **computed at query time** (`max(0.0, 1 - cosine_distance)`
+  — ADR 0017, clamped per ADR 0024: pgvector's `<=>` returns distance in `[0, 2]`, so the unclamped
+  form would yield `[-1, 1]` and break the `[0, 1]` range the seam promises); it is a per-query
+  property, never a column.
 - **Denormalization — `file` on the chunk.** The citation filename is copied onto every chunk (not
   joined from `files`) so citation render needs no join and provenance travels *with* the unit
   (honor-point ①; the Retriever SELECTs `file` directly). Safe because the worker is the **single
@@ -97,7 +99,8 @@ the file is still `queued`) without corruption.
 - **`page_or_slide` scalar everywhere** — never-span (ADR 0019); keeps the Grounder/Retriever/Citation
   contracts unreopened.
 - **`ready ⟺ full chunk set committed`** — `files.status='ready'` flips inside the index transaction
-  with the chunk insert (ADR 0020); no partial index is ever visible.
+  with the chunk insert (ADR 0020); no partial index is ever visible. Atomicity is unconditional;
+  **publication is conditional per ADR 0025** on the caller not already being inside a transaction.
 - **Embedding-model consistency** — `chunks.embedding_model_id` (write, ADR 0018) is asserted by the
   Retriever (read); index- and query-time embeddings are the identical model+version (ADR 0005).
 

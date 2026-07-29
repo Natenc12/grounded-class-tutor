@@ -10,6 +10,7 @@ can be tested with no network / no OpenAI (the same `client=`-injection discipli
 The `db` fixture moved to the root `tests/conftest.py` when the retriever suite (#5) needed it too;
 it is still available here by normal conftest inheritance.
 """
+
 from __future__ import annotations
 
 import hashlib

@@ -18,6 +18,7 @@ an empty result set that the Grounder cannot tell apart from an empty class (whi
 a REFUSAL: "your materials don't cover this"). `ask()` is the first caller standing on both sides
 of that seam, so the conversion lands here. See `ask()`'s docstring for the exact boundary.
 """
+
 from __future__ import annotations
 
 from dataclasses import dataclass

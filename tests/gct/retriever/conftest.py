@@ -14,6 +14,7 @@ Two things the retriever tests need that nothing else in the repo provides:
 
 The `db` fixture comes from the root `tests/conftest.py` by conftest inheritance.
 """
+
 from __future__ import annotations
 
 import hashlib

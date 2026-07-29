@@ -13,6 +13,7 @@ insert the full set, so re-running the same `file_id` replaces cleanly with no d
 minimal row (Slice 1), a repeat lands on UPDATE (drives the re-index test, and is what Slice 2
 needs when the row pre-exists - wrap, not rewrite; PM-4 seam).
 """
+
 from __future__ import annotations
 
 from typing import TYPE_CHECKING

@@ -13,6 +13,7 @@ Kept to ONE round-trip on the cheapest endpoint, deliberately: the full end-to-e
 the smoke suite lives in `scripts/ask_smoke.py` (run by hand, per run, with its cost in plain
 sight), not in a test that every `pytest` habit would silently re-bill.
 """
+
 from __future__ import annotations
 
 from gct.config import ACTIVE_EMBEDDING_MODEL_ID, EMBEDDING_DIM

@@ -22,6 +22,7 @@ Never-span falls out for FREE: we chunk WITHIN each `ParsedUnit` independently a
 merge text across units. A `ParsedUnit` is already exactly one page/slide, so a chunk
 physically cannot straddle a boundary.
 """
+
 from __future__ import annotations
 
 from dataclasses import dataclass

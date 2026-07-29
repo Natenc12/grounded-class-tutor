@@ -20,6 +20,7 @@ Organised by the claim being defended:
 Every test that takes `db` is automatically `db`-marked (tests/conftest.py derives the mark from
 the fixture). A SKIP here locally means Postgres is down - it is not a pass.
 """
+
 from __future__ import annotations
 
 from collections.abc import Sequence
@@ -370,15 +371,19 @@ class TestRetrievalRan:
             embedder=ranking_embedder,
         )
 
-        result = ask(conn, QUESTION, owner_id, class_id,
-                     embedder=ranking_embedder, generator=scripted(GOOD_REPLY))
+        result = ask(
+            conn,
+            QUESTION,
+            owner_id,
+            class_id,
+            embedder=ranking_embedder,
+            generator=scripted(GOOD_REPLY),
+        )
 
         assert result.result.state is GrounderState.GROUNDED
         assert result.retrieval_ran is True
 
-    def test_empty_class_ran_retrieval_and_is_a_measured_miss(
-        self, db, ranking_embedder, scripted
-    ):
+    def test_empty_class_ran_retrieval_and_is_a_measured_miss(self, db, ranking_embedder, scripted):
         """THE DISCRIMINATING CASE: `retrieved == []` but retrieval absolutely did run.
 
         This is why the flag cannot be replaced by `not result.retrieved`. An un-ingested class
@@ -390,13 +395,14 @@ class TestRetrievalRan:
         conn, owner_id, class_id = db  # nothing seeded
         generator = scripted()
 
-        result = ask(conn, QUESTION, owner_id, class_id,
-                     embedder=ranking_embedder, generator=generator)
+        result = ask(
+            conn, QUESTION, owner_id, class_id, embedder=ranking_embedder, generator=generator
+        )
 
         assert result.retrieved == []
-        assert result.retrieval_ran is True          # ran, and missed
+        assert result.retrieval_ran is True  # ran, and missed
         assert result.result.state is GrounderState.REFUSAL
-        assert generator.call_count == 0             # canned refusal, nothing paid for
+        assert generator.call_count == 0  # canned refusal, nothing paid for
 
     def test_embedding_mismatch_reports_retrieval_never_ran(
         self, db, ranking_embedder, seed_class, scripted
@@ -404,11 +410,13 @@ class TestRetrievalRan:
         conn, owner_id, class_id = db
         # Same discriminating stamp as the mismatch test above: the corpus is labelled with the
         # ACTIVE model id, which is not this embedder's own.
-        seed_class(["some real content"], embedder=ranking_embedder,
-                   model_id=ACTIVE_EMBEDDING_MODEL_ID)
+        seed_class(
+            ["some real content"], embedder=ranking_embedder, model_id=ACTIVE_EMBEDDING_MODEL_ID
+        )
 
-        result = ask(conn, QUESTION, owner_id, class_id,
-                     embedder=ranking_embedder, generator=scripted())
+        result = ask(
+            conn, QUESTION, owner_id, class_id, embedder=ranking_embedder, generator=scripted()
+        )
 
         assert result.result.state is GrounderState.ERROR
         assert result.retrieved == []
@@ -419,12 +427,9 @@ class TestRetrievalRan:
     ):
         conn, owner_id, class_id = db
         seed_class(["some real content"], embedder=ranking_embedder)
-        exploding = BrokenEmbeddings(
-            ranking_embedder, TransientEmbeddingError("429 slow down")
-        )
+        exploding = BrokenEmbeddings(ranking_embedder, TransientEmbeddingError("429 slow down"))
 
-        result = ask(conn, QUESTION, owner_id, class_id,
-                     embedder=exploding, generator=scripted())
+        result = ask(conn, QUESTION, owner_id, class_id, embedder=exploding, generator=scripted())
 
         assert result.result.state is GrounderState.ERROR
         assert result.retrieved == []

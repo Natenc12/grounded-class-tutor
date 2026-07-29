@@ -12,6 +12,7 @@ directly. Every chunk row carries `owner_id`/`class_id` (F6/F12 isolation) and
 `embedding_model_id`, stamped from the embedder that produced the vectors (ADR 0018 - the value
 the Retriever asserts against).
 """
+
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -74,9 +75,7 @@ def compose(
     # exact trust failure this product exists to prevent. Raise (not assert): this guard must hold
     # even under `python -O`, which strips assert statements.
     if len(vectors) != len(chunks):
-        raise ValueError(
-            f"embedder returned {len(vectors)} vectors for {len(chunks)} chunks"
-        )
+        raise ValueError(f"embedder returned {len(vectors)} vectors for {len(chunks)} chunks")
     return [
         PreparedChunk(
             text=chunk.text,

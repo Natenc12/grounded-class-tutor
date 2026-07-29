@@ -27,6 +27,7 @@ twins, shaped to what this suite has to discriminate:
 The `db` fixture comes from the root `tests/conftest.py` by conftest inheritance; taking it is
 what earns a test the `db` marker (tests/conftest.py derives the mark from the fixture).
 """
+
 from __future__ import annotations
 
 import hashlib

@@ -15,6 +15,7 @@ constructed at all: every test stops before the question loop, which is the part
 Every test taking `db` is automatically `db`-marked (tests/conftest.py derives it from the
 fixture). A SKIP here locally means Postgres is down - it is not a pass.
 """
+
 from __future__ import annotations
 
 import importlib.util
@@ -95,7 +96,7 @@ def question(qid: str, expectation: str, sources: list[tuple[str, int]]) -> Eval
 
 
 class TestConvergeCorpus:
-    """"Every corpus file ingested exactly once" - the property that makes re-running safe."""
+    """ "Every corpus file ingested exactly once" - the property that makes re-running safe."""
 
     def test_ingests_every_file_once_on_a_cold_class(self, db, corpus):
         conn, owner_id, class_id = db
@@ -118,13 +119,19 @@ class TestConvergeCorpus:
         """
         conn, owner_id, class_id = db
         first = ask_smoke._converge_corpus(
-            conn, owner_id=owner_id, class_id=class_id, corpus_dir=corpus,
+            conn,
+            owner_id=owner_id,
+            class_id=class_id,
+            corpus_dir=corpus,
             embedder=FakeEmbeddings(),
         )
 
         second_embedder = FakeEmbeddings()
         second = ask_smoke._converge_corpus(
-            conn, owner_id=owner_id, class_id=class_id, corpus_dir=corpus,
+            conn,
+            owner_id=owner_id,
+            class_id=class_id,
+            corpus_dir=corpus,
             embedder=second_embedder,
         )
 
@@ -138,7 +145,10 @@ class TestConvergeCorpus:
 
         with pytest.raises(ask_smoke.SetupError, match="dogfood corpus is"):
             ask_smoke._converge_corpus(
-                conn, owner_id=owner_id, class_id=class_id, corpus_dir=empty,
+                conn,
+                owner_id=owner_id,
+                class_id=class_id,
+                corpus_dir=empty,
                 embedder=FakeEmbeddings(),
             )
 
@@ -151,13 +161,15 @@ class TestConvergeCorpus:
         """
         conn, owner_id, class_id = db
         ask_smoke._converge_corpus(
-            conn, owner_id=owner_id, class_id=class_id, corpus_dir=corpus,
+            conn,
+            owner_id=owner_id,
+            class_id=class_id,
+            corpus_dir=corpus,
             embedder=FakeEmbeddings(),
         )
         # Ingest alpha.pdf a SECOND time - the real-world failure, reproduced exactly: a fresh
         # file_id, so the delete-by-file_id idempotency never fires.
-        ingest_file(corpus / "alpha.pdf", owner_id, class_id,
-                    embedder=FakeEmbeddings(), conn=conn)
+        ingest_file(corpus / "alpha.pdf", owner_id, class_id, embedder=FakeEmbeddings(), conn=conn)
 
         embedder = FakeEmbeddings()
         ready = ask_smoke._converge_corpus(
@@ -251,7 +263,10 @@ class TestSetupValidityGuards:
         """
         conn, owner_id, class_id = db
         ask_smoke._converge_corpus(
-            conn, owner_id=owner_id, class_id=class_id, corpus_dir=corpus,
+            conn,
+            owner_id=owner_id,
+            class_id=class_id,
+            corpus_dir=corpus,
             embedder=FakeEmbeddings(),
         )
 
@@ -278,7 +293,10 @@ class TestSetupValidityGuards:
         """
         conn, owner_id, class_id = db
         ask_smoke._converge_corpus(
-            conn, owner_id=owner_id, class_id=class_id, corpus_dir=corpus,
+            conn,
+            owner_id=owner_id,
+            class_id=class_id,
+            corpus_dir=corpus,
             embedder=FakeEmbeddings(),
         )
 
@@ -294,8 +312,11 @@ class TestSetupValidityGuards:
                 (other_class, other_owner, "other class"),
             )
             ingest_file(
-                other_dir / "someone-elses.pdf", other_owner, other_class,
-                embedder=FakeEmbeddings(), conn=conn,
+                other_dir / "someone-elses.pdf",
+                other_owner,
+                other_class,
+                embedder=FakeEmbeddings(),
+                conn=conn,
             )
 
             indexed = ask_smoke._indexed_pages(conn, owner_id=owner_id, class_id=class_id)
@@ -306,12 +327,8 @@ class TestSetupValidityGuards:
             )
 
             # Same class_id, different owner, and vice versa: BOTH halves of the predicate matter.
-            assert ask_smoke._indexed_pages(
-                conn, owner_id=other_owner, class_id=class_id
-            ) == set()
-            assert ask_smoke._indexed_pages(
-                conn, owner_id=owner_id, class_id=other_class
-            ) == set()
+            assert ask_smoke._indexed_pages(conn, owner_id=other_owner, class_id=class_id) == set()
+            assert ask_smoke._indexed_pages(conn, owner_id=owner_id, class_id=other_class) == set()
         finally:
             # The `db` fixture tears down ITS owner only, so this one cleans up after itself.
             conn.execute("delete from chunks where owner_id = %s", (other_owner,))
@@ -379,9 +396,11 @@ class TestExitGate:
         from gct.eval.scoring import EvalRecord
         from gct.grounder.answer import GrounderState
 
-        records = [EvalRecord("answer", GrounderState.GROUNDED, hit=True)] + [
-            EvalRecord("answer", GrounderState.PARTIAL, hit=True) for _ in range(7)
-        ] + [EvalRecord("refuse", GrounderState.REFUSAL)]
+        records = (
+            [EvalRecord("answer", GrounderState.GROUNDED, hit=True)]
+            + [EvalRecord("answer", GrounderState.PARTIAL, hit=True) for _ in range(7)]
+            + [EvalRecord("refuse", GrounderState.REFUSAL)]
+        )
 
         ask_smoke._print_gate(records, self._metrics(records))
         out = capsys.readouterr().out

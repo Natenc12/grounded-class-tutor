@@ -5,6 +5,7 @@ Tested with a real generated PDF (`pdf_factory`) and the deterministic `fake_emb
 network / no Postgres. The DB-backed `index_file`/`ingest_file` tests live elsewhere
 (test_index.py).
 """
+
 from __future__ import annotations
 
 import pytest

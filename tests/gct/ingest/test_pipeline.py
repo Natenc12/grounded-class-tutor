@@ -72,10 +72,16 @@ def test_ingest_file_embed_failure_leaves_db_untouched(pdf_factory, db):
     """ADR 0020's property ("an embed failure leaves the DB untouched") holds only by STATEMENT
     ORDER inside `ingest_file`: `compose` (embed included) is pure and fully precedes the only
     transaction (`index_file`, in `index.py`) - nothing currently goes red if that ordering ever
-    breaks. It's exactly the shape a Slice-2 worker will be tempted to break, e.g. pre-creating the
+    breaks. It's ONE OF TWO shapes a Slice-2 worker will be tempted to break, e.g. pre-creating the
     `files` row as `processing` before `compose` runs. An embedder that raises must leave zero
     `files` rows AND zero `chunks` rows for this owner - if a future worker pre-writes a row before
-    `compose`, this goes red."""
+    `compose`, this goes red.
+
+    SCOPE - this pins the WRITE-ORDER half only. The other half is the caller's connection state
+    (ADR 0020, publication claim amended per ADR 0025): a worker that leases a job and then ingests
+    on the SAME connection gets a savepoint rather than a transaction, so `ingest_file` returns
+    reporting success while having published nothing. ADR 0025 records why no single-connection test
+    can catch that - this one included. A green here is not cover for it."""
     conn, owner_id, class_id = db
     path = pdf_factory("lecture.pdf", ["alpha beta gamma"])
 

@@ -47,6 +47,36 @@ work without colliding — not a concept.** Split by module/file seam (Grounder 
 module), never into pieces that all churn the same file. If a clean seam doesn't exist, keep the
 pieces together as a **group** (see step 5), don't force a split.
 
+**Two failures live here, and they pull in opposite directions — diagnose before acting.**
+
+- **Under-split:** a task spans files with *different* owners and no shared state. The smoke-runner
+  row is the cautionary case — `ask()`, the scoring module, and the runner script are three files,
+  three review surfaces, and one issue. A real seam that the projection walked past. **Fix: split.**
+- **Over-split (worse):** a task looks big, so it gets cut into pieces that all churn one file. Ship
+  those as N PRs and N−1 of them merge a module that does not run — more review work than the single
+  diff, and no intermediate state anyone can exercise. **Fix: leave it whole and give it a PR plan
+  (below).**
+
+Test before splitting: **would each piece merge into something that runs?** If no, it is not a task
+boundary, it is a commit boundary. Say so in the body rather than on the board.
+
+**PR plan for any task over ~3 checklist items.** A big issue is not a problem; a big issue that
+arrives as a wall is. Annotate the checklist with where to cut, so it reads as a merge sequence:
+
+```
+- [ ] ② build labeled context [S#] + server-side map (ADR 0015)     — PR 1
+- [ ] single generate() call; prompt + coverage marker (ADR 0014)   — PR 1
+- [ ] parse [S#] + coverage marker                                  — PR 2
+- [ ] validate (V1-structural): labels, zero-cite guard, marker     — PR 2
+- [ ] decide state + fail-safe (ADR 0014/0016)                      — PR 3
+```
+
+**This is a plan, not tracked state — and that distinction is the whole point.** The issue stays the
+single writer for "is this done"; the annotations are advice to whoever picks it up, and nothing
+recomputes or reconciles them. Promoting them to tracked units (sub-issues, per-item tickets) creates
+a second writer for one fact, which is the drift this repo is built to avoid — and it buries the
+ready-frontier under rows that were never independently pickable.
+
 ### 3 — Pass 2: ground & verify (two-way)
 - **Precision (no hallucination):** every task must cite a specific doc span (roadmap bullet / ADR /
   component-spec line). A task with no citation is marked `⚠ ungrounded — inferred beyond docs` and
@@ -65,7 +95,9 @@ Each issue carries the block in Templates → *Provenance*. The slice's `Exit` l
 - **Mutual exclusion:** each task declares `Touches:` (file globs from the component specs). Two tasks
   are `parallel-safe` iff footprints are disjoint. Overlap → serialize (add a dep edge) or group.
 - **Groups:** tasks that can't be made disjoint become **one group epic**, one owner, sub-tasks as a
-  checklist inside — not N racing issues.
+  checklist inside — not N racing issues. Carry the **PR plan** from step 2 on that checklist: a group
+  is precisely the case where the pieces share a file, so its owner needs the merge sequence spelled
+  out. The checklist is the plan; the issue's open/closed is still the only tracked fact.
 - **Readiness:** label each issue `ready` (no open blockers) or `blocked`.
 
 ### 6 — Reconcile against GitHub (idempotency)
@@ -101,7 +133,27 @@ Print, and stop for approval:
 - **DAG preview:** the ready-frontier — what's pickable *now*, including any freshly-unblocked issues.
 
 ### 8 — Apply (only with `--create` + approval)
-1. Bootstrap labels if missing: `slice-0`…`slice-4`, `spike`, `epic`, `ready`, `blocked`, `group`.
+1. **Bootstrap every label the plan uses — derived from step 7's issue table, never from a stored
+   list.** `gh issue create` **fails the whole create** on an unknown `--label`: it does not warn and
+   continue, and it does not create the issue minus the label. So a missing label is not a cosmetic
+   gap, it is four dead creates in a row.
+
+   A stored list is exactly the wrong shape here, and it failed the first time it was tested: step 8.3
+   below stamps a per-task `task:<slug>` key on every child, and no static list can contain a slug
+   that is invented by the projection it is meant to precede. The Spike Pass 1 run also needed a
+   *phase* label (`spike-pass-1`) that no `slice-N` enumeration covers.
+
+   Take the **union of labels across every issue about to be created or edited**, diff it against
+   `gh label list`, and create the missing ones *before* the first `gh issue create`:
+
+   ```sh
+   gh label create "<name>" --color <hex> --description "<what it keys>"
+   ```
+
+   Two conventions worth matching rather than re-inventing: reconcile keys are `--color c5def5
+   --description "reconcile key"`, and a phase label reuses its family's color (`spike-pass-2` is
+   `7057ff`, so `spike-pass-1` is too). Read the union off the table you just printed — *not* from
+   the taxonomy section below, which documents what labels **mean**, not which ones this run needs.
 2. **Reconcile existing:** apply the queued `blocked→ready` relabels and coordination edits from step 6;
    refresh the epic graph/checklist. (Never reopen or edit `exists-closed` issues.)
 3. **Create new:** the epic (if absent) then new children, wiring `Depends on` / `Blocks` numbers,
@@ -147,10 +199,14 @@ graph LR
   eval[#_ eval/questions.jsonl seed] --> smoke
 ```
 
-## Label taxonomy (skill creates on first `--create`)
-`slice-0`..`slice-4` (which slice) · `spike` · `epic` · `group` · `ready` / `blocked` (dependency
-frontier) · `task:<slug>` (per-issue reconcile key). Assignment (native GitHub) = claiming; no `wip`
-label needed.
+## Label taxonomy — what the labels *mean*
+**Not a bootstrap checklist.** Step 8.1 derives what to create from the run's own issue table;
+reading it from here instead is how the `task:<slug>` keys got missed.
+
+`slice-0`..`slice-4` (which slice) · `spike-pass-1` / `spike-pass-2` (which spike pass — a phase, not
+a slice; ADR 0022 sequences them, and a row can carry one without any `slice-N`) · `spike` · `epic` ·
+`group` · `ready` / `blocked` (dependency frontier) · `task:<slug>` (per-issue reconcile key, one per
+task, invented by the projection). Assignment (native GitHub) = claiming; no `wip` label needed.
 
 ## Dependency representation
 Body text + `ready`/`blocked` labels + the epic's Mermaid graph. No GitHub sub-issues/issue-types

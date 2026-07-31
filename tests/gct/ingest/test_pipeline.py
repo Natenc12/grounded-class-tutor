@@ -57,6 +57,47 @@ def test_compose_propagates_parse_error_on_empty_file(pdf_factory, fake_embedder
         compose(path, OWNER_ID, CLASS_ID, embedder=fake_embedder)
 
 
+class _ExplodingEmbedder:
+    """An `Embeddings`-shaped stub whose `embed` always raises - the failure injection for
+    `test_ingest_file_embed_failure_leaves_db_untouched` below (issue #42)."""
+
+    model_id = "exploding-embedder"
+    dim = 1
+
+    def embed(self, texts):
+        raise RuntimeError("embedder exploded")
+
+
+def test_ingest_file_embed_failure_leaves_db_untouched(pdf_factory, db):
+    """ADR 0020's property ("an embed failure leaves the DB untouched") holds only by STATEMENT
+    ORDER inside `ingest_file`: `compose` (embed included) is pure and fully precedes the only
+    transaction (`index_file`, in `index.py`) - nothing currently goes red if that ordering ever
+    breaks. It's ONE OF TWO shapes a Slice-2 worker will be tempted to break, e.g. pre-creating the
+    `files` row as `processing` before `compose` runs. An embedder that raises must leave zero
+    `files` rows AND zero `chunks` rows for this owner - if a future worker pre-writes a row before
+    `compose`, this goes red.
+
+    SCOPE - this pins the WRITE-ORDER half only. The other half is the caller's connection state
+    (ADR 0020, publication claim amended per ADR 0025): a worker that leases a job and then ingests
+    on the SAME connection gets a savepoint rather than a transaction, so `ingest_file` returns
+    reporting success while having published nothing. ADR 0025 records why no single-connection test
+    can catch that - this one included. A green here is not cover for it."""
+    conn, owner_id, class_id = db
+    path = pdf_factory("lecture.pdf", ["alpha beta gamma"])
+
+    with pytest.raises(RuntimeError):
+        ingest_file(path, owner_id, class_id, embedder=_ExplodingEmbedder(), conn=conn)
+
+    files_count = conn.execute(
+        "select count(*) from files where owner_id = %s", (owner_id,)
+    ).fetchone()[0]
+    chunks_count = conn.execute(
+        "select count(*) from chunks where owner_id = %s", (owner_id,)
+    ).fetchone()[0]
+    assert files_count == 0
+    assert chunks_count == 0
+
+
 def test_ingest_file_end_to_end(pdf_factory, fake_embedder, db):
     """The top-level Slice-1 entry: a real file goes through parse→chunk→embed→index and lands as a
     queryable, `ready` file. Returns the minted `file_id`; chunk rows are present under it."""

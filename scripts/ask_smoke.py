@@ -21,6 +21,12 @@ Run (needs a migrated DB, `.env` secrets, and the corpus files present — this 
 
     uv run python scripts/ask_smoke.py
     uv run python scripts/ask_smoke.py --suite smoke --k 5
+    uv run python scripts/ask_smoke.py --chunk-size 400 --chunk-overlap 60 --owner nate-400-60
+
+A new chunk window needs a fresh `--owner`, as above: the corpus is converged PER OWNER and no
+column records which window produced a chunk set, so a second window under an owner that already
+has a corpus scores the first window's chunks. See `_print_census`, which prints the window for
+exactly that reason.
 
 Exit codes: 0 the gate passed · 1 the gate failed · 2 setup failed (no corpus, no questions, a
 question naming a file the corpus does not have).
@@ -45,6 +51,7 @@ from gct.eval.scoring import (
     score_state,
 )
 from gct.grounder.answer import GrounderResult, GrounderState
+from gct.ingest.chunk import CHUNK_OVERLAP_WORDS, CHUNK_SIZE_WORDS
 from gct.ingest.pipeline import ingest_file
 from gct.providers.base import Embeddings
 from gct.providers.openai_provider import OpenAIEmbeddings, OpenAIGeneration
@@ -154,6 +161,8 @@ def _converge_corpus(
     class_id: str,
     corpus_dir: Path,
     embedder: Embeddings,
+    chunk_size: int,
+    chunk_overlap: int,
 ) -> dict[str, int]:
     """Bring the class to "every corpus file ingested exactly once". Returns filename -> chunks.
 
@@ -164,6 +173,11 @@ def _converge_corpus(
     the class doubles, retrieval fills its top-k with copies of one slide, and the census silently
     inflates. Convergence (check, then ingest only what is missing) is what makes this script safe
     to re-run, which a bench has to be.
+
+    `chunk_size`/`chunk_overlap` are required rather than defaulted, for the same reason `embedder`
+    is: they reach `ingest_file`, and the caller prints them (`_print_census`), so a default here
+    would let the printed window and the ingested one drift apart. They apply only to files this
+    call actually INGESTS — an already-`ready` file keeps whatever window produced it.
     """
     paths = sorted(
         {path for pattern in CORPUS_GLOBS for path in corpus_dir.glob(pattern)},
@@ -206,7 +220,15 @@ def _converge_corpus(
             continue
 
         print(f"  {path.name}: ingesting (parse -> chunk -> embed -> index) ...", flush=True)
-        file_id = ingest_file(path, owner_id, class_id, embedder=embedder, conn=conn)
+        file_id = ingest_file(
+            path,
+            owner_id,
+            class_id,
+            embedder=embedder,
+            conn=conn,
+            chunk_size=chunk_size,
+            chunk_overlap=chunk_overlap,
+        )
         count = conn.execute(
             "select count(*) from chunks where file_id = %(file_id)s::uuid",
             {"file_id": file_id},
@@ -324,9 +346,23 @@ def _require_expected_files(
 
 
 def _print_census(
-    conn: psycopg.Connection, *, owner_id: str, class_id: str, ready: dict[str, int]
+    conn: psycopg.Connection,
+    *,
+    owner_id: str,
+    class_id: str,
+    ready: dict[str, int],
+    chunk_size: int,
+    chunk_overlap: int,
 ) -> None:
-    """One line of ground truth about what the questions below are actually being asked of."""
+    """One line of ground truth about what the questions below are actually being asked of.
+
+    The chunk window prints HERE because nothing else can report it. `_converge_corpus` skips any
+    file already `ready` for this owner, matching on FILENAME alone, and no column records which
+    window produced a chunk set — so a second `--chunk-size`/`--chunk-overlap` under an owner that
+    already has a corpus silently scores the FIRST window's chunks. Two runs at different windows
+    printing an IDENTICAL census is exactly how that announces itself, and the printed window is
+    what makes the two counts comparable at all. Vary the window under a fresh `--owner`.
+    """
     total_chunks = conn.execute(
         """
         select count(*) from chunks
@@ -336,7 +372,7 @@ def _print_census(
     ).fetchone()[0]
     print(
         f"  census: {len(ready)} file(s) ready — {sum(ready.values())} chunks across them, "
-        f"{total_chunks} in the class"
+        f"{total_chunks} in the class, at chunk window {chunk_size}/{chunk_overlap} words"
     )
     print(
         f"  reference: manifest.md describes {MANIFEST_FILES} files / {MANIFEST_PARSED_UNITS} "
@@ -517,6 +553,24 @@ def _parse_args() -> argparse.Namespace:
         default=DEFAULT_K,
         help=f"retriever top-k (default {DEFAULT_K}, the retriever's own DEFAULT_K)",
     )
+    parser.add_argument(
+        "--chunk-size",
+        type=int,
+        default=CHUNK_SIZE_WORDS,
+        help=(
+            f"chunk window in words (default {CHUNK_SIZE_WORDS}, the chunker's own "
+            "CHUNK_SIZE_WORDS)"
+        ),
+    )
+    parser.add_argument(
+        "--chunk-overlap",
+        type=int,
+        default=CHUNK_OVERLAP_WORDS,
+        help=(
+            f"chunk overlap in words (default {CHUNK_OVERLAP_WORDS}, the chunker's own "
+            "CHUNK_OVERLAP_WORDS)"
+        ),
+    )
     args = parser.parse_args()
     # Range-checked HERE, before the DB opens or a single file is embedded. `retrieve()` rejects
     # k < 1 correctly and `ask()` correctly declines to convert caller bugs into a tidy ERROR - so
@@ -525,6 +579,14 @@ def _parse_args() -> argparse.Namespace:
     # system that answered badly. `parser.error` exits 2, matching EXIT_SETUP.
     if args.k < 1:
         parser.error(f"--k must be >= 1, got {args.k}")
+    # The `--k` precedent above, one stage earlier and cheaper to get wrong: an invalid window
+    # reaches `chunk_units`, whose guard raises mid-ingest — after every file before it in the
+    # corpus was already parsed, embedded and PAID FOR — and exits 1.
+    if not (0 <= args.chunk_overlap < args.chunk_size):
+        parser.error(
+            "--chunk-overlap must be in [0, --chunk-size), got "
+            f"--chunk-overlap {args.chunk_overlap}, --chunk-size {args.chunk_size}"
+        )
     return args
 
 
@@ -541,7 +603,13 @@ def _load(path: str, suite: str) -> list[EvalQuestion]:
 
 def main() -> int:
     args = _parse_args()
-    print(f"Slice 1 smoke — suite={args.suite!r} k={args.k} owner={args.owner!r}")
+    # The chunk window is part of the run's identity, not decoration: a corpus is converged per
+    # owner and carries no record of the window that produced it (see `_print_census`), so the
+    # header and the census are the only two places a run says which window it was asked for.
+    print(
+        f"Slice 1 smoke — suite={args.suite!r} k={args.k} "
+        f"chunk={args.chunk_size}/{args.chunk_overlap} owner={args.owner!r}"
+    )
 
     try:
         questions = _load(args.questions, args.suite)
@@ -598,13 +666,22 @@ def main() -> int:
                 class_id=class_id,
                 corpus_dir=corpus_dir,
                 embedder=embedder,
+                chunk_size=args.chunk_size,
+                chunk_overlap=args.chunk_overlap,
             )
             _require_expected_files(
                 questions,
                 ready,
                 _indexed_pages(conn, owner_id=args.owner, class_id=class_id),
             )
-            _print_census(conn, owner_id=args.owner, class_id=class_id, ready=ready)
+            _print_census(
+                conn,
+                owner_id=args.owner,
+                class_id=class_id,
+                ready=ready,
+                chunk_size=args.chunk_size,
+                chunk_overlap=args.chunk_overlap,
+            )
 
             # The tiny closure the loop drives: providers, connection and scope are wired once
             # here, so the loop below reads as "ask each question" and nothing else.

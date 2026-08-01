@@ -16,7 +16,9 @@ CONTRACT (locked, ADR 0019 - downstream Retriever/Grounder bind to this):
 
 STRATEGY (spike - tuned against the eval set later, ADR 0019 / 0021): boundary method,
 size, overlap, tokenizer tooling. Provisional V1 strategy = fixed-size + overlap over
-whitespace-split words. Sizes below are spike-tunable constants, not commitments.
+whitespace-split words. Sizes below are spike-tunable constants, not commitments - and
+so is the `size`/`overlap` SIGNATURE that carries them: ADR 0019 leaves the whole
+strategy to the spike, so the knobs may change shape (or vanish) when it settles.
 
 Never-span falls out for FREE: we chunk WITHIN each `ParsedUnit` independently and never
 merge text across units. A `ParsedUnit` is already exactly one page/slide, so a chunk
@@ -55,29 +57,45 @@ class TextChunk:
     page_or_slide: int
 
 
-def chunk_units(units: list[ParsedUnit]) -> list[TextChunk]:
+def chunk_units(
+    units: list[ParsedUnit],
+    *,
+    size: int = CHUNK_SIZE_WORDS,
+    overlap: int = CHUNK_OVERLAP_WORDS,
+) -> list[TextChunk]:
     """Chunk every parsed unit into `TextChunk`s, in order, under the never-span contract.
 
     Units are chunked INDEPENDENTLY - never merging text across them - which is what makes
     never-span hold for free. Chunks come back grouped per source unit, in unit order.
 
-    A unit whose text is shorter than `CHUNK_SIZE_WORDS` yields exactly ONE chunk (the whole
-    unit). A unit with real text always yields >= 1 chunk.
+    A unit whose text is shorter than `size` yields exactly ONE chunk (the whole unit). A unit
+    with real text always yields >= 1 chunk.
+
+    `size`/`overlap` default to the module constants, so the strategy is unchanged unless a
+    caller overrides it. Both the values AND this signature are provisional spike parameters
+    (ADR 0019, SPIKE half - see module docstring).
     """
+    # Validated here, at the public entry, because the failure mode is a HANG rather than a
+    # crash: `overlap >= size` makes stride <= 0 and `_word_windows` appends windows forever.
+    # Raise (not assert) for the same reason `compose`'s alignment guard in pipeline.py does -
+    # this validates CALLER input and must hold under `python -O`, which strips asserts.
+    if not (0 <= overlap < size):
+        raise ValueError(f"overlap must be in [0, size); got overlap={overlap}, size={size}")
+
     chunks: list[TextChunk] = []
     for unit in units:
-        chunks.extend(_chunk_one(unit))
+        chunks.extend(_chunk_one(unit, size, overlap))
     return chunks
 
 
-def _chunk_one(unit: ParsedUnit) -> list[TextChunk]:
+def _chunk_one(unit: ParsedUnit, size: int, overlap: int) -> list[TextChunk]:
     """Chunk a single unit's text into `TextChunk`s carrying that unit's provenance.
 
     The whitespace split + join FLATTENS newline structure. That is part of the provisional
     whitespace-word strategy, not an oversight (see module docstring, ADR 0019 / 0021).
     """
     words = unit.text.split()
-    windows = _word_windows(len(words), CHUNK_SIZE_WORDS, CHUNK_OVERLAP_WORDS)
+    windows = _word_windows(len(words), size, overlap)
     return [
         TextChunk(
             text=" ".join(words[start:end]),
@@ -96,7 +114,14 @@ def _word_windows(n_words: int, size: int, overlap: int) -> list[tuple[int, int]
       - Consecutive windows overlap by `overlap` words (stride = size - overlap).
       - The final window covers the tail - no trailing words dropped.
       - `n_words == 0` -> `[]`; `0 < n_words <= size` -> exactly one window `(0, n_words)`.
-      - Never emit an empty window; never advance by 0 (guarded by the module-level assert).
+      - Never emit an empty window; never advance by 0 (see the assert below).
+
+    Since `chunk_units` became parameterized there are THREE guards on `overlap < size`, at
+    different reaches, and naming only one of them here would name the wrong one for most
+    callers: the module-level assert covers the DEFAULTS at import, `chunk_units` raises on
+    CALLER-supplied values, and the assert below is this function's own self-guard for the
+    direct-call path the tests use. The assert is the only one that reaches every caller of
+    THIS function, which is why it stays even though `chunk_units` already raised.
     """
     assert 0 <= overlap < size, "overlap must be in [0, size)"  # stride > 0, no infinite loop
     if n_words == 0:

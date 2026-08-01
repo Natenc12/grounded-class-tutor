@@ -48,6 +48,41 @@ def test_compose_stamps_provenance_model_and_embeds_all(pdf_factory, fake_embedd
         assert p.embedding == fake_embedder.embed([p.text])[0]
 
 
+def test_compose_forwards_the_chunk_window(pdf_factory, fake_embedder):
+    """`chunk_size`/`chunk_overlap` reach `chunk_units` — the pass-through is real, not decorative.
+
+    The failure this exists for has no other symptom: a `compose` that accepts the window and then
+    calls `chunk_units(...)` with the defaults still returns well-formed `PreparedChunk`s, still
+    embeds and stamps them correctly, and passes every other test in this file. The spike (ADR
+    0019 / 0021) would then retune the window, observe nothing change, and read that as evidence
+    about chunking rather than about the wiring.
+
+    Counts are compared against the real `chunk_units` at the SAME window (the convention
+    `test_compose_stamps_provenance_model_and_embeds_all` sets) rather than hand-guessed, and both
+    windows are chosen to differ from the defaults so a silent fallback cannot pass.
+    """
+    path = pdf_factory("lecture.pdf", [" ".join(f"w{i}" for i in range(600))])
+    units = parse_file(path)
+
+    wide = compose(
+        path, OWNER_ID, CLASS_ID, embedder=fake_embedder, chunk_size=400, chunk_overlap=50
+    )
+    narrow = compose(
+        path, OWNER_ID, CLASS_ID, embedder=fake_embedder, chunk_size=100, chunk_overlap=20
+    )
+    default = compose(path, OWNER_ID, CLASS_ID, embedder=fake_embedder)
+
+    assert len(wide) == len(chunk_units(units, size=400, overlap=50))
+    assert len(narrow) == len(chunk_units(units, size=100, overlap=20))
+    # Three distinct counts: neither override collapsed onto the other or onto the default.
+    assert len(narrow) > len(wide)
+    assert len({len(wide), len(narrow), len(default)}) == 3
+    # The chunks are genuinely re-cut, not merely re-counted — a narrow window's first chunk holds
+    # fewer words than a wide one's, and every row is still a fully-stamped PreparedChunk.
+    assert len(narrow[0].text.split()) < len(wide[0].text.split())
+    assert all(p.embedding_model_id == fake_embedder.model_id for p in narrow)
+
+
 def test_compose_propagates_parse_error_on_empty_file(pdf_factory, fake_embedder):
     """A zero-text file raises `ParseError` from `parse_file`, and compose lets it fly untouched
     (terminal-failure *handling* is Slice 2's job, ADR 0020)."""
@@ -117,6 +152,37 @@ def test_ingest_file_end_to_end(pdf_factory, fake_embedder, db):
     ).fetchone()[0]
     # One chunk per short page (text under CHUNK_SIZE_WORDS) — matches the real chunker.
     assert n_chunks == len(chunk_units(parse_file(path)))
+
+
+def test_ingest_file_forwards_the_chunk_window(pdf_factory, fake_embedder, db):
+    """The window survives the SECOND hop too — `ingest_file` -> `compose` -> `chunk_units` — and
+    the retuned chunk set is what actually lands in the DB.
+
+    `test_compose_forwards_the_chunk_window` proves the inner hop; this one is here because
+    `ingest_file` is the seam Slice 2's worker wraps (ADR 0020), and a worker that passes a tuned
+    window down through it would otherwise index default-sized chunks while believing otherwise —
+    invisible until someone counted rows.
+    """
+    conn, owner_id, class_id = db
+    path = pdf_factory("lecture.pdf", [" ".join(f"w{i}" for i in range(600))])
+    units = parse_file(path)
+
+    file_id = ingest_file(
+        path,
+        owner_id,
+        class_id,
+        embedder=fake_embedder,
+        conn=conn,
+        chunk_size=100,
+        chunk_overlap=20,
+    )
+
+    n_chunks = conn.execute(
+        "select count(*) from chunks where file_id = %s::uuid", (file_id,)
+    ).fetchone()[0]
+    assert n_chunks == len(chunk_units(units, size=100, overlap=20))
+    # Differs from what the defaults would have written, so a dropped parameter goes red here.
+    assert n_chunks != len(chunk_units(units))
 
 
 # --- Fixture reliability (issue #23) ----------------------------------------------------------

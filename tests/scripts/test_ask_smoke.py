@@ -409,6 +409,184 @@ class TestExitGate:
         assert "1 GROUNDED + 7 PARTIAL" in out
 
 
+def grounder_result(state, prose, gaps):
+    """A `GrounderResult` with only the fields `_print_verbose` reads populated."""
+    from gct.grounder.answer import Coverage, GrounderResult, Integrity
+
+    return GrounderResult(
+        state=state,
+        answer_prose=prose,
+        citations=[],
+        coverage=Coverage(complete=not gaps, gaps=list(gaps)),
+        integrity=Integrity(ok=True, reasons=[]),
+        error=None,
+    )
+
+
+class TestOnlyFilter:
+    """`--only` (issue #60): re-ask a hand-picked subset cheaply, without lying about it."""
+
+    QUESTIONS = [
+        question("q001", "answer", [("present.pdf", 1)]),
+        question("q005", "answer", [("present.pdf", 2)]),
+        question("q009", "refuse", []),
+    ]
+
+    def test_no_flag_is_the_whole_suite_untouched(self):
+        assert ask_smoke._select(self.QUESTIONS, None) is self.QUESTIONS
+
+    def test_selects_exactly_the_named_ids(self):
+        selected = ask_smoke._select(self.QUESTIONS, "q005")
+
+        assert [q.id for q in selected] == ["q005"]
+
+    def test_comma_separated_ids_select_all_of_them_in_suite_order(self):
+        """Suite order, not command-line order: the per-question lines are meant to be diffed
+        against the same lines from a full run."""
+        selected = ask_smoke._select(self.QUESTIONS, "q009,q001")
+
+        assert [q.id for q in selected] == ["q001", "q009"]
+
+    def test_whitespace_around_ids_is_tolerated(self):
+        assert [q.id for q in ask_smoke._select(self.QUESTIONS, " q005 , q009 ")] == [
+            "q005",
+            "q009",
+        ]
+
+    def test_unknown_id_is_a_setup_error_naming_it(self):
+        """A typo must never quietly run a smaller suite than intended - and this one is the
+        cheapest of all to miss, since `--only q05` matching nothing would ask ZERO questions and
+        then print a tidy report of them."""
+        with pytest.raises(ask_smoke.SetupError, match="does not contain") as exc:
+            ask_smoke._select(self.QUESTIONS, "q05")
+
+        assert "'q05'" in str(exc.value)
+
+    def test_a_partly_unknown_id_list_is_refused_whole(self):
+        """One good id does not license running the run: the caller asked for two questions."""
+        with pytest.raises(ask_smoke.SetupError, match="'q999'"):
+            ask_smoke._select(self.QUESTIONS, "q005,q999")
+
+    def test_the_filter_is_applied_after_the_suite_filter(self):
+        """`--suite smoke --only q005` means "q005, IF smoke has it". An id in the eval file but
+        not in this suite is therefore unknown HERE, and must be refused rather than resurrected."""
+        smoke_only = [q for q in self.QUESTIONS if q.id != "q009"]
+
+        with pytest.raises(ask_smoke.SetupError, match="'q009'"):
+            ask_smoke._select(smoke_only, "q009")
+
+    def test_empty_id_list_is_a_setup_error(self):
+        with pytest.raises(ask_smoke.SetupError, match="names no question ids"):
+            ask_smoke._select(self.QUESTIONS, " , ")
+
+    def test_notice_names_the_ids_and_refuses_to_report_rates(self, capsys):
+        """What prints INSTEAD of the rate vector. Rates over a hand-picked subset are the
+        "clean rate over a suite that quietly shrank" this whole script exists to prevent - the
+        difference being that here the shrinking was asked for, so it is named rather than
+        refused. The gate is suppressed for its own reason: >=1 GROUNDED AND >=1 REFUSAL is
+        structurally unreachable for a one-question run, so running it would print FAIL for a run
+        that answered exactly what it was asked."""
+        ask_smoke._print_filtered_notice(ask_smoke._select(self.QUESTIONS, "q005"), 12)
+        out = capsys.readouterr().out
+
+        assert "FILTERED RUN" in out
+        assert "1 of 12" in out
+        assert "q005" in out
+        assert "No ADR 0023 rate vector" in out
+        assert "not comparable" in out
+        assert "No exit gate" in out
+        # The rate vector's own labels must be nowhere near this output.
+        assert "grounded_pass_rate" not in out
+        assert "PASS" not in out and "FAIL" not in out
+
+    def test_default_args_leave_both_new_flags_off(self, monkeypatch):
+        """The byte-identical-default guarantee, at the parse layer: absent flags mean a default
+        run takes neither new branch."""
+        monkeypatch.setattr("sys.argv", ["ask_smoke.py"])
+
+        args = ask_smoke._parse_args()
+
+        assert args.only is None
+        assert args.verbose is False
+
+    def test_flags_parse(self, monkeypatch):
+        monkeypatch.setattr("sys.argv", ["ask_smoke.py", "--only", "q005,q009", "--verbose"])
+
+        args = ask_smoke._parse_args()
+
+        assert args.only == "q005,q009"
+        assert args.verbose is True
+
+
+class TestVerbose:
+    """`--verbose` (issue #60): the probe has to be able to see its own subject."""
+
+    def test_prints_full_prose_and_untruncated_gaps(self, capsys):
+        """`_detail` never prints the prose at all, and clips gaps at 80 chars - but the gap
+        WORDING is the evidence a generation probe compares across repeated asks."""
+        from gct.grounder.answer import GrounderState
+
+        long_gap = "the sources do not cover " + "x" * 200
+        # A blank paragraph break in the prose, because that is what a real answer carries.
+        result = grounder_result(GrounderState.PARTIAL, "line one\n\nline two", [long_gap, "and b"])
+
+        ask_smoke._print_verbose(result)
+        out = capsys.readouterr().out
+
+        assert "answer_prose:" in out
+        assert "| line one" in out and "| line two" in out
+        assert not any(line.rstrip() != line for line in out.splitlines()), (
+            "verbose output is diffed run-against-run; trailing whitespace is noise in that diff"
+        )
+        assert long_gap in out, "the gap list must NOT be clipped under --verbose"
+        assert "..." not in out
+        assert "gaps (2, un-truncated):" in out
+
+    def test_none_prose_prints_no_block_and_never_the_word_none(self, capsys):
+        """REFUSAL and ERROR carry no prose, by contract (`GrounderResult`). An empty block, or a
+        literal "None", would read as something the model wrote."""
+        from gct.grounder.answer import GrounderState
+
+        result = grounder_result(GrounderState.REFUSAL, None, ["nothing on quantum chromodynamics"])
+
+        ask_smoke._print_verbose(result)
+        out = capsys.readouterr().out
+
+        assert "answer_prose" not in out
+        assert "None" not in out
+        assert "nothing on quantum chromodynamics" in out
+
+    def test_a_result_with_neither_prose_nor_gaps_prints_nothing(self, capsys):
+        """An ERROR carries no prose and no gaps (`_error`), so verbose has nothing to add - and
+        must add nothing rather than an empty labelled block."""
+        from gct.grounder.answer import GrounderState
+
+        ask_smoke._print_verbose(grounder_result(GrounderState.ERROR, None, []))
+
+        assert capsys.readouterr().out == ""
+
+    def test_the_summary_line_is_untouched_by_verbose(self, capsys):
+        """The default-output guarantee, stated as a property: verbose output is strictly
+        ADDITIVE, printed after the summary line, so a future reader can diff a probe run against
+        the full run it is probing."""
+        from gct.eval.scoring import EvalRecord
+        from gct.grounder.answer import GrounderState
+
+        result = grounder_result(GrounderState.PARTIAL, "some prose", ["a gap"])
+        ask_result = ask_smoke.AskResult(result=result, retrieved=[], retrieval_ran=True)
+        record = EvalRecord("answer", GrounderState.PARTIAL, hit=True)
+        q = question("q005", "answer", [("present.pdf", 1)])
+
+        ask_smoke._print_question_line(q, ask_result, record)
+        plain = capsys.readouterr().out
+
+        ask_smoke._print_question_line(q, ask_result, record)
+        ask_smoke._print_verbose(result)
+        verbose = capsys.readouterr().out
+
+        assert verbose.startswith(plain), "verbose must only APPEND to the per-question line"
+
+
 class TestArgValidation:
     def test_k_below_one_exits_two_before_any_work(self, monkeypatch):
         """`--k 0` must die at parse time. Unvalidated it reached `retrieve()` mid-loop - AFTER

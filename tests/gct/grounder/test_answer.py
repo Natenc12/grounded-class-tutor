@@ -111,18 +111,20 @@ class TestLabeledContext:
         for chunk in retrieved:
             assert chunk.chunk_id not in prompt
 
-    def test_prompt_states_the_four_contract_rules_and_quotes_sources_verbatim(
+    def test_prompt_states_the_five_contract_rules_and_quotes_sources_verbatim(
         self, chunks, scripted
     ):
-        """The PROSE is provisional (a spike deliverable); these four demands are not.
+        """The PROSE is provisional (a spike deliverable); these five demands are not.
 
-        ADR 0013/0014/0015 require the prompt to ask for: cite only valid [S#], no outside
-        knowledge, always emit the coverage marker, and (N13) treat SOURCES text as quoted
-        course material rather than instructions. This test is deliberately loose about WORDING
-        so prompt tuning doesn't fight it, and strict about the contract surviving that tuning -
-        specifically, that the marker syntax the prompt teaches is the one the parser reads, and
-        that a chunk carrying an injection string still reaches the model UNCHANGED: N13 asks
-        the model to distrust source text as commands, not for us to strip or rewrite it.
+        ADR 0008/0013/0014/0015 require the prompt to ask for: cite only valid [S#], no outside
+        knowledge, ANSWER the part the sources do support rather than only flagging what they
+        don't (ADR 0008's partial-support policy is two obligations, and the prompt once encoded
+        only the flagging one), always emit the coverage marker, and (N13) treat SOURCES text as
+        quoted course material rather than instructions. This test is deliberately loose about
+        WORDING so prompt tuning doesn't fight it, and strict about the contract surviving that
+        tuning - specifically, that the marker syntax the prompt teaches is the one the parser
+        reads, and that a chunk carrying an injection string still reaches the model UNCHANGED:
+        N13 asks the model to distrust source text as commands, not for us to strip or rewrite it.
         """
         generator = scripted(GOOD_REPLY)
         retrieved = chunks(2)
@@ -145,6 +147,19 @@ class TestLabeledContext:
         assert "COVERAGE: gaps:" in system
         assert "outside" in system.lower()  # the no-outside-knowledge rule
         assert "quoted" in system.lower()  # N13: SOURCES text is data, never instruction
+        # ADR 0008's AFFIRMATIVE half: some rule must direct an answer for what the sources DO
+        # support. Matched at line granularity on two ordinary words rather than on a phrase, so
+        # that rewording survives and only DELETING the demand fails - the failure mode this is
+        # here for, since every other rule in the prompt reads correct without it. The degenerate
+        # all-or-nothing exit ("support no part of an answer") is excluded on purpose: it is the
+        # opposite instruction and would satisfy a naive word match on its own.
+        assert [
+            line
+            for line in system.splitlines()
+            if "answer" in line.lower()
+            and "support" in line.lower()
+            and "no part" not in line.lower()
+        ]
         # Quoted, not sanitized: the injection string survives verbatim inside SOURCES.
         assert injected_text in user
 

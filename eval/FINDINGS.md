@@ -243,3 +243,79 @@ spike-ranking instrument whose most carefully-designed signal is empty is rankin
 than its design assumes, and the same q005-shaped question that produces a flat refusal today is the
 one most likely to produce a PARTIAL under a tuned prompt. Worth watching in Spike Pass 1 rather than
 acting on now.
+
+---
+
+## 2026-08-01 — Spike Pass 1, the chunking probe (#59): eight runs across three windows
+
+First runs on the parameterized chunker. Each window ran under its **own owner**, so each got its own
+corpus — `_converge_corpus` skips any file already `ready` for an owner, matching on filename alone,
+so a second window under one owner would have silently scored the first window's chunks.
+
+| window | owner | chunks | runs | `grounded_pass_rate` | `retrieval_hit_rate` | q005 | q007 |
+|---|---|---|---|---|---|---|---|
+| 150/25 | `nate-spike-chunk-150-25` | 184 | 3 | 8/8, 8/8, 8/8 | 8/8 ×3 | GROUNDED ×3 | hit=yes ×3 |
+| 250/40 *(default)* | `nate-spike-chunk-250-40` | 122 | 2 | 7/8, 7/8 | 8/8 ×2 | REFUSAL ×2 | hit=yes ×2 |
+| 500/80 | `nate-spike-chunk-500-80` | 80 | 3 | 6/8, 5/8, 6/8 | **7/8 ×3** | REFUSAL ×3 | **hit=no ×3** |
+
+`partial_rate`, `integrity_flag_rate`, `hallucination_rate` and `error_count` were **0 in every run**;
+`correct_refusal_rate` was **4/4 in every run**. The gate passed on all eight.
+
+**Not a ranking, and the table must not be read as one** (ADR 0022 §1; the comparison protocol is
+Pass 2's, #45). The one 5/8 reading at 500/80 had a third in-corpus question refuse that was not
+captured in that run's transcript — one question is exactly the noise floor #45 measured, and it is
+recorded here as noise rather than reconstructed.
+
+### RED — at 500/80 the expected page for q007 falls out of the top-5 entirely
+Reproduced **3/3**, and `Livingston Cosmogony.pdf` p.4 is a **single-source** row, which
+`_require_expected_files` already names as "a guaranteed permanent miss". This is the cheap design
+signal Pass 1 exists to catch, on exactly the axis ADR 0023 §1 assigns to chunking.
+
+Mechanism, from a direct top-5 probe of the same question against all three corpora:
+
+| window | p.4's chunk | its score | rank | what displaced it |
+|---|---|---|---|---|
+| 150/25 | 150w | **0.614** | 1 | — |
+| 250/40 | 250w | 0.565 | 1 | — |
+| 500/80 | folded into a 500w chunk | absent | — | p.9 chunks at 0.562 / 0.555 |
+
+A wider window dilutes a specific passage's topical signal until a neighbouring page outranks it. The
+result reproduces exactly, unlike the generation-side wobble below, because retrieval over a fixed
+index is deterministic — worth remembering when deciding how many runs a future reading needs.
+
+### q005 is a chunking-side lever too — which qualifies, but does not contradict, the entry above
+The 2026-07-27 entries record q005 as "a generation-side lever, not retrieval," on the evidence that
+retrieval always hit. That remains true, and the probe makes it sharper: the target chunk (Lecture 20
+s.2, **45 words**) is one chunk at *every* window, is byte-identical across all three, and retrieves
+at the **identical score 0.565** in each — `hit=yes` throughout. Nothing about the target changed.
+
+What changed is what shares the top-5 with it, and therefore how much of the assembled context it is:
+
+| window | top-5 total | q005's target as a share | outcome |
+|---|---|---|---|
+| 150/25 | ~615 words | 7.3% | GROUNDED ×3 |
+| 250/40 | ~966 words | 4.7% | REFUSAL ×2 (plus five prior reproductions) |
+| 500/80 | ~1416 words | 3.2% | REFUSAL ×3 |
+
+So a question can be moved by the chunk window **without its own chunk or its retrieval hit changing
+at all**. Offered as a hypothesis consistent with three windows, not a law: n=3, one corpus.
+
+**Matters later, and it matters to #60:** the prompt lever and the chunk window are *not independent*
+levers on q005. A wording change evaluated at the default window and a window change evaluated at the
+default wording are measuring an interaction neither one owns.
+
+### What this sweep could not vary — state this beside any reading of it
+23 of the 52 parsed units are deck slides, the longest is **133 words**, and every one of them is a
+single chunk at every window tested. Deck chunk *text* was therefore byte-identical across the whole
+sweep, and six of the eight in-corpus rows are deck-anchored. The window's reach into those rows is
+entirely indirect — through what else lands in the top-5, which is precisely how q005 moved. An
+all-green sweep on this corpus would have proven less than it appeared to.
+
+One further blind spot, structural: `retrieval_hit`'s any-match rule means the multi-source rows
+(q001, and q003 since its curation) cannot report a chunking-induced miss as long as one leg survives.
+The signal is clean on the six single-source rows.
+
+### PARTIAL still has never fired
+`partial_rate` was 0.0% in all eight runs, across three different corpora. The bucket ADR 0023 spends
+most of its length protecting remains empty, now including under windows that visibly changed both
+retrieval and grounding outcomes.

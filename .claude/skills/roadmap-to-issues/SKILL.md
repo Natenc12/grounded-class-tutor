@@ -18,31 +18,41 @@ Turn the design docs into GitHub issues the same way the tutor answers questions
 colliding). Docs are source of truth; this skill is a one-directional projection onto GitHub.
 
 ## When to use
-- Planning the work for the current slice, or refreshing the board after a slice closes.
+- Planning the work for the current phase (slice or spike pass), or refreshing the board after one
+  closes.
 - "Make the issues", "turn the roadmap into issues", "what's ready to pick up".
 
 ## Source of truth (read these first, every run)
-1. `CLAUDE.md` → **Current status** — the anchor for *which slice we're in*.
-2. `design/roadmap.md` — the slice's `Build` bullets and `Exit` criterion.
+1. `CLAUDE.md` → **Current status** — the anchor for *which phase we're in* (slice, or spike pass).
+2. `design/roadmap.md` — that phase's `Build` bullets and `Exit` criterion.
 3. `design/decisions/*.md` (ADRs) and `design/components/{grounder,retriever,ingestion-worker}.md`
    — the contracts each task must cite.
 
-**Halt on conflict.** If CLAUDE.md status and roadmap.md disagree about the current slice, stop and
+**Halt on conflict.** If CLAUDE.md status and roadmap.md disagree about the current phase, stop and
 surface the disagreement — do not guess (mirrors the repo's source-of-truth rule).
 
 ## Scope
-Default: **current slice only** (from CLAUDE.md status). Re-run as slices complete. `--phase slice-N`
+Default: **current phase only** (from CLAUDE.md status). Re-run as phases complete. `--phase <phase>`
 or `--all` overrides. `--create` actually writes to GitHub; without it the skill is dry-run.
+
+**`<phase>` below means the run's own scope label, derived — never assumed to be a `slice-N`.** A
+slice projects as `slice-N`; a spike pass projects as `spike-pass-N`, which ADR 0022 sequences as a
+phase rather than a slice. A spike-pass row carries **no `slice-N` at all** — the Spike Pass 1
+projection stamped `spike-pass-1` and no slice label — so anything keying on `slice-N` literally
+misses the whole phase. Same reasoning as step 8.1: read the label off the run, not off a family
+written down here.
 
 ---
 
 ## Procedure
 
 ### 1 — Anchor
-Read the source-of-truth docs. Identify the current slice. Halt on conflict.
+Read the source-of-truth docs. Identify the current phase and **resolve `<phase>` from it** —
+`slice-N` for a slice, `spike-pass-N` for a spike pass. Every step below keys on that one value; it is
+resolved here once and never re-guessed. Halt on conflict.
 
 ### 2 — Pass 1: decompose along mergeable seams
-Break the slice's `Build` bullets into tasks. **The unit is a chunk of surface area two people can
+Break the phase's `Build` bullets into tasks. **The unit is a chunk of surface area two people can
 work without colliding — not a concept.** Split by module/file seam (Grounder module vs Retriever
 module), never into pieces that all churn the same file. If a clean seam doesn't exist, keep the
 pieces together as a **group** (see step 5), don't force a split.
@@ -86,7 +96,7 @@ ready-frontier under rows that were never independently pickable.
   uncovered is flagged `✗ gap — no issue covers this`.
 
 ### 4 — Provenance
-Each issue carries the block in Templates → *Provenance*. The slice's `Exit` line becomes the issue's
+Each issue carries the block in Templates → *Provenance*. The phase's `Exit` line becomes the issue's
 **Acceptance** (verbatim) — this is also its definition-of-done for dependency purposes.
 
 ### 5 — Coordination
@@ -102,10 +112,15 @@ Each issue carries the block in Templates → *Provenance*. The slice's `Exit` l
 
 ### 6 — Reconcile against GitHub (idempotency)
 A re-run is a **reconcile**, not a fresh create. First pull existing state:
-`gh issue list --state all --label slice-N --json number,title,state,labels,body`. Match a proposed
-task to an existing issue by its hidden marker `<!-- gct:slice-N:<task-slug> -->`.
+`gh issue list --state all --label <phase> --json number,title,state,labels,body`. Match a proposed
+task to an existing issue by its hidden marker `<!-- gct:<phase>:<task-slug> -->`.
 
-> Marker matching: `gh --search` tokenizes on `:`, so don't trust a raw `--search "gct:slice-N:slug"`.
+**This fetch is the only thing that populates the match set, so getting `<phase>` wrong does not
+degrade — it silently reclassifies every existing issue as `new` and re-creates the whole board.**
+There is no second lookup to catch it: both keys below are checked against *these* rows and nothing
+else. Confirm the fetch returned the rows you expect before trusting a `new` classification.
+
+> Marker matching: `gh --search` tokenizes on `:`, so don't trust a raw `--search "gct:<phase>:slug"`.
 > Match against the fetched `body` field yourself (substring), and additionally stamp each issue with a
 > per-task label `task:<slug>` at create time as a reliable secondary key.
 
@@ -167,11 +182,11 @@ Print, and stop for approval:
 ### Provenance block (every issue)
 ```
 ── Provenance ──
-Source:     design/roadmap.md → Slice N, "<build bullet>"
+Source:     design/roadmap.md → Slice N (or Spike Pass N), "<build bullet>"
 ADRs:       0019 (chunking never-span), 0008/0014-0016 (grounder)
 Spec:       design/components/grounder.md
 Invariants: owner_id AND class_id filter · citation spine
-Acceptance: <the slice Exit criterion that this task satisfies, verbatim>
+Acceptance: <the phase's Exit criterion that this task satisfies, verbatim>
 ```
 
 ### Coordination block (every issue)
@@ -183,8 +198,9 @@ Group: none                         Status: ready
 Claim: assign yourself when you pick this up.
 ```
 
-### Epic issue (one per slice)
-Title: `[Slice N] <slice name>` · labels `epic`, `slice-N`. Body:
+### Epic issue (one per phase)
+Title: `[Slice N] <name>` for a slice, `[Spike PN] <name>` for a spike pass · labels `epic`,
+`<phase>`. Body:
 - one-line goal + the `Exit` criterion,
 - a **Mermaid** dependency graph of the children,
 - a task-list checklist of child issues,

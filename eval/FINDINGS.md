@@ -62,6 +62,49 @@ not detailed"). Reproduced twice in one day. The slide's parsed text may carry l
 than the deck visually suggests, or the prompt's assertion bar is set too cautious for
 definitional-by-attribution content. **Matters later:** this is the exact shape Spike Pass 1's
 generation/prompt lever exists to tune; it is the only in-corpus miss in an otherwise 7/8 run.
+> **2026-08-01 — hypothesis 1 falsified by measurement; hypothesis 2 survives.** Measured offline
+> with the repo's own parser (no API call, no DB): `parse_file` on
+> `data/dogfood/religion/Lecture 20 Evolutionist-Creationist Debate.pptx` returns slide 2 as **315
+> characters**, verbatim —
+>
+> ```
+> Cosmogony today: Evolution or Creation?
+> How can conflicting views on cosmogony be reconciled?
+> “Creation Science” reinterprets scientific results to argue that various myths in the Book of Genesis and other select biblical passages are scientifically valid.
+>  Images from the Creation Museum in Petersburg, KY, U.S.A.
+> ```
+>
+> — against q005's `answer_notes` in `eval/questions.jsonl` ("It reinterprets scientific results to
+> argue that various myths in the Book of Genesis and other select biblical passages are
+> scientifically valid (associated with the Creation Museum in Petersburg, KY)"). The parsed text
+> carries the graded answer **near-verbatim**. So the first hypothesis above — *"the slide's parsed
+> text may carry less of the claim than the deck visually suggests"* — is **eliminated**: the text
+> is not thin, it contains the claim in full. The second — *"the prompt's assertion bar is set too
+> cautious for definitional-by-attribution content"* — is the one that survives, and is the
+> hypothesis Spike Pass 1's generation lever is left testing.
+>
+> Second measurement, same probe: a case-insensitive scan of all five corpus files for
+> `creation science|creationis` matches in exactly two of them — `Lecture 20` (slide 1, on the deck
+> title *"Evolutionist-Creationist debate"* only; slide 2, the passage above) and
+> `Livingston Cosmogony.pdf` (pp. 2, 10, 13, 14 — passages on Creation Science or creationism
+> generally: p.10's only match is "biblical-creationist" in the theological sense, and none carry
+> the Lecture-20 attribution q005's `expected_sources` names). Slide 2 is the only text in the
+> corpus carrying q005's graded answer.
+>
+> One further **observation about the corpus, not a verdict on q005**: the gaps the model reports —
+> "specific claims made by 'Creation Science'", "how it argues its validity" — name content slide 2
+> genuinely does **not** carry. The slide states *that* Creation Science reinterprets scientific
+> results toward Genesis; it enumerates no specific claims and gives no argument for their validity.
+> **But the corpus does carry that content elsewhere:** `Livingston Cosmogony.pdf` p.13 evaluates the
+> movement at length ("Creation Science is not a science but a religious belief of a very specific
+> kind", the Creation Research Council's statement of faith), and p.14 poses it as a review question.
+> Whether any of that reaches the model is **unmeasured**, and the smoke runner cannot measure it:
+> `ask_smoke.py` uses `AskResult.retrieved` only for the `hit` check and never prints it, so a
+> retrieved-but-uncited chunk is invisible in every run recorded in this file. Answering it needs a
+> direct `retrieve()` call (one query embed, no generation). Worth doing, because the mass-skew entry
+> above says Livingston chunks crowd the ranking: if Livingston p.13 IS in q005's top-5, the model
+> declined while holding more of the requested content than slide 2 alone, which sharpens the
+> surviving hypothesis rather than weakening it.
 
 ### The coverage-marker contract survived first contact: 12/12
 Epic #9 flagged the marker syntax as provisional pending real model output. First live run:
@@ -243,3 +286,150 @@ spike-ranking instrument whose most carefully-designed signal is empty is rankin
 than its design assumes, and the same q005-shaped question that produces a flat refusal today is the
 one most likely to produce a PARTIAL under a tuned prompt. Worth watching in Spike Pass 1 rather than
 acting on now.
+
+---
+
+## 2026-08-01 — Spike Pass 1 generation probe (#60): q005 resolved, with a counterfactual
+
+**Scope, quoted from the epic (#58, flag 1):** *"Probes here answer **works / red**, never **which is
+best**."* The bench's noise floor is one whole question — **12.5 points** on the 8-question in-corpus
+suite, measured by #45 and recorded above. **Nothing below ranks two wordings on
+`grounded_pass_rate`, and the full-suite rates here must not be read as a score improvement over the
+2026-07-27 runs.** The one comparative claim made is about q005 specifically, and it is licensed by
+q005's stability (five reproductions, never a flip) plus the same-session counterfactual below.
+Governing decisions: **ADR 0022 §1**, **ADR 0023**.
+
+### The wording under test — the record of *which* wording, since there is no runtime lever
+
+The prompt is edited in place, so the wording itself is the record. One rule was added to
+`_SYSTEM_PROMPT` as rule 4; nothing else in the prompt changed apart from the ordinals of the rules
+below it (old 4–7 became 5–8), and rule 7 (the all-or-nothing exit, previously rule 6) is
+byte-identical:
+
+```
+4. Where the sources support part of the question, answer that part - state it with its [S#]
+   citation - and put what they do not support in the coverage line. Partial support calls for
+   an answer plus a gap list, not a decline.
+```
+
+It encodes the **affirmative half of ADR 0008's partial-support policy** — *"the Grounder answers
+what the retrieved context supports"* — which the prompt had never carried. The prohibition half
+(rules 1/3/5, as the rules now stand — 1/3/4 before the insertion) and the degenerate all-or-nothing
+case (rule 7, previously 6) were both already there.
+
+### q005: REFUSAL → GROUNDED, 5 of 5 — and REFUSAL 3 of 3 when the rule is removed
+
+The counterfactual is what makes this causal rather than coincidental: both arms were run **back to
+back on 2026-08-01**, same corpus (122 chunks, nothing re-ingested), same `k=5`, same models, the
+only difference being the presence of rule 4.
+
+| arm | runs | q005 outcome |
+|---|---|---|
+| **with** rule 4 | 5 | **GROUNDED 5/5**, citing `Lecture 20 …pptx` p.2 — the row's `expected_sources` |
+| **without** rule 4 (prompt restored to its prior text) | 3 | **REFUSAL 3/3** |
+| historical, without rule 4 (2026-07-27: four suite runs + one same-day repeat — the "five-time reproduction" above) | 5 | REFUSAL 5/5 |
+
+So q005 stands — as of this 2026-08-01 probe — at **8 refusals across every ask without the rule (3
+today + 5 historical), and 7
+grounded answers across every ask with it (the 5 probe runs above, plus q005's ask inside each of
+the two full suites below)** — no crossover in either direction. The `runs` column counts `--only
+q005` probe invocations; the full suites are tallied separately. The removal arm reproduced the
+original gap wording too ("specific claims made by 'Creation Science'"), i.e. it reproduced the
+defect, not merely a refusal.
+
+A representative answer under the new rule, quoted in full:
+
+> According to Lecture 20, 'Creation Science' claims to reinterpret scientific results to argue that
+> various myths in the Book of Genesis and other select biblical passages are scientifically valid
+> [S3].
+
+It attributes to Lecture 20 as the question asks, and cites the slide rather than the surrounding
+Livingston material (see the retrieval observation below, which makes that non-trivial).
+
+> **2026-08-02 — independent re-runs, one qualification.** Review re-runs reproduced the result
+> (GROUNDED, citing `Lecture 20 …pptx` p.2; the removal arm re-refused once; the retrieve() table
+> below reproduced to four decimal places) — but the PROSE varied: one re-run dropped the
+> "According to Lecture 20," prefix, another reordered the clauses entirely. The stable part is
+> the citation choice, not the phrasing; the sentence quoted above is one run's wording, not the
+> answer's. These re-runs (three grounded asks, one removal-arm refusal) take the standing tally
+> to **10 grounded / 9 refusals** — still no crossover.
+
+### The predicted first PARTIAL did **not** fire — `partial_rate` is still 0.0%
+
+The entry above predicted that "the same q005-shaped question that produces a flat refusal today is
+the one most likely to produce a PARTIAL under a tuned prompt." **That prediction is not borne out.**
+Across both full-suite runs below, `partial_rate` remained **0.0%** — the rule converted q005's flat
+refusal straight to a full GROUNDED with `COVERAGE: complete`, not to an answer-plus-gaps.
+
+PARTIAL has now never fired in **56** tabulated in-corpus question-asks (32 across the four 2026-07
+suite runs + 24 today: 16 in the two full suites plus the 8 probe-arm asks above).
+**Matters later:** the bucket ADR 0023 spends most of its length protecting is still entirely
+untested by observation, and the lever most expected to exercise it did not. Pass 2 should not assume
+the PARTIAL path works merely because it is specified.
+
+One bound on what those 56 asks can say: the suite has no row whose *correct* outcome is a partial —
+all 8 `answer` rows are fully covered by their expected sources and all 4 `refuse` rows are verified
+absent, so the null result tests the *prediction* (that q005 would land PARTIAL), not the mechanic.
+Exercising PARTIAL deliberately needs an eval row with genuinely partial coverage, which is a change
+to `eval/questions.jsonl` — deliberately untouched by this probe (#60's scope).
+
+### Full suite, twice — the trust column held
+
+The added rule pushes the model toward asserting more, so the four out-of-corpus questions are the
+guard that matters. Both full runs, 2026-08-01, same conditions as above:
+
+| metric | run 1 | run 2 |
+|---|---|---|
+| grounded_pass_rate | 100.0% (8/8) | 100.0% (8/8) |
+| partial_rate | 0.0% | 0.0% |
+| false_refusal_rate | 0.0% (0/8) | 0.0% (0/8) |
+| integrity_flag_rate | 0.0% | 0.0% |
+| **correct_refusal_rate** | **100% (4/4)** | **100% (4/4)** |
+| **hallucination_rate** | **0.0% (0/4)** | **0.0% (0/4)** |
+| retrieval_hit_rate | 100% (8/8) | 100% (8/8) |
+| error_count | 0 | 0 |
+
+Read as **works, not as a ranking**: in-corpus questions came back cited and out-of-corpus ones came
+back refused, and the refusal side did not degrade. q006 — the ±12.5-point mover — landed GROUNDED in
+both runs, which is consistent with, but not evidence of, anything: it flips on its own (#45).
+
+The no-gaps-refusal oddity recorded above (a decline naming nothing missing) did **not** recur under
+the new wording: all 8 refusal-asks across both runs stated gaps — though all 8 were out-of-corpus,
+since the runs produced no in-corpus refusal at all, so the original in-corpus shape (q006) had no
+opportunity to recur.
+
+### Retrieval observation: `hit=yes` hides what else is in the top-k
+
+Measured 2026-08-01 by calling `retrieve()` directly (one query embed, no generation), q005's top-5
+is **four Livingston p.13 chunks and one Lecture 20 slide**, with the expected slide ranked **third**:
+
+| rank | score | source |
+|---|---|---|
+| 1 | 0.6189 | `Livingston Cosmogony.pdf` p.13 |
+| 2 | 0.5820 | `Livingston Cosmogony.pdf` p.13 |
+| **3** | **0.5648** | **`Lecture 20 …pptx` p.2 — the expected source** |
+| 4 | 0.5432 | `Livingston Cosmogony.pdf` p.13 |
+| 5 | 0.5364 | `Livingston Cosmogony.pdf` p.13 |
+
+Livingston p.13 does not merely mention Creation Science — it **argues against** it ("Creation Science
+is not a science but a religious belief of a very specific kind"). So the model was answering *"what
+does Lecture 20 say it claims"* from a context in which 4 of 5 blocks were a different author's
+critique.
+
+**This qualifies the entry above titled "q005 is a consistent false refusal — a generation-side lever,
+not retrieval."** That entry is right that the fix was generation-side, and this probe confirms it.
+But its reasoning — `hit=yes`, therefore retrieval is fine — is weaker than it reads: `retrieval_hit`
+is an **any-match** check, so `hit=yes` says the expected chunk is *somewhere* in the top-k and says
+nothing about what outranks it or what surrounds it. A two-signal bench cannot see top-k composition
+at all. **Matters later:** this is a live example for the chunking probe (#59) and for the V3
+relevance floor — and it compounds the corpus mass-skew entry at the top of this file (Livingston is
+62 of 122 chunks). `ask_smoke.py` cannot surface this; it uses `AskResult.retrieved` only for the
+`hit` check and never prints it.
+
+### Pointer: the coverage-marker syntax was held constant for this probe
+
+**Where that is decided: #60.** The standing observation it rests on is already recorded above — the
+marker parsed **12/12** on the first live run, with **zero integrity flags across all four runs**. Ten
+further runs today (the eight `--only q005` probes and the two full suites) added no integrity flags.
+This file does not decide the syntax; it records the observation and points at the issue that owns
+the choice.

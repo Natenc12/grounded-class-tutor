@@ -21,9 +21,14 @@ Run (needs a migrated DB, `.env` secrets, and the corpus files present — this 
 
     uv run python scripts/ask_smoke.py
     uv run python scripts/ask_smoke.py --suite smoke --k 5
+    uv run python scripts/ask_smoke.py --only q005 --verbose    # a probe, not a bench run
 
-Exit codes: 0 the gate passed · 1 the gate failed · 2 setup failed (no corpus, no questions, a
-question naming a file the corpus does not have).
+`--only` re-asks a hand-picked subset cheaply (issue #60's generation probe) and `--verbose`
+prints what the model actually wrote. Neither changes what a default run prints.
+
+Exit codes: 0 the gate passed, or a `--only` run completed (the gate does not run on a subset —
+see `_print_filtered_notice`) · 1 the gate failed · 2 setup failed (no corpus, no questions, a
+question naming a file the corpus does not have, an `--only` id no question carries).
 """
 
 from __future__ import annotations
@@ -390,6 +395,40 @@ def _print_question_line(question: EvalQuestion, result: AskResult, record: Eval
     )
 
 
+def _print_verbose(result: GrounderResult) -> None:
+    """`--verbose`: the two fields the one-line scan format structurally cannot carry.
+
+    STRICTLY ADDITIVE, and that is the requirement rather than a nicety: it prints AFTER
+    `_print_question_line` and touches nothing above, so a default run's output stays
+    byte-identical and a probe run can be diffed against the run it is probing.
+
+    The two chosen fields are the ones a generation probe (issue #60) is actually looking at.
+    `answer_prose` is never printed anywhere else — `_detail` reports citations, gaps, integrity
+    or error, never the prose the model wrote. And gaps reach the summary line only on REFUSAL,
+    clipped at 80 chars by `_clip` — on PARTIAL, `_detail`'s citations branch wins and the gaps
+    do not appear there at all; the gap WORDING is the evidence compared across repeated asks,
+    so this is the one place it prints whole.
+
+    No prose means no block — not an empty one and not the string "None". REFUSAL and ERROR carry
+    no prose by contract (`GrounderResult`), so on a refusal-heavy run this prints the gaps alone.
+    """
+    # Truthiness, not `is not None`: it covers the contractual None and an empty-string prose in
+    # one branch, and both mean the same thing here — there is nothing to show.
+    if result.answer_prose:
+        print("        answer_prose:")
+        for line in result.answer_prose.splitlines():
+            # `rstrip` so a blank paragraph break does not emit a trailing-whitespace line: this
+            # output gets diffed run-against-run, and invisible whitespace is noise in that diff.
+            print(f"          | {line}".rstrip())
+    # `coverage` is non-None on every state (see `_error` / `_empty_retrieval_refusal`), so this
+    # needs no state switch — an ERROR simply carries no gaps and prints nothing.
+    gaps = result.coverage.gaps
+    if gaps:
+        print(f"        gaps ({len(gaps)}, un-truncated):")
+        for gap in gaps:
+            print(f"          - {gap}")
+
+
 def _pct(rate: float | None) -> str:
     """A rate, or `n/a` — NEVER 0%. `_rate` returns None for an empty denominator, and rendering
     that as 0% would make "we scored nothing" look like "we scored everything and failed"."""
@@ -455,9 +494,12 @@ def _print_summary(metrics: EvalMetrics) -> None:
             "rate is NOT comparable to a full-suite run"
         )
 
-    # ALWAYS printed, including at zero. ERROR leaves N_scored, so errors silently shrink every
-    # denominator above — a run where 6 of 8 in-corpus questions errored can post a perfect 2/2.
-    # The absence of this line is exactly what would hide that FAIL->ERROR escape hatch.
+    # ALWAYS printed on a bench run, including at zero. ERROR leaves N_scored, so errors silently
+    # shrink every denominator above — a run where 6 of 8 in-corpus questions errored can post a
+    # perfect 2/2. The absence of this line is exactly what would hide that FAIL->ERROR escape
+    # hatch. A `--only` run never reaches this function; `_print_filtered_notice` prints an
+    # aggregate ERROR count instead — conditional rather than at-zero, because a filtered run's
+    # per-question lines already name each ERROR (see its docstring for the different bargain).
     print("  health (excluded from ranking, never from the report):")
     _rate_line(
         "error_count / error_rate",
@@ -465,6 +507,55 @@ def _print_summary(metrics: EvalMetrics) -> None:
         metrics.error_count,
         answer.total + refuse.total,
     )
+
+
+def _print_filtered_notice(
+    questions: list[EvalQuestion], suite_total: int, records: list[EvalRecord]
+) -> None:
+    """What a `--only` run prints INSTEAD of the rate vector and the gate.
+
+    Both suppressions are the same rule this file already enforces everywhere else. `_print_summary`
+    reports rates over `N_scored`; on a hand-picked subset those are rates over a suite that shrank
+    — the one failure `_require_expected_files`, `_pct` and the retrieval shortfall warning each
+    exist to prevent — except here the shrinking was ASKED FOR, so the honest report is to name it
+    rather than to refuse the run.
+
+    The gate goes with them for a different reason: it requires >=1 in-corpus GROUNDED AND >=1
+    out-of-corpus REFUSAL, which a subset can be structurally incapable of containing. Running it
+    on `--only q005` would print FAIL and exit 1 — "the system answered badly" — for a run that
+    answered exactly what it was asked. So the subset run exits EXIT_OK and says why, out loud;
+    setup failures still exit 2, since those are about validity, not results.
+
+    One aggregate survives the suppression: an ERROR count, printed only when something errored.
+    That is a summary convenience, not the closing of a hidden signal — every errored ask already
+    prints its own line above (state ERROR, outcome=EXCLUDED, the error kind and message); the
+    aggregate keeps a multi-question probe from ending on a quiet closing block while an earlier
+    line errored. Deliberately CONDITIONAL, unlike `_print_summary`'s always-printed health line:
+    a probe with no errors needs no aggregate, and the line's presence-on-error is pinned by
+    tests rather than by an at-zero convention.
+    """
+    print(
+        f"\nFILTERED RUN — {len(questions)} of {suite_total} question(s) in the suite: "
+        + ", ".join(question.id for question in questions)
+    )
+    print(
+        "  No ADR 0023 rate vector: rates over a hand-picked subset are not comparable to a "
+        "full-suite run."
+    )
+    print(
+        "  No exit gate either: it needs >=1 in-corpus GROUNDED and >=1 out-of-corpus REFUSAL, "
+        "which a subset need not contain."
+    )
+    errored = sum(1 for record in records if record.state is GrounderState.ERROR)
+    if errored:
+        # Both numbers derive from `records` — the asks that actually ran — so the line cannot
+        # disagree with itself if a caller ever hands it fewer records than questions.
+        print(
+            f"  !! {errored} of {len(records)} question(s) came back ERROR — a health count "
+            "(ADR 0023 §3's error signal, counted rather than rated because rates stay "
+            "suppressed here). This run measured less than it asked."
+        )
+    print("  The per-question lines above are this run's whole result.")
 
 
 def _print_gate(records: list[EvalRecord], metrics: EvalMetrics) -> bool:
@@ -512,6 +603,19 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--questions", default=DEFAULT_QUESTIONS, help="the eval JSONL (ADR 0021)")
     parser.add_argument("--suite", default=DEFAULT_SUITE, help="suite name to filter on")
     parser.add_argument(
+        "--only",
+        default=None,
+        metavar="ID[,ID...]",
+        help="restrict the run to these question ids (e.g. q005,q009), applied after --suite; "
+        "suppresses the rate vector and the exit gate",
+    )
+    parser.add_argument(
+        "--verbose",
+        action="store_true",
+        help="also print each answer's full prose and un-truncated gap list, after its summary "
+        "line (the summary line itself is unchanged)",
+    )
+    parser.add_argument(
         "--k",
         type=int,
         default=DEFAULT_K,
@@ -539,12 +643,52 @@ def _load(path: str, suite: str) -> list[EvalQuestion]:
     return questions
 
 
+def _select(questions: list[EvalQuestion], only: str | None) -> list[EvalQuestion]:
+    """`--only`: keep just the named ids, AFTER the suite filter — so `--suite smoke --only q005`
+    means "q005, if smoke has it", and an id that smoke does not carry is an error rather than a
+    silently empty run.
+
+    An unknown id is a SetupError for the same reason a missing expected file is one: a typo must
+    never quietly run a smaller suite than intended. Here that failure would be especially cheap to
+    miss — `--only q05` matching nothing would ask ZERO questions and print a tidy report of them.
+
+    Suite order is preserved rather than command-line order: the per-question lines are meant to be
+    diffed against the same lines from a full run, and reordering them would break that comparison
+    for no gain.
+    """
+    if only is None:
+        return questions
+
+    wanted = [qid.strip() for qid in only.split(",") if qid.strip()]
+    if not wanted:
+        raise SetupError(f"--only {only!r} names no question ids")
+
+    available = {question.id for question in questions}
+    unknown = [qid for qid in wanted if qid not in available]
+    if unknown:
+        raise SetupError(
+            "--only names question id(s) that this suite does not contain: "
+            + ", ".join(repr(qid) for qid in unknown)
+            + f" — the suite has {', '.join(sorted(available))}"
+        )
+
+    keep = set(wanted)
+    return [question for question in questions if question.id in keep]
+
+
 def main() -> int:
     args = _parse_args()
     print(f"Slice 1 smoke — suite={args.suite!r} k={args.k} owner={args.owner!r}")
 
     try:
         questions = _load(args.questions, args.suite)
+        suite_total = len(questions)
+        questions = _select(questions, args.only)
+
+        # The class check runs over the SELECTED rows, and the setup guards below likewise: a
+        # subset run only has to be scoreable in the questions it actually asks, and failing it on
+        # a missing source for a question it will never ask would make `--only` unusable on a
+        # corpus that is mid-move — which is exactly when a probe gets run.
         slugs = {question.class_slug for question in questions}
         if len(slugs) > 1:
             # V1 scope: one ask is scoped to one class, so one run is one class. A multi-class
@@ -654,6 +798,17 @@ def main() -> int:
                 )
                 records.append(record)
                 _print_question_line(question, result, record)
+                if args.verbose:
+                    _print_verbose(result.result)
+
+            # A filtered run reports what it asked and stops; a full run is the bench, and gets the
+            # rate vector and the gate. `_print_filtered_notice` carries why the subset gets
+            # neither. Keyed on the FLAG, not on whether the subset came out smaller: `--only`
+            # naming every id in the suite today is still a probe, and one question added to the
+            # eval file tomorrow must not silently turn that same command back into a bench run.
+            if args.only is not None:
+                _print_filtered_notice(questions, suite_total, records)
+                return EXIT_OK
 
             metrics = compute_metrics(records)
             _print_summary(metrics)

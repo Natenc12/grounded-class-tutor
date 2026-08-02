@@ -25,7 +25,9 @@ Run (needs a migrated DB, `.env` secrets, and the corpus files present — this 
     uv run python scripts/ask_smoke.py --chunk-size 400 --chunk-overlap 60 --owner nate-400-60
 
 `--only` re-asks a hand-picked subset cheaply (issue #60's generation probe) and `--verbose`
-prints what the model actually wrote. Neither changes what a default run prints.
+prints what the model actually wrote. Neither changes what a default run prints. Cheap assumes
+the owner already HAS a converged corpus: convergence walks the corpus dir, never the question
+list, so under a fresh `--owner` even `--only q005` pays the full ingest first.
 
 A new chunk window needs a fresh `--owner`, as above: the corpus is converged PER OWNER and no
 column records which window produced a chunk set, so a second window under an owner that already

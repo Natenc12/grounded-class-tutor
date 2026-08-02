@@ -111,18 +111,23 @@ class TestLabeledContext:
         for chunk in retrieved:
             assert chunk.chunk_id not in prompt
 
-    def test_prompt_states_the_four_contract_rules_and_quotes_sources_verbatim(
+    def test_prompt_states_the_six_contract_demands_and_quotes_sources_verbatim(
         self, chunks, scripted
     ):
-        """The PROSE is provisional (a spike deliverable); these four demands are not.
+        """The PROSE is provisional (a spike deliverable); these six demands are not.
 
-        ADR 0013/0014/0015 require the prompt to ask for: cite only valid [S#], no outside
-        knowledge, always emit the coverage marker, and (N13) treat SOURCES text as quoted
-        course material rather than instructions. This test is deliberately loose about WORDING
-        so prompt tuning doesn't fight it, and strict about the contract surviving that tuning -
-        specifically, that the marker syntax the prompt teaches is the one the parser reads, and
-        that a chunk carrying an injection string still reaches the model UNCHANGED: N13 asks
-        the model to distrust source text as commands, not for us to strip or rewrite it.
+        ADR 0008/0013/0014/0015 require the prompt to ask for: cite only valid [S#], no outside
+        knowledge, ANSWER the part the sources do support rather than only flagging what they
+        don't (ADR 0008's partial-support policy is two obligations, and the prompt once encoded
+        only the flagging one), REFUSE whole when nothing is supported (the all-or-nothing exit,
+        ADR 0008's degenerate case - the counterweight that keeps the affirmative rule from
+        pushing the model to answer on nothing), always emit the coverage marker, and (N13) treat
+        SOURCES text as quoted course material rather than instructions. This test is
+        deliberately loose about WORDING so prompt tuning doesn't fight it, and strict about the
+        contract surviving that tuning - specifically, that the marker syntax the prompt teaches
+        is the one the parser reads, and that a chunk carrying an injection string still reaches
+        the model UNCHANGED: N13 asks the model to distrust source text as commands, not for us
+        to strip or rewrite it.
         """
         generator = scripted(GOOD_REPLY)
         retrieved = chunks(2)
@@ -145,6 +150,28 @@ class TestLabeledContext:
         assert "COVERAGE: gaps:" in system
         assert "outside" in system.lower()  # the no-outside-knowledge rule
         assert "quoted" in system.lower()  # N13: SOURCES text is data, never instruction
+        # ADR 0008's AFFIRMATIVE half: some rule must direct an answer for what the sources DO
+        # support. What this literally pins: at least one PHYSICAL line carrying both "answer"
+        # and "support" that is not the degenerate all-or-nothing exit (excluded via its literal
+        # "no part", itself provisional prose). That is looser than a phrase match but NOT
+        # deletion-proof: a reword to a synonym ("cover" for "support"), or a re-wrap that splits
+        # the two words across lines, fails this and should be re-pinned deliberately - and a
+        # rewording of the exit that drops "no part" would let a deletion slip through. Today it
+        # matches exactly one line (rule 4); deleting that rule fails it.
+        assert [
+            line
+            for line in system.splitlines()
+            if "answer" in line.lower()
+            and "support" in line.lower()
+            and "no part" not in line.lower()
+        ], "no prompt rule carries ADR 0008's affirmative (answer-what-is-supported) half"
+        # And the DEGENERATE case stays pinned too: the all-or-nothing refusal exit is the
+        # counterweight to the affirmative rule above, and before this assertion existed,
+        # deleting it left the entire suite green. Keyed on the same literal "no part" the
+        # affirmative assertion excludes - reword one and both fail, forcing a deliberate re-pin.
+        assert any(
+            "no part" in line.lower() and "answer" in line.lower() for line in system.splitlines()
+        ), "no prompt rule carries the all-or-nothing refusal exit (support no part -> no answer)"
         # Quoted, not sanitized: the injection string survives verbatim inside SOURCES.
         assert injected_text in user
 

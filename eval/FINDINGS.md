@@ -483,8 +483,15 @@ Mechanism, from a direct top-5 probe of the same question against all three corp
 | window | p.4's chunk | its score | rank | what displaced it |
 |---|---|---|---|---|
 | 150/25 | 150w | **0.614** | 1 | — |
-| 250/40 | 250w | 0.565 | 1 | — |
-| 500/80 | folded into a 500w chunk | absent | — | p.9 chunks at 0.562 / 0.555 |
+| 250/40 | 250w | 0.562 | 1 | — |
+| 500/80 | folded into a 500w chunk | 0.498, rank 6 — out of the top-5 | — | p.9 chunks at 0.562 / 0.555 |
+
+(Two cells carry review corrections, 2026-08-02. The 250/40 score was first recorded as 0.565 —
+q005's score, transcribed from four lines below; re-probes measured 0.5624 three times, and the
+pre-existing `nate-dogfood` corpus agrees at 0.5623. The 500/80 cell originally said "absent",
+which conflated score with rank; the re-probe supplied the actual figure. The duplication with
+p.9's 0.562 is real, and sharper: the displacing chunk scores at 500/80 what the expected chunk
+scored at the default window.)
 
 A wider window dilutes a specific passage's topical signal until a neighbouring page outranks it. The
 result reproduces exactly, unlike the generation-side wobble below, because retrieval over a fixed

@@ -44,9 +44,9 @@ ask_smoke = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(ask_smoke)
 
 # `_converge_corpus` takes the chunk window as REQUIRED keyword args (it threads them to
-# `ingest_file`, and its caller prints them), so every call here has to supply one. No test in
-# this file varies the window - the chunk counts asserted below are the module defaults' - so they
-# all pass the same one from here rather than restating a literal at eight call sites.
+# `ingest_file`, and its caller prints them), so every call here has to supply one. All but one
+# test (`test_the_chunk_window_reaches_ingest`, which varies the window deliberately) assert chunk
+# counts at the module defaults, so they share this dict rather than restating a literal per call.
 WINDOW = {"chunk_size": CHUNK_SIZE_WORDS, "chunk_overlap": CHUNK_OVERLAP_WORDS}
 
 

@@ -9,6 +9,7 @@ from __future__ import annotations
 import pytest
 
 from gct.ingest.chunk import (
+    CHUNK_OVERLAP_WORDS,
     CHUNK_SIZE_WORDS,
     TextChunk,
     _word_windows,
@@ -69,6 +70,149 @@ class TestWordWindows:
         """
         with pytest.raises(AssertionError):
             _word_windows(100, 50, 50)
+
+
+class TestWordWindowsAtNonDefaultSizes:
+    """The same math at windows the spike may actually retune to (ADR 0019 / 0021).
+
+    Every other `_word_windows` case above happens to run at 250/40 — the current defaults — so a
+    stride bug that only bites at some *other* (size, overlap) pair would be invisible. These pin
+    the tiling at two candidate windows the spike is likely to try, on a real page's word count.
+    """
+
+    # 835 words is the real word count of `Livingston Cosmogony.pdf` page 4 in the dogfood corpus,
+    # not a round number picked to make the arithmetic land: a tuning window has to behave on the
+    # ragged tails real pages produce, and 835 divides evenly by neither stride below.
+    REAL_PAGE_WORDS = 835
+
+    def test_tiles_a_real_page_at_150_25(self):
+        """stride 125 over 835 words -> 7 windows, the last one a short tail (750, 835)."""
+        windows = _word_windows(self.REAL_PAGE_WORDS, 150, 25)
+
+        assert windows == [
+            (0, 150),
+            (125, 275),
+            (250, 400),
+            (375, 525),
+            (500, 650),
+            (625, 775),
+            (750, 835),
+        ]
+        assert len(windows) == 7
+        assert windows[-1][1] == self.REAL_PAGE_WORDS  # tail covered, nothing dropped
+
+    def test_tiles_a_real_page_at_500_80(self):
+        """stride 420 over 835 words -> 2 windows; the second is the whole remainder, not a
+        full-size window, because 835 < 2 * 500 - 80."""
+        windows = _word_windows(self.REAL_PAGE_WORDS, 500, 80)
+
+        assert windows == [(0, 500), (420, 835)]
+        assert windows[0][1] - windows[1][0] == 80  # neighbors share exactly `overlap` words
+
+
+class TestNonDefaultWindow:
+    """`chunk_units` must actually USE the size/overlap it is handed.
+
+    A pass-through parameter that is accepted and then silently ignored is the failure mode with no
+    symptom: callers tune the window, nothing changes, and the spike concludes the window doesn't
+    matter (ADR 0019 / 0021). Comparing two windows against each other — rather than against a
+    hand-written count — is what makes that visible.
+    """
+
+    def test_two_windows_over_one_unit_yield_different_counts(self):
+        """The SAME unit chunked at two windows produces two different chunk counts, and the
+        smaller window produces more chunks. Both also differ from the default, so a silent
+        fallback to `CHUNK_SIZE_WORDS`/`CHUNK_OVERLAP_WORDS` cannot pass this."""
+        units = [_unit(600)]
+
+        wide = chunk_units(units, size=400, overlap=50)
+        narrow = chunk_units(units, size=100, overlap=20)
+        default = chunk_units(units)
+
+        assert len(narrow) > len(wide)
+        assert len({len(wide), len(narrow), len(default)}) == 3
+
+    def test_smaller_window_still_covers_every_word(self):
+        """Retuning the window changes how text is cut up, never what text survives: the first
+        chunk's opening word and the last chunk's closing word still bracket the whole unit. A
+        window that quietly dropped the tail would keep the count assertions above green."""
+        chunks = chunk_units([_unit(600)], size=100, overlap=20)
+
+        assert chunks[0].text.split()[0] == "w0"
+        assert chunks[-1].text.split()[-1] == "w599"
+        # And no chunk exceeds the window it was asked for — the bracket above holds even for a
+        # chunker that ignored `size` entirely, so without this the coverage claim is window-blind.
+        assert all(len(chunk.text.split()) <= 100 for chunk in chunks)
+
+    def test_overlap_is_honored_not_just_size(self):
+        """At a FIXED size, changing only `overlap` changes the tiling — and adjacent chunks
+        physically share exactly `overlap` words. Every other test in this class varies size and
+        overlap together, so a `_chunk_one` that forwarded `size` and quietly dropped `overlap`
+        would pass all of them; this is the one that dies."""
+        units = [_unit(600)]
+
+        assert len(chunk_units(units, size=100, overlap=0)) < len(
+            chunk_units(units, size=100, overlap=50)
+        )
+        chunks = chunk_units(units, size=100, overlap=20)
+        assert chunks[0].text.split()[-20:] == chunks[1].text.split()[:20]
+
+    def test_defaults_are_the_module_constants(self):
+        """An omitted window must equal an explicit one at CHUNK_SIZE_WORDS/CHUNK_OVERLAP_WORDS —
+        the same constant-not-literal pinning the argparse layer already has. Without it, either
+        default could drift off its constant and nothing would fail."""
+        units = [_unit(600)]
+
+        assert chunk_units(units) == chunk_units(
+            units, size=CHUNK_SIZE_WORDS, overlap=CHUNK_OVERLAP_WORDS
+        )
+
+
+class TestWindowValidation:
+    """`chunk_units` rejects a caller's bad window with `ValueError`, at the public entry.
+
+    Not an `AssertionError`: `overlap >= size` makes stride <= 0, which HANGS rather than crashes,
+    and `python -O` strips asserts — so the guard that faces callers has to be a real raise. The
+    inner `_word_windows` self-guard stays an assert on purpose and is pinned separately by
+    `TestWordWindows.test_rejects_overlap_not_less_than_size`; these tests exist to keep the two
+    from being conflated into one.
+    """
+
+    def test_rejects_overlap_equal_to_size(self):
+        """overlap == size -> stride 0, the exact infinite-loop boundary."""
+        with pytest.raises(ValueError) as excinfo:
+            chunk_units([_unit(100)], size=50, overlap=50)
+
+        # The message must name BOTH values: a caller who passed them through from config needs to
+        # see which pair was rejected, not just that "a" window was bad.
+        assert "overlap=50" in str(excinfo.value)
+        assert "size=50" in str(excinfo.value)
+
+    def test_rejects_overlap_greater_than_size(self):
+        """overlap > size -> stride negative; windows would march backwards forever."""
+        with pytest.raises(ValueError) as excinfo:
+            chunk_units([_unit(100)], size=50, overlap=80)
+
+        assert "overlap=80" in str(excinfo.value)
+        assert "size=50" in str(excinfo.value)
+
+    def test_rejects_negative_overlap(self):
+        """overlap < 0 makes stride EXCEED size, which silently skips words between windows —
+        text present in the file that no chunk contains, so it can never be retrieved or cited.
+        A hang is loud; this one would just quietly lose corpus, which is why the guard is a
+        two-sided range check and not merely `overlap < size`."""
+        with pytest.raises(ValueError) as excinfo:
+            chunk_units([_unit(100)], size=50, overlap=-10)
+
+        assert "overlap=-10" in str(excinfo.value)
+
+    def test_validation_precedes_any_chunking(self):
+        """The bad window is rejected even with NO units to chunk, i.e. the guard is on the
+        parameters themselves and not a side effect of hitting `_word_windows`. If it ever moved
+        inward, an empty-input call would return `[]` and a caller's broken window would go
+        unreported until the first real file arrived."""
+        with pytest.raises(ValueError):
+            chunk_units([], size=50, overlap=50)
 
 
 class TestChunkHappyPath:
@@ -150,6 +294,29 @@ class TestNeverSpanProvenance:
         for chunk in chunk_units([a, b]):
             prefixes = {word[0] for word in chunk.text.split()}
             assert prefixes in ({"a"}, {"b"})  # never both -> text never crossed a unit boundary
+
+    def test_never_span_holds_at_an_arbitrary_window(self):
+        """Never-span is window-INDEPENDENT, and that is worth pinning precisely because it looks
+        like it might not be: a small window fragments each unit maximally, which is exactly when a
+        naive chunker that windowed over concatenated text would start bleeding page 1's tail into
+        page 2's head. It holds here by construction — units are chunked independently — so this
+        test is really a guard on that construction surviving a future rewrite of `_chunk_one`.
+
+        The window below (7/2) is far from the defaults and cuts both units into many pieces; if
+        provenance can be mixed at all, this is where it shows.
+        """
+        a = ParsedUnit(text=" ".join(f"a{i}" for i in range(40)), file="doc.pdf", page_or_slide=1)
+        b = ParsedUnit(text=" ".join(f"b{i}" for i in range(40)), file="doc.pdf", page_or_slide=2)
+
+        chunks = chunk_units([a, b], size=7, overlap=2)
+
+        assert len(chunks) > 2  # the window really did fragment the units, not just re-emit them
+        for chunk in chunks:
+            prefixes = {word[0] for word in chunk.text.split()}
+            assert prefixes in ({"a"}, {"b"})  # no chunk mixes words from two units
+            # ...and each fragment still carries its OWN source unit's provenance, not the first
+            # unit's or the last one's — honor-point ① survives the extra fragmentation.
+            assert (chunk.file, chunk.page_or_slide) == ("doc.pdf", 1 if prefixes == {"a"} else 2)
 
     def test_page_or_slide_stays_scalar_int(self):
         """page_or_slide is an int on every chunk (never a range) - never-span."""

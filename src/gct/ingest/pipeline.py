@@ -21,7 +21,7 @@ from uuid import uuid4
 
 import psycopg
 
-from gct.ingest.chunk import chunk_units
+from gct.ingest.chunk import CHUNK_OVERLAP_WORDS, CHUNK_SIZE_WORDS, chunk_units
 from gct.ingest.index import index_file
 from gct.ingest.parse import parse_file
 from gct.providers.base import Embeddings
@@ -56,6 +56,11 @@ def compose(
     class_id: str,
     *,
     embedder: Embeddings,
+    # Named `chunk_size`/`chunk_overlap` here but `size`/`overlap` in chunk.py: that module is
+    # already "chunk", so the short names are unambiguous there, whereas a bare `size` in a
+    # signature that also takes a `path` does not say what it sizes. The asymmetry is deliberate.
+    chunk_size: int = CHUNK_SIZE_WORDS,
+    chunk_overlap: int = CHUNK_OVERLAP_WORDS,
 ) -> list[PreparedChunk]:
     """Parse -> chunk -> embed -> build the full `PreparedChunk` set, in order. Pure: no DB.
 
@@ -63,11 +68,14 @@ def compose(
     from `embedder.model_id` - the model that ACTUALLY produced the vectors, never from config
     (ADR 0018); `owner_id`/`class_id` go on every row (F6/F12).
 
+    `chunk_size`/`chunk_overlap` default to the module constants and are forwarded to
+    `chunk_units`, which validates them; they are provisional spike parameters (ADR 0019).
+
     `ParseError` (terminal) and `TransientEmbeddingError` (transient) propagate untouched - handling
     is Slice 2's (ADR 0020). An empty parse cannot occur: `parse_file` raises
     `ParseError("empty", ...)` rather than returning `[]`.
     """
-    chunks = chunk_units(parse_file(path))
+    chunks = chunk_units(parse_file(path), size=chunk_size, overlap=chunk_overlap)
     vectors = embedder.embed([c.text for c in chunks])
     # Alignment guard: one vector per chunk, in order. A mismatch means a chunk would carry the
     # wrong embedding and later be retrieved for text it doesn't match - a silent mis-citation, the
@@ -100,6 +108,8 @@ def ingest_file(
     *,
     embedder: Embeddings,
     conn: psycopg.Connection,
+    chunk_size: int = CHUNK_SIZE_WORDS,
+    chunk_overlap: int = CHUNK_OVERLAP_WORDS,
 ) -> str:
     """Ingest one file end to end and return its generated `file_id`. Slice 1 calls this directly.
 
@@ -113,9 +123,20 @@ def ingest_file(
         degrades to a savepoint and this function returns having committed nothing - the chunk set
         is invisible to every other connection and dies with the caller's outer transaction. See
         `index_file`'s docstring for the full precondition and how to satisfy it.
+
+    `chunk_size`/`chunk_overlap` are forwarded to `compose` and default to the module constants.
+    They are provisional spike parameters (ADR 0019) - a later caller wrapping this seam (Slice
+    2's worker) should not treat their names or existence as settled.
     """
     file_id = str(uuid4())
-    chunks = compose(path, owner_id, class_id, embedder=embedder)
+    chunks = compose(
+        path,
+        owner_id,
+        class_id,
+        embedder=embedder,
+        chunk_size=chunk_size,
+        chunk_overlap=chunk_overlap,
+    )
     index_file(
         conn,
         file_id=file_id,

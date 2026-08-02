@@ -32,6 +32,7 @@ from reportlab.pdfgen import canvas
 
 from gct.config import EMBEDDING_DIM
 from gct.eval.questions import EvalQuestion, ExpectedSource
+from gct.ingest.chunk import CHUNK_OVERLAP_WORDS, CHUNK_SIZE_WORDS
 from gct.ingest.pipeline import ingest_file
 
 # Import the script by PATH rather than by package name: `scripts/` is deliberately not a package
@@ -41,6 +42,12 @@ _SCRIPT = Path(__file__).resolve().parents[2] / "scripts" / "ask_smoke.py"
 _spec = importlib.util.spec_from_file_location("ask_smoke_under_test", _SCRIPT)
 ask_smoke = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(ask_smoke)
+
+# `_converge_corpus` takes the chunk window as REQUIRED keyword args (it threads them to
+# `ingest_file`, and its caller prints them), so every call here has to supply one. All but one
+# test (`test_the_chunk_window_reaches_ingest`, which varies the window deliberately) assert chunk
+# counts at the module defaults, so they share this dict rather than restating a literal per call.
+WINDOW = {"chunk_size": CHUNK_SIZE_WORDS, "chunk_overlap": CHUNK_OVERLAP_WORDS}
 
 
 class FakeEmbeddings:
@@ -106,12 +113,18 @@ class TestConvergeCorpus:
         conn, owner_id, class_id = db
         embedder = FakeEmbeddings()
 
-        ready = ask_smoke._converge_corpus(
-            conn, owner_id=owner_id, class_id=class_id, corpus_dir=corpus, embedder=embedder
+        ready, ingested = ask_smoke._converge_corpus(
+            conn,
+            owner_id=owner_id,
+            class_id=class_id,
+            corpus_dir=corpus,
+            embedder=embedder,
+            **WINDOW,
         )
 
         assert sorted(ready) == ["alpha.pdf", "beta.pdf"]
         assert all(count > 0 for count in ready.values())
+        assert ingested == 2, "a cold class ingests every file THIS run"
         assert embedder.calls, "a cold class must actually embed"
 
     def test_second_run_ingests_nothing_and_embeds_nothing(self, db, corpus):
@@ -122,25 +135,52 @@ class TestConvergeCorpus:
         with copies of one page, and every count printed goes with it.
         """
         conn, owner_id, class_id = db
-        first = ask_smoke._converge_corpus(
+        first, _ = ask_smoke._converge_corpus(
             conn,
             owner_id=owner_id,
             class_id=class_id,
             corpus_dir=corpus,
             embedder=FakeEmbeddings(),
+            **WINDOW,
         )
 
         second_embedder = FakeEmbeddings()
-        second = ask_smoke._converge_corpus(
+        second, second_ingested = ask_smoke._converge_corpus(
             conn,
             owner_id=owner_id,
             class_id=class_id,
             corpus_dir=corpus,
             embedder=second_embedder,
+            **WINDOW,
         )
 
         assert second == first, "the census must not move on a re-run"
+        assert second_ingested == 0, "a converged corpus reports zero files ingested this run"
         assert second_embedder.calls == [], "a converged corpus must cost nothing to re-run"
+
+    def test_the_chunk_window_reaches_ingest(self, db, corpus):
+        """The THREADING claim, which no arg-parsing test can make: a window handed to this
+        function must reach `chunk_units`, or `--chunk-size` would print in the header and the
+        census and change nothing about the chunks being scored.
+
+        Every generated page is four words, so a 2-word window with 1-word overlap (stride 1)
+        cuts each page into THREE chunks - a count that neither the default 250/40 window (one
+        chunk per page) nor a zero-overlap fallback (two per page) can produce, so BOTH halves
+        of the window must have arrived intact for this to pass.
+        """
+        conn, owner_id, class_id = db
+
+        ready, _ = ask_smoke._converge_corpus(
+            conn,
+            owner_id=owner_id,
+            class_id=class_id,
+            corpus_dir=corpus,
+            embedder=FakeEmbeddings(),
+            chunk_size=2,
+            chunk_overlap=1,
+        )
+
+        assert ready == {"alpha.pdf": 6, "beta.pdf": 3}
 
     def test_empty_corpus_dir_is_a_setup_error(self, db, tmp_path):
         conn, owner_id, class_id = db
@@ -154,6 +194,7 @@ class TestConvergeCorpus:
                 class_id=class_id,
                 corpus_dir=empty,
                 embedder=FakeEmbeddings(),
+                **WINDOW,
             )
 
     def test_duplicate_ready_rows_warn_and_do_not_re_ingest(self, db, corpus, capsys):
@@ -170,14 +211,20 @@ class TestConvergeCorpus:
             class_id=class_id,
             corpus_dir=corpus,
             embedder=FakeEmbeddings(),
+            **WINDOW,
         )
         # Ingest alpha.pdf a SECOND time - the real-world failure, reproduced exactly: a fresh
         # file_id, so the delete-by-file_id idempotency never fires.
         ingest_file(corpus / "alpha.pdf", owner_id, class_id, embedder=FakeEmbeddings(), conn=conn)
 
         embedder = FakeEmbeddings()
-        ready = ask_smoke._converge_corpus(
-            conn, owner_id=owner_id, class_id=class_id, corpus_dir=corpus, embedder=embedder
+        ready, _ = ask_smoke._converge_corpus(
+            conn,
+            owner_id=owner_id,
+            class_id=class_id,
+            corpus_dir=corpus,
+            embedder=embedder,
+            **WINDOW,
         )
         out = capsys.readouterr().out
 
@@ -187,6 +234,64 @@ class TestConvergeCorpus:
         assert embedder.calls == [], "a duplicate must never trigger another ingest"
         # The reported count is the INFLATED total, and saying so is the point of the warning.
         assert ready["alpha.pdf"] == 2 * 2  # two pages, twice
+
+    def test_partial_convergence_counts_only_files_ingested_this_run(self, db, corpus):
+        """`ingested` is the THIS-RUN count, not the ready count. The cold-class and re-run tests
+        pin it only at its two extremes (everything / nothing), so an implementation wrong only in
+        between - say, one that reports `len(ready)` whenever anything was ingested - would pass
+        both. One file pre-ingested + one missing is the smallest case that sits between them."""
+        conn, owner_id, class_id = db
+        ingest_file(corpus / "alpha.pdf", owner_id, class_id, embedder=FakeEmbeddings(), conn=conn)
+
+        ready, ingested = ask_smoke._converge_corpus(
+            conn,
+            owner_id=owner_id,
+            class_id=class_id,
+            corpus_dir=corpus,
+            embedder=FakeEmbeddings(),
+            **WINDOW,
+        )
+
+        assert sorted(ready) == ["alpha.pdf", "beta.pdf"]
+        assert ingested == 1
+
+
+class TestPrintCensus:
+    """The census must not label stored chunks with the requested window: the window is a fact
+    about the COMMAND LINE, and only files ingested THIS run are known to carry it. Three wordings,
+    keyed on `ingested` vs `len(ready)` - each pinned here because `TestMainWiring` stubs this
+    function out, so nothing else ever executes it.
+    """
+
+    def _census_out(self, db, ingested, capsys):
+        conn, owner_id, class_id = db
+        ask_smoke._print_census(
+            conn,
+            owner_id=owner_id,
+            class_id=class_id,
+            ready={"alpha.pdf": 4, "beta.pdf": 2},
+            chunk_size=150,
+            chunk_overlap=25,
+            ingested=ingested,
+        )
+        return capsys.readouterr().out
+
+    def test_everything_ingested_labels_the_window_as_applied(self, db, capsys):
+        out = self._census_out(db, ingested=2, capsys=capsys)
+        assert "all ingested this run at chunk window 150/25 words" in out
+
+    def test_nothing_ingested_says_the_requested_window_did_not_apply(self, db, capsys):
+        """The reuse trap itself: an owner that already had a corpus. The old line asserted the
+        requested window as stored fact; this pins the honest wording that replaced it."""
+        out = self._census_out(db, ingested=0, capsys=capsys)
+        assert "none ingested this run" in out
+        assert "requested window 150/25 words did not apply" in out
+        assert "keep the window that made them" in out
+
+    def test_mixed_ingestion_names_both_counts(self, db, capsys):
+        out = self._census_out(db, ingested=1, capsys=capsys)
+        assert "1 of 2 file(s) ingested this run at the requested window 150/25 words" in out
+        assert "the rest keep the window that made them" in out
 
 
 class TestResolveClass:
@@ -272,6 +377,7 @@ class TestSetupValidityGuards:
             class_id=class_id,
             corpus_dir=corpus,
             embedder=FakeEmbeddings(),
+            **WINDOW,
         )
 
         indexed = ask_smoke._indexed_pages(conn, owner_id=owner_id, class_id=class_id)
@@ -302,6 +408,7 @@ class TestSetupValidityGuards:
             class_id=class_id,
             corpus_dir=corpus,
             embedder=FakeEmbeddings(),
+            **WINDOW,
         )
 
         # A SECOND owner/class carrying a filename+page that exists nowhere in the first.
@@ -641,7 +748,7 @@ class TestMainWiring:
         monkeypatch.setattr(ask_smoke, "OpenAIGeneration", object)
         monkeypatch.setattr(ask_smoke, "connect", self._FakeConn)
         monkeypatch.setattr(ask_smoke, "_resolve_class", lambda conn, owner, slug: uuid.uuid4())
-        monkeypatch.setattr(ask_smoke, "_converge_corpus", lambda *a, **k: set())
+        monkeypatch.setattr(ask_smoke, "_converge_corpus", lambda *a, **k: ({}, 0))
         monkeypatch.setattr(ask_smoke, "_require_expected_files", lambda *a, **k: None)
         monkeypatch.setattr(ask_smoke, "_indexed_pages", lambda *a, **k: {})
         monkeypatch.setattr(ask_smoke, "_print_census", lambda *a, **k: None)
@@ -715,3 +822,41 @@ class TestArgValidation:
         monkeypatch.setattr("sys.argv", ["ask_smoke.py"])
 
         assert ask_smoke._parse_args().k == DEFAULT_K
+
+    @pytest.mark.parametrize(
+        ("size", "overlap"),
+        [("100", "100"), ("100", "150"), ("100", "-1"), ("0", "0")],
+        ids=["overlap-equals-size", "overlap-exceeds-size", "negative-overlap", "zero-size"],
+    )
+    def test_invalid_chunk_window_exits_two_before_any_work(self, monkeypatch, size, overlap):
+        """`--k 0`'s failure shape, one stage earlier. Unvalidated, an invalid window reaches
+        `chunk_units` and raises mid-ingest - after every file before it in the corpus was parsed,
+        embedded and paid for - exiting 1, the code documented as "the gate failed"."""
+        monkeypatch.setattr(
+            "sys.argv", ["ask_smoke.py", "--chunk-size", size, "--chunk-overlap", overlap]
+        )
+
+        with pytest.raises(SystemExit) as exc:
+            ask_smoke._parse_args()
+
+        assert exc.value.code == ask_smoke.EXIT_SETUP
+
+    @pytest.mark.parametrize(("size", "overlap"), [(400, 60), (150, 0)])
+    def test_a_valid_chunk_window_is_accepted(self, monkeypatch, size, overlap):
+        """The other side of the check, including `overlap=0` - legal, and the boundary a
+        `0 < overlap` typo in the guard would reject."""
+        monkeypatch.setattr(
+            "sys.argv",
+            ["ask_smoke.py", "--chunk-size", str(size), "--chunk-overlap", str(overlap)],
+        )
+
+        args = ask_smoke._parse_args()
+
+        assert (args.chunk_size, args.chunk_overlap) == (size, overlap)
+
+    def test_default_chunk_window_is_the_chunkers_own(self, monkeypatch):
+        monkeypatch.setattr("sys.argv", ["ask_smoke.py"])
+
+        args = ask_smoke._parse_args()
+
+        assert (args.chunk_size, args.chunk_overlap) == (CHUNK_SIZE_WORDS, CHUNK_OVERLAP_WORDS)

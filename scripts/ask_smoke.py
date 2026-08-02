@@ -168,8 +168,13 @@ def _converge_corpus(
     embedder: Embeddings,
     chunk_size: int,
     chunk_overlap: int,
-) -> dict[str, int]:
-    """Bring the class to "every corpus file ingested exactly once". Returns filename -> chunks.
+) -> tuple[dict[str, int], int]:
+    """Bring the class to "every corpus file ingested exactly once". Returns
+    `(filename -> chunks, files actually ingested THIS run)`.
+
+    The second element exists for `_print_census`: the requested window applies only to files this
+    call actually ingests, so the census must not label already-`ready` chunks with it. Only this
+    function can tell the two apart.
 
     PER FILE, not all-or-nothing, and that is the whole point. `ingest_file` mints a FRESH
     `file_id` on every call (pipeline.py), and `index_file`'s idempotency is delete-by-file_id —
@@ -195,6 +200,7 @@ def _converge_corpus(
         )
 
     ready: dict[str, int] = {}
+    ingested = 0
     for path in paths:
         rows = _ready_rows(conn, owner_id, class_id, path.name)
 
@@ -240,8 +246,9 @@ def _converge_corpus(
         ).fetchone()[0]
         print(f"  {path.name}: ingested — {count} chunks (file_id={file_id})")
         ready[path.name] = int(count)
+        ingested += 1
 
-    return ready
+    return ready, ingested
 
 
 def _indexed_pages(
@@ -358,15 +365,18 @@ def _print_census(
     ready: dict[str, int],
     chunk_size: int,
     chunk_overlap: int,
+    ingested: int,
 ) -> None:
     """One line of ground truth about what the questions below are actually being asked of.
 
     The chunk window prints HERE because nothing else can report it. `_converge_corpus` skips any
     file already `ready` for this owner, matching on FILENAME alone, and no column records which
     window produced a chunk set — so a second `--chunk-size`/`--chunk-overlap` under an owner that
-    already has a corpus silently scores the FIRST window's chunks. Two runs at different windows
-    printing an IDENTICAL census is exactly how that announces itself, and the printed window is
-    what makes the two counts comparable at all. Vary the window under a fresh `--owner`.
+    already has a corpus silently scores the FIRST window's chunks. That is why the window prints
+    beside `ingested`, the count of files this run actually chunked at it: the REQUESTED window is
+    a fact about the command line, and only the files ingested this run are known to carry it —
+    labelling skipped files with it would state as stored fact something no column records. Vary
+    the window under a fresh `--owner`.
     """
     total_chunks = conn.execute(
         """
@@ -375,9 +385,21 @@ def _print_census(
         """,
         {"owner_id": owner_id, "class_id": class_id},
     ).fetchone()[0]
+    if ingested == len(ready):
+        window_note = f"all ingested this run at chunk window {chunk_size}/{chunk_overlap} words"
+    elif ingested == 0:
+        window_note = (
+            f"none ingested this run — requested window {chunk_size}/{chunk_overlap} words did "
+            "not apply; stored chunks keep the window that made them"
+        )
+    else:
+        window_note = (
+            f"{ingested} of {len(ready)} file(s) ingested this run at the requested window "
+            f"{chunk_size}/{chunk_overlap} words; the rest keep the window that made them"
+        )
     print(
         f"  census: {len(ready)} file(s) ready — {sum(ready.values())} chunks across them, "
-        f"{total_chunks} in the class, at chunk window {chunk_size}/{chunk_overlap} words"
+        f"{total_chunks} in the class, {window_note}"
     )
     print(
         f"  reference: manifest.md describes {MANIFEST_FILES} files / {MANIFEST_PARSED_UNITS} "
@@ -804,7 +826,7 @@ def main() -> int:
 
             print(f"\nSetup — class {slug!r}, corpus {corpus_dir}:")
             class_id = _resolve_class(conn, args.owner, slug)
-            ready = _converge_corpus(
+            ready, ingested = _converge_corpus(
                 conn,
                 owner_id=args.owner,
                 class_id=class_id,
@@ -825,6 +847,7 @@ def main() -> int:
                 ready=ready,
                 chunk_size=args.chunk_size,
                 chunk_overlap=args.chunk_overlap,
+                ingested=ingested,
             )
 
             # The tiny closure the loop drives: providers, connection and scope are wired once

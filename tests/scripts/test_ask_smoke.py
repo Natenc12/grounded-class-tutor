@@ -113,7 +113,7 @@ class TestConvergeCorpus:
         conn, owner_id, class_id = db
         embedder = FakeEmbeddings()
 
-        ready = ask_smoke._converge_corpus(
+        ready, ingested = ask_smoke._converge_corpus(
             conn,
             owner_id=owner_id,
             class_id=class_id,
@@ -124,6 +124,7 @@ class TestConvergeCorpus:
 
         assert sorted(ready) == ["alpha.pdf", "beta.pdf"]
         assert all(count > 0 for count in ready.values())
+        assert ingested == 2, "a cold class ingests every file THIS run"
         assert embedder.calls, "a cold class must actually embed"
 
     def test_second_run_ingests_nothing_and_embeds_nothing(self, db, corpus):
@@ -134,7 +135,7 @@ class TestConvergeCorpus:
         with copies of one page, and every count printed goes with it.
         """
         conn, owner_id, class_id = db
-        first = ask_smoke._converge_corpus(
+        first, _ = ask_smoke._converge_corpus(
             conn,
             owner_id=owner_id,
             class_id=class_id,
@@ -144,7 +145,7 @@ class TestConvergeCorpus:
         )
 
         second_embedder = FakeEmbeddings()
-        second = ask_smoke._converge_corpus(
+        second, second_ingested = ask_smoke._converge_corpus(
             conn,
             owner_id=owner_id,
             class_id=class_id,
@@ -154,6 +155,7 @@ class TestConvergeCorpus:
         )
 
         assert second == first, "the census must not move on a re-run"
+        assert second_ingested == 0, "a converged corpus reports zero files ingested this run"
         assert second_embedder.calls == [], "a converged corpus must cost nothing to re-run"
 
     def test_the_chunk_window_reaches_ingest(self, db, corpus):
@@ -166,7 +168,7 @@ class TestConvergeCorpus:
         """
         conn, owner_id, class_id = db
 
-        ready = ask_smoke._converge_corpus(
+        ready, _ = ask_smoke._converge_corpus(
             conn,
             owner_id=owner_id,
             class_id=class_id,
@@ -214,7 +216,7 @@ class TestConvergeCorpus:
         ingest_file(corpus / "alpha.pdf", owner_id, class_id, embedder=FakeEmbeddings(), conn=conn)
 
         embedder = FakeEmbeddings()
-        ready = ask_smoke._converge_corpus(
+        ready, _ = ask_smoke._converge_corpus(
             conn,
             owner_id=owner_id,
             class_id=class_id,
@@ -686,7 +688,7 @@ class TestMainWiring:
         monkeypatch.setattr(ask_smoke, "OpenAIGeneration", object)
         monkeypatch.setattr(ask_smoke, "connect", self._FakeConn)
         monkeypatch.setattr(ask_smoke, "_resolve_class", lambda conn, owner, slug: uuid.uuid4())
-        monkeypatch.setattr(ask_smoke, "_converge_corpus", lambda *a, **k: set())
+        monkeypatch.setattr(ask_smoke, "_converge_corpus", lambda *a, **k: ({}, 0))
         monkeypatch.setattr(ask_smoke, "_require_expected_files", lambda *a, **k: None)
         monkeypatch.setattr(ask_smoke, "_indexed_pages", lambda *a, **k: {})
         monkeypatch.setattr(ask_smoke, "_print_census", lambda *a, **k: None)

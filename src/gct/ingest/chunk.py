@@ -77,8 +77,8 @@ def chunk_units(
     """
     # Validated here, at the public entry, because the failure mode is a HANG rather than a
     # crash: `overlap >= size` makes stride <= 0 and `_word_windows` appends windows forever.
-    # Raise (not assert) for the same reason `compose`'s alignment guard in pipeline.py does -
-    # this validates CALLER input and must hold under `python -O`, which strips asserts.
+    # Raise (not assert): like `compose`'s alignment guard in pipeline.py, this must hold under
+    # `python -O`, which strips asserts.
     if not (0 <= overlap < size):
         raise ValueError(f"overlap must be in [0, size); got overlap={overlap}, size={size}")
 

@@ -745,6 +745,15 @@ class TestMainWiring:
             )
 
         monkeypatch.setattr(ask_smoke, "_load", lambda path, suite: list(questions))
+        # The wiring block reads the key through `load_settings` before constructing providers.
+        # Stubbed like every other seam here - NOT for isolation only, but because this must not
+        # depend on the ambient environment: in CI OPENAI_API_KEY is genuinely empty, so an
+        # unstubbed read would trip the empty-key SetupError inside every test that drives main().
+        monkeypatch.setattr(
+            ask_smoke,
+            "load_settings",
+            lambda: Settings(database_url="postgresql://localhost:5432/x", openai_api_key="sk-t"),
+        )
         monkeypatch.setattr(ask_smoke, "OpenAIEmbeddings", FakeEmbeddings)
         monkeypatch.setattr(ask_smoke, "OpenAIGeneration", object)
         monkeypatch.setattr(ask_smoke, "connect", self._FakeConn)

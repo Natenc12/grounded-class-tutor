@@ -9,6 +9,7 @@ from __future__ import annotations
 import pytest
 
 from gct.ingest.chunk import (
+    CHUNK_OVERLAP_WORDS,
     CHUNK_SIZE_WORDS,
     TextChunk,
     _word_windows,
@@ -142,6 +143,29 @@ class TestNonDefaultWindow:
         # And no chunk exceeds the window it was asked for — the bracket above holds even for a
         # chunker that ignored `size` entirely, so without this the coverage claim is window-blind.
         assert all(len(chunk.text.split()) <= 100 for chunk in chunks)
+
+    def test_overlap_is_honored_not_just_size(self):
+        """At a FIXED size, changing only `overlap` changes the tiling — and adjacent chunks
+        physically share exactly `overlap` words. Every other test in this class varies size and
+        overlap together, so a `_chunk_one` that forwarded `size` and quietly dropped `overlap`
+        would pass all of them; this is the one that dies."""
+        units = [_unit(600)]
+
+        assert len(chunk_units(units, size=100, overlap=0)) < len(
+            chunk_units(units, size=100, overlap=50)
+        )
+        chunks = chunk_units(units, size=100, overlap=20)
+        assert chunks[0].text.split()[-20:] == chunks[1].text.split()[:20]
+
+    def test_defaults_are_the_module_constants(self):
+        """An omitted window must equal an explicit one at CHUNK_SIZE_WORDS/CHUNK_OVERLAP_WORDS —
+        the same constant-not-literal pinning the argparse layer already has. Without it, either
+        default could drift off its constant and nothing would fail."""
+        units = [_unit(600)]
+
+        assert chunk_units(units) == chunk_units(
+            units, size=CHUNK_SIZE_WORDS, overlap=CHUNK_OVERLAP_WORDS
+        )
 
 
 class TestWindowValidation:

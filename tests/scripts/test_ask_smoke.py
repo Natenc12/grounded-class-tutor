@@ -163,8 +163,10 @@ class TestConvergeCorpus:
         function must reach `chunk_units`, or `--chunk-size` would print in the header and the
         census and change nothing about the chunks being scored.
 
-        Every generated page is four words, so a 2-word window with no overlap splits each page in
-        two - a count the default 250/40 window cannot produce (it yields one chunk per page).
+        Every generated page is four words, so a 2-word window with 1-word overlap (stride 1)
+        cuts each page into THREE chunks - a count that neither the default 250/40 window (one
+        chunk per page) nor a zero-overlap fallback (two per page) can produce, so BOTH halves
+        of the window must have arrived intact for this to pass.
         """
         conn, owner_id, class_id = db
 
@@ -175,10 +177,10 @@ class TestConvergeCorpus:
             corpus_dir=corpus,
             embedder=FakeEmbeddings(),
             chunk_size=2,
-            chunk_overlap=0,
+            chunk_overlap=1,
         )
 
-        assert ready == {"alpha.pdf": 4, "beta.pdf": 2}
+        assert ready == {"alpha.pdf": 6, "beta.pdf": 3}
 
     def test_empty_corpus_dir_is_a_setup_error(self, db, tmp_path):
         conn, owner_id, class_id = db
@@ -232,6 +234,64 @@ class TestConvergeCorpus:
         assert embedder.calls == [], "a duplicate must never trigger another ingest"
         # The reported count is the INFLATED total, and saying so is the point of the warning.
         assert ready["alpha.pdf"] == 2 * 2  # two pages, twice
+
+    def test_partial_convergence_counts_only_files_ingested_this_run(self, db, corpus):
+        """`ingested` is the THIS-RUN count, not the ready count. The cold-class and re-run tests
+        pin it only at its two extremes (everything / nothing), so an implementation wrong only in
+        between - say, one that reports `len(ready)` whenever anything was ingested - would pass
+        both. One file pre-ingested + one missing is the smallest case that sits between them."""
+        conn, owner_id, class_id = db
+        ingest_file(corpus / "alpha.pdf", owner_id, class_id, embedder=FakeEmbeddings(), conn=conn)
+
+        ready, ingested = ask_smoke._converge_corpus(
+            conn,
+            owner_id=owner_id,
+            class_id=class_id,
+            corpus_dir=corpus,
+            embedder=FakeEmbeddings(),
+            **WINDOW,
+        )
+
+        assert sorted(ready) == ["alpha.pdf", "beta.pdf"]
+        assert ingested == 1
+
+
+class TestPrintCensus:
+    """The census must not label stored chunks with the requested window: the window is a fact
+    about the COMMAND LINE, and only files ingested THIS run are known to carry it. Three wordings,
+    keyed on `ingested` vs `len(ready)` - each pinned here because `TestMainWiring` stubs this
+    function out, so nothing else ever executes it.
+    """
+
+    def _census_out(self, db, ingested, capsys):
+        conn, owner_id, class_id = db
+        ask_smoke._print_census(
+            conn,
+            owner_id=owner_id,
+            class_id=class_id,
+            ready={"alpha.pdf": 4, "beta.pdf": 2},
+            chunk_size=150,
+            chunk_overlap=25,
+            ingested=ingested,
+        )
+        return capsys.readouterr().out
+
+    def test_everything_ingested_labels_the_window_as_applied(self, db, capsys):
+        out = self._census_out(db, ingested=2, capsys=capsys)
+        assert "all ingested this run at chunk window 150/25 words" in out
+
+    def test_nothing_ingested_says_the_requested_window_did_not_apply(self, db, capsys):
+        """The reuse trap itself: an owner that already had a corpus. The old line asserted the
+        requested window as stored fact; this pins the honest wording that replaced it."""
+        out = self._census_out(db, ingested=0, capsys=capsys)
+        assert "none ingested this run" in out
+        assert "requested window 150/25 words did not apply" in out
+        assert "keep the window that made them" in out
+
+    def test_mixed_ingestion_names_both_counts(self, db, capsys):
+        out = self._census_out(db, ingested=1, capsys=capsys)
+        assert "1 of 2 file(s) ingested this run at the requested window 150/25 words" in out
+        assert "the rest keep the window that made them" in out
 
 
 class TestResolveClass:

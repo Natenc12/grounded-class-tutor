@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import pytest
 
-from gct.ingest.chunk import chunk_units
+from gct.ingest.chunk import CHUNK_OVERLAP_WORDS, CHUNK_SIZE_WORDS, chunk_units
 from gct.ingest.parse import ParseError, parse_file
 from gct.ingest.pipeline import PreparedChunk, compose, ingest_file
 
@@ -81,6 +81,24 @@ def test_compose_forwards_the_chunk_window(pdf_factory, fake_embedder):
     # fewer words than a wide one's, and every row is still a fully-stamped PreparedChunk.
     assert len(narrow[0].text.split()) < len(wide[0].text.split())
     assert all(p.embedding_model_id == fake_embedder.model_id for p in narrow)
+
+
+def test_compose_defaults_are_the_module_constants(pdf_factory, fake_embedder):
+    """An omitted window must equal an explicit one at the constants — pins `compose`'s OWN
+    defaults, which the forwarding test above cannot: it compares compose against `chunk_units`
+    at the same window, so a default that drifted off its constant would cancel out on both
+    sides. `PreparedChunk` is frozen and the fake embedder is deterministic, so whole-row
+    equality is exact."""
+    path = pdf_factory("lecture.pdf", [" ".join(f"w{i}" for i in range(600))])
+
+    assert compose(path, OWNER_ID, CLASS_ID, embedder=fake_embedder) == compose(
+        path,
+        OWNER_ID,
+        CLASS_ID,
+        embedder=fake_embedder,
+        chunk_size=CHUNK_SIZE_WORDS,
+        chunk_overlap=CHUNK_OVERLAP_WORDS,
+    )
 
 
 def test_compose_propagates_parse_error_on_empty_file(pdf_factory, fake_embedder):

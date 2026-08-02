@@ -329,7 +329,8 @@ only difference being the presence of rule 4.
 | **without** rule 4 (prompt restored to its prior text) | 3 | **REFUSAL 3/3** |
 | historical, without rule 4 (2026-07-27: four suite runs + one same-day repeat — the "five-time reproduction" above) | 5 | REFUSAL 5/5 |
 
-So q005 now stands at **8 refusals across every ask without the rule (3 today + 5 historical), and 7
+So q005 stands — as of this 2026-08-01 probe — at **8 refusals across every ask without the rule (3
+today + 5 historical), and 7
 grounded answers across every ask with it (the 5 probe runs above, plus q005's ask inside each of
 the two full suites below)** — no crossover in either direction. The `runs` column counts `--only
 q005` probe invocations; the full suites are tallied separately. The removal arm reproduced the
@@ -350,7 +351,8 @@ Livingston material (see the retrieval observation below, which makes that non-t
 > below reproduced to four decimal places) — but the PROSE varied: one re-run dropped the
 > "According to Lecture 20," prefix, another reordered the clauses entirely. The stable part is
 > the citation choice, not the phrasing; the sentence quoted above is one run's wording, not the
-> answer's.
+> answer's. These re-runs (three grounded asks, one removal-arm refusal) take the standing tally
+> to **10 grounded / 9 refusals** — still no crossover.
 
 ### The predicted first PARTIAL did **not** fire — `partial_rate` is still 0.0%
 
@@ -392,7 +394,9 @@ back refused, and the refusal side did not degrade. q006 — the ±12.5-point mo
 both runs, which is consistent with, but not evidence of, anything: it flips on its own (#45).
 
 The no-gaps-refusal oddity recorded above (a decline naming nothing missing) did **not** recur under
-the new wording: all 8 refusal-asks across both runs stated gaps.
+the new wording: all 8 refusal-asks across both runs stated gaps — though all 8 were out-of-corpus,
+since the runs produced no in-corpus refusal at all, so the original in-corpus shape (q006) had no
+opportunity to recur.
 
 ### Retrieval observation: `hit=yes` hides what else is in the top-k
 

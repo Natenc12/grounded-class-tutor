@@ -506,10 +506,12 @@ class TestOnlyFilter:
         assert "ERROR" not in out
 
     def test_notice_reports_errors_as_a_count_never_a_rate(self, capsys):
-        """The one signal that survives the suppression. The comparability argument covers RATES;
-        an ask that produced no result at all is a health fact (ADR 0023 §3), and without this
-        line a probe whose every question errored would print a tidy report and exit 0 — the
-        FAIL->ERROR escape hatch the bench's own health line exists to keep visible."""
+        """The one aggregate that survives the suppression, and it is a COUNT, never a rate.
+        The per-question lines above it already name each ERROR (state, outcome=EXCLUDED, kind
+        and message), so this line is a summary convenience: it keeps a multi-question probe
+        from ending on a quiet closing block while an earlier ask errored. Conditional on
+        purpose — see `_print_filtered_notice`'s docstring for the bargain, which differs from
+        the bench health line's always-printed one."""
         from gct.eval.scoring import EvalRecord
         from gct.grounder.answer import GrounderState
 

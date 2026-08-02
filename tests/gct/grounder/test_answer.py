@@ -111,7 +111,7 @@ class TestLabeledContext:
         for chunk in retrieved:
             assert chunk.chunk_id not in prompt
 
-    def test_prompt_states_the_six_contract_rules_and_quotes_sources_verbatim(
+    def test_prompt_states_the_six_contract_demands_and_quotes_sources_verbatim(
         self, chunks, scripted
     ):
         """The PROSE is provisional (a spike deliverable); these six demands are not.

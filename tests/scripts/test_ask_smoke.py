@@ -27,10 +27,11 @@ import io
 import uuid
 from pathlib import Path
 
+import psycopg
 import pytest
 from reportlab.pdfgen import canvas
 
-from gct.config import EMBEDDING_DIM
+from gct.config import EMBEDDING_DIM, Settings
 from gct.eval.questions import EvalQuestion, ExpectedSource
 from gct.ingest.chunk import CHUNK_OVERLAP_WORDS, CHUNK_SIZE_WORDS
 from gct.ingest.pipeline import ingest_file
@@ -744,6 +745,15 @@ class TestMainWiring:
             )
 
         monkeypatch.setattr(ask_smoke, "_load", lambda path, suite: list(questions))
+        # The wiring block reads the key through `load_settings` before constructing providers.
+        # Stubbed like every other seam here - NOT for isolation only, but because this must not
+        # depend on the ambient environment: in CI OPENAI_API_KEY is genuinely empty, so an
+        # unstubbed read would trip the empty-key SetupError inside every test that drives main().
+        monkeypatch.setattr(
+            ask_smoke,
+            "load_settings",
+            lambda: Settings(database_url="postgresql://localhost:5432/x", openai_api_key="sk-t"),
+        )
         monkeypatch.setattr(ask_smoke, "OpenAIEmbeddings", FakeEmbeddings)
         monkeypatch.setattr(ask_smoke, "OpenAIGeneration", object)
         monkeypatch.setattr(ask_smoke, "connect", self._FakeConn)
@@ -860,3 +870,76 @@ class TestArgValidation:
         args = ask_smoke._parse_args()
 
         assert (args.chunk_size, args.chunk_overlap) == (CHUNK_SIZE_WORDS, CHUNK_OVERLAP_WORDS)
+
+
+class TestWiringSetupFailures:
+    """Provider and DB wiring failures are SETUP failures (exit 2), never gate failures (exit 1).
+
+    The distinction is `SetupError`'s own: "it ran and lost" vs "it never ran". Before the wiring
+    boundary converted them, all three paths below raised straight through `except SetupError` and
+    exited 1 with a traceback - a typo'd `.env` indistinguishable from a system that answered
+    badly. Each test drives the REAL `main()` up to the wiring block and fails it there; nothing
+    is stubbed past the failure point, so the exit code is the one a user would see.
+    """
+
+    QUESTIONS = [question("q001", "answer", [("present.pdf", 1)])]
+
+    def _drive(self, monkeypatch, tmp_path, *, key="sk-test", **overrides):
+        questions = list(self.QUESTIONS)
+        monkeypatch.setattr(ask_smoke, "_load", lambda path, suite: questions)
+        monkeypatch.setattr(
+            ask_smoke,
+            "load_settings",
+            lambda: Settings(database_url="postgresql://localhost:5432/x", openai_api_key=key),
+        )
+        for name, value in overrides.items():
+            monkeypatch.setattr(ask_smoke, name, value)
+        monkeypatch.setattr("sys.argv", ["ask_smoke.py", "--corpus-dir", str(tmp_path)])
+        return ask_smoke.main()
+
+    def test_empty_api_key_exits_two_before_any_client_exists(self, monkeypatch, tmp_path, capsys):
+        """The real missing-key path: `load_settings()` defaults an unset OPENAI_API_KEY to "",
+        which the OpenAI client ACCEPTS at construction - so without the explicit check the
+        failure lands at the first paid call, mid-ingest, as exit 1."""
+
+        def boom(*a, **k):
+            raise AssertionError("no client may be constructed on an empty key")
+
+        rc = self._drive(
+            monkeypatch, tmp_path, key="", OpenAIEmbeddings=boom, OpenAIGeneration=boom
+        )
+        out = capsys.readouterr().out
+
+        assert rc == ask_smoke.EXIT_SETUP
+        assert "SETUP FAILED" in out
+        assert "OPENAI_API_KEY is empty" in out
+
+    def test_provider_construction_error_exits_two(self, monkeypatch, tmp_path, capsys):
+        from openai import OpenAIError
+
+        def boom(*a, **k):
+            raise OpenAIError("no api_key client option")
+
+        rc = self._drive(monkeypatch, tmp_path, OpenAIEmbeddings=boom)
+        out = capsys.readouterr().out
+
+        assert rc == ask_smoke.EXIT_SETUP
+        assert "SETUP FAILED" in out
+        assert "cannot construct the OpenAI providers" in out
+
+    def test_unreachable_database_exits_two(self, monkeypatch, tmp_path, capsys):
+        def refuse():
+            raise psycopg.OperationalError("connection refused")
+
+        rc = self._drive(
+            monkeypatch,
+            tmp_path,
+            OpenAIEmbeddings=FakeEmbeddings,
+            OpenAIGeneration=object,
+            connect=refuse,
+        )
+        out = capsys.readouterr().out
+
+        assert rc == ask_smoke.EXIT_SETUP
+        assert "SETUP FAILED" in out
+        assert "cannot connect to Postgres" in out

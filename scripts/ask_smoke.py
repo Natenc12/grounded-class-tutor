@@ -36,7 +36,8 @@ exactly that reason.
 
 Exit codes: 0 the gate passed, or a `--only` run completed (the gate does not run on a subset —
 see `_print_filtered_notice`) · 1 the gate failed · 2 setup failed (no corpus, no questions, a
-question naming a file the corpus does not have, an `--only` id no question carries).
+question naming a file the corpus does not have, an `--only` id no question carries, no API key,
+no reachable database).
 """
 
 from __future__ import annotations
@@ -46,8 +47,10 @@ from pathlib import Path
 from uuid import uuid4
 
 import psycopg
+from openai import OpenAIError
 
 from gct.ask import AskResult, ask
+from gct.config import load_settings
 from gct.db import connect
 from gct.eval.questions import EXPECTATION_ANSWER, EXPECTATION_REFUSE, EvalQuestion, load_questions
 from gct.eval.scoring import (
@@ -795,10 +798,32 @@ def main() -> int:
         # Built ONCE, for the whole run: one OpenAI client, one connection. The embedder in
         # particular must be the same object on both sides of the seam - ingest STAMPS
         # `embedding_model_id` from it and the Retriever ASSERTS the stamp against it (ADR 0018).
-        embedder = OpenAIEmbeddings()
-        generator = OpenAIGeneration()
+        #
+        # Wiring failures are SETUP failures (SetupError's "it never ran"), so they convert HERE
+        # and exit 2 - unconverted they escape `except SetupError` below and exit 1 with a
+        # traceback, reporting "the system answered badly" for a run that never validly started.
+        # The key check is explicit because absence never raises: `load_settings()` defaults a
+        # missing OPENAI_API_KEY to "", which the client ACCEPTS at construction - the failure
+        # would otherwise surface as an AuthenticationError at the first PAID call, mid-ingest.
+        # (A key that is present but wrong still fails there, as exit 1; converting that would
+        # mean wrapping paid calls, which the question loop below deliberately refuses to do.)
+        if not load_settings().openai_api_key:
+            raise SetupError("OPENAI_API_KEY is empty — set it in .env (CLAUDE.md, Local dev)")
 
-        with connect() as conn:
+        try:
+            embedder = OpenAIEmbeddings()
+            generator = OpenAIGeneration()
+        except OpenAIError as err:
+            raise SetupError(f"cannot construct the OpenAI providers: {err}") from err
+
+        try:
+            conn = connect()
+        except psycopg.OperationalError as err:
+            raise SetupError(
+                f"cannot connect to Postgres (DATABASE_URL — is the server up?): {err}"
+            ) from err
+
+        with conn:
             # AUTOCOMMIT, and it is load-bearing — not a style choice.
             #
             # psycopg opens an implicit transaction on the first statement, so WITHOUT this the

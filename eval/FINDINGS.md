@@ -327,7 +327,7 @@ only difference being the presence of rule 4.
 |---|---|---|
 | **with** rule 4 | 5 | **GROUNDED 5/5**, citing `Lecture 20 …pptx` p.2 — the row's `expected_sources` |
 | **without** rule 4 (prompt restored to its prior text) | 3 | **REFUSAL 3/3** |
-| historical, without rule 4 (2026-07-27, four live runs) | 5 | REFUSAL 5/5 |
+| historical, without rule 4 (2026-07-27: four suite runs + one same-day repeat — the "five-time reproduction" above) | 5 | REFUSAL 5/5 |
 
 So q005 now stands at **8 refusals across every ask without the rule (3 today + 5 historical), and 7
 grounded answers across every ask with it (the 5 probe runs above, plus q005's ask inside each of
@@ -345,11 +345,12 @@ A representative answer under the new rule, quoted in full:
 It attributes to Lecture 20 as the question asks, and cites the slide rather than the surrounding
 Livingston material (see the retrieval observation below, which makes that non-trivial).
 
-> **2026-08-02 — independent re-run, one qualification.** A review re-run reproduced the result
-> (GROUNDED, citing `Lecture 20 …pptx` p.2; removal arm re-refused; the retrieve() table below
-> reproduced to four decimal places) but produced the same sentence *without* the "According to
-> Lecture 20," prefix. The attribution prefix varies run to run; the stable part is the citation
-> choice, not the phrasing.
+> **2026-08-02 — independent re-runs, one qualification.** Review re-runs reproduced the result
+> (GROUNDED, citing `Lecture 20 …pptx` p.2; the removal arm re-refused once; the retrieve() table
+> below reproduced to four decimal places) — but the PROSE varied: one re-run dropped the
+> "According to Lecture 20," prefix, another reordered the clauses entirely. The stable part is
+> the citation choice, not the phrasing; the sentence quoted above is one run's wording, not the
+> answer's.
 
 ### The predicted first PARTIAL did **not** fire — `partial_rate` is still 0.0%
 
@@ -363,6 +364,12 @@ suite runs + 24 today: 16 in the two full suites plus the 8 probe-arm asks above
 **Matters later:** the bucket ADR 0023 spends most of its length protecting is still entirely
 untested by observation, and the lever most expected to exercise it did not. Pass 2 should not assume
 the PARTIAL path works merely because it is specified.
+
+One bound on what those 56 asks can say: the suite has no row whose *correct* outcome is a partial —
+all 8 `answer` rows are fully covered by their expected sources and all 4 `refuse` rows are verified
+absent, so the null result tests the *prediction* (that q005 would land PARTIAL), not the mechanic.
+Exercising PARTIAL deliberately needs an eval row with genuinely partial coverage, which is a change
+to `eval/questions.jsonl` — deliberately untouched by this probe (#60's scope).
 
 ### Full suite, twice — the trust column held
 
@@ -383,6 +390,9 @@ guard that matters. Both full runs, 2026-08-01, same conditions as above:
 Read as **works, not as a ranking**: in-corpus questions came back cited and out-of-corpus ones came
 back refused, and the refusal side did not degrade. q006 — the ±12.5-point mover — landed GROUNDED in
 both runs, which is consistent with, but not evidence of, anything: it flips on its own (#45).
+
+The no-gaps-refusal oddity recorded above (a decline naming nothing missing) did **not** recur under
+the new wording: all 8 refusal-asks across both runs stated gaps.
 
 ### Retrieval observation: `hit=yes` hides what else is in the top-k
 

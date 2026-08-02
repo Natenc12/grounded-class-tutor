@@ -497,8 +497,9 @@ def _print_summary(metrics: EvalMetrics) -> None:
     # ALWAYS printed on a bench run, including at zero. ERROR leaves N_scored, so errors silently
     # shrink every denominator above — a run where 6 of 8 in-corpus questions errored can post a
     # perfect 2/2. The absence of this line is exactly what would hide that FAIL->ERROR escape
-    # hatch. A `--only` run never reaches this function; its error signal is the ERROR line in
-    # `_print_filtered_notice`, kept for the same reason.
+    # hatch. A `--only` run never reaches this function; `_print_filtered_notice` prints an
+    # aggregate ERROR count instead — conditional rather than at-zero, because a filtered run's
+    # per-question lines already name each ERROR (see its docstring for the different bargain).
     print("  health (excluded from ranking, never from the report):")
     _rate_line(
         "error_count / error_rate",
@@ -525,10 +526,13 @@ def _print_filtered_notice(
     answered exactly what it was asked. So the subset run exits EXIT_OK and says why, out loud;
     setup failures still exit 2, since those are about validity, not results.
 
-    One health signal survives the suppression: the ERROR count. The comparability argument covers
-    RATES; a count of asks that produced no result at all is not a rate, and dropping it would let
-    a probe whose every question errored print a tidy report and exit 0 — the same FAIL->ERROR
-    escape hatch `_print_summary`'s health line exists to keep visible (ADR 0023 §3).
+    One aggregate survives the suppression: an ERROR count, printed only when something errored.
+    That is a summary convenience, not the closing of a hidden signal — every errored ask already
+    prints its own line above (state ERROR, outcome=EXCLUDED, the error kind and message); the
+    aggregate keeps a multi-question probe from ending on a quiet closing block while an earlier
+    line errored. Deliberately CONDITIONAL, unlike `_print_summary`'s always-printed health line:
+    a probe with no errors needs no aggregate, and the line's presence-on-error is pinned by
+    tests rather than by an at-zero convention.
     """
     print(
         f"\nFILTERED RUN — {len(questions)} of {suite_total} question(s) in the suite: "
@@ -544,9 +548,12 @@ def _print_filtered_notice(
     )
     errored = sum(1 for record in records if record.state is GrounderState.ERROR)
     if errored:
+        # Both numbers derive from `records` — the asks that actually ran — so the line cannot
+        # disagree with itself if a caller ever hands it fewer records than questions.
         print(
-            f"  !! {errored} of {len(questions)} question(s) came back ERROR — a health count, "
-            "not a suppressed rate (ADR 0023 §3). This run measured less than it asked."
+            f"  !! {errored} of {len(records)} question(s) came back ERROR — a health count "
+            "(ADR 0023 §3's error signal, counted rather than rated because rates stay "
+            "suppressed here). This run measured less than it asked."
         )
     print("  The per-question lines above are this run's whole result.")
 

@@ -18,6 +18,7 @@ fixture). A SKIP here locally means Postgres is down - it is not a pass.
 
 from __future__ import annotations
 
+import dataclasses
 import importlib.util
 import io
 import uuid
@@ -486,7 +487,7 @@ class TestOnlyFilter:
         refused. The gate is suppressed for its own reason: >=1 GROUNDED AND >=1 REFUSAL is
         structurally unreachable for a one-question run, so running it would print FAIL for a run
         that answered exactly what it was asked."""
-        ask_smoke._print_filtered_notice(ask_smoke._select(self.QUESTIONS, "q005"), 12)
+        ask_smoke._print_filtered_notice(ask_smoke._select(self.QUESTIONS, "q005"), 12, [])
         out = capsys.readouterr().out
 
         assert "FILTERED RUN" in out
@@ -498,6 +499,28 @@ class TestOnlyFilter:
         # The rate vector's own labels must be nowhere near this output.
         assert "grounded_pass_rate" not in out
         assert "PASS" not in out and "FAIL" not in out
+        # And with no ERROR rows there is no error line to print (see the next two tests).
+        assert "ERROR" not in out
+
+    def test_notice_reports_errors_as_a_count_never_a_rate(self, capsys):
+        """The one signal that survives the suppression. The comparability argument covers RATES;
+        an ask that produced no result at all is a health fact (ADR 0023 §3), and without this
+        line a probe whose every question errored would print a tidy report and exit 0 — the
+        FAIL->ERROR escape hatch the bench's own health line exists to keep visible."""
+        from gct.eval.scoring import EvalRecord
+        from gct.grounder.answer import GrounderState
+
+        selected = ask_smoke._select(self.QUESTIONS, "q001,q005")
+        records = [
+            EvalRecord("answer", GrounderState.GROUNDED, hit=True),
+            EvalRecord("answer", GrounderState.ERROR, hit=None),
+        ]
+
+        ask_smoke._print_filtered_notice(selected, 12, records)
+        out = capsys.readouterr().out
+
+        assert "1 of 2 question(s) came back ERROR" in out
+        assert "error_rate" not in out  # a count, never a rate — rates stay suppressed
 
     def test_default_args_leave_both_new_flags_off(self, monkeypatch):
         """The byte-identical-default guarantee, at the parse layer: absent flags mean a default
@@ -565,26 +588,109 @@ class TestVerbose:
 
         assert capsys.readouterr().out == ""
 
-    def test_the_summary_line_is_untouched_by_verbose(self, capsys):
-        """The default-output guarantee, stated as a property: verbose output is strictly
-        ADDITIVE, printed after the summary line, so a future reader can diff a probe run against
-        the full run it is probing."""
-        from gct.eval.scoring import EvalRecord
+
+class TestMainWiring:
+    """The two new flags driven through `main()` itself — offline, no DB, no provider, no spend.
+
+    The unit tests above prove `_select`, `_print_verbose` and `_print_filtered_notice` each work
+    in isolation; none of them can notice `main()` failing to CALL one. (Mutation-checked in PR
+    #63's review: deleting the `--verbose` call, or the whole `--only` early return, left every
+    unit test green.) So these monkeypatch out exactly the seams that cost money or need
+    Postgres, run the real `main()`, and assert on ONE captured buffer — where ordering is a
+    checkable fact rather than something the test constructs itself.
+    """
+
+    QUESTIONS = [
+        question("q001", "answer", [("present.pdf", 1)]),
+        question("q005", "answer", [("present.pdf", 2)]),
+        question("q009", "refuse", []),
+    ]
+
+    class _FakeConn:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            return False
+
+    def _drive(self, monkeypatch, tmp_path, argv_tail, states=None):
+        """Run `main()` with fakes at the seams. Question text is set to the question's id so
+        the fake `ask` can answer per-question the way the real one would."""
         from gct.grounder.answer import GrounderState
 
-        result = grounder_result(GrounderState.PARTIAL, "some prose", ["a gap"])
-        ask_result = ask_smoke.AskResult(result=result, retrieved=[], retrieval_ran=True)
-        record = EvalRecord("answer", GrounderState.PARTIAL, hit=True)
-        q = question("q005", "answer", [("present.pdf", 1)])
+        states = states or {
+            "q001": (GrounderState.GROUNDED, "prose one [S1]", []),
+            "q005": (GrounderState.GROUNDED, "prose five [S1]", []),
+            "q009": (GrounderState.REFUSAL, None, ["nothing on this"]),
+        }
+        questions = [dataclasses.replace(q, question=q.id) for q in self.QUESTIONS]
 
-        ask_smoke._print_question_line(q, ask_result, record)
-        plain = capsys.readouterr().out
+        def fake_ask(conn, question_text, owner, class_id, *, embedder, generator, k):
+            state, prose, gaps = states[question_text]
+            return ask_smoke.AskResult(
+                result=grounder_result(state, prose, gaps), retrieved=[], retrieval_ran=True
+            )
 
-        ask_smoke._print_question_line(q, ask_result, record)
-        ask_smoke._print_verbose(result)
-        verbose = capsys.readouterr().out
+        monkeypatch.setattr(ask_smoke, "_load", lambda path, suite: list(questions))
+        monkeypatch.setattr(ask_smoke, "OpenAIEmbeddings", FakeEmbeddings)
+        monkeypatch.setattr(ask_smoke, "OpenAIGeneration", object)
+        monkeypatch.setattr(ask_smoke, "connect", self._FakeConn)
+        monkeypatch.setattr(ask_smoke, "_resolve_class", lambda conn, owner, slug: uuid.uuid4())
+        monkeypatch.setattr(ask_smoke, "_converge_corpus", lambda *a, **k: set())
+        monkeypatch.setattr(ask_smoke, "_require_expected_files", lambda *a, **k: None)
+        monkeypatch.setattr(ask_smoke, "_indexed_pages", lambda *a, **k: {})
+        monkeypatch.setattr(ask_smoke, "_print_census", lambda *a, **k: None)
+        monkeypatch.setattr(ask_smoke, "ask", fake_ask)
+        monkeypatch.setattr("sys.argv", ["ask_smoke.py", "--corpus-dir", str(tmp_path), *argv_tail])
+        return ask_smoke.main()
 
-        assert verbose.startswith(plain), "verbose must only APPEND to the per-question line"
+    def test_a_default_run_reaches_the_bench_and_the_gate(self, monkeypatch, tmp_path, capsys):
+        rc = self._drive(monkeypatch, tmp_path, [])
+        out = capsys.readouterr().out
+
+        assert rc == ask_smoke.EXIT_OK
+        assert "grounded_pass_rate" in out
+        assert "exit gate" in out
+        assert "FILTERED RUN" not in out
+        assert "answer_prose" not in out  # --verbose off is the default, through the real loop
+
+    def test_only_takes_the_early_return_instead_of_the_bench(self, monkeypatch, tmp_path, capsys):
+        rc = self._drive(monkeypatch, tmp_path, ["--only", "q005"])
+        out = capsys.readouterr().out
+
+        assert rc == ask_smoke.EXIT_OK
+        assert "FILTERED RUN — 1 of 3" in out
+        assert "grounded_pass_rate" not in out
+        # The notice SAYS "No exit gate either", so match the gate's own verdict line, not the
+        # phrase: neither verdict may print on a filtered run.
+        assert "PASS — exit gate" not in out and "FAIL — exit gate" not in out
+
+    def test_verbose_is_wired_and_prints_after_the_summary_line(
+        self, monkeypatch, tmp_path, capsys
+    ):
+        """Order asserted in ONE buffer: the prose block sits between its own summary line and
+        the notice. A two-capture `startswith` comparison builds the expected order itself and
+        cannot see a reordering; an index chain over the real run's output can."""
+        rc = self._drive(monkeypatch, tmp_path, ["--only", "q005", "--verbose"])
+        out = capsys.readouterr().out
+
+        assert rc == ask_smoke.EXIT_OK
+        assert out.index("q005 ") < out.index("answer_prose:") < out.index("FILTERED RUN")
+        assert "prose five" in out
+
+    def test_a_filtered_run_with_an_error_says_so_out_loud(self, monkeypatch, tmp_path, capsys):
+        from gct.grounder.answer import GrounderState
+
+        rc = self._drive(
+            monkeypatch,
+            tmp_path,
+            ["--only", "q005"],
+            states={"q005": (GrounderState.ERROR, None, [])},
+        )
+        out = capsys.readouterr().out
+
+        assert rc == ask_smoke.EXIT_OK
+        assert "1 of 1 question(s) came back ERROR" in out
 
 
 class TestArgValidation:

@@ -86,8 +86,9 @@ generation/prompt lever exists to tune; it is the only in-corpus miss in an othe
 > Second measurement, same probe: a case-insensitive scan of all five corpus files for
 > `creation science|creationis` matches in exactly two of them — `Lecture 20` (slide 1, on the deck
 > title *"Evolutionist-Creationist debate"* only; slide 2, the passage above) and
-> `Livingston Cosmogony.pdf` (pp. 2, 10, 13, 14 — passages that discuss Creation Science, but are
-> not the Lecture-20 attribution q005's `expected_sources` names). Slide 2 is the only text in the
+> `Livingston Cosmogony.pdf` (pp. 2, 10, 13, 14 — passages on Creation Science or creationism
+> generally: p.10's only match is "biblical-creationist" in the theological sense, and none carry
+> the Lecture-20 attribution q005's `expected_sources` names). Slide 2 is the only text in the
 > corpus carrying q005's graded answer.
 >
 > One further **observation about the corpus, not a verdict on q005**: the gaps the model reports —
@@ -301,8 +302,9 @@ Governing decisions: **ADR 0022 §1**, **ADR 0023**.
 ### The wording under test — the record of *which* wording, since there is no runtime lever
 
 The prompt is edited in place, so the wording itself is the record. One rule was added to
-`_SYSTEM_PROMPT` as rule 4; nothing else in the prompt changed, and rule 7 (the all-or-nothing exit,
-previously rule 6) is byte-identical:
+`_SYSTEM_PROMPT` as rule 4; nothing else in the prompt changed apart from the ordinals of the rules
+below it (old 4–7 became 5–8), and rule 7 (the all-or-nothing exit, previously rule 6) is
+byte-identical:
 
 ```
 4. Where the sources support part of the question, answer that part - state it with its [S#]
@@ -312,7 +314,8 @@ previously rule 6) is byte-identical:
 
 It encodes the **affirmative half of ADR 0008's partial-support policy** — *"the Grounder answers
 what the retrieved context supports"* — which the prompt had never carried. The prohibition half
-(rules 1/3/5) and the degenerate all-or-nothing case (rule 7) were both already there.
+(rules 1/3/5, as the rules now stand — 1/3/4 before the insertion) and the degenerate all-or-nothing
+case (rule 7, previously 6) were both already there.
 
 ### q005: REFUSAL → GROUNDED, 5 of 5 — and REFUSAL 3 of 3 when the rule is removed
 
@@ -326,10 +329,12 @@ only difference being the presence of rule 4.
 | **without** rule 4 (prompt restored to its prior text) | 3 | **REFUSAL 3/3** |
 | historical, without rule 4 (2026-07-27, four live runs) | 5 | REFUSAL 5/5 |
 
-So q005 now stands at **8 refusals across every run without the rule, and 5 grounded answers across
-every run with it** — no crossover in either direction. The removal arm reproduced the original gap
-wording too ("specific claims made by 'Creation Science'"), i.e. it reproduced the defect, not merely
-a refusal.
+So q005 now stands at **8 refusals across every ask without the rule (3 today + 5 historical), and 7
+grounded answers across every ask with it (the 5 probe runs above, plus q005's ask inside each of
+the two full suites below)** — no crossover in either direction. The `runs` column counts `--only
+q005` probe invocations; the full suites are tallied separately. The removal arm reproduced the
+original gap wording too ("specific claims made by 'Creation Science'"), i.e. it reproduced the
+defect, not merely a refusal.
 
 A representative answer under the new rule, quoted in full:
 
@@ -340,6 +345,12 @@ A representative answer under the new rule, quoted in full:
 It attributes to Lecture 20 as the question asks, and cites the slide rather than the surrounding
 Livingston material (see the retrieval observation below, which makes that non-trivial).
 
+> **2026-08-02 — independent re-run, one qualification.** A review re-run reproduced the result
+> (GROUNDED, citing `Lecture 20 …pptx` p.2; removal arm re-refused; the retrieve() table below
+> reproduced to four decimal places) but produced the same sentence *without* the "According to
+> Lecture 20," prefix. The attribution prefix varies run to run; the stable part is the citation
+> choice, not the phrasing.
+
 ### The predicted first PARTIAL did **not** fire — `partial_rate` is still 0.0%
 
 The entry above predicted that "the same q005-shaped question that produces a flat refusal today is
@@ -347,7 +358,8 @@ the one most likely to produce a PARTIAL under a tuned prompt." **That predictio
 Across both full-suite runs below, `partial_rate` remained **0.0%** — the rule converted q005's flat
 refusal straight to a full GROUNDED with `COVERAGE: complete`, not to an answer-plus-gaps.
 
-PARTIAL has now never fired in **56** in-corpus question-runs (32 previously recorded + 24 today).
+PARTIAL has now never fired in **56** tabulated in-corpus question-asks (32 across the four 2026-07
+suite runs + 24 today: 16 in the two full suites plus the 8 probe-arm asks above).
 **Matters later:** the bucket ADR 0023 spends most of its length protecting is still entirely
 untested by observation, and the lever most expected to exercise it did not. Pass 2 should not assume
 the PARTIAL path works merely because it is specified.
@@ -403,6 +415,7 @@ relevance floor — and it compounds the corpus mass-skew entry at the top of th
 ### Pointer: the coverage-marker syntax was held constant for this probe
 
 **Where that is decided: #60.** The standing observation it rests on is already recorded above — the
-marker parsed **12/12** on the first live run, with **zero integrity flags across all four runs**. Six
-further runs today added no integrity flags. This file does not decide the syntax; it records the
-observation and points at the issue that owns the choice.
+marker parsed **12/12** on the first live run, with **zero integrity flags across all four runs**. Ten
+further runs today (the eight `--only q005` probes and the two full suites) added no integrity flags.
+This file does not decide the syntax; it records the observation and points at the issue that owns
+the choice.

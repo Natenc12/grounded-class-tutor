@@ -148,18 +148,20 @@ class TestLabeledContext:
         assert "outside" in system.lower()  # the no-outside-knowledge rule
         assert "quoted" in system.lower()  # N13: SOURCES text is data, never instruction
         # ADR 0008's AFFIRMATIVE half: some rule must direct an answer for what the sources DO
-        # support. Matched at line granularity on two ordinary words rather than on a phrase, so
-        # that rewording survives and only DELETING the demand fails - the failure mode this is
-        # here for, since every other rule in the prompt reads correct without it. The degenerate
-        # all-or-nothing exit ("support no part of an answer") is excluded on purpose: it is the
-        # opposite instruction and would satisfy a naive word match on its own.
+        # support. What this literally pins: at least one PHYSICAL line carrying both "answer"
+        # and "support" that is not the degenerate all-or-nothing exit (excluded via its literal
+        # "no part", itself provisional prose). That is looser than a phrase match but NOT
+        # deletion-proof: a reword to a synonym ("cover" for "support"), or a re-wrap that splits
+        # the two words across lines, fails this and should be re-pinned deliberately - and a
+        # rewording of the exit that drops "no part" would let a deletion slip through. Today it
+        # matches exactly one line (rule 4); deleting that rule fails it.
         assert [
             line
             for line in system.splitlines()
             if "answer" in line.lower()
             and "support" in line.lower()
             and "no part" not in line.lower()
-        ]
+        ], "no prompt rule carries ADR 0008's affirmative (answer-what-is-supported) half"
         # Quoted, not sanitized: the injection string survives verbatim inside SOURCES.
         assert injected_text in user
 

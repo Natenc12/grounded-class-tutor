@@ -404,9 +404,10 @@ def _print_verbose(result: GrounderResult) -> None:
 
     The two chosen fields are the ones a generation probe (issue #60) is actually looking at.
     `answer_prose` is never printed anywhere else — `_detail` reports citations, gaps, integrity
-    or error, never the prose the model wrote. And gaps reach the summary line through `_clip`,
-    which cuts at 80 chars; the gap WORDING is the evidence compared across repeated asks, so
-    truncating it here would hide the difference the probe exists to see.
+    or error, never the prose the model wrote. And gaps reach the summary line only on REFUSAL,
+    clipped at 80 chars by `_clip` — on PARTIAL, `_detail`'s citations branch wins and the gaps
+    do not appear there at all; the gap WORDING is the evidence compared across repeated asks,
+    so this is the one place it prints whole.
 
     No prose means no block — not an empty one and not the string "None". REFUSAL and ERROR carry
     no prose by contract (`GrounderResult`), so on a refusal-heavy run this prints the gaps alone.
@@ -493,9 +494,11 @@ def _print_summary(metrics: EvalMetrics) -> None:
             "rate is NOT comparable to a full-suite run"
         )
 
-    # ALWAYS printed, including at zero. ERROR leaves N_scored, so errors silently shrink every
-    # denominator above — a run where 6 of 8 in-corpus questions errored can post a perfect 2/2.
-    # The absence of this line is exactly what would hide that FAIL->ERROR escape hatch.
+    # ALWAYS printed on a bench run, including at zero. ERROR leaves N_scored, so errors silently
+    # shrink every denominator above — a run where 6 of 8 in-corpus questions errored can post a
+    # perfect 2/2. The absence of this line is exactly what would hide that FAIL->ERROR escape
+    # hatch. A `--only` run never reaches this function; its error signal is the ERROR line in
+    # `_print_filtered_notice`, kept for the same reason.
     print("  health (excluded from ranking, never from the report):")
     _rate_line(
         "error_count / error_rate",
@@ -505,7 +508,9 @@ def _print_summary(metrics: EvalMetrics) -> None:
     )
 
 
-def _print_filtered_notice(questions: list[EvalQuestion], suite_total: int) -> None:
+def _print_filtered_notice(
+    questions: list[EvalQuestion], suite_total: int, records: list[EvalRecord]
+) -> None:
     """What a `--only` run prints INSTEAD of the rate vector and the gate.
 
     Both suppressions are the same rule this file already enforces everywhere else. `_print_summary`
@@ -519,6 +524,11 @@ def _print_filtered_notice(questions: list[EvalQuestion], suite_total: int) -> N
     on `--only q005` would print FAIL and exit 1 — "the system answered badly" — for a run that
     answered exactly what it was asked. So the subset run exits EXIT_OK and says why, out loud;
     setup failures still exit 2, since those are about validity, not results.
+
+    One health signal survives the suppression: the ERROR count. The comparability argument covers
+    RATES; a count of asks that produced no result at all is not a rate, and dropping it would let
+    a probe whose every question errored print a tidy report and exit 0 — the same FAIL->ERROR
+    escape hatch `_print_summary`'s health line exists to keep visible (ADR 0023 §3).
     """
     print(
         f"\nFILTERED RUN — {len(questions)} of {suite_total} question(s) in the suite: "
@@ -532,6 +542,12 @@ def _print_filtered_notice(questions: list[EvalQuestion], suite_total: int) -> N
         "  No exit gate either: it needs >=1 in-corpus GROUNDED and >=1 out-of-corpus REFUSAL, "
         "which a subset need not contain."
     )
+    errored = sum(1 for record in records if record.state is GrounderState.ERROR)
+    if errored:
+        print(
+            f"  !! {errored} of {len(questions)} question(s) came back ERROR — a health count, "
+            "not a suppressed rate (ADR 0023 §3). This run measured less than it asked."
+        )
     print("  The per-question lines above are this run's whole result.")
 
 
@@ -784,7 +800,7 @@ def main() -> int:
             # naming every id in the suite today is still a probe, and one question added to the
             # eval file tomorrow must not silently turn that same command back into a bench run.
             if args.only is not None:
-                _print_filtered_notice(questions, suite_total)
+                _print_filtered_notice(questions, suite_total, records)
                 return EXIT_OK
 
             metrics = compute_metrics(records)

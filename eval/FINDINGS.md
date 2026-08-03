@@ -556,9 +556,11 @@ Per the discipline note at the top: this file records observations, and a findin
 choice goes to an ADR. Pass 1's verdict — *what* the core is validated at, what that does not claim,
 and why the red it caught bounds Pass 2's chunking axis rather than blocking Slice 2 — is
 `design/decisions/0026-spike-pass-1-verdict.md`. The observations it rests on are the two dated
-probe sections above, which that ADR **cites rather than copies** — deliberately, since 0.565 and
-0.562 were already transposed once within this file (see the dated correction in the q007 mechanism
-table). Where the ADR does carry a figure, it is one that *is* the decision's content.
+probe sections above, which that ADR **cites rather than copies**: it reproduces no measurement
+except where the figure is its own decision content. That rule is deliberate, and this file is why —
+a score in the q007 mechanism table was mis-transcribed from an adjacent subsection and corrected a
+day later (the parenthetical directly under that table). A second copy in a second file is how a
+slip like that stops being correctable in one place.
 
 ### One gap in the record above, noticed while writing the verdict
 The q007 mechanism table records the expected page's **rank** at each window but only records the

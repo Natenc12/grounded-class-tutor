@@ -123,8 +123,8 @@ The seams it draws, which later slices wrap rather than rewrite:
 seed smoke suite; the differentiator grounds and refuses on real course materials. **The verdict is
 ADR 0026** — read it rather than this line: it names the *configuration* validated (validation here
 is not a general claim), states the bars it does not clear, and records the red the pass caught as a
-bound on Pass 2's chunking axis. Evidence lives in `eval/FINDINGS.md` — the ADR cites those
-measurements rather than copying them, so the numbers keep one writer.
+bound on Pass 2's chunking axis. Evidence lives in `eval/FINDINGS.md`, which stays the writer of the
+measurements — the ADR reproduces none of them except where the figure is its own decision content.
 
 **Slice 2 — Real write path: CURRENT.** Wrap the *proven* inline pipeline in the async worker + job
 queue + status store (DB-backed `jobs`, in-process poll worker, `enqueue`/`claim`, ADR 0011) plus

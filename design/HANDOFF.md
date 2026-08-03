@@ -110,10 +110,11 @@ parallel. The skill reads CLAUDE.md **Current status** to know which slice to pr
 - [x] **Assumptions & explicit non-goals stated.** Scope boundary (ADR 0002); V1 crude-grounding ladder
       (ADR 0004); carried assumptions below.
 
-> ⚠️ **Green = buildable, not validated.** The differentiator (grounding/refusal quality, N1–N4) is
-> **empirical and unproven** at V1 — it ships crude and unmeasured by design (ADR 0004). **Spike Pass 1 is
-> the first real de-risking**; treat a demoable V1 as *buildable*, never as *proven faithful*. This caveat
-> is load-bearing — do not over-read a passing gate.
+> ⚠️ **Green = buildable. Validated ≠ proven faithful.** The differentiator (grounding/refusal quality,
+> N1–N4) is **empirical** — it ships crude and unmeasured by design (ADR 0004). **Spike Pass 1 was the
+> first real de-risking**, and it validated the core at **one named configuration** (ADR 0026) — a
+> narrower claim than trustworthy, and one that does not retire this caveat. Treat a demoable V1 as
+> *buildable*, never as *proven faithful*. This caveat is load-bearing — do not over-read a passing gate.
 
 ## Open assumptions (the builder may proceed on these)
 - **Eval scoring is two-signal (PM-1 / ADR 0023, ratified).** Score retrieval (`expected_sources` in

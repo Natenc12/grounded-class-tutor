@@ -477,6 +477,16 @@ the rates — are the load-bearing evidence.
 Reproduced **3/3**, and `Livingston Cosmogony.pdf` p.4 is a **single-source** row, which
 `_require_expected_files` already names as "a guaranteed permanent miss". This is the cheap design
 signal Pass 1 exists to catch, on exactly the axis ADR 0023 §1 assigns to chunking.
+> **2026-08-03 — correction: that citation of `_require_expected_files` is wrong, and the point it
+> was reaching for is a different one.** The guard's "guaranteed permanent miss" (`ask_smoke.py`,
+> the `unindexed` branch) is about a source page carrying **no indexed chunk** — a setup failure it
+> raises `SetupError` on, *before* anything is scored. p.4 was indexed at all three windows and was
+> scored at all three (0.614 / 0.562 / 0.498 below), so that branch never applied here and could
+> not have. What single-source actually buys is the property recorded two sections down: the
+> any-match rule in `scoring.retrieval_hit` lets a **multi**-source row hide a chunking-induced
+> miss behind a surviving leg, and a single-source row cannot. Same conclusion — the miss is real
+> and cannot be masked — reached by the mechanism that genuinely produces it. Epic #58 carries the
+> same misattribution, inherited from this entry; ADR 0026 states the corrected version.
 
 Mechanism, from a direct top-5 probe of the same question against all three corpora:
 
@@ -546,7 +556,9 @@ Per the discipline note at the top: this file records observations, and a findin
 choice goes to an ADR. Pass 1's verdict — *what* the core is validated at, what that does not claim,
 and why the red it caught bounds Pass 2's chunking axis rather than blocking Slice 2 — is
 `design/decisions/0026-spike-pass-1-verdict.md`. The observations it rests on are the two dated
-probe sections above; neither is restated there.
+probe sections above, which that ADR **cites rather than copies** — deliberately, since 0.565 and
+0.562 were already transposed once within this file (see the dated correction in the q007 mechanism
+table). Where the ADR does carry a figure, it is one that *is* the decision's content.
 
 ### One gap in the record above, noticed while writing the verdict
 The q007 mechanism table records the expected page's **rank** at each window but only records the

@@ -13,7 +13,13 @@ Both Pass 1 probes are closed and their evidence is in `eval/FINDINGS.md` under 
 (the generation probe, #60; the chunking probe's eight full-suite runs across three windows, #59).
 That file records **observations, never decisions** by its own header rule — *"a finding that ripens
 into a choice goes to an ADR or an issue, and gets a pointer here."* The verdict is such a choice,
-so it lives here and the findings file points at it.
+so it lives here.
+
+**This ADR cites measurements rather than copying them.** Where a figure appears below it is because
+the figure *is* the decision's content; everything else points at the dated FINDINGS section that
+owns it. That is not fastidiousness for its own sake — 0.565 and 0.562 were already transposed once
+inside FINDINGS itself (corrected in place, 2026-08-02), which is exactly what a second copy in a
+second file makes likelier.
 
 Pass 1's charter bounds what this ADR may say: **validation, not optimization** (ADR 0022 §1) — the
 probes answer *works / red*, never *which is best*. The comparison protocol belongs to Pass 2 (#45).
@@ -28,45 +34,54 @@ The configuration validated is the one Slice 2 inherits:
   by #60 (`src/gct/grounder/answer.py`);
 - `k = 5`; `text-embedding-3-small` / `gpt-4o-mini`; the five-file dogfood religion corpus.
 
-The evidence is the two full-suite runs of **exactly that configuration** (2026-08-01), recorded in
-`eval/FINDINGS.md`: grounded 8/8, correct-refusal 4/4, hallucination 0/4, integrity-flag 0,
-retrieval 8/8, zero errors, both times. In-corpus questions came back cited; out-of-corpus ones came
-back refused.
+The evidence is the two full-suite runs of **exactly that configuration** (2026-08-01, recorded under
+*Full suite, twice* in FINDINGS' generation-probe section): in-corpus questions came back cited,
+out-of-corpus ones came back refused, and every trust-critical column was clean both times — no
+hallucination, no integrity flag, no error, full retrieval. The rate vector itself lives there, not
+here.
 
 **Stated with its denominator, because the denominator is small.** That is **n = 2** suites on a
-bench whose noise floor is **one whole question** — 12.5 points on the 8-question in-corpus suite
-(measured, #45). The claim being made is *"it grounds and refuses on real course materials at this
-configuration"*, not any rate.
+bench whose noise floor is **one whole question** — measured by #45, and the reason no rate in this
+ADR is treated as a score.
 
 ### 2. What this verdict does not claim
 - **Not a quality bar.** ADR 0023 is explicit that the smoke suite is a spike-ranking instrument and
   **not a release gate**; V1 is demoable-not-measured (ADR 0004), and the ship bar is V3's N1–N4.
-  `HANDOFF.md`'s "green = buildable, not proven faithful" caveat is **not** retired by this ADR.
-- **Not a ranking.** No chunk window and no prompt wording is claimed to beat another. Every adjacent
-  gap in the chunking probe's `grounded_pass_rate` column is exactly one question wide — inside the
-  noise floor — which is why its per-question sections, not its rates, carry its result.
+  `HANDOFF.md`'s caveat — *"Green = buildable"*, and never read a demoable V1 as *proven faithful* —
+  is **not** retired by this ADR. Validated-at-a-configuration is a narrower claim than trustworthy.
+- **Not a ranking.** No chunk window is claimed to beat another. The differences between the chunking
+  probe's rates are all within the noise floor above, which is why that probe's per-question sections,
+  not its rates, carry its result.
+  **One deliberate exception, licensed and scoped:** `q005`'s prompt counterfactual below *is* a
+  comparative claim about two wordings. FINDINGS licenses it explicitly — q005 was stable across five
+  reproductions and never flipped, and both arms ran back to back in one session. It is a claim about
+  one question at one window, not about wordings in general.
 - **Not a margin.** At the shipped window `q007`'s expected page ranks **first**; what ranked second
-  there was never recorded, so its margin is **unmeasured**. The chunks that displace it at 500/80
-  score 0.562 / 0.555 — which is what the expected chunk itself scores at 250/40 — so the dilution
-  mechanism is not peculiar to the widest window tested. "Ranks first" is the claim; "has headroom"
-  is not.
+  there was never recorded, so its margin is **unmeasured**. What the sweep does show is that the
+  page's own score falls at every widening step, and that the scores in play across windows are the
+  same size as the gap being claimed. "Ranks first" is supported; "has headroom" is not.
 
 ### 3. The red Pass 1 caught is a bound on the chunking axis, not a Slice 2 blocker — Slice 2 is released
 At a 500/80 window, `q007`'s expected page (`Livingston Cosmogony.pdf` p.4) falls out of the top-5
-entirely, reproduced 3/3, on a **single-source** row — which `_require_expected_files` already names
-as a guaranteed permanent miss. The mechanism is measured: a wider window dilutes the passage's
-topical signal until neighbouring-page chunks outrank it.
+entirely, reproduced 3/3. The mechanism is measured: a wider window dilutes the passage's topical
+signal until neighbouring-page chunks outrank it. The row is **single-source**, which matters for a
+specific reason — `scoring.retrieval_hit`'s any-match rule means a multi-source row can hide a
+chunking-induced miss behind a surviving leg, and this row cannot. (It is *not* the case that
+`_require_expected_files` names this miss: that guard is about a page carrying **no indexed chunk**,
+which raises `SetupError` before scoring. p.4 was indexed at every window and was scored. FINDINGS
+and epic #58 both make this misattribution; FINDINGS now carries a dated correction.)
 
-That window is not the one that ships, and the failure is not reachable at the one that does. It
+That window is not the one that ships, and the failure was **not observed** at the one that does. It
 therefore **bounds the axis Pass 2 tunes** rather than blocking the write path Slice 2 builds. This
 is the cheap design signal Pass 1 exists to produce, caught before the skeleton was thickened.
 
 ## Alternatives considered
 - **Declare the core validated unconditionally** — rejected: the two probes never crossed. All eight
   chunking runs predate #60's prompt rule, and the generation probe held the window fixed at the
-  default. No evidence covers any configuration other than the one named in §1, so an unqualified
-  claim would assert more than was measured.
-- **Block Slice 2 on the `q007` red** — rejected on two counts: the failure is not reachable at the
+  default. So **no evidence covers §1's configuration except those two runs** — the sweep measured
+  other windows, but none of them under the prompt that ships. An unqualified claim would assert more
+  than was measured.
+- **Block Slice 2 on the `q007` red** — rejected on two counts: the failure was not observed at the
   shipped configuration, and Pass 1's own charter makes a red a *design signal on the axis Pass 2
   owns*, not a build gate. Blocking would also smuggle in a ranking claim ("the shipped window is the
   wrong one") that Pass 1 is barred from making.
@@ -81,27 +96,30 @@ is the cheap design signal Pass 1 exists to produce, caught before the skeleton 
 ## Consequences
 - **ADR 0022 step 1 is discharged and step 2 is unblocked.** 0022 carries a dated pointer here.
 - **`q005` is retired as this phase's target, with a counterfactual rather than a lucky run** —
-  GROUNDED 5/5 under the new prompt rule and REFUSAL 3/3 with that rule removed, scoped to the
-  default window. The five-time reproduction that made it Pass 1's clean target is closed.
-- **A negative result is carried forward deliberately: `partial_rate` is 0.0% across 120 in-corpus
-  asks.** The lever most expected to produce the first PARTIAL — a tuned prompt — did not; it
-  converted a flat refusal straight to a full GROUNDED. The bucket ADR 0023 spends most of its length
-  designing and protecting remains entirely unexercised by observation, now including under windows
-  that visibly changed both retrieval and grounding outcomes. **Pass 2 must not assume the PARTIAL
-  path works merely because it is specified.** ADR 0023 §5's guardrails are unaffected — an empty
-  bucket is not a licence to collapse it.
+  GROUNDED 5/5 under the new prompt rule and REFUSAL 3/3 with that rule removed, back to back, at the
+  default window. This is the scoped comparative claim §2 licenses. The five-time reproduction that
+  made q005 Pass 1's clean target is closed.
+- **A negative result is carried forward deliberately: PARTIAL has never fired**, across every
+  in-corpus ask tallied to date (FINDINGS' running count stands at 120). The lever most expected to
+  produce the first PARTIAL — a tuned prompt — did not; it converted a flat refusal straight to a full
+  GROUNDED. The bucket ADR 0023 spends most of its length designing and protecting remains entirely
+  unexercised by observation, now including under windows that visibly changed both retrieval and
+  grounding outcomes. **Pass 2 must not assume the PARTIAL path works merely because it is
+  specified.** ADR 0023 §5's guardrails are unaffected — an empty bucket is not a licence to collapse
+  it.
 - **The prompt lever and the chunk window are not independent, and Pass 2 must account for it.**
   `q005` moves on the window with its own chunk and its retrieval hit *unchanged* — the target chunk
-  is byte-identical and scores 0.565 at every window, while its share of the assembled top-5 context
-  goes 7.3% → 4.7% → 3.2%. A bake-off varying one lever at the other's default is measuring an
-  interaction neither probe owns. Carried to #45.
-- **A limit that must be stated beside any reading of the chunking sweep:** 23 of the 52 parsed units
-  are deck slides, the longest is 133 words, and every one is a single chunk at every window tested —
-  so deck chunk text was byte-identical across the whole sweep, while six of the eight in-corpus rows
-  are deck-anchored. The window reached those rows only indirectly.
+  is byte-identical across windows and retrieves at an identical score; what changes is its share of
+  the assembled top-5 context (the three measurements are in FINDINGS' chunking-probe section). A
+  bake-off varying one lever at the other's default is measuring an interaction neither probe owns.
+  Carried to #45.
+- **A limit that must be stated beside any reading of the chunking sweep:** most of the corpus's deck
+  slides are a single chunk at *every* window tested, so their chunk text was byte-identical across
+  the whole sweep — while most in-corpus rows are deck-anchored. The window reached those rows only
+  indirectly. The counts are in FINDINGS.
 - **No provisional default changed.** `chunk.py` is untouched; the roadmap's Slice 1 *Provisional
   defaults* bullet names the chunking **strategy** ("fixed-size + overlap"), not a size, and the same
   file already declares prompt wording empirical — so nothing in it is stale and no ADR describes
   something the code no longer does.
 - **`eval/FINDINGS.md` keeps the evidence and gains a pointer here.** This ADR is the single writer
-  for the verdict; the findings file remains the single writer for the observations.
+  for the verdict; that file is the single writer for the measurements.

@@ -119,10 +119,19 @@ The seams it draws, which later slices wrap rather than rewrite:
 - **Exit gate** — `ask(class, question)` returns a cited answer for an in-corpus question and an honest
   refusal for an out-of-corpus one, demonstrated over the smoke suite.
 
-**Spike Pass 1 — validation, not optimization: CURRENT.** On the tracer + seed smoke suite, run
-**chunking + generation only** and confirm the differentiator actually grounds and refuses — before
-Slices 2–4 thicken the skeleton (ADR 0022, `design/roadmap.md` → *Spike Pass 1*). A red result here is
-a cheap design signal; that is the point of running it now rather than later.
+**Spike Pass 1 — validation, not optimization: COMPLETE.** Chunking + generation run on the tracer +
+seed smoke suite; the differentiator grounds and refuses on real course materials. **The verdict is
+ADR 0026** — read it rather than this line: it names the *configuration* validated (validation here
+is not a general claim), states the bars it does not clear, and records the red the pass caught as a
+bound on Pass 2's chunking axis. Evidence lives in `eval/FINDINGS.md`; neither file restates the other.
+
+**Slice 2 — Real write path: CURRENT.** Wrap the *proven* inline pipeline in the async worker + job
+queue + status store (DB-backed `jobs`, in-process poll worker, `enqueue`/`claim`, ADR 0011) plus
+failure/idempotency — retryable/terminal split, all-or-nothing atomic replace, index-write-only
+transaction (ADR 0020, precondition per ADR 0025). Additive, not a rewrite: the PM-4 seam exists so
+this slice *wraps* `ingest_file` rather than reshaping it. **Exit:** upload →
+`queued→processing→ready/failed` is real; at-least-once + reaper safe; no partial index ever visible.
+See `design/roadmap.md` → *Slice 2* and `design/components/ingestion-worker.md`.
 
 **Issue-level state is NOT recorded in this file.** Never write "#N is done" or "#N is next" here — it
 is wrong within the week, and this file is not the writer of that fact. Fetch it instead:

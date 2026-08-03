@@ -36,6 +36,10 @@ of running the spikes.
   grounding failure is discovered only after the whole skeleton exists.
 
 ## Consequences
+- **Step 1 discharged 2026-08-03 by ADR 0026** — the Pass 1 verdict. It names the configuration the
+  core is validated at (rather than validating it in general), records the red Pass 1 caught as a
+  bound on the chunking axis, and releases step 2. Nothing in this ADR is revised by it; the pointer
+  is here because "the **validated** core" in §Decision 2 is the claim it discharges.
 - **Roadmap:** Pass 1 and Pass 2 are explicit steps in the V1 build sequence, not footnotes to the
   spike table. Pass 1 sits between Slice 1 and Slice 2; Pass 2 follows Slice 4 + dogfooding.
 - **Pass-1 scope is deliberately narrow** (chunking + generation) — the two biggest N1/N2 levers that

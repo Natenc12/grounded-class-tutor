@@ -152,5 +152,8 @@ You do **not** need all of these before contributing. Start at the top; go as de
 recorded what happened — see [`eval/FINDINGS.md`](../eval/FINDINGS.md) for the actual measurements
 (retrieval hit rate, hallucination rate, honest-refusal rate, and where the noise floor sits), not a
 restated verdict here. Spike Pass 1 — the pass that puts those numbers under deliberate pressure —
-hasn't run yet. Read that file, or the open issue board, for where things currently stand — this
-caveat is about the *kind* of claim to trust, not a snapshot of a number that will move.
+has now run; its verdict is [`decisions/0026`](decisions/0026-spike-pass-1-verdict.md), and it is
+careful about what it claims: the core is validated *at a named configuration*, and that is still not
+the same claim as "trustworthy" (the ship bar is V3's). Read those files, or the open issue board, for
+where things currently stand — this caveat is about the *kind* of claim to trust, not a snapshot of a
+number that will move.

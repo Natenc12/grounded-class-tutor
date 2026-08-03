@@ -1,6 +1,7 @@
 # HANDOFF — Grounded Class Tutor
 
-**Status:** Build-ready ✅ (gate green — *buildable*, not *validated*; see caveat).  **Rigor:** Deep (ADR 0001).
+**Status:** Build-ready ✅ (gate green — *buildable*; validated **at one named configuration** per ADR 0026,
+which is still not *proven faithful* — see caveat).  **Rigor:** Deep (ADR 0001).
 **Primary reader:** a build-agent implementing V1. All design decisions settled (PM-1 ratified as ADR 0023).
 
 ## Build brief (the 60-second version)

@@ -477,6 +477,16 @@ the rates — are the load-bearing evidence.
 Reproduced **3/3**, and `Livingston Cosmogony.pdf` p.4 is a **single-source** row, which
 `_require_expected_files` already names as "a guaranteed permanent miss". This is the cheap design
 signal Pass 1 exists to catch, on exactly the axis ADR 0023 §1 assigns to chunking.
+> **2026-08-03 — correction: that citation of `_require_expected_files` is wrong, and the point it
+> was reaching for is a different one.** The guard's "guaranteed permanent miss" (`ask_smoke.py`,
+> the `unindexed` branch) is about a source page carrying **no indexed chunk** — a setup failure it
+> raises `SetupError` on, *before* anything is scored. p.4 was indexed at all three windows and was
+> scored at all three (0.614 / 0.562 / 0.498 below), so that branch never applied here and could
+> not have. What single-source actually buys is the property recorded two sections down: the
+> any-match rule in `scoring.retrieval_hit` lets a **multi**-source row hide a chunking-induced
+> miss behind a surviving leg, and a single-source row cannot. Same conclusion — the miss is real
+> and cannot be masked — reached by the mechanism that genuinely produces it. Epic #58 carries the
+> same misattribution, inherited from this entry; ADR 0026 states the corrected version.
 
 Mechanism, from a direct top-5 probe of the same question against all three corpora:
 
@@ -537,3 +547,27 @@ question-asks** on top of the 56 the section above tallies (8 full suites × 8 i
 8 further runs with zero integrity flags. The bucket ADR 0023 spends most of its length protecting
 remains empty, now including under windows that visibly changed both retrieval and grounding
 outcomes.
+
+---
+
+## 2026-08-03 — Spike Pass 1 closed. **The verdict is ADR 0026, not this file.**
+
+Per the discipline note at the top: this file records observations, and a finding that ripens into a
+choice goes to an ADR. Pass 1's verdict — *what* the core is validated at, what that does not claim,
+and why the red it caught bounds Pass 2's chunking axis rather than blocking Slice 2 — is
+`design/decisions/0026-spike-pass-1-verdict.md`. The observations it rests on are the two dated
+probe sections above, which that ADR **cites rather than copies**: it reproduces no measurement
+except where the figure is its own decision content. That rule is deliberate, and this file is why —
+a score in the q007 mechanism table was mis-transcribed from an adjacent subsection and corrected a
+day later (the parenthetical directly under that table). A second copy in a second file is how a
+slip like that stops being correctable in one place.
+
+### One gap in the record above, noticed while writing the verdict
+The q007 mechanism table records the expected page's **rank** at each window but only records the
+displacing scores at 500/80. At the 250/40 default it says rank 1 — and **nothing recorded what
+ranked second**, so the margin at the shipped window is unmeasured, not wide. Worth knowing because
+the two chunks that displace p.4 at 500/80 score **0.562 / 0.555**, and 0.562 is what p.4 itself
+scores at 250/40: the scores in play are the same size as the gap being claimed. **Matters later:**
+a Pass 2 top-5 probe should print the whole ranking, not just the expected row's position — one
+extra column at the same API cost, and it is the difference between "it ranks first" and "it ranks
+first by a margin that would survive a window change."

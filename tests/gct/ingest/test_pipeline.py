@@ -8,7 +8,7 @@ network / no Postgres. The DB-backed `index_file`/`ingest_file` tests live elsew
 
 from __future__ import annotations
 
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 import pytest
 
@@ -280,5 +280,52 @@ def test_ingest_file_uses_a_caller_supplied_file_id(pdf_factory, fake_embedder, 
     # And the content hangs off the id the caller supplied, not off one nobody is watching.
     n_chunks = conn.execute(
         "select count(*) from chunks where file_id = %s::uuid", (file_id,)
+    ).fetchone()[0]
+    assert n_chunks > 0
+
+
+def test_ingest_file_still_mints_a_file_id_when_none_is_supplied(pdf_factory, fake_embedder, db):
+    """Omitting `file_id` mints one and CREATES the row - Slice 1's path, provably unchanged.
+
+    Deliberately overlaps `test_ingest_file_end_to_end`, which has always exercised this path
+    incidentally. What that test does not say is that the default is load-bearing: make `file_id`
+    required and every Slice 1 caller breaks, but its failure reads as an incidental break to fix
+    by passing an id. Named for the guarantee, this one cannot be read that way.
+
+    It is also the other half of the pair. `test_ingest_file_uses_a_caller_supplied_file_id` drives
+    the upsert's UPDATE branch; this drives INSERT. Which branch runs is decided entirely by whether
+    the caller owns the id, so the two together pin both sides of that fork.
+
+    The before/after count is what makes "created" a real claim rather than "a row exists" - the
+    row must not have been there beforehand.
+    """
+    conn, owner_id, class_id = db
+    path = pdf_factory("lecture.pdf", ["alpha beta gamma", "delta epsilon"])
+
+    before = conn.execute("select count(*) from files where owner_id = %s", (owner_id,)).fetchone()[
+        0
+    ]
+    assert before == 0
+
+    returned = ingest_file(path, owner_id, class_id, embedder=fake_embedder, conn=conn)
+
+    # Minted, not echoed: a well-formed uuid the caller never saw. UUID() raises on anything else,
+    # which matters because the `files.file_id` column would reject it downstream anyway.
+    assert UUID(returned)
+
+    # Exactly one row, and it is the one just minted - the INSERT branch, not an UPDATE of something
+    # that was already there.
+    n_files = conn.execute(
+        "select count(*) from files where owner_id = %s", (owner_id,)
+    ).fetchone()[0]
+    assert n_files == 1
+
+    status = conn.execute(
+        "select status from files where file_id = %s::uuid", (returned,)
+    ).fetchone()[0]
+    assert status == "ready"
+
+    n_chunks = conn.execute(
+        "select count(*) from chunks where file_id = %s::uuid", (returned,)
     ).fetchone()[0]
     assert n_chunks > 0

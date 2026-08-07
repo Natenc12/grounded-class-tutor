@@ -8,6 +8,8 @@ network / no Postgres. The DB-backed `index_file`/`ingest_file` tests live elsew
 
 from __future__ import annotations
 
+from uuid import uuid4
+
 import pytest
 
 from gct.ingest.chunk import CHUNK_OVERLAP_WORDS, CHUNK_SIZE_WORDS, chunk_units
@@ -224,3 +226,59 @@ def test_fake_embedder_is_stable_across_processes(fake_embedder):
     vector = fake_embedder.embed(["hello world"])[0]
     assert vector[0] == 203741030093645.0
     assert vector[1:] == [0.0] * (fake_embedder.dim - 1)
+
+
+def test_ingest_file_uses_a_caller_supplied_file_id(pdf_factory, fake_embedder, db):
+    """A supplied `file_id` ingests INTO the row that already exists - one file stays one row.
+
+    The Slice 2 worker claims a job whose `files` row was created `queued` before the claim, so it
+    passes that row's id down. Without the seam `ingest_file` mints its own, and the `queued` row
+    the student polls is stranded while the chunks land under a second id - no error, no log, an
+    upload that appears to hang forever.
+
+    The hand-written INSERT stands in for `enqueue` (#70), which does not exist yet; it is the only
+    thing here pretending. This test drives `index_file`'s upsert onto its UPDATE branch, the
+    counterpart to the INSERT branch every no-`file_id` caller takes.
+
+    The two load-bearing assertions are the returned id and the row COUNT. Asserting only that a
+    `ready` row exists would pass in the broken world too - there is a `ready` row there, it is just
+    the wrong one.
+    """
+    conn, owner_id, class_id = db
+
+    # Stand-in for enqueue: the row the worker's job points at, already `queued` before ingest runs.
+    file_id = str(uuid4())
+    conn.execute(
+        """
+        insert into files (file_id, owner_id, class_id, filename, status)
+        values (%s::uuid, %s, %s::uuid, %s, 'queued')
+        """,
+        (file_id, owner_id, class_id, "lecture.pdf"),
+    )
+
+    path = pdf_factory("lecture.pdf", ["alpha beta gamme", "delta epsilon"])
+
+    returned = ingest_file(
+        path, owner_id, class_id, embedder=fake_embedder, conn=conn, file_id=file_id
+    )
+    # Return contract: the id supplied comes back, never a freshly minted one.
+    assert returned == file_id
+
+    # The row was ADVANCED, not duplicated. `owner_id` is unique per test (the `db` fixture), so
+    # this counts only this test's rows - a second, minted row would make it 2.
+    n_files = conn.execute(
+        "select count(*) from files where owner_id = %s", (owner_id,)
+    ).fetchone()[0]
+    assert n_files == 1
+
+    # `queued` -> `ready` on that same row: the upsert's UPDATE branch fired.
+    status = conn.execute(
+        "select status from files where file_id = %s::uuid", (file_id,)
+    ).fetchone()[0]
+    assert status == "ready"
+
+    # And the content hangs off the id the caller supplied, not off one nobody is watching.
+    n_chunks = conn.execute(
+        "select count(*) from chunks where file_id = %s::uuid", (file_id,)
+    ).fetchone()[0]
+    assert n_chunks > 0

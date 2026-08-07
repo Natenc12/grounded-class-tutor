@@ -423,6 +423,12 @@ class TestSetupValidityGuards:
                 "insert into classes (class_id, owner_id, name) values (%s::uuid, %s, %s)",
                 (other_class, other_owner, "other class"),
             )
+            # Returns `conn` to IDLE before `ingest_file` opens the index transaction. Without it
+            # that transaction degrades to a savepoint and publishes nothing (ADR 0025). This test
+            # asserts nothing about publication - it reads back through this same connection, which
+            # sees its own uncommitted rows - so it is not wrong today. It is the same pattern that
+            # made two tests in test_pipeline.py green while writing nothing, kept from spreading.
+            conn.commit()
             ingest_file(
                 other_dir / "someone-elses.pdf",
                 other_owner,

@@ -1,9 +1,14 @@
-"""Unit tests for the pure compose stage (issue #4, ADR 0018 stamp / 0019 never-span).
+"""Tests for `compose` and the `ingest_file` entry point (issue #4, ADR 0018 stamp / 0019 never-span).
 
 `compose` is the no-DB half of the pipeline: parse -> chunk -> embed -> build `PreparedChunk`s.
-Tested with a real generated PDF (`pdf_factory`) and the deterministic `fake_embedder` stub, so no
-network / no Postgres. The DB-backed `index_file`/`ingest_file` tests live elsewhere
-(test_index.py).
+Its tests use a real generated PDF (`pdf_factory`) and the deterministic `fake_embedder` stub, so
+no network / no Postgres.
+
+`ingest_file` composes that half with the index transaction, so its tests DO take the `db` fixture
+and hit real Postgres - they live here, with the entry point they exercise, rather than in
+test_index.py. What lives there is `index_file` itself: the atomic-write invariants, tested
+directly. Splitting on the function under test rather than on "does it touch the DB" is why both
+files have DB-backed tests.
 """
 
 from __future__ import annotations

@@ -237,7 +237,7 @@ def test_fake_embedder_is_stable_across_processes(fake_embedder):
     assert vector[1:] == [0.0] * (fake_embedder.dim - 1)
 
 
-def test_ingest_file_uses_a_caller_supplied_file_id(pdf_factory, fake_embedder, db):
+def test_ingest_file_uses_a_caller_supplied_file_id(pdf_factory, fake_embedder, db, db_other):
     """A supplied `file_id` ingests INTO the row that already exists - one file stays one row.
 
     The Slice 2 worker claims a job whose `files` row was created `queued` before the claim, so it
@@ -252,6 +252,11 @@ def test_ingest_file_uses_a_caller_supplied_file_id(pdf_factory, fake_embedder, 
     The two load-bearing assertions are the returned id and the row COUNT. Asserting only that a
     `ready` row exists would pass in the broken world too - there is a `ready` row there, it is just
     the wrong one.
+
+    The final readback uses `db_other`, a SEPARATE connection, because everything asserted through
+    `conn` is true whether or not anything was committed - a connection sees its own uncommitted
+    work. This test shipped green while publishing nothing for exactly that reason. `db_other` is
+    what makes `conn.commit()` below load-bearing in a way an assertion can feel.
     """
     conn, owner_id, class_id = db
 
@@ -301,8 +306,26 @@ def test_ingest_file_uses_a_caller_supplied_file_id(pdf_factory, fake_embedder, 
     ).fetchone()[0]
     assert n_chunks > 0
 
+    # PUBLISHED, not merely computed. Every assertion above would hold on a savepoint that commits
+    # nothing; this one is read through a different connection, which can only see committed rows.
+    published = db_other.execute(
+        "select status from files where file_id = %s::uuid", (file_id,)
+    ).fetchone()
+    assert published is not None, (
+        "the files row is invisible to other connections - nothing committed"
+    )
+    assert published[0] == "ready"
+    assert (
+        db_other.execute(
+            "select count(*) from chunks where file_id = %s::uuid", (file_id,)
+        ).fetchone()[0]
+        == n_chunks
+    )
 
-def test_ingest_file_still_mints_a_file_id_when_none_is_supplied(pdf_factory, fake_embedder, db):
+
+def test_ingest_file_still_mints_a_file_id_when_none_is_supplied(
+    pdf_factory, fake_embedder, db, db_other
+):
     """Omitting `file_id` mints one and CREATES the row - Slice 1's path, provably unchanged.
 
     Deliberately overlaps `test_ingest_file_end_to_end`, which has always exercised this path
@@ -316,6 +339,11 @@ def test_ingest_file_still_mints_a_file_id_when_none_is_supplied(pdf_factory, fa
 
     The before/after count is what makes "created" a real claim rather than "a row exists" - the
     row must not have been there beforehand.
+
+    Reads back through `db_other` for the same reason its sibling does. This path has no seeded row
+    and so no `conn.commit()` to forget, which is exactly why the check belongs here too: the thing
+    being pinned is that `ingest_file` PUBLISHES, and nothing about that should depend on which
+    branch of the upsert ran.
     """
     conn, owner_id, class_id = db
     path = pdf_factory("lecture.pdf", ["alpha beta gamma", "delta epsilon"])
@@ -324,6 +352,12 @@ def test_ingest_file_still_mints_a_file_id_when_none_is_supplied(pdf_factory, fa
         0
     ]
     assert before == 0
+    # Ends the transaction that SELECT opened - a READ leaves `conn` INTRANS just as a write does,
+    # and `index_file` would then get a savepoint and publish nothing (ADR 0025). `rollback` rather
+    # than `commit` because there is nothing to save: the point is to return the connection to
+    # IDLE, not to keep anything. This test had no INSERT to make the hazard obvious, which is
+    # exactly why it went unnoticed until `db_other` read it back on a second connection.
+    conn.rollback()
 
     returned = ingest_file(path, owner_id, class_id, embedder=fake_embedder, conn=conn)
 
@@ -347,6 +381,21 @@ def test_ingest_file_still_mints_a_file_id_when_none_is_supplied(pdf_factory, fa
         "select count(*) from chunks where file_id = %s::uuid", (returned,)
     ).fetchone()[0]
     assert n_chunks > 0
+
+    # PUBLISHED, on a different connection - see the sibling test.
+    published = db_other.execute(
+        "select status from files where file_id = %s::uuid", (returned,)
+    ).fetchone()
+    assert published is not None, (
+        "the files row is invisible to other connections - nothing committed"
+    )
+    assert published[0] == "ready"
+    assert (
+        db_other.execute(
+            "select count(*) from chunks where file_id = %s::uuid", (returned,)
+        ).fetchone()[0]
+        == n_chunks
+    )
 
 
 def test_ingest_file_rejects_a_malformed_file_id_before_spending_anything(pdf_factory):

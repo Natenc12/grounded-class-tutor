@@ -1,4 +1,4 @@
-"""Tests for `compose` and the `ingest_file` entry point (issue #4, ADR 0018 stamp / 0019 never-span).
+"""Tests for `compose` and `ingest_file` (issue #4, ADR 0018 stamp / 0019 never-span).
 
 `compose` is the no-DB half of the pipeline: parse -> chunk -> embed -> build `PreparedChunk`s.
 Its tests use a real generated PDF (`pdf_factory`) and the deterministic `fake_embedder` stub, so

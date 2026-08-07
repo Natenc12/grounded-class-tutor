@@ -255,8 +255,17 @@ def test_ingest_file_uses_a_caller_supplied_file_id(pdf_factory, fake_embedder, 
         """,
         (file_id, owner_id, class_id, "lecture.pdf"),
     )
+    # LOAD-BEARING, not tidiness. This INSERT leaves `conn` INTRANS, and `index_file`'s
+    # `conn.transaction()` then issues a SAVEPOINT rather than BEGIN - releasing which commits
+    # NOTHING (ADR 0025, and `ingest_file`'s own docstring). Every assertion below reads back on
+    # this same connection, so they all pass on rows no other connection can see and the fixture's
+    # teardown rollback then discards. Without this line the test is green in exactly the world it
+    # exists to rule out. The real caller has the same obligation: the Slice 2 worker MUST COMMIT
+    # ITS CLAIM before ingesting on the same connection (`components/ingestion-worker.md`), so
+    # committing here is also what makes this a faithful stand-in for `enqueue` (#70).
+    conn.commit()
 
-    path = pdf_factory("lecture.pdf", ["alpha beta gamme", "delta epsilon"])
+    path = pdf_factory("lecture.pdf", ["alpha beta gamma", "delta epsilon"])
 
     returned = ingest_file(
         path, owner_id, class_id, embedder=fake_embedder, conn=conn, file_id=file_id

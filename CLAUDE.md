@@ -63,6 +63,16 @@ The `db` fixture skips locally when Postgres is down but **hard-fails in CI**, s
 silently skip their way to green. Locally that judgement is still yours: `pytest -m db` reporting
 **skips means Postgres is down, not that the DB path passed.**
 
+**A `db` green does not prove anything was saved.** A connection sees its own uncommitted work, so
+every assertion read back through `db`'s connection holds whether or not the write was ever
+published — the savepoint failure ADR 0025 describes is invisible from one connection *by
+construction*. Assert through `db` for what the code computed; assert through **`db_other`** — a
+second connection, same database — for what actually survives. Any test whose point is that
+something was written takes it. This is not a style preference: the rule was stated in four places
+and two tests written against it still published nothing, which is what `db_other` exists to have
+caught. Its docstring carries the mechanism; ADR 0027 (proposed) carries the argument for enforcing
+the precondition in code rather than in prose.
+
 `live` marks a test that hits a paid API, and is excluded from the CI gate. Like `db`, it is
 **derived, never hand-declared**: `pytest_collection_modifyitems` in `tests/conftest.py` applies it to
 any test taking a `live_*` fixture. Constructing a real provider client through such a fixture is what

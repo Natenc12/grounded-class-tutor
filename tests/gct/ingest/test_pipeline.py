@@ -113,8 +113,12 @@ def test_compose_propagates_parse_error_on_empty_file(pdf_factory, fake_embedder
 
 
 class _ExplodingEmbedder:
-    """An `Embeddings`-shaped stub whose `embed` always raises - the failure injection for
-    `test_ingest_file_embed_failure_leaves_db_untouched` below (issue #42)."""
+    """An `Embeddings`-shaped stub whose `embed` always raises - the failure injection for the
+    `ingest_file` tests that assert nothing downstream of `compose` ran (issue #42).
+
+    Used two ways: as an injected FAILURE (an embed error must leave the DB untouched) and as a
+    TRIPWIRE (a guard that fails fast must return before `embed` is ever reached). Both rely on the
+    same property, that reaching `embed` is loud rather than silent."""
 
     model_id = "exploding-embedder"
     dim = 1
@@ -338,3 +342,30 @@ def test_ingest_file_still_mints_a_file_id_when_none_is_supplied(pdf_factory, fa
         "select count(*) from chunks where file_id = %s::uuid", (returned,)
     ).fetchone()[0]
     assert n_chunks > 0
+
+
+def test_ingest_file_rejects_a_malformed_file_id_before_spending_anything(pdf_factory):
+    """A `file_id` that isn't a uuid fails INSTANTLY - no parse, no embed, no DB.
+
+    Postgres rejects a malformed id on its own, at `index_file`'s `::uuid` cast. That is a real
+    check in the wrong place: `compose` has already run by then, so a typo costs a full embedding
+    run before anyone finds out. The defect was ordering, not detection, so this test pins the
+    ORDER rather than the message.
+
+    It proves that by making the later steps fatal instead of merely expensive. `conn=None` cannot
+    be executed against and `_ExplodingEmbedder` raises on use, so this test can only pass if the
+    guard returns before either is touched - a `ValueError` here means nothing downstream ran. Move
+    the guard below `compose` and the `RuntimeError` escapes instead, which is why this asserts on
+    the exception type and not merely that something raised.
+    """
+    path = pdf_factory("lecture.pdf", ["alpha beta gamma"])
+
+    with pytest.raises(ValueError, match="well-formed uuid"):
+        ingest_file(
+            path,
+            "owner",
+            "class",
+            embedder=_ExplodingEmbedder(),
+            conn=None,
+            file_id="not-a-uuid",
+        )

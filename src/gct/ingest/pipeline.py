@@ -17,7 +17,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 import psycopg
 
@@ -135,9 +135,30 @@ def ingest_file(
     `chunk_size`/`chunk_overlap` are forwarded to `compose` and default to the module constants.
     They are provisional spike parameters (ADR 0019) - a later caller wrapping this seam (Slice
     2's worker) should not treat their names or existence as settled.
+
+    Raises `ValueError` on a malformed `file_id`, before `compose` runs. The scope check on a
+    SUPPLIED id lives in `index_file` instead, not here - see the note on the guard below.
     """
     if file_id is None:
         file_id = str(uuid4())
+    else:
+        # Validated BEFORE `compose`, which parses and then EMBEDS - a paid call. Postgres would
+        # reject a malformed id anyway, but only at `index_file`'s `::uuid` cast, i.e. after the
+        # embedding run is already bought. This is the cheapest check in the pipeline and it was
+        # the last to run; the fix is ordering, not detection. It also gives Slice 2 a clean
+        # terminal failure (a bad id never becomes good on retry, ADR 0011) instead of a psycopg
+        # error raised from inside the index transaction.
+        #
+        # Only the FORMAT is checkable here. Whether the id names a row this caller may write is a
+        # question for the database, and asking it would mean issuing a statement on `conn` before
+        # `index_file` opens its transaction - which is precisely the ADR 0025 precondition this
+        # function's own docstring forbids breaking. That check therefore lives inside
+        # `index_file`'s transaction, where a statement is free, and pays the embedding cost it
+        # cannot avoid.
+        try:
+            UUID(file_id)
+        except ValueError as exc:
+            raise ValueError(f"file_id must be a well-formed uuid, got {file_id!r}") from exc
 
     chunks = compose(
         path,

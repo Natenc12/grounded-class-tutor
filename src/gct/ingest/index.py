@@ -62,6 +62,11 @@ def index_file(
       - `embedding` (`list[float]`) adapts to `vector(1536)` only if the connection registered the
         pgvector type - `conn` MUST come from `gct.db.connect()`.
 
+    Raises `ValueError` if `file_id` already names a row under a different `owner_id`/`class_id`.
+    The raise happens inside the transaction, so nothing is written; it is terminal, never
+    retryable (ADR 0011). Callers that mint their own id never hit it - only a supplied one can
+    collide with a row someone else owns.
+
     Raises `ValueError` if `chunks` is empty: publishing `ready` with no chunks would break
     `status=ready` ⟺ full chunk set committed & queryable (ADR 0020, publication conditional per
     ADR 0025). The guard runs BEFORE the
@@ -77,6 +82,29 @@ def index_file(
         )
 
     with conn.transaction():
+        # 0. Scope guard: if `file_id` already names a row, it must be THIS caller's row.
+        #    The upsert below sets only `status`/`updated_at`, so on its UPDATE branch the existing
+        #    row's `owner_id`/`class_id` survive while step 3 writes chunks under the ones passed
+        #    in. Nothing reconciles the two, so a caller supplying someone else's `file_id` leaves
+        #    a `files` row scoped to one tenant owning chunks scoped to another - and retrieval
+        #    filters on `owner_id AND class_id` (F6/F12), so those chunks answer for a student who
+        #    never uploaded them. Refusing the write is the only outcome that keeps F6/F12 true.
+        #    Widening the upsert to overwrite owner/class instead would make the mismatch vanish by
+        #    letting any caller reassign a file - the same violation with no error to notice.
+        #    Compared in SQL so Postgres normalizes the uuid: `select` returns NULL for no row,
+        #    else the boolean.
+        scope_ok = conn.execute(
+            """
+            select owner_id = %(owner_id)s and class_id = %(class_id)s::uuid
+            from files where file_id = %(file_id)s::uuid
+            """,
+            {"file_id": file_id, "owner_id": owner_id, "class_id": class_id},
+        ).fetchone()
+        if scope_ok is not None and not scope_ok[0]:
+            raise ValueError(
+                f"file_id={file_id} exists under a different owner/class; "
+                f"refusing to index chunks for owner_id={owner_id} class_id={class_id} onto it"
+            )
         # 1. Publish the files row as `ready` (upsert). Must precede the chunk insert: chunks FK to
         #    files.file_id. A repeat file_id lands on the UPDATE branch (idempotent re-index).
         conn.execute(

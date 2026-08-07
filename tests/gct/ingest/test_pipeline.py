@@ -369,3 +369,59 @@ def test_ingest_file_rejects_a_malformed_file_id_before_spending_anything(pdf_fa
             conn=None,
             file_id="not-a-uuid",
         )
+
+
+def test_ingest_file_refuses_a_file_id_belonging_to_another_owner(pdf_factory, fake_embedder, db):
+    """Supplying an id that names SOMEONE ELSE'S row raises, and writes nothing.
+
+    The third row of the supplied-`file_id` table, and the only one where the upsert's indifference
+    is observable: it sets `status`/`updated_at` only, so the existing row keeps its `owner_id`
+    while step 3 writes chunks under the caller's. That leaves a `files` row scoped to one tenant
+    owning chunks scoped to another, and retrieval filters on `owner_id AND class_id` (F6/F12) -
+    so the chunks would answer for a student who never uploaded the file.
+
+    `test_ingest_file_uses_a_caller_supplied_file_id` covers the same UPDATE branch at the one spot
+    where this cannot show: it passes the same owner it seeded, and keeping the old value and
+    writing the new one are indistinguishable when they are equal.
+
+    Seeded under the fixture's `owner_id` (so teardown reclaims it) and ingested as a DIFFERENT
+    owner - the direction a Slice 2 worker would get it wrong, carrying scope from somewhere other
+    than the row it claimed. The status assertion is the load-bearing one: `queued` still `queued`
+    proves the guard fired before step 1's upsert, where a raise from any later step would have
+    left it too.
+    """
+    conn, owner_id, class_id = db
+
+    file_id = str(uuid4())
+    conn.execute(
+        """
+        insert into files (file_id, owner_id, class_id, filename, status)
+        values (%s::uuid, %s, %s::uuid, %s, 'queued')
+        """,
+        (file_id, owner_id, class_id, "lecture.pdf"),
+    )
+    conn.commit()  # ADR 0025 - see the sibling test; without it nothing below is published.
+
+    path = pdf_factory("lecture.pdf", ["alpha beta gamma", "delta epsilon"])
+
+    with pytest.raises(ValueError, match="different owner/class"):
+        ingest_file(
+            path,
+            f"{owner_id}-someone-else",
+            class_id,
+            embedder=fake_embedder,
+            conn=conn,
+            file_id=file_id,
+        )
+
+    # Untouched: still `queued`, never advanced to `ready` by the upsert.
+    status = conn.execute(
+        "select status from files where file_id = %s::uuid", (file_id,)
+    ).fetchone()[0]
+    assert status == "queued"
+
+    # And no chunks were written under it - the whole transaction rolled back.
+    n_chunks = conn.execute(
+        "select count(*) from chunks where file_id = %s::uuid", (file_id,)
+    ).fetchone()[0]
+    assert n_chunks == 0

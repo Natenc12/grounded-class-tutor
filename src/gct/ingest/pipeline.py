@@ -106,16 +106,24 @@ def ingest_file(
     owner_id: str,
     class_id: str,
     *,
+    file_id: str | None = None,
     embedder: Embeddings,
     conn: psycopg.Connection,
     chunk_size: int = CHUNK_SIZE_WORDS,
     chunk_overlap: int = CHUNK_OVERLAP_WORDS,
 ) -> str:
-    """Ingest one file end to end and return its generated `file_id`. Slice 1 calls this directly.
+    """Ingest one file end to end and return its `file_id`. Slice 1 calls this directly.
 
-    Generates `file_id` (`uuid4`) Python-side so the full chunk row set is complete before the index
-    transaction opens (ADR 0020), runs `compose`, then hands the rows to `index_file` for the
-    all-or-nothing atomic write (which also creates the minimal `files` row -> `ready`).
+    `file_id` is minted here (`uuid4`) only when the caller supplies none. Either way it is fixed
+    Python-side before `compose` runs, so the full chunk row set is complete before the index
+    transaction opens (ADR 0020); the rows then go to `index_file` for the all-or-nothing atomic
+    write (which also creates the minimal `files` row -> `ready`). The return is the id actually
+    used - supply one and the same id comes back, never a new one.
+
+    Slice 2's worker is the caller that supplies one. `enqueue` created that worker's `files` row as
+    `queued` before the job was claimed (ADR 0011), so minting a fresh id here would strand the row
+    the student is watching and index the chunks under a second one. With the id supplied,
+    `index_file`'s upsert lands on its UPDATE branch instead and one file stays one row.
 
     `conn` must satisfy TWO requirements, not one:
       - the pgvector adapter is registered - use `gct.db.connect()`;
@@ -128,7 +136,9 @@ def ingest_file(
     They are provisional spike parameters (ADR 0019) - a later caller wrapping this seam (Slice
     2's worker) should not treat their names or existence as settled.
     """
-    file_id = str(uuid4())
+    if file_id is None:
+        file_id = str(uuid4())
+
     chunks = compose(
         path,
         owner_id,

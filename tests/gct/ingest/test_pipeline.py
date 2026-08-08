@@ -1,12 +1,19 @@
-"""Unit tests for the pure compose stage (issue #4, ADR 0018 stamp / 0019 never-span).
+"""Tests for `compose` and `ingest_file` (issue #4, ADR 0018 stamp / 0019 never-span).
 
 `compose` is the no-DB half of the pipeline: parse -> chunk -> embed -> build `PreparedChunk`s.
-Tested with a real generated PDF (`pdf_factory`) and the deterministic `fake_embedder` stub, so no
-network / no Postgres. The DB-backed `index_file`/`ingest_file` tests live elsewhere
-(test_index.py).
+Its tests use a real generated PDF (`pdf_factory`) and the deterministic `fake_embedder` stub, so
+no network / no Postgres.
+
+`ingest_file` composes that half with the index transaction, so its tests DO take the `db` fixture
+and hit real Postgres - they live here, with the entry point they exercise, rather than in
+test_index.py. What lives there is `index_file` itself: the atomic-write invariants, tested
+directly. Splitting on the function under test rather than on "does it touch the DB" is why both
+files have DB-backed tests.
 """
 
 from __future__ import annotations
+
+from uuid import UUID, uuid4
 
 import pytest
 
@@ -111,8 +118,12 @@ def test_compose_propagates_parse_error_on_empty_file(pdf_factory, fake_embedder
 
 
 class _ExplodingEmbedder:
-    """An `Embeddings`-shaped stub whose `embed` always raises - the failure injection for
-    `test_ingest_file_embed_failure_leaves_db_untouched` below (issue #42)."""
+    """An `Embeddings`-shaped stub whose `embed` always raises - the failure injection for the
+    `ingest_file` tests that assert nothing downstream of `compose` ran (issue #42).
+
+    Used two ways: as an injected FAILURE (an embed error must leave the DB untouched) and as a
+    TRIPWIRE (a guard that fails fast must return before `embed` is ever reached). Both rely on the
+    same property, that reaching `embed` is loud rather than silent."""
 
     model_id = "exploding-embedder"
     dim = 1
@@ -224,3 +235,205 @@ def test_fake_embedder_is_stable_across_processes(fake_embedder):
     vector = fake_embedder.embed(["hello world"])[0]
     assert vector[0] == 203741030093645.0
     assert vector[1:] == [0.0] * (fake_embedder.dim - 1)
+
+
+def test_ingest_file_uses_a_caller_supplied_file_id(pdf_factory, fake_embedder, db, db_other):
+    """A supplied `file_id` ingests INTO the row that already exists - one file stays one row.
+
+    The Slice 2 worker claims a job whose `files` row was created `queued` before the claim, so it
+    passes that row's id down. Without the seam `ingest_file` mints its own, and the `queued` row
+    the student polls is stranded while the chunks land under a second id - no error, no log, an
+    upload that appears to hang forever.
+
+    The hand-written INSERT stands in for `enqueue` (#70), which does not exist yet; it is the only
+    thing here pretending. This test drives `index_file`'s upsert onto its UPDATE branch, the
+    counterpart to the INSERT branch every no-`file_id` caller takes.
+
+    The two load-bearing assertions are the returned id and the row COUNT. Asserting only that a
+    `ready` row exists would pass in the broken world too - there is a `ready` row there, it is just
+    the wrong one.
+
+    The final readback uses `db_other`, a SEPARATE connection, because everything asserted through
+    `conn` is true whether or not anything was committed - a connection sees its own uncommitted
+    work. This test shipped green while publishing nothing for exactly that reason. `db_other` is
+    what makes `conn.commit()` below load-bearing in a way an assertion can feel.
+    """
+    conn, owner_id, class_id = db
+
+    # Stand-in for enqueue: the row the worker's job points at, already `queued` before ingest runs.
+    file_id = str(uuid4())
+    conn.execute(
+        """
+        insert into files (file_id, owner_id, class_id, filename, status)
+        values (%s::uuid, %s, %s::uuid, %s, 'queued')
+        """,
+        (file_id, owner_id, class_id, "lecture.pdf"),
+    )
+    # LOAD-BEARING, not tidiness. This INSERT leaves `conn` INTRANS, and `index_file`'s
+    # `conn.transaction()` then issues a SAVEPOINT rather than BEGIN - releasing which commits
+    # NOTHING (ADR 0025, and `ingest_file`'s own docstring). Every assertion below reads back on
+    # this same connection, so they all pass on rows no other connection can see and the fixture's
+    # teardown rollback then discards. Without this line the test is green in exactly the world it
+    # exists to rule out. The real caller has the same obligation: the Slice 2 worker MUST COMMIT
+    # ITS CLAIM before ingesting on the same connection (`components/ingestion-worker.md`), so
+    # committing here is also what makes this a faithful stand-in for `enqueue` (#70).
+    conn.commit()
+
+    path = pdf_factory("lecture.pdf", ["alpha beta gamma", "delta epsilon"])
+
+    returned = ingest_file(
+        path, owner_id, class_id, embedder=fake_embedder, conn=conn, file_id=file_id
+    )
+    # Return contract: the id supplied comes back, never a freshly minted one.
+    assert returned == file_id
+
+    # The row was ADVANCED, not duplicated. `owner_id` is unique per test (the `db` fixture), so
+    # this counts only this test's rows - a second, minted row would make it 2.
+    n_files = conn.execute(
+        "select count(*) from files where owner_id = %s", (owner_id,)
+    ).fetchone()[0]
+    assert n_files == 1
+
+    # `queued` -> `ready` on that same row: the upsert's UPDATE branch fired.
+    status = conn.execute(
+        "select status from files where file_id = %s::uuid", (file_id,)
+    ).fetchone()[0]
+    assert status == "ready"
+
+    # And the content hangs off the id the caller supplied, not off one nobody is watching.
+    n_chunks = conn.execute(
+        "select count(*) from chunks where file_id = %s::uuid", (file_id,)
+    ).fetchone()[0]
+    assert n_chunks > 0
+
+    # PUBLISHED, not merely computed. Every assertion above would hold on a savepoint that commits
+    # nothing; this one is read through a different connection, which can only see committed rows.
+    published = db_other.execute(
+        "select status from files where file_id = %s::uuid", (file_id,)
+    ).fetchone()
+    assert published is not None, (
+        "the files row is invisible to other connections - nothing committed"
+    )
+    assert published[0] == "ready"
+    assert (
+        db_other.execute(
+            "select count(*) from chunks where file_id = %s::uuid", (file_id,)
+        ).fetchone()[0]
+        == n_chunks
+    )
+
+
+def test_ingest_file_still_mints_a_file_id_when_none_is_supplied(
+    pdf_factory, fake_embedder, db, db_other
+):
+    """Omitting `file_id` mints one and CREATES the row - Slice 1's path, provably unchanged.
+
+    Deliberately overlaps `test_ingest_file_end_to_end`, which has always exercised this path
+    incidentally. What that test does not say is that the default is load-bearing: make `file_id`
+    required and every Slice 1 caller breaks, but its failure reads as an incidental break to fix
+    by passing an id. Named for the guarantee, this one cannot be read that way.
+
+    It is also the other half of the pair. `test_ingest_file_uses_a_caller_supplied_file_id` drives
+    the upsert's UPDATE branch; this drives INSERT. Which branch runs is decided entirely by whether
+    the caller owns the id, so the two together pin both sides of that fork.
+
+    The before/after count is what makes "created" a real claim rather than "a row exists" - the
+    row must not have been there beforehand.
+
+    Reads back through `db_other` for the same reason its sibling does. This path has no seeded row
+    and so no `conn.commit()` to forget, which is exactly why the check belongs here too: the thing
+    being pinned is that `ingest_file` PUBLISHES, and nothing about that should depend on which
+    branch of the upsert ran.
+    """
+    conn, owner_id, class_id = db
+    path = pdf_factory("lecture.pdf", ["alpha beta gamma", "delta epsilon"])
+
+    before = conn.execute("select count(*) from files where owner_id = %s", (owner_id,)).fetchone()[
+        0
+    ]
+    assert before == 0
+    # Ends the transaction that SELECT opened - a READ leaves `conn` INTRANS just as a write does,
+    # and `index_file` would then get a savepoint and publish nothing (ADR 0025). `rollback` rather
+    # than `commit` because there is nothing to save: the point is to return the connection to
+    # IDLE, not to keep anything. This test had no INSERT to make the hazard obvious, which is
+    # exactly why it went unnoticed until `db_other` read it back on a second connection.
+    conn.rollback()
+
+    returned = ingest_file(path, owner_id, class_id, embedder=fake_embedder, conn=conn)
+
+    # Minted, not echoed: a well-formed uuid the caller never saw. UUID() raises on anything else,
+    # which matters because the `files.file_id` column would reject it downstream anyway.
+    assert UUID(returned)
+
+    # Exactly one row, and it is the one just minted - the INSERT branch, not an UPDATE of something
+    # that was already there.
+    n_files = conn.execute(
+        "select count(*) from files where owner_id = %s", (owner_id,)
+    ).fetchone()[0]
+    assert n_files == 1
+
+    status = conn.execute(
+        "select status from files where file_id = %s::uuid", (returned,)
+    ).fetchone()[0]
+    assert status == "ready"
+
+    n_chunks = conn.execute(
+        "select count(*) from chunks where file_id = %s::uuid", (returned,)
+    ).fetchone()[0]
+    assert n_chunks > 0
+
+    # PUBLISHED, on a different connection - see the sibling test.
+    published = db_other.execute(
+        "select status from files where file_id = %s::uuid", (returned,)
+    ).fetchone()
+    assert published is not None, (
+        "the files row is invisible to other connections - nothing committed"
+    )
+    assert published[0] == "ready"
+    assert (
+        db_other.execute(
+            "select count(*) from chunks where file_id = %s::uuid", (returned,)
+        ).fetchone()[0]
+        == n_chunks
+    )
+
+
+def test_ingest_file_rejects_a_malformed_file_id_before_spending_anything(pdf_factory):
+    """A `file_id` that isn't a uuid fails INSTANTLY - no parse, no embed, no DB.
+
+    Postgres rejects a malformed id on its own, at `index_file`'s `::uuid` cast. That is a real
+    check in the wrong place: `compose` has already run by then, so a typo costs a full embedding
+    run before anyone finds out. The defect was ordering, not detection, so this test pins the
+    ORDER rather than the message.
+
+    It proves that by making the later steps fatal instead of merely expensive. `conn=None` cannot
+    be executed against and `_ExplodingEmbedder` raises on use, so this test can only pass if the
+    guard returns before either is touched - a `ValueError` here means nothing downstream ran. Move
+    the guard below `compose` and the `RuntimeError` escapes instead, which is why this asserts on
+    the exception type and not merely that something raised.
+    """
+    path = pdf_factory("lecture.pdf", ["alpha beta gamma"])
+
+    with pytest.raises(ValueError, match="canonical uuid"):
+        ingest_file(
+            path,
+            "owner",
+            "class",
+            embedder=_ExplodingEmbedder(),
+            conn=None,
+            file_id="not-a-uuid",
+        )
+
+    # The other shape the guard must refuse WELL: psycopg returns uuid columns as `uuid.UUID`
+    # instances, so this is the value a Slice 2 worker naturally holds after reading its job.
+    # The guard owes it the same documented ValueError - whose message says the fix, pass
+    # str(id) - not an incidental AttributeError from inside `UUID()`.
+    with pytest.raises(ValueError, match="canonical uuid"):
+        ingest_file(
+            path,
+            "owner",
+            "class",
+            embedder=_ExplodingEmbedder(),
+            conn=None,
+            file_id=uuid4(),
+        )

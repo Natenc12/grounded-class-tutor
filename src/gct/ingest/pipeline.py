@@ -17,7 +17,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 import psycopg
 
@@ -106,16 +106,24 @@ def ingest_file(
     owner_id: str,
     class_id: str,
     *,
+    file_id: str | None = None,
     embedder: Embeddings,
     conn: psycopg.Connection,
     chunk_size: int = CHUNK_SIZE_WORDS,
     chunk_overlap: int = CHUNK_OVERLAP_WORDS,
 ) -> str:
-    """Ingest one file end to end and return its generated `file_id`. Slice 1 calls this directly.
+    """Ingest one file end to end and return its `file_id`. Slice 1 calls this directly.
 
-    Generates `file_id` (`uuid4`) Python-side so the full chunk row set is complete before the index
-    transaction opens (ADR 0020), runs `compose`, then hands the rows to `index_file` for the
-    all-or-nothing atomic write (which also creates the minimal `files` row -> `ready`).
+    `file_id` is minted here (`uuid4`) only when the caller supplies none. Either way it is fixed
+    Python-side before `compose` runs, so the full chunk row set is complete before the index
+    transaction opens (ADR 0020); the rows then go to `index_file` for the all-or-nothing atomic
+    write (which also creates the minimal `files` row -> `ready`). The return is the id actually
+    used - supply one and the same id comes back, never a new one.
+
+    Slice 2's worker is the caller that supplies one. `enqueue` created that worker's `files` row as
+    `queued` before the job was claimed (ADR 0011), so minting a fresh id here would strand the row
+    the student is watching and index the chunks under a second one. With the id supplied,
+    `index_file`'s upsert lands on its UPDATE branch instead and one file stays one row.
 
     `conn` must satisfy TWO requirements, not one:
       - the pgvector adapter is registered - use `gct.db.connect()`;
@@ -127,8 +135,43 @@ def ingest_file(
     `chunk_size`/`chunk_overlap` are forwarded to `compose` and default to the module constants.
     They are provisional spike parameters (ADR 0019) - a later caller wrapping this seam (Slice
     2's worker) should not treat their names or existence as settled.
+
+    Raises `ValueError` on a malformed `file_id`, before `compose` runs. Only the FORMAT is
+    checked: nothing here or in `index_file` verifies the id names a row this caller may write.
+    That scope question is #24, parked on #71 - see the note on the guard below.
     """
-    file_id = str(uuid4())
+    if file_id is None:
+        file_id = str(uuid4())
+    else:
+        # Validated BEFORE `compose`, which parses and then EMBEDS - a paid call. Postgres would
+        # reject a malformed id anyway, but only at `index_file`'s `::uuid` cast, i.e. after the
+        # embedding run is already bought. This is the cheapest check in the pipeline and it was
+        # the last to run; the fix is ordering, not detection. It also gives Slice 2 a clean
+        # terminal failure (a bad id never becomes good on retry, ADR 0011) instead of a psycopg
+        # error raised from inside the index transaction.
+        #
+        # STRICT on purpose: Python's `UUID()` parses spellings Postgres rejects (urn:uuid:...,
+        # stray hyphens), which would pass a lax `UUID(file_id)` guard and still die at the
+        # `::uuid` cast - after the embed was bought. The worker's id arrives from the DB already
+        # canonical, so any other spelling (or a `uuid.UUID` instance) here is an upstream bug;
+        # refuse it loudly rather than convert it quietly.
+        #
+        # Only the FORMAT is checkable here. Whether the id names a row this caller may write is a
+        # question for the database, and asking it would mean issuing a statement on `conn` before
+        # `index_file` opens its transaction - which is precisely the ADR 0025 precondition this
+        # function's own docstring forbids breaking. No layer checks it today: a wrong id is
+        # silently written into (#24 records the evidence). Where that check belongs - the
+        # worker's claim step or the publish step - is #24's question, parked on #71; do not
+        # decide it here.
+        try:
+            canonical = str(UUID(file_id)) == file_id.lower()
+        except (ValueError, AttributeError, TypeError):
+            canonical = False
+        if not canonical:
+            raise ValueError(
+                f"file_id must be a canonical uuid string (pass str(id)), got {file_id!r}"
+            )
+
     chunks = compose(
         path,
         owner_id,

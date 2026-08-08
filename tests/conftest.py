@@ -116,6 +116,39 @@ def db():
 
 
 @pytest.fixture
+def db_other(db):
+    """A SECOND connection to the same database — the only way to prove a write was PUBLISHED.
+
+    A connection can always see its own uncommitted work, so every assertion read back through
+    `db`'s connection is true whether or not anything was committed. That is not a hypothetical:
+    `test_ingest_file_uses_a_caller_supplied_file_id` shipped green while publishing nothing,
+    because its stand-in for `enqueue` left the connection INTRANS and `index_file`'s
+    `conn.transaction()` degraded to a savepoint (ADR 0025). Four assertions passed on rows that
+    no other connection could see and the teardown rollback then discarded.
+
+    ADR 0025 records that no SINGLE-connection test can catch that. True — and it is a statement
+    about single-connection tests, not about testing. Reading back through a second connection
+    catches it, which is what this fixture is for. Assert through `db`'s connection for what the
+    code computed; assert through this one for what actually survives.
+
+    Depends on `db` for two reasons, both load-bearing: the skip/hard-fail decision about an
+    unreachable Postgres is made in exactly one place, and `pytest_collection_modifyitems` reads
+    `db` out of `fixturenames` transitively, so a test taking only this fixture still derives the
+    `db` marker rather than silently escaping `-m db`.
+
+    Autocommit because it is a read-only verifier: every statement becomes its own transaction, so
+    it can never hold an old snapshot and report a stale answer regardless of the server's default
+    isolation level. It only ever reads, so it has nothing to clean up — `db` owns teardown.
+    """
+    conn = connect()
+    conn.autocommit = True
+    try:
+        yield conn
+    finally:
+        conn.close()
+
+
+@pytest.fixture
 def live_openai_embedder():
     """The REAL OpenAI embedder — taking this fixture is what makes a test `live` (paid).
 

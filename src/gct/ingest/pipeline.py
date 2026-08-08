@@ -136,8 +136,9 @@ def ingest_file(
     They are provisional spike parameters (ADR 0019) - a later caller wrapping this seam (Slice
     2's worker) should not treat their names or existence as settled.
 
-    Raises `ValueError` on a malformed `file_id`, before `compose` runs. The scope check on a
-    SUPPLIED id lives in `index_file` instead, not here - see the note on the guard below.
+    Raises `ValueError` on a malformed `file_id`, before `compose` runs. Only the FORMAT is
+    checked: nothing here or in `index_file` verifies the id names a row this caller may write.
+    That scope question is #24, parked on #71 - see the note on the guard below.
     """
     if file_id is None:
         file_id = str(uuid4())
@@ -149,16 +150,27 @@ def ingest_file(
         # terminal failure (a bad id never becomes good on retry, ADR 0011) instead of a psycopg
         # error raised from inside the index transaction.
         #
+        # STRICT on purpose: Python's `UUID()` parses spellings Postgres rejects (urn:uuid:...,
+        # stray hyphens), which would pass a lax `UUID(file_id)` guard and still die at the
+        # `::uuid` cast - after the embed was bought. The worker's id arrives from the DB already
+        # canonical, so any other spelling (or a `uuid.UUID` instance) here is an upstream bug;
+        # refuse it loudly rather than convert it quietly.
+        #
         # Only the FORMAT is checkable here. Whether the id names a row this caller may write is a
         # question for the database, and asking it would mean issuing a statement on `conn` before
         # `index_file` opens its transaction - which is precisely the ADR 0025 precondition this
-        # function's own docstring forbids breaking. That check therefore lives inside
-        # `index_file`'s transaction, where a statement is free, and pays the embedding cost it
-        # cannot avoid.
+        # function's own docstring forbids breaking. No layer checks it today: a wrong id is
+        # silently written into (#24 records the evidence). Where that check belongs - the
+        # worker's claim step or the publish step - is #24's question, parked on #71; do not
+        # decide it here.
         try:
-            UUID(file_id)
-        except ValueError as exc:
-            raise ValueError(f"file_id must be a well-formed uuid, got {file_id!r}") from exc
+            canonical = str(UUID(file_id)) == file_id.lower()
+        except (ValueError, AttributeError, TypeError):
+            canonical = False
+        if not canonical:
+            raise ValueError(
+                f"file_id must be a canonical uuid string (pass str(id)), got {file_id!r}"
+            )
 
     chunks = compose(
         path,

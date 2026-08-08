@@ -414,7 +414,7 @@ def test_ingest_file_rejects_a_malformed_file_id_before_spending_anything(pdf_fa
     """
     path = pdf_factory("lecture.pdf", ["alpha beta gamma"])
 
-    with pytest.raises(ValueError, match="well-formed uuid"):
+    with pytest.raises(ValueError, match="canonical uuid"):
         ingest_file(
             path,
             "owner",
@@ -422,4 +422,18 @@ def test_ingest_file_rejects_a_malformed_file_id_before_spending_anything(pdf_fa
             embedder=_ExplodingEmbedder(),
             conn=None,
             file_id="not-a-uuid",
+        )
+
+    # The other shape the guard must refuse WELL: psycopg returns uuid columns as `uuid.UUID`
+    # instances, so this is the value a Slice 2 worker naturally holds after reading its job.
+    # The guard owes it the same documented ValueError - whose message says the fix, pass
+    # str(id) - not an incidental AttributeError from inside `UUID()`.
+    with pytest.raises(ValueError, match="canonical uuid"):
+        ingest_file(
+            path,
+            "owner",
+            "class",
+            embedder=_ExplodingEmbedder(),
+            conn=None,
+            file_id=uuid4(),
         )

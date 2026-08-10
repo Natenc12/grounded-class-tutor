@@ -108,6 +108,9 @@ def db():
             # bury the test's own failure under InFailedSqlTransaction. Clear that state first.
             conn.rollback()
             conn.execute("delete from chunks where owner_id = %s", (owner_id,))
+            # jobs.file_id FKs to files, so it must go before files or the delete
+            # below raises ForeignKeyViolation (issue #70 is the table's first writer).
+            conn.execute("delete from jobs where owner_id = %s", (owner_id,))
             conn.execute("delete from files where owner_id = %s", (owner_id,))
             conn.execute("delete from classes where owner_id = %s", (owner_id,))
             conn.commit()

@@ -19,7 +19,7 @@ from pathlib import Path
 import psycopg
 import pytest
 
-from gct.jobs.queue import claim, enqueue
+from gct.jobs.queue import claim, enqueue, reclaim_expired
 
 
 def _lecture(tmp_path: Path) -> Path:
@@ -321,3 +321,113 @@ def test_claim_skips_a_job_a_concurrent_claimer_holds_locked(db, db_open_txn, tm
     assert job is not None and job.file_id == file_id, (
         "the None above was not about the lock — the job should be claimable once it releases"
     )
+
+
+def _backdate_lease(conn, file_id: str) -> None:
+    """Push a claimed job's lease an hour into the past — a worker that died mid-job.
+
+    Expiry is simulated by editing the timestamp rather than claiming with a tiny
+    `lease_seconds` and sleeping: no wall-clock wait, and the lease is unambiguously
+    expired rather than racing the test's own speed. Commits, so `reclaim_expired`
+    starts outside a transaction (its contract; ADR 0025).
+    """
+    conn.execute(
+        "update jobs set leased_until = now() - interval '1 hour' where file_id = %s::uuid",
+        (file_id,),
+    )
+    conn.commit()
+
+
+def test_reclaim_expired_requeues_only_the_expired_lease(db, db_other, tmp_path):
+    """The WHERE's precision, from both sides: expired requeued, live lease untouched.
+
+    The untouched half is the one the handoff warns is easy to skip: a too-broad WHERE
+    yanks a job from a healthy worker mid-run, and a test with only expired jobs in the
+    table would never notice. So one lease is pushed into the past and one is live, and
+    the assertions are about BOTH.
+
+    Also pins what reclaim writes (through `db_other` — publication, not computation):
+    state back to `queued`, lease CLEARED, and `attempts` NOT reset — the crashed run
+    spent an attempt, and zeroing the trail would hand a poison file a fresh budget
+    after every crash.
+    """
+    conn, owner_id, class_id = db
+    source = _lecture(tmp_path)
+    first = enqueue(conn, path=source, owner_id=owner_id, class_id=class_id)
+    second = enqueue(conn, path=source, owner_id=owner_id, class_id=class_id)
+    crashed = claim(conn, lease_seconds=3600)
+    healthy = claim(conn, lease_seconds=3600)
+    assert crashed is not None and crashed.file_id == first
+    assert healthy is not None and healthy.file_id == second
+    _backdate_lease(conn, first)
+
+    moved = reclaim_expired(conn)
+
+    assert moved == 1, "exactly one lease was expired, so exactly one row moves"
+    assert conn.info.transaction_status == psycopg.pq.TransactionStatus.IDLE
+    requeued = db_other.execute(
+        "select state, leased_until, attempts from jobs where job_id = %s::uuid",
+        (crashed.job_id,),
+    ).fetchone()
+    assert requeued == ("queued", None, 1), (
+        "the expired job must be republished as queued, lease cleared, attempts KEPT"
+    )
+    untouched = db_other.execute(
+        "select state, leased_until is not null from jobs where job_id = %s::uuid",
+        (healthy.job_id,),
+    ).fetchone()
+    assert untouched == ("processing", True), (
+        "reclaim touched a live lease — it just yanked a job from a healthy worker"
+    )
+
+
+def test_reclaim_expired_leaves_terminal_states_alone(db, db_other, tmp_path):
+    """`state = 'processing'` in the WHERE is load-bearing: done jobs stay done.
+
+    `complete`/`fail` never clear `leased_until`, so every terminal row carries an
+    expired lease forever. A reclaim that filtered on the lease alone would resurrect
+    the entire job history back to `queued` on every tick — infinite reprocessing.
+    The terminal row here is written directly (state='done', stale lease left in
+    place), which is exactly the shape `complete` will publish.
+    """
+    conn, owner_id, class_id = db
+    file_id = enqueue(conn, path=_lecture(tmp_path), owner_id=owner_id, class_id=class_id)
+    job = claim(conn, lease_seconds=3600)
+    assert job is not None
+    conn.execute("update jobs set state = 'done' where job_id = %s::uuid", (job.job_id,))
+    conn.commit()
+    _backdate_lease(conn, file_id)
+
+    assert reclaim_expired(conn) == 0, "a terminal job with a stale lease was resurrected"
+
+    state = db_other.execute(
+        "select state from jobs where job_id = %s::uuid", (job.job_id,)
+    ).fetchone()[0]
+    assert state == "done"
+
+
+def test_attempts_accumulate_across_a_claim_reclaim_claim_cycle(db, db_other, tmp_path):
+    """The retry trail: claim → crash → reclaim → claim again reads as attempt 2.
+
+    This is the budget #71 spends. Each half of the guarantee lives in a different
+    function — `claim` bumps, `reclaim_expired` preserves — and only the cycle
+    exercises them together: a reset hiding in reclaim passes every single-function
+    test and still hands a poison file an infinite budget.
+    """
+    conn, owner_id, class_id = db
+    file_id = enqueue(conn, path=_lecture(tmp_path), owner_id=owner_id, class_id=class_id)
+
+    first_try = claim(conn, lease_seconds=3600)
+    assert first_try is not None and first_try.attempts == 1
+    _backdate_lease(conn, file_id)
+    assert reclaim_expired(conn) == 1
+
+    second_try = claim(conn, lease_seconds=3600)
+
+    assert second_try is not None
+    assert second_try.job_id == first_try.job_id, "the same job came back around"
+    assert second_try.attempts == 2, "the reclaim reset the attempts trail"
+    published = db_other.execute(
+        "select attempts from jobs where job_id = %s::uuid", (second_try.job_id,)
+    ).fetchone()[0]
+    assert published == 2

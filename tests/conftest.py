@@ -152,6 +152,35 @@ def db_other(db):
 
 
 @pytest.fixture
+def db_open_txn(db):
+    """A second connection that HOLDS AN OPEN TRANSACTION — for lock-contention tests.
+
+    `db_other` cannot play this part, by design: it is autocommit, so every statement is its own
+    transaction and any row lock it takes is released inside the very statement that took it.
+    Measured while writing #70's SKIP LOCKED test: two autocommit connections claiming
+    concurrently were handed the SAME job, because neither lock outlived its SELECT. Simulating
+    a worker mid-claim requires the lock to OUTLIVE the statement, which only a non-autocommit
+    connection's open transaction provides. Named for what it does so nobody substitutes
+    `db_other` back in: use this to hold locks, use `db_other` to verify publication.
+
+    Depends on `db` for the same two load-bearing reasons `db_other` does: the skip/hard-fail
+    decision about an unreachable Postgres lives in exactly one place, and the `db` marker is
+    still derived transitively via `fixturenames`.
+
+    Teardown rolls back FIRST, so locks held by a failed test die with it instead of blocking
+    `db`'s own teardown deletes.
+    """
+    conn = connect()
+    try:
+        yield conn
+    finally:
+        try:
+            conn.rollback()
+        finally:
+            conn.close()
+
+
+@pytest.fixture
 def live_openai_embedder():
     """The REAL OpenAI embedder — taking this fixture is what makes a test `live` (paid).
 

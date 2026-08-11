@@ -16,9 +16,10 @@ from __future__ import annotations
 import uuid
 from pathlib import Path
 
+import psycopg
 import pytest
 
-from gct.jobs.queue import enqueue
+from gct.jobs.queue import claim, enqueue
 
 
 def _lecture(tmp_path: Path) -> Path:
@@ -175,8 +176,6 @@ def test_enqueue_rejects_a_class_that_does_not_exist(db, db_other, tmp_path):
     carries NO foreign key — the constraint lives entirely on the row written first, and a later
     reordering of the two inserts would silently drop it.
     """
-    import psycopg
-
     conn, owner_id, _ = db
     source = _lecture(tmp_path)
 
@@ -189,4 +188,136 @@ def test_enqueue_rejects_a_class_that_does_not_exist(db, db_other, tmp_path):
             0
         ]
         == 0
+    )
+
+
+def test_claim_returns_the_oldest_queued_job(db, db_other, tmp_path):
+    """FIFO by `created_at`: the job that has waited longest wins — and the other is untouched.
+
+    Enqueueing two jobs in order cannot prove the ORDER BY: rows inserted microseconds apart
+    come back in insertion order from a plain scan anyway, so the test would stay green with the
+    clause deleted. The SECOND enqueue is therefore backdated an hour — only ordering by
+    `created_at` finds it.
+
+    The sibling assertion (first job still `queued`, no lease) is the half that catches a
+    too-broad UPDATE: a WHERE that matches more than the one selected row would stamp both.
+    """
+    conn, owner_id, class_id = db
+    source = _lecture(tmp_path)
+    first = enqueue(conn, path=source, owner_id=owner_id, class_id=class_id)
+    second = enqueue(conn, path=source, owner_id=owner_id, class_id=class_id)
+    conn.execute(
+        "update jobs set created_at = created_at - interval '1 hour' where file_id = %s::uuid",
+        (second,),
+    )
+    conn.commit()  # `claim` must start OUTSIDE a transaction (its docstring; ADR 0025)
+
+    job = claim(conn, lease_seconds=60)
+
+    assert job is not None
+    assert job.file_id == second, "claim did not follow created_at to the oldest job"
+    assert (job.owner_id, job.class_id) == (owner_id, class_id)
+    assert job.attempts == 1, "the returned attempts must COUNT this claim (post-bump)"
+    stored_job_id = db_other.execute(
+        "select job_id::text from jobs where file_id = %s::uuid", (second,)
+    ).fetchone()[0]
+    assert job.job_id == stored_job_id
+
+    untouched = db_other.execute(
+        "select state, attempts, leased_until from jobs where file_id = %s::uuid", (first,)
+    ).fetchone()
+    assert untouched == ("queued", 0, None), "claim touched a job it did not return"
+
+
+def test_claim_publishes_the_lease_before_returning(db, db_other, tmp_path):
+    """The commit-before-return contract (decided 2026-08-11), pinned from both sides.
+
+    Through `db_other`: the processing state, the attempts bump, and a lease inside
+    (now, now + lease_seconds] are visible to a DIFFERENT connection with no commit from this
+    test — so `claim` published them itself. A lease only this connection can see is not a
+    lease; `reclaim_expired` and every other worker read it from elsewhere.
+
+    On `db`'s own connection: transaction status is back to IDLE. That is `index_file`'s
+    ADR 0025 precondition — a claim that returned INTRANS would make the worker's very next
+    ingest on this connection publish nothing while reporting success, and #74 deliberately
+    left that unguarded at runtime.
+
+    Also pins that `files.status` still reads `queued`: every transition after `queued` on
+    that axis belongs to #71, so claim writing it would be a second writer.
+    """
+    conn, owner_id, class_id = db
+    file_id = enqueue(conn, path=_lecture(tmp_path), owner_id=owner_id, class_id=class_id)
+
+    job = claim(conn, lease_seconds=300)
+
+    assert job is not None
+    assert conn.info.transaction_status == psycopg.pq.TransactionStatus.IDLE, (
+        "claim returned with a transaction still open — the next ingest on this "
+        "connection would degrade to a savepoint and publish nothing (ADR 0025)"
+    )
+    published = db_other.execute(
+        """
+        select state, attempts, leased_until > now(),
+               leased_until <= now() + make_interval(secs => %(lease_seconds)s)
+        from jobs where job_id = %(job_id)s::uuid
+        """,
+        {"lease_seconds": 300, "job_id": job.job_id},
+    ).fetchone()
+    assert published == ("processing", 1, True, True), (
+        "the claim was not published to another connection, or the lease is not "
+        "inside (now, now + lease_seconds]"
+    )
+    file_status = db_other.execute(
+        "select status from files where file_id = %s::uuid", (file_id,)
+    ).fetchone()[0]
+    assert file_status == "queued", "claim wrote files.status — that axis belongs to #71"
+
+
+def test_claim_on_an_empty_queue_returns_none(db):
+    """Empty is the poll loop's most common outcome — a result, not an error.
+
+    (If this ever fails with a Job, look for stray `queued` rows in the local `jobs` table —
+    claim is deliberately unscoped, so leftovers from a crashed run are visible to it.)
+
+    The IDLE check matters on this path too: the None branch still opened a read transaction,
+    and leaving it open would trip ADR 0025 on the tick that DOES find a job.
+    """
+    conn, _, _ = db
+
+    assert claim(conn, lease_seconds=60) is None
+    assert conn.info.transaction_status == psycopg.pq.TransactionStatus.IDLE
+
+
+def test_claim_skips_a_job_a_concurrent_claimer_holds_locked(db, db_open_txn, tmp_path):
+    """Two workers, one job, zero double-claims — the SKIP LOCKED half of ADR 0011.
+
+    Exactly ONE job is enqueued, so the test cannot pass because two claimers happened to be
+    handed different jobs — with one job there is no accidental way through. `db_open_txn`
+    plays a worker frozen mid-claim: it holds the row lock claim's SELECT takes, in a
+    transaction that has not committed. (`db_other` cannot play this part — it is autocommit,
+    so its locks die inside the statement that takes them; see the fixture docstring.)
+
+    The lock_timeout is mutation insurance, not contract: with SKIP LOCKED deleted from the
+    source the second claim BLOCKS on the held lock, and without the timeout that mutation
+    would hang the suite instead of failing it.
+    """
+    conn, owner_id, class_id = db
+    file_id = enqueue(conn, path=_lecture(tmp_path), owner_id=owner_id, class_id=class_id)
+
+    held = db_open_txn.execute(
+        "select job_id from jobs where file_id = %s::uuid for update", (file_id,)
+    ).fetchone()
+    assert held is not None, "the frozen worker never got the lock — the test is not testing"
+
+    conn.execute("set lock_timeout = '2s'")
+    conn.commit()  # `set` opened an implicit transaction; claim must start outside one
+
+    assert claim(conn, lease_seconds=60) is None, (
+        "claim was handed a job another worker holds locked — SKIP LOCKED is not doing its job"
+    )
+
+    db_open_txn.rollback()  # the frozen worker dies; its lock releases
+    job = claim(conn, lease_seconds=60)
+    assert job is not None and job.file_id == file_id, (
+        "the None above was not about the lock — the job should be claimable once it releases"
     )

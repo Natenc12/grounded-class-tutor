@@ -186,5 +186,36 @@ def reclaim_expired(conn: psycopg.Connection) -> int:
     Zero cleanup by design - a crashed run committed nothing, because the ingest
     transaction wraps only the final write, never the parse/embed work (ADR 0020).
     #71 calls this on the poll loop (ADR 0011 addendum).
+
+    ONE statement on purpose: a select-then-update pair would need its own row
+    locking to close the gap between reading a lease and resetting it; a single
+    UPDATE is that whole move, atomically. Both WHERE conditions are load-bearing:
+    - without `state = 'processing'`, terminal rows get resurrected - `complete`/
+      `fail` never clear `leased_until`, so every done and failed job carries an
+      expired lease forever and would requeue on every tick;
+    - without `leased_until < now()`, a live lease is yanked from a healthy worker
+      mid-job. (Same server clock `claim` stamped the lease with.)
+
+    `attempts` is deliberately NOT reset - it is the retry trail #71 compares
+    against its budget. A reclaim that zeroed it would hand a poison file a fresh
+    budget after every crash.
+
+    Reclaiming is NOT killing: a stalled-but-alive worker keeps running and may
+    finish after its job is re-handed out. That duplicate run is safe by design -
+    at-least-once, absorbed by `index_file`'s all-or-nothing replace (ADR 0020).
+
+    Commits before returning, same contract as `claim` (its docstring has the
+    argument). Returns how many rows moved; 0 is the normal tick, not an error.
+    `jobs_state_lease_idx (state, leased_until)` exists precisely for this scan.
     """
-    raise NotImplementedError
+    with conn.transaction():
+        cursor = conn.execute(
+            """
+            update jobs
+            set state = 'queued',
+                leased_until = null,
+                updated_at = now()
+            where state = 'processing' and leased_until < now()
+            """
+        )
+    return cursor.rowcount

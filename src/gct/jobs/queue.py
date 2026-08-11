@@ -167,8 +167,22 @@ def claim(conn: psycopg.Connection, *, lease_seconds: int) -> Job | None:
 
 
 def complete(conn: psycopg.Connection, *, job_id: str) -> None:
-    """Terminal success: state='done'. The worker calls this after ingest_file returns."""
-    raise NotImplementedError
+    """Terminal success: state='done'. The worker calls this after ingest_file returns.
+
+    Commits before returning, same contract as `claim` (its docstring has the
+    argument). `leased_until` is deliberately left in place - `reclaim_expired`
+    filters on state, so a stale lease on a terminal row is inert, and clearing it
+    would erase the record of when the winning run held the job.
+    """
+    with conn.transaction():
+        conn.execute(
+            """
+            update jobs
+            set state = 'done', updated_at = now()
+            where job_id = %(job_id)s::uuid
+            """,
+            {"job_id": job_id},
+        )
 
 
 def fail(conn: psycopg.Connection, *, job_id: str, error: str) -> None:
@@ -176,8 +190,20 @@ def fail(conn: psycopg.Connection, *, job_id: str, error: str) -> None:
 
     `last_error` is free text - distinct from `files.failed_reason`, which is a
     closed CHECK set of five values that only #71 writes.
+
+    Commits before returning, same contract as `claim`. `attempts` is untouched:
+    the trail of how many tries this job burned is exactly what a human reading a
+    failed row wants to see.
     """
-    raise NotImplementedError
+    with conn.transaction():
+        conn.execute(
+            """
+            update jobs
+            set state = 'failed', last_error = %(error)s, updated_at = now()
+            where job_id = %(job_id)s::uuid
+            """,
+            {"error": error, "job_id": job_id},
+        )
 
 
 def reclaim_expired(conn: psycopg.Connection) -> int:

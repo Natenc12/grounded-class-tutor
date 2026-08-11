@@ -101,17 +101,69 @@ def claim(conn: psycopg.Connection, *, lease_seconds: int) -> Job | None:
 
     Sets state='processing', bumps attempts, stamps leased_until.
 
-    TRANSACTION BEHAVIOR IS PART OF THIS CONTRACT, not an implementation detail:
-    claiming is a write, and if the caller then ingests on this same connection
-    inside the resulting transaction, `index_file`'s transaction degrades to a
-    SAVEPOINT and publishes NOTHING while reporting success (ADR 0025). State
-    here, explicitly, whether the claim is committed before return.
+    COMMITS BEFORE RETURNING - that is the contract, not a detail (decided
+    2026-08-11): both statements run inside this function's own `conn.transaction()`,
+    so the lease is visible to every other worker the moment this returns, and `conn`
+    is left OUTSIDE any transaction - the precondition `index_file` demands of a
+    worker that ingests on the connection it claimed with (ADR 0025;
+    `ingestion-worker.md` step 1). The rejected alternative - leaving the commit to
+    the caller so a crash undoes the whole attempt - loses the `attempts` bump with
+    it (a poison file then retries forever, its budget never spent) and holds the
+    row lock through the entire ingest, where a hung worker parks the job somewhere
+    neither another claimer nor `reclaim_expired` can see it.
+
+    None means the queue is empty OR every queued row is mid-claim by a concurrent
+    worker right now (SKIP LOCKED skips, never waits). Both are normal poll-loop
+    outcomes, not errors - the worker hits them most ticks.
+
+    The returned `attempts` COUNTS THIS CLAIM (the post-bump value): it answers
+    "which attempt is this?", which is what #71 compares against its retry budget.
 
     `lease_seconds` is a parameter rather than a constant on purpose: no lease
     duration, backoff curve, or poll interval exists anywhere in the design corpus
     yet, and #71 owns picking them (epic #73, gap 1, resolved 2026-08-03).
     """
-    raise NotImplementedError
+    with conn.transaction():
+        # Both statements MUST share this transaction: the row lock FOR UPDATE takes
+        # lives exactly as long as the transaction that took it, so a select in its
+        # own transaction would release the lock before the update ran - two workers
+        # could then claim the same job in the gap.
+        row = conn.execute(
+            """
+            select job_id::text, file_id::text, owner_id, class_id::text, attempts
+            from jobs
+            where state = 'queued'
+            order by created_at
+            for update skip locked
+            limit 1
+            """
+        ).fetchone()
+        if row is None:
+            return None
+        job_id, file_id, owner_id, class_id, attempts = row
+
+        # now() on the SERVER, not Python's clock: `reclaim_expired` compares
+        # `leased_until < now()` on the server's clock, so stamping the lease from a
+        # worker machine's clock would let clock drift expire leases early or late.
+        conn.execute(
+            """
+            update jobs
+            set state = 'processing',
+                attempts = attempts + 1,
+                leased_until = now() + make_interval(secs => %(lease_seconds)s),
+                updated_at = now()
+            where job_id = %(job_id)s::uuid
+            """,
+            {"lease_seconds": lease_seconds, "job_id": job_id},
+        )
+
+    return Job(
+        job_id=job_id,
+        file_id=file_id,
+        owner_id=owner_id,
+        class_id=class_id,
+        attempts=attempts + 1,
+    )
 
 
 def complete(conn: psycopg.Connection, *, job_id: str) -> None:

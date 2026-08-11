@@ -19,7 +19,7 @@ from pathlib import Path
 import psycopg
 import pytest
 
-from gct.jobs.queue import claim, enqueue, reclaim_expired
+from gct.jobs.queue import claim, complete, enqueue, fail, reclaim_expired
 
 
 def _lecture(tmp_path: Path) -> Path:
@@ -431,3 +431,65 @@ def test_attempts_accumulate_across_a_claim_reclaim_claim_cycle(db, db_other, tm
         "select attempts from jobs where job_id = %s::uuid", (second_try.job_id,)
     ).fetchone()[0]
     assert published == 2
+
+
+def test_complete_publishes_done_and_touches_only_its_job(db, db_other, tmp_path):
+    """Terminal success is published, scoped to ONE job, and leaves `files.status` alone.
+
+    The sibling job is the test's teeth: with a single row in the table, a `complete`
+    that lost its WHERE clause — every job marked done — would still pass. The
+    `files.status` assertion pins the two-axes split one more time: flipping the
+    student-facing status to `ready` is `index_file`'s job, inside the same
+    transaction as the chunk insert, never the queue's.
+    """
+    conn, owner_id, class_id = db
+    source = _lecture(tmp_path)
+    first = enqueue(conn, path=source, owner_id=owner_id, class_id=class_id)
+    second = enqueue(conn, path=source, owner_id=owner_id, class_id=class_id)
+    job = claim(conn, lease_seconds=3600)
+    assert job is not None and job.file_id == first
+
+    complete(conn, job_id=job.job_id)
+
+    assert conn.info.transaction_status == psycopg.pq.TransactionStatus.IDLE
+    done = db_other.execute(
+        "select state, last_error from jobs where job_id = %s::uuid", (job.job_id,)
+    ).fetchone()
+    assert done == ("done", None), "complete was not published, or invented an error"
+    sibling = db_other.execute(
+        "select state from jobs where file_id = %s::uuid", (second,)
+    ).fetchone()[0]
+    assert sibling == "queued", "complete touched a job it was not given"
+    file_status = db_other.execute(
+        "select status from files where file_id = %s::uuid", (first,)
+    ).fetchone()[0]
+    assert file_status == "queued", "complete wrote files.status — that axis belongs to #71"
+
+
+def test_fail_publishes_failed_with_the_error_and_keeps_attempts(db, db_other, tmp_path):
+    """Terminal failure carries its evidence: the message survives, and so does the trail.
+
+    `last_error` is the free-text WHY a human reads off a dead job; `attempts` is how
+    many tries it burned. A `fail` that dropped either would leave a corpse with no
+    autopsy. Scoping teeth again via the untouched sibling.
+    """
+    conn, owner_id, class_id = db
+    source = _lecture(tmp_path)
+    first = enqueue(conn, path=source, owner_id=owner_id, class_id=class_id)
+    second = enqueue(conn, path=source, owner_id=owner_id, class_id=class_id)
+    job = claim(conn, lease_seconds=3600)
+    assert job is not None and job.file_id == first
+
+    fail(conn, job_id=job.job_id, error="embed exploded: dimension mismatch")
+
+    assert conn.info.transaction_status == psycopg.pq.TransactionStatus.IDLE
+    dead = db_other.execute(
+        "select state, last_error, attempts from jobs where job_id = %s::uuid", (job.job_id,)
+    ).fetchone()
+    assert dead == ("failed", "embed exploded: dimension mismatch", 1), (
+        "fail was not published with its error and the attempts trail intact"
+    )
+    sibling = db_other.execute(
+        "select state, last_error from jobs where file_id = %s::uuid", (second,)
+    ).fetchone()
+    assert sibling == ("queued", None), "fail touched a job it was not given"

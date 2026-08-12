@@ -40,7 +40,7 @@ spike within the fixed contract, not here.
 Not a request/response function — a **job consumer** with a durable effect. The contract is the job
 shape it claims, the row set it writes, and the status transitions it guarantees.
 ```
-Job{ file_id, owner_id, class_id }        # claimed across the ADR 0011 boundary
+Job{ job_id, file_id, owner_id, class_id, attempts, staging_ref }   # claimed across the ADR 0011 boundary
 
 Effect on commit (ready):
   chunks := [ Chunk{ chunk_id, file_id, owner_id, class_id,
@@ -54,6 +54,17 @@ Guarantee: a file's chunks are ALL-from-one-successful-run or ABSENT (ADR 0020).
 ```
 The written `Chunk` shape is exactly what the Retriever selects and hands up — the write path and read
 path meet on this row. `page_or_slide` is **scalar** by the never-span rule (ADR 0019).
+
+**The `Job` shape carries three fields beyond the identity triple, and `staging_ref` is the
+load-bearing one.** `job_id` and `attempts` are the queue handle and the retry trail the queue module
+owns. `staging_ref` is here because of step 1's ADR 0025 precondition, not for convenience: a worker
+that had to look the path up would run a statement *after* its claim committed, and a bare `SELECT`
+reopens psycopg's implicit transaction exactly as a write does — putting the connection back `INTRANS`
+and degrading step 6's transaction to a SAVEPOINT that publishes nothing. Handing the path over at
+claim time removes the worker's *reason* to touch the database between claim and ingest, which is a
+stronger guarantee than a rule telling it not to. (The Down-dependency on file staging below is
+unchanged: the worker still *reads the bytes* itself. What it no longer does is ask the database
+where they are.)
 
 ## Internal approach (pipeline)
 Slow/external work runs with **no transaction open**; the transaction is a short local swap once a

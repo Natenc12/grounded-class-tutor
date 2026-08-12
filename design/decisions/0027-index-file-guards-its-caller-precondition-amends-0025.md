@@ -1,10 +1,12 @@
 # 0027. `index_file` should guard its own caller precondition — amending ADR 0025
 
 - **Date:** 2026-08-07
-- **Status:** proposed — would amend **ADR 0025** (its "documented and asserted by the callers, not
-  enforced inside `index_file`" decision, and the *Guard inside `index_file`* rejection; the
-  precondition itself, the autocommit fix, and the atomicity/publication distinction all stand
-  unchanged)
+- **Status:** proposed for `index_file` — would amend **ADR 0025** (its "documented and asserted by
+  the callers, not enforced inside `index_file`" decision, and the *Guard inside `index_file`*
+  rejection; the precondition itself, the autocommit fix, and the atomicity/publication distinction
+  all stand unchanged). **Partially adopted 2026-08-11: `src/gct/jobs/queue.py` guards all five of
+  its writers** — see *§Adopted early in the queue module*. The `index_file` half remains open on
+  #75; nothing in `src/gct/ingest/` has changed.
 
 ## Context
 
@@ -100,6 +102,42 @@ does.
 
 **This ADR does not authorize the code change.** It records the case for reversing a decision that is
 on the record, so the reversal happens in the open. Nothing in `src/` changes until this is accepted.
+
+## Adopted early in the queue module (2026-08-11)
+
+`src/gct/jobs/queue.py` (#70) added five new writers with this precondition, and the review of that
+PR asked the question this ADR had not: **what does the guard cost in a module that is not
+`index_file`?** ADR 0025's rejection rests entirely on blast radius — a guard "fires on benign
+code" — and that is an empirical claim about a specific set of callers. It had been measured once,
+against one module.
+
+Measured against `queue.py`, guard live on all five writers (`enqueue`, `claim`, `complete`, `fail`,
+`reclaim_expired`):
+
+```
+pytest -m "not live"  ->  313 passed, 0 failed
+```
+
+**Zero firings.** Not "seven, none benign" — none at all. Every existing caller already satisfies the
+precondition, so in this module the blast-radius objection is not outweighed, it is *empty*. The
+guard was separately confirmed live rather than vacuous: after a single bare `SELECT`, all five
+writers raise.
+
+The guard is therefore adopted **for `queue.py` only**, and this section is its decision record.
+Three things follow, and the third is the point:
+
+- **This is not the `index_file` decision.** That one still costs the seven `test_ask_smoke.py` edits
+  catalogued above, and it stays open on #75. Adopting here does not pre-empt it.
+- **It is evidence for it.** #75 now gets to argue the expensive half with a working precedent and a
+  measurement, instead of arguing the pattern and the cost together.
+- **The asymmetry is itself informative.** `index_file`'s seven firings were never a sign that the
+  guard is wrong; they were seven callers already in the hazardous state. A module whose callers were
+  written *after* the rule was understood fires zero times. That is the strongest available argument
+  that the guard's cost is a one-off migration of existing call sites, not an ongoing tax.
+
+Where ADR 0025's reasoning is untouched: it declined the guard for `index_file`, whose callers include
+the `seed_class` fixture and every test in `test_index.py`. Nothing here re-opens that; it records
+that the same objection, tested elsewhere, came back empty.
 
 ## Alternatives considered
 

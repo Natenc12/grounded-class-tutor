@@ -127,8 +127,9 @@ writers raise.
 The guard is therefore adopted **for `queue.py` only**, and this section is its decision record.
 Three things follow, and the third is the point:
 
-- **This is not the `index_file` decision.** That one still costs the seven `test_ask_smoke.py` edits
-  catalogued above, and it stays open on #75. Adopting here does not pre-empt it.
+- **This is not the `index_file` decision.** That one still cost the seven `test_ask_smoke.py` edits
+  catalogued above, and stayed open on #75 until accepted (see the status line). Adopting here did
+  not pre-empt it.
 - **It is evidence for it.** #75 now gets to argue the expensive half with a working precedent and a
   measurement, instead of arguing the pattern and the cost together.
 - **The asymmetry is itself informative.** `index_file`'s seven firings were never a sign that the

@@ -1,12 +1,13 @@
 # 0027. `index_file` should guard its own caller precondition — amending ADR 0025
 
 - **Date:** 2026-08-07
-- **Status:** proposed for `index_file` — would amend **ADR 0025** (its "documented and asserted by
-  the callers, not enforced inside `index_file`" decision, and the *Guard inside `index_file`*
+- **Status:** accepted 2026-08-11 (#75) — amends **ADR 0025** (its "documented and asserted by the
+  callers, not enforced inside `index_file`" decision, and the *Guard inside `index_file`*
   rejection; the precondition itself, the autocommit fix, and the atomicity/publication distinction
-  all stand unchanged). **Partially adopted 2026-08-11: `src/gct/jobs/queue.py` guards all five of
-  its writers** — see *§Adopted early in the queue module*. The `index_file` half remains open on
-  #75; nothing in `src/gct/ingest/` has changed.
+  all stand unchanged). Adoption came in two steps, both 2026-08-11: `src/gct/jobs/queue.py`
+  guarded its five writers first (*§Adopted early in the queue module*), then #75 accepted the
+  `index_file` half. The guard lives in `gct.db.require_idle`, called by every writer that wraps
+  its work in `conn.transaction()`.
 
 ## Context
 

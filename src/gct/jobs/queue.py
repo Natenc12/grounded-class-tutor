@@ -9,10 +9,11 @@ swap drops in behind. Keep the shape swappable - no caller should need to know
 the substrate is Postgres.
 
 Every writer here REFUSES a connection that is already inside a transaction, rather
-than silently degrading to a SAVEPOINT that publishes nothing (`_require_idle`;
-ADR 0025, adopted for this module per ADR 0027 §Adopted early in the queue module).
-The `index_file` half of that guard is still open on #75 - this module went first
-because the guard costs nothing here, measured.
+than silently degrading to a SAVEPOINT that publishes nothing (`gct.db.require_idle`;
+ADR 0025, guarded per ADR 0027). This module adopted the guard first - measured at
+zero firings, ADR 0027 §Adopted early in the queue module - and `index_file` followed
+when #75 accepted the ADR, which is when the helper moved to `gct.db` so both modules
+call one writer of the rule.
 """
 
 from __future__ import annotations
@@ -22,40 +23,7 @@ from pathlib import Path
 
 import psycopg
 
-
-def _require_idle(conn: psycopg.Connection, fn: str) -> None:
-    """Reject a connection that is already inside a transaction. Every writer here calls this.
-
-    ADR 0025's failure in one line: psycopg opens an implicit transaction on a connection's
-    first statement, and `conn.transaction()` on an already-open connection issues a SAVEPOINT
-    rather than BEGIN - so the write commits NOTHING while the function returns successfully.
-    Silent, and invisible to any test that reads back through the same connection.
-
-    ADR 0025 chose documentation over a guard, on ONE empirical claim: that a guard "fires on
-    benign code". ADR 0027 disputed that for `index_file` and measured 7 firings, none benign.
-    Nobody had measured THIS module. Measured 2026-08-11, guard live on all five writers:
-
-        pytest -m "not live"  ->  313 passed, 0 failed
-
-    Zero. Every existing caller already satisfies the precondition, so here the blast-radius
-    objection is not merely outweighed - it is empty. That is why the guard lands in `queue.py`
-    ahead of `index_file`, whose own adoption still costs 7 test edits and is open on #75.
-    Recorded in ADR 0027 (§Adopted early in the queue module) so this is a decision on the
-    record, not enforcement nobody chose.
-
-    Deliberately NOT caught anywhere: a caller in the wrong transaction state is a programming
-    error at wiring, not a runtime condition to handle. The message names the remedy because an
-    error that only says "no" costs the reader the same debugging session twice.
-    """
-    status = conn.info.transaction_status
-    if status != psycopg.pq.TransactionStatus.IDLE:
-        raise RuntimeError(
-            f"{fn}() requires a connection that is NOT already inside a transaction; "
-            f"psycopg reports {status.name}. Its write would degrade to a SAVEPOINT and "
-            "publish nothing while returning successfully (ADR 0025). Fix at the caller: "
-            "set `conn.autocommit = True` at wiring, or commit before calling. NB a bare "
-            "SELECT opens the implicit transaction exactly as a write does."
-        )
+from gct.db import require_idle
 
 
 @dataclass(frozen=True)
@@ -124,7 +92,7 @@ def enqueue(
     block below degrades to a SAVEPOINT and this function returns having published nothing.
     Same precondition, same reason, as `index_file` - see its docstring.
     """
-    _require_idle(conn, "enqueue")
+    require_idle(conn, "enqueue")
     source = Path(path)
 
     with conn.transaction():
@@ -202,11 +170,11 @@ def claim(conn: psycopg.Connection, *, lease_seconds: int) -> Job | None:
     NOT already be inside a transaction. The commit promised above is CONDITIONAL on it -
     hand this an open connection and the block below is a SAVEPOINT, so the lease is
     published to nobody, `conn` comes back still in a transaction, and a crash takes the
-    `attempts` bump with it. All three guarantees fail together and silently. `_require_idle`
+    `attempts` bump with it. All three guarantees fail together and silently. `require_idle`
     now refuses that call rather than letting it look like it worked; the docstring states
     it too, because the guard tells you THAT you are wrong and this tells you WHY.
     """
-    _require_idle(conn, "claim")
+    require_idle(conn, "claim")
     with conn.transaction():
         # Both statements MUST share this transaction: the row lock FOR UPDATE takes
         # lives exactly as long as the transaction that took it, so a select in its
@@ -293,7 +261,7 @@ def complete(conn: psycopg.Connection, *, job_id: str) -> bool:
 
     Returns True when this call is the one that finished the job.
     """
-    _require_idle(conn, "complete")
+    require_idle(conn, "complete")
     with conn.transaction():
         cursor = conn.execute(
             """
@@ -344,7 +312,7 @@ def fail(conn: psycopg.Connection, *, job_id: str, error: str) -> bool:
     handles both outcomes in one place, and a split that differed between the success
     and failure paths would be read as meaningful.
     """
-    _require_idle(conn, "fail")
+    require_idle(conn, "fail")
     with conn.transaction():
         cursor = conn.execute(
             """
@@ -398,7 +366,7 @@ def reclaim_expired(conn: psycopg.Connection) -> int:
     argument). Returns how many rows moved; 0 is the normal tick, not an error.
     `jobs_state_lease_idx (state, leased_until)` exists precisely for this scan.
     """
-    _require_idle(conn, "reclaim_expired")
+    require_idle(conn, "reclaim_expired")
     with conn.transaction():
         cursor = conn.execute(
             """

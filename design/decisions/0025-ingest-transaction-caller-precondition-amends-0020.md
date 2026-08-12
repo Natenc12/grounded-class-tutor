@@ -2,7 +2,12 @@
 
 - **Date:** 2026-07-27
 - **Status:** accepted — amends **ADR 0020** (its unconditional publication claim; the
-  index-write-only boundary and the all-or-nothing rationale stand unchanged)
+  index-write-only boundary and the all-or-nothing rationale stand unchanged); its
+  "documented, not enforced" decision and the *Guard inside `index_file`* rejection amended
+  2026-08-11 by **ADR 0027** (writers now refuse a non-`IDLE` connection via
+  `gct.db.require_idle`, and the `seed_class` counter-example no longer holds — ADR 0027
+  §Context). The precondition itself, the autocommit remedy, and the atomicity-vs-publication
+  distinction stand.
 
 ## Context
 ADR 0020 §2–3 state the ingest guarantee without qualification: processing a file "commits its

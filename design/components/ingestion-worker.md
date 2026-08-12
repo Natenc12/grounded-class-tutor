@@ -70,19 +70,22 @@ where they are.)
 Slow/external work runs with **no transaction open**; the transaction is a short local swap once a
 *complete, valid* row set is in hand (ADR 0020).
 
-> **The claim transaction must COMMIT before step 2 begins (ADR 0025).** Leasing the job is a write,
-> so it opens a transaction on the worker's connection; carrying that transaction into the pipeline
-> turns step 6's `conn.transaction()` into a mere SAVEPOINT, and the file's chunks are then published
-> only when the *worker's* outer transaction commits — invisible to readers and destructible by any
-> later failure until then. It also holds the connection open across every embedding round-trip,
-> which is the hazard the paragraph above already forbids. Both failures have one cause and one fix:
-> claim, commit, then process on a connection that is not in a transaction. Slice 1's runner does
-> this with `conn.autocommit = True`; a worker may instead commit the claim explicitly.
+> **The claim transaction must COMMIT before step 2 begins (ADR 0025, guarded per ADR 0027).**
+> Leasing the job is a write, so it opens a transaction on the worker's connection; carrying that
+> transaction into the pipeline used to degrade step 6's `conn.transaction()` to a mere SAVEPOINT
+> that published nothing, silently. The index write now REFUSES that call outright
+> (`gct.db.require_idle` raises before anything is written), so the failure is loud on the first
+> ingest instead of silent forever — but the worker's obligation is unchanged: claim, commit, then
+> process on a connection that is not in a transaction, which also keeps the connection from being
+> held open across every embedding round-trip (the hazard the paragraph above already forbids).
+> Slice 1's runner does this with `conn.autocommit = True`; a worker may instead commit the claim
+> explicitly.
 >
-> This is sharper than a tidiness rule. ADR 0020 makes the reaper safe by arguing a crash-mid-
-> `processing` job "committed nothing" — but under savepoint nesting a *successful* run has also
-> committed nothing, so success and crash stop being distinguishable by DB state, which is the only
-> signal the reaper reads.
+> Why the rule is sharper than tidiness: ADR 0020 makes the reaper safe by arguing a crash-mid-
+> `processing` job "committed nothing" — under savepoint nesting a *successful* run had also
+> committed nothing, so success and crash stopped being distinguishable by DB state, the only
+> signal the reaper reads. The guard is what makes that state unreachable rather than merely
+> forbidden.
 
 1. **Claim** the job (ADR 0011); set `status=processing`, **and commit it** — see the note above.
 2. **Parse** staged bytes → text + structure (pypdf / python-pptx / `unstructured` — tooling is a
@@ -128,6 +131,7 @@ Slow/external work runs with **no transaction open**; the transaction is a short
 | **Duplicate job delivery** (at-least-once) | infra | safe — idempotent replace re-does the same delete-then-insert; no dedup needed (ADR 0020) |
 | **Re-index of an already-`ready` file** | normal | old full set stays queryable until COMMIT, then swapped atomically — never flickers empty/partial |
 | **Partial embed then failure** | transient | nothing committed; retry reprocesses from scratch (accepted re-embed cost, ADR 0020) |
+| **Index write handed a connection already inside a transaction** | programming error | the index write **raises `RuntimeError` before opening the transaction** — nothing is written. The alternative was a SAVEPOINT that publishes nothing while reporting success (ADR 0025, guarded per ADR 0027); the error names the remedy (autocommit at wiring, or commit first) |
 | **Zero-chunk row set handed to the index write** | programming error | the index write **raises `ValueError` before opening the transaction** — nothing is written, not even the `files` row. Publishing `ready` over zero chunks would break `status=ready` ⟺ full chunk set queryable. Unreachable through the pipeline (parse fails an empty file first), but the index write is a public entry point and does not trust its caller (#23) |
 
 ## Invariants
@@ -140,9 +144,10 @@ Slow/external work runs with **no transaction open**; the transaction is a short
   ADR 0025). Held from **both** ends inside the box: a write that fails partway rolls back whole
   (regression-tested on the re-index and first-index paths, #23), and a zero-chunk write is refused
   before the transaction opens rather than published as `ready`. **Atomicity is unconditional;
-  PUBLICATION is not** — it needs a third thing this box cannot enforce, a caller whose connection
-  is not already inside a transaction. §Internal approach step 1 states that precondition and what
-  it costs a worker to get wrong.
+  PUBLICATION is not** — it needs a caller whose connection is not already inside a transaction,
+  and the box now ENFORCES that: `index_file` refuses a non-IDLE connection before writing anything
+  (ADR 0025, guarded per ADR 0027). §Internal approach step 1 states the precondition and what it
+  costs a worker to get wrong.
 - **Idempotent by construction** — reprocessing a file fully replaces its chunk set; safe under
   at-least-once delivery + lease/reaper reclaim, no dedup keys (ADR 0011/0020).
 - **Transaction wraps the write, not the work** — never held across embedding-API calls (ADR 0020).

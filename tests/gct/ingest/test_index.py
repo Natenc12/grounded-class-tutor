@@ -277,3 +277,37 @@ def test_index_file_rejects_empty_chunk_set(db):
     # never ran.
     row = conn.execute("select status from files where file_id = %s::uuid", (file_id,)).fetchone()
     assert row is None
+
+
+def test_index_file_refuses_a_connection_already_in_a_transaction(db, db_other):
+    """`index_file` on an INTRANS connection raises instead of degrading to a SAVEPOINT.
+
+    The ADR 0025 failure (ADR 0025, guarded per ADR 0027): psycopg opens an implicit
+    transaction on a connection's first statement — a bare SELECT is enough — and
+    `conn.transaction()` then issues a SAVEPOINT that publishes NOTHING while the call
+    returns successfully. ADR 0027's probe found seven tests in exactly that state; #75
+    accepted the guard.
+
+    Arms the trap with a bare SELECT (the subtle half — no write anywhere), and asserts the
+    refusal wrote nothing through `db_other`: a guard that raised after doing half the work
+    would be worse than none. Reading back through `db`'s own connection could not make that
+    claim — it sees its own uncommitted rows, which is the very failure this guard exists
+    to catch.
+    """
+    conn, owner_id, class_id = db
+    file_id = str(uuid.uuid4())
+    conn.execute("select 1")  # arms the implicit transaction exactly as a write would
+
+    with pytest.raises(RuntimeError, match="index_file.*already inside a transaction"):
+        index_file(
+            conn,
+            file_id=file_id,
+            filename="lecture.pdf",
+            owner_id=owner_id,
+            class_id=class_id,
+            chunks=[_chunk(owner_id, class_id, "some text", page=1)],
+        )
+    conn.rollback()  # leave the fixture's teardown a clean connection
+
+    row = db_other.execute("select 1 from files where file_id = %s::uuid", (file_id,)).fetchone()
+    assert row is None, "a refused index_file call must publish nothing"

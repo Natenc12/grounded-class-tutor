@@ -269,14 +269,12 @@ def test_ingest_file_uses_a_caller_supplied_file_id(pdf_factory, fake_embedder, 
         """,
         (file_id, owner_id, class_id, "lecture.pdf"),
     )
-    # LOAD-BEARING, not tidiness. This INSERT leaves `conn` INTRANS, and `index_file`'s
-    # `conn.transaction()` then issues a SAVEPOINT rather than BEGIN - releasing which commits
-    # NOTHING (ADR 0025, and `ingest_file`'s own docstring). Every assertion below reads back on
-    # this same connection, so they all pass on rows no other connection can see and the fixture's
-    # teardown rollback then discards. Without this line the test is green in exactly the world it
-    # exists to rule out. The real caller has the same obligation: the Slice 2 worker MUST COMMIT
-    # ITS CLAIM before ingesting on the same connection (`components/ingestion-worker.md`), so
-    # committing here is also what makes this a faithful stand-in for `enqueue` (#70).
+    # LOAD-BEARING, not tidiness. This INSERT leaves `conn` INTRANS - the state in which
+    # `index_file` once degraded to a SAVEPOINT publishing nothing, and now refuses outright
+    # (ADR 0025, guarded per ADR 0027): without this commit, `require_idle` reddens this test.
+    # The real caller has the same obligation: the Slice 2 worker MUST COMMIT ITS CLAIM before
+    # ingesting on the same connection (`components/ingestion-worker.md`), so committing here is
+    # also what makes this a faithful stand-in for `enqueue` (#70).
     conn.commit()
 
     path = pdf_factory("lecture.pdf", ["alpha beta gamma", "delta epsilon"])
@@ -353,10 +351,10 @@ def test_ingest_file_still_mints_a_file_id_when_none_is_supplied(
     ]
     assert before == 0
     # Ends the transaction that SELECT opened - a READ leaves `conn` INTRANS just as a write does,
-    # and `index_file` would then get a savepoint and publish nothing (ADR 0025). `rollback` rather
-    # than `commit` because there is nothing to save: the point is to return the connection to
-    # IDLE, not to keep anything. This test had no INSERT to make the hazard obvious, which is
-    # exactly why it went unnoticed until `db_other` read it back on a second connection.
+    # and `index_file` refuses an INTRANS connection (ADR 0025, guarded per ADR 0027; it once
+    # degraded to a savepoint publishing nothing, which is how this test shipped green while
+    # writing nothing). `rollback` rather than `commit` because there is nothing to save: the
+    # point is to return the connection to IDLE, not to keep anything.
     conn.rollback()
 
     returned = ingest_file(path, owner_id, class_id, embedder=fake_embedder, conn=conn)

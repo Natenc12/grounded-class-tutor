@@ -70,8 +70,8 @@ construction*. Assert through `db` for what the code computed; assert through **
 second connection, same database — for what actually survives. Any test whose point is that
 something was written takes it. This is not a style preference: the rule was stated in four places
 and two tests written against it still published nothing, which is what `db_other` exists to have
-caught. Its docstring carries the mechanism; ADR 0027 (proposed) carries the argument for enforcing
-the precondition in code rather than in prose.
+caught. Its docstring carries the mechanism; ADR 0027 (accepted — writers now refuse a non-IDLE
+connection via `gct.db.require_idle`) carries the argument that got enforcement adopted.
 
 `live` marks a test that hits a paid API, and is excluded from the CI gate. Like `db`, it is
 **derived, never hand-declared**: `pytest_collection_modifyitems` in `tests/conftest.py` applies it to

@@ -112,6 +112,7 @@ class TestConvergeCorpus:
 
     def test_ingests_every_file_once_on_a_cold_class(self, db, corpus):
         conn, owner_id, class_id = db
+        conn.autocommit = True  # the script's wiring (ADR 0025, guarded per ADR 0027)
         embedder = FakeEmbeddings()
 
         ready, ingested = ask_smoke._converge_corpus(
@@ -136,6 +137,7 @@ class TestConvergeCorpus:
         with copies of one page, and every count printed goes with it.
         """
         conn, owner_id, class_id = db
+        conn.autocommit = True  # the script's wiring (ADR 0025, guarded per ADR 0027)
         first, _ = ask_smoke._converge_corpus(
             conn,
             owner_id=owner_id,
@@ -170,6 +172,7 @@ class TestConvergeCorpus:
         of the window must have arrived intact for this to pass.
         """
         conn, owner_id, class_id = db
+        conn.autocommit = True  # the script's wiring (ADR 0025, guarded per ADR 0027)
 
         ready, _ = ask_smoke._converge_corpus(
             conn,
@@ -206,6 +209,7 @@ class TestConvergeCorpus:
         (dropping chunk sets is not a bench's call), and must not re-ingest.
         """
         conn, owner_id, class_id = db
+        conn.autocommit = True  # the script's wiring (ADR 0025, guarded per ADR 0027)
         ask_smoke._converge_corpus(
             conn,
             owner_id=owner_id,
@@ -242,6 +246,7 @@ class TestConvergeCorpus:
         between - say, one that reports `len(ready)` whenever anything was ingested - would pass
         both. One file pre-ingested + one missing is the smallest case that sits between them."""
         conn, owner_id, class_id = db
+        conn.autocommit = True  # the script's wiring (ADR 0025, guarded per ADR 0027)
         ingest_file(corpus / "alpha.pdf", owner_id, class_id, embedder=FakeEmbeddings(), conn=conn)
 
         ready, ingested = ask_smoke._converge_corpus(
@@ -372,6 +377,7 @@ class TestSetupValidityGuards:
         The column is `text`, so a missing conversion would make every census check a false alarm.
         """
         conn, owner_id, class_id = db
+        conn.autocommit = True  # the script's wiring (ADR 0025, guarded per ADR 0027)
         ask_smoke._converge_corpus(
             conn,
             owner_id=owner_id,
@@ -403,6 +409,7 @@ class TestSetupValidityGuards:
         (`retriever.md`: "the guard is not exempt from the isolation filter").
         """
         conn, owner_id, class_id = db
+        conn.autocommit = True  # the script's wiring (ADR 0025, guarded per ADR 0027)
         ask_smoke._converge_corpus(
             conn,
             owner_id=owner_id,
@@ -423,12 +430,6 @@ class TestSetupValidityGuards:
                 "insert into classes (class_id, owner_id, name) values (%s::uuid, %s, %s)",
                 (other_class, other_owner, "other class"),
             )
-            # Returns `conn` to IDLE before `ingest_file` opens the index transaction. Without it
-            # that transaction degrades to a savepoint and publishes nothing (ADR 0025). This test
-            # asserts nothing about publication - it reads back through this same connection, which
-            # sees its own uncommitted rows - so it is not wrong today. It is the same pattern that
-            # made two tests in test_pipeline.py green while writing nothing, kept from spreading.
-            conn.commit()
             ingest_file(
                 other_dir / "someone-elses.pdf",
                 other_owner,

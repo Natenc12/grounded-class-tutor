@@ -6,8 +6,9 @@ The invariant this box exists to hold: a file's chunks are ALL-from-one-run or A
 `files.status='ready'` flips inside the SAME transaction as the chunk insert - so `status=ready`
 ⟺ the full chunk set is committed & queryable (ADR 0020 §2-3), GIVEN the caller precondition in
 `index_file`'s docstring. Atomicity is unconditional; PUBLICATION is not (ADR 0025 amends 0020's
-unconditional claim). The transaction wraps only the write; the slow parse/chunk/embed work
-already ran, with no transaction open.
+unconditional claim) - and the precondition is now ENFORCED, not just documented: `index_file`
+refuses a non-IDLE connection (ADR 0025, guarded per ADR 0027). The transaction wraps only the
+write; the slow parse/chunk/embed work already ran, with no transaction open.
 
 Idempotent by construction: processing a `file_id` is `DELETE FROM chunks WHERE file_id` then
 insert the full set, so re-running the same `file_id` replaces cleanly with no dedup keys. The
@@ -21,6 +22,8 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 import psycopg
+
+from gct.db import require_idle
 
 if TYPE_CHECKING:
     # Type-only import: keeps the pipeline -> index runtime edge one-directional (no import cycle).
@@ -42,19 +45,22 @@ def index_file(
     the new set. Commit as one unit; on any error nothing is committed. A `classes` row for
     `class_id` must already exist - this box never creates classes.
 
-    PRECONDITION ON `conn` - the publication half of that guarantee is CONDITIONAL (ADR 0025):
-    `conn` MUST NOT already be inside a transaction. psycopg opens an implicit transaction on a
-    connection's first statement, and `Connection.transaction()` checks the state - already
-    `INTRANS` means the block below issues a SAVEPOINT rather than BEGIN, and releasing a savepoint
-    commits NOTHING. This function then returns successfully having published nothing: the rows are
-    visible only to this connection, and any later rollback destroys them. Atomicity survives (a
-    savepoint rollback still discards exactly its own writes); PUBLICATION does not.
+    PRECONDITION ON `conn` - the publication half of that guarantee is CONDITIONAL (ADR 0025,
+    guarded per ADR 0027): `conn` MUST NOT already be inside a transaction. psycopg opens an
+    implicit transaction on a connection's first statement, and `Connection.transaction()` checks
+    the state - already `INTRANS` means the block below issues a SAVEPOINT rather than BEGIN, and
+    releasing a savepoint commits NOTHING. This function would then return successfully having
+    published nothing: the rows visible only to this connection, destroyed by any later rollback.
+    Atomicity survives (a savepoint rollback still discards exactly its own writes); PUBLICATION
+    does not.
     Satisfy it with a fresh connection, `conn.autocommit = True`, or an explicit commit since the
     last statement. `scripts/ask_smoke.py` uses autocommit; a Slice 2 worker MUST COMMIT ITS CLAIM
     before ingesting on the same connection (`components/ingestion-worker.md`, step 1) - leasing a
     job is a write, so the lease alone is enough to trigger this.
-    Deliberately not guarded here: a runtime check would depend on statement order inside the
-    caller rather than on caller intent, so it would fire on benign code (ADR 0025, Alternatives).
+    ENFORCED, not merely documented: `require_idle` below raises rather than letting the call
+    look like it worked. ADR 0025 declined this guard predicting it would fire on benign code;
+    ADR 0027 measured that prediction (every firing was a caller already in the hazardous state,
+    zero false alarms) and reversed it - accepted via #75.
 
     SQL-boundary conversions (schema quirks, migrations/0001_init.sql):
       - `page_or_slide` int -> text (`chunks.page_or_slide` is `text`).
@@ -67,6 +73,10 @@ def index_file(
     ADR 0025). The guard runs BEFORE the
     transaction opens, so nothing is written at all - not even the `files` row.
     """
+    # Connection guard first: a wiring error outranks a payload error, and both must fire before
+    # the transaction opens so a refused call writes nothing at all.
+    require_idle(conn, "index_file")
+
     # Empty-set guard: `executemany` over an empty sequence is a no-op, so steps 1-2 below would
     # commit alone and publish a `ready` file with zero chunks. Raise (not assert): this guard must
     # hold even under `python -O`, which strips assert statements.

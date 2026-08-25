@@ -24,9 +24,12 @@ def main() -> None:
         format="%(asctime)s %(levelname)s %(name)s: %(message)s",
     )
     conn = connect()
-    # AUTOCOMMIT is load-bearing, not style (ADR 0025, guarded per ADR 0027): without it the
-    # first statement opens psycopg's implicit transaction and every writer downstream refuses
-    # the connection. ask_smoke.py's wiring comment carries the full argument.
+    # Autocommit is defense in depth here, not load-bearing: every writer on the worker path
+    # commits itself inside its own `conn.transaction()`, so a plain connection works end to
+    # end (ADR 0025, guarded per ADR 0027; the plain-connection test in test_worker.py proves
+    # it). Kept because it protects a future statement added outside a transaction block from
+    # silently opening the implicit transaction. ask_smoke.py's wiring comment carries the
+    # original argument for the mode.
     conn.autocommit = True
     try:
         run(

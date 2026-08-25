@@ -74,7 +74,8 @@ def test_happy_path_publishes_through_a_second_connection(db, db_other, tmp_path
     made through `db` here proves nothing about publication.
     """
     conn, owner_id, class_id = db
-    conn.autocommit = True  # the worker's wiring contract (ADR 0025) - `db`'s conn is not
+    conn.autocommit = True  # matches the shipped wiring; not required for correctness -
+    # every writer commits itself (see the plain-connection test below)
     source = write_pdf(tmp_path / "lecture-3.pdf", ["alpha page one words", "beta page two words"])
     file_id = enqueue(conn, path=source, owner_id=owner_id, class_id=class_id)
 
@@ -105,6 +106,40 @@ def test_happy_path_publishes_through_a_second_connection(db, db_other, tmp_path
         "select count(*) from chunks where file_id = %s::uuid", (file_id,)
     ).fetchone()
     assert chunk_count > 0
+
+
+def test_processing_status_publishes_on_a_plain_connection(db, db_other, tmp_path):
+    """The whole worker path commits itself - autocommit at wiring is defense in depth.
+
+    Regression for the bare-execute version of the `processing` write (fixed on this
+    branch): on a connection WITHOUT autocommit it sat unpublished in psycopg's implicit
+    transaction, and `index_file` then refused the INTRANS connection - after the embed
+    was already paid (ADR 0025). Wrapped in its own `conn.transaction()`, the path now
+    works on a plain connection; asserting through `db_other` is what proves publication,
+    same argument as the happy-path test above.
+    """
+    conn, owner_id, class_id = db  # deliberately NOT switched to autocommit - that is the point
+    source = write_pdf(tmp_path / "plain-conn.pdf", ["plain connection page words"])
+    file_id = enqueue(conn, path=source, owner_id=owner_id, class_id=class_id)
+
+    processed = process_one(
+        conn,
+        embedder=FakeEmbeddings(),
+        chunk_size=CHUNK_SIZE_WORDS,
+        chunk_overlap=CHUNK_OVERLAP_WORDS,
+    )
+
+    assert processed is True
+    status, state = db_other.execute(
+        """
+        select f.status, j.state
+        from files f
+        join jobs j using (file_id)
+        where f.file_id = %s::uuid
+        """,
+        (file_id,),
+    ).fetchone()
+    assert (status, state) == ("ready", "done")
 
 
 def test_empty_queue_is_a_normal_tick(db):

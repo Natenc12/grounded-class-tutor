@@ -21,9 +21,12 @@ Runs as a separate OS process via `scripts/worker.py`: ADR 0011's addendum is ex
 over this module (ADR 0009).
 
 Connection contract (ADR 0025, guarded per ADR 0027): every entry point here needs a
-connection that is idle between statements. `scripts/worker.py` satisfies it with
-`conn.autocommit = True` at wiring, exactly as `ask_smoke.py` does - its wiring comment
-carries the full argument for why autocommit is load-bearing rather than style.
+connection that is idle between statements. Every writer on the worker path commits
+itself inside its own `conn.transaction()` (`claim`/`complete` in queue.py, the status
+write here, `index_file`), so a plain connection works end to end. `scripts/worker.py`
+still sets `conn.autocommit = True` at wiring as defense in depth: it protects the next
+statement someone adds OUTSIDE a transaction block from silently opening the implicit
+transaction this module no longer contains.
 """
 
 from __future__ import annotations

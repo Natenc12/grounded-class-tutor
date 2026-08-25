@@ -99,12 +99,21 @@ def process_one(
 
     # Keyed on `file_id`, the primary key - not `staging_ref`, which is nullable and carries
     # no uniqueness constraint. `updated_at` is bumped by hand: `files` has no trigger.
+    #
+    # `status <> 'ready'` keeps the student-facing status monotonic. Under at-least-once a job
+    # can be reclaimed a SECOND time after an earlier worker's `index_file` already published
+    # `ready` - that worker's `complete` returned False, so the job never went `done`. Without
+    # the guard, this claim flips a finished file back to `processing` in the UI. The retry
+    # path is unaffected: `failed -> processing` (PR 2) still passes.
+    # UNTESTED until PR 3 - `reclaim_expired` is what makes the sequence reachable, so the
+    # test belongs with the reaper, not here.
     conn.execute(
         """
         update files
         set status = 'processing',
             updated_at = now()
         where file_id = %(file_id)s::uuid
+          and status <> 'ready'
         """,
         {"file_id": job.file_id},
     )

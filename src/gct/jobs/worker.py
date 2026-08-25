@@ -65,8 +65,9 @@ def process_one(
       1. `claim(conn, lease_seconds=...)` - commits before returning (queue.py's contract), so
          the connection comes back idle and the lease is already visible to other workers.
       2. Write `files.status = 'processing'` for the claimed file - this module's own SQL, the
-         one worker-owned statement (see the ownership table above). Under the autocommit
-         contract it commits itself, leaving the connection idle for step 3.
+         one worker-owned statement (see the ownership table above). Wrapped in its own
+         `conn.transaction()` so it commits under EITHER wiring - autocommit or plain - and
+         leaves the connection idle for step 3, the same shape as every `queue.py` writer.
       3. `ingest_file(job.staging_ref, ..., file_id=job.file_id, embedder=..., conn=conn,
          chunk_size=..., chunk_overlap=...)` - the UNCHANGED Slice 1 pipeline (PM-4 seam:
          wrap, do not rewrite). It publishes `ready` itself, inside the index transaction.
@@ -107,16 +108,24 @@ def process_one(
     # path is unaffected: `failed -> processing` (PR 2) still passes.
     # UNTESTED until PR 3 - `reclaim_expired` is what makes the sequence reachable, so the
     # test belongs with the reaper, not here.
-    conn.execute(
-        """
-        update files
-        set status = 'processing',
-            updated_at = now()
-        where file_id = %(file_id)s::uuid
-          and status <> 'ready'
-        """,
-        {"file_id": job.file_id},
-    )
+    #
+    # `conn.transaction()` rather than a bare execute: a bare statement only commits if the
+    # caller wired autocommit, and on a plain connection it would sit unpublished in the
+    # implicit transaction - then `index_file` refuses the INTRANS connection AFTER the embed
+    # was paid (ADR 0025). The block commits under either wiring, like every `queue.py`
+    # writer. No `require_idle` here on purpose: `claim` just committed and nothing runs
+    # between it and this statement, so the connection cannot be anything but idle.
+    with conn.transaction():
+        conn.execute(
+            """
+            update files
+            set status = 'processing',
+                updated_at = now()
+            where file_id = %(file_id)s::uuid
+              and status <> 'ready'
+            """,
+            {"file_id": job.file_id},
+        )
 
     ingest_file(
         job.staging_ref,

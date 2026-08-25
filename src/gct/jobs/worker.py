@@ -88,6 +88,15 @@ def process_one(
     if job is None:
         return False
 
+    # Deliberately nothing logged on the empty tick above: at a 2s poll that is 30 lines a
+    # minute of "nothing happened", which buries the lines that matter.
+    logger.info("job %s: claimed file %s (attempt %s)", job.job_id, job.file_id, job.attempts)
+    # Timed from the claim, not the ingest, because the LEASE covers claim->complete: this
+    # duration is the evidence PR 3's lease number is chosen from, and `attempts` above is the
+    # same for PR 2's retry budget. Both are provisional today precisely because nothing has
+    # measured them (see the constants' comment).
+    started = time.perf_counter()
+
     # Keyed on `file_id`, the primary key - not `staging_ref`, which is nullable and carries
     # no uniqueness constraint. `updated_at` is bumped by hand: `files` has no trigger.
     conn.execute(
@@ -111,10 +120,18 @@ def process_one(
         chunk_overlap=chunk_overlap,
     )
 
-    if not complete(conn, job_id=job.job_id):
-        # The one signal that the lease was too short for this file; dropping the bool would
-        # discard it, since nothing else can detect a lost lease after the fact.
-        logger.warning("job %s: lease lost during ingest - another worker owns it now", job.job_id)
+    elapsed = time.perf_counter() - started
+    if complete(conn, job_id=job.job_id):
+        logger.info("job %s: done in %.1fs", job.job_id, elapsed)
+    else:
+        # The lease was too short for this file - the one signal that says so. `elapsed`
+        # against `lease_seconds` is the whole diagnosis.
+        logger.warning(
+            "job %s: lease lost after %.1fs (lease was %ss) - another worker owns it now",
+            job.job_id,
+            elapsed,
+            lease_seconds,
+        )
 
     return True
 
@@ -136,6 +153,7 @@ def run(
     PR 3 adds `reclaim_expired` to this loop (the reaper, ADR 0011 addendum).
     """
 
+    logger.info("worker started: poll %.1fs, lease %ss", poll_seconds, lease_seconds)
     while True:
         if not process_one(
             conn,

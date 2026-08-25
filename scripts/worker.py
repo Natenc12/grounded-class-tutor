@@ -7,6 +7,8 @@ loop.
 Usage:  uv run python scripts/worker.py
 """
 
+import logging
+
 from gct.db import connect
 from gct.ingest.chunk import CHUNK_OVERLAP_WORDS, CHUNK_SIZE_WORDS
 from gct.jobs.worker import run
@@ -14,6 +16,13 @@ from gct.providers.openai_provider import OpenAIEmbeddings
 
 
 def main() -> None:
+    # The library only EMITS events (`logging.getLogger(__name__)`); deciding where they go and
+    # at what level is the application's call, and this script is the application (ADR 0009).
+    # Without this the worker's info lines vanish - Python's default level is WARNING.
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s %(levelname)s %(name)s: %(message)s",
+    )
     conn = connect()
     # AUTOCOMMIT is load-bearing, not style (ADR 0025, guarded per ADR 0027): without it the
     # first statement opens psycopg's implicit transaction and every writer downstream refuses

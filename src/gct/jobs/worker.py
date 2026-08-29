@@ -94,8 +94,9 @@ DEFAULT_MAX_ATTEMPTS = 5
 # uncapped curve reaches hours by the fifth attempt for a provider blip that cleared in seconds.
 # Both sit far under DEFAULT_LEASE_SECONDS on purpose: the worker serves the backoff while still
 # HOLDING the lease (see `process_one`), so a backoff that could outlast the lease would let the
-# reaper hand the job to someone else mid-wait, which is the double-embed ADR 0011's lease number
-# exists to prevent. That relationship is ENFORCED in `process_one`, not just intended here -
+# reaper hand the job to someone else mid-wait, which is the double-embed the lease exists to
+# prevent. ADR 0011 named that mechanism and deferred its value; the value is ADR 0028 §1.
+# That relationship is ENFORCED in `process_one`, not just intended here -
 # `lease_seconds` is a parameter, so these two constants cannot see the number they must stay
 # under, and a caller passing a short lease would otherwise break the rule silently.
 BACKOFF_BASE_SECONDS = 2.0
@@ -506,8 +507,8 @@ def run(
         if reclaimed:
             logger.warning(
                 "reaper: %s job(s) whose lease had elapsed are claimable again - a worker died "
-                "or was stopped mid-ingest, and their files have been showing whatever status "
-                "that run reached until now",
+                "or was stopped mid-ingest. Their files keep whatever status that run reached "
+                "until some later claim moves them",
                 reclaimed,
             )
         if not process_one(

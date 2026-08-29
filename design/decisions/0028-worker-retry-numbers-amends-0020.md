@@ -1,10 +1,15 @@
-# 0028. The worker's four retry numbers, and what a DB blip is — amending ADR 0020
+# 0028. The worker's four retry numbers, the reaper's cadence, and what a DB blip is — amending ADR 0020
 
 - **Date:** 2026-08-29
 - **Status:** accepted — amends **ADR 0020** (its §1 classification of a DB blip as *transient*,
   and its §1 reference to "the ADR 0011 budget", which named an ADR that holds no budget; §1's
   terminal/bad-input half, §2's all-or-nothing replace and §3's index-write-only boundary all
   stand unchanged)
+
+> §§1–3 ratify numbers and rules the code already ran on; **§4 is the amendment**; **§5 is a new
+> decision** — the reaper's cadence, which ADR 0011's addendum located on the poll loop without
+> fixing how often. §5 is the authority `run` and its tests cite, so it is named here rather than
+> left to be found.
 
 ## Context
 ADR 0011 chose the substrate — a DB-backed `jobs` table claimed by an in-process poll worker —
@@ -34,9 +39,9 @@ next reader argues with a decision instead of guessing at a constant.
 | number | value | constant | safe-if-wrong direction |
 |---|---|---|---|
 | **lease** | 15 min | `DEFAULT_LEASE_SECONDS` | errs **long**. Too short reclaims a job a healthy worker is still ingesting and pays the embedding bill twice; too long only delays reclaim after a worker dies. |
-| **retry budget** | 5 attempts that run | `DEFAULT_MAX_ATTEMPTS` | counted in `jobs.attempts`, so a crash costs an attempt exactly as a caught 429 does. |
-| **backoff** | `min(2 · 2^(n-1), 60)` s | `BACKOFF_BASE_SECONDS` / `BACKOFF_MAX_SECONDS` | bounded, so the delay stays a delay; the cap sits far under the lease (rule 2 below). |
-| **poll** | 2 s | `DEFAULT_POLL_SECONDS` | idle queries are free against local Postgres for one user; the trade is how long an enqueued file sits before anything visibly happens. |
+| **retry budget** | 5 attempts that run | `DEFAULT_MAX_ATTEMPTS` | errs **generous**. Too few gives up on a provider having a bad minute and shows the student `transient_exhausted` for a file that was fine; too many only spends more time and more embed calls on a file that was going to fail anyway. Counted in `jobs.attempts`, so a crash costs an attempt exactly as a caught 429 does. |
+| **backoff** | `min(2 · 2^(n-1), 60)` s | `BACKOFF_BASE_SECONDS` / `BACKOFF_MAX_SECONDS` | errs **short**. Too short re-asks a provider that is still busy — it wastes an attempt but breaks nothing; too long burns lease the attempt needed (rule 2) and, uncapped, stops being a delay at all. |
+| **poll** | 2 s | `DEFAULT_POLL_SECONDS` | errs **fast**. Too fast costs idle queries, which are free against local Postgres for one user; too slow is latency the student feels on every upload with nothing to say why. |
 
 **The budget is five attempts that RUN, and a sixth claim always happens on a doomed job.**
 `process_one` checks `job.attempts > max_attempts` against the post-bump value `claim` returns,
@@ -140,8 +145,14 @@ of the topology, not of the reaper, and it is the first thing to re-examine unde
   lease expires. The fix is a shutdown handler that `release`s the in-flight job, which is a
   behavior change with its own lost-lease edge cases; it is named here so the delay is a known
   cost of the number rather than a bug someone rediscovers.
-- What would move each number: a **completion log** whose `elapsed` approaches `lease_seconds`
-  (lease too short); a **"backoff cut" warning** (lease too short for the curve it must cover);
-  a file that exhausts the budget on genuine 429s rather than crashes (budget too small); a
-  student complaining that an upload sits idle (poll too slow). All four are already emitted by
-  the shipped worker.
+- What would move each number, and where the evidence comes from:
+  - **lease** — a completion log whose `elapsed` approaches `lease_seconds`; a **"backoff cut"
+    warning**; or a **non-zero reaper log** on a deployment where no worker actually died, which
+    on V1's single-worker topology means the lease expired under a run that was still healthy.
+  - **budget** — a file that exhausts it on genuine 429s rather than on crashes.
+  - **backoff** — the same "backoff cut" warning, which says the curve did not fit its lease.
+  - **poll** — nothing in-process, by construction: the cost of a slow poll is latency a student
+    feels and the worker cannot see. Its evidence is a report, not a log line.
+
+  Three of the four therefore report themselves. **The poll number does not**, which is worth
+  knowing before trusting silence as confirmation that 2 s is right.

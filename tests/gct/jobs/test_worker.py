@@ -6,12 +6,12 @@ sees its own uncommitted work, so reading back through `db` would hold whether o
 was committed (ADR 0025); the durability assertion IS the point of the happy-path test, not a
 flourish on it.
 
-The failure-split half exercises ADR 0020 §1 from both sides (its transient class narrowed by
-ADR 0028 - a DB blip is not in it). Its stubs are chosen so a failure costs
-nothing and is exact: `FakeEmbeddings(transient_failures=N)` raises the provider-agnostic
-`TransientEmbeddingError` on cue, and a corrupt PDF makes `parse_file` raise the real
-`ParseError` rather than a mock of one - the terminal path's whole contract is that
-`exc.reason` is already a legal `files.failed_reason`, and a stubbed exception would let that
+The failure-split half exercises ADR 0020 §1 from both sides (ADR 0020 §1, DB-blip class
+amended per ADR 0028 - a blip is not in the transient class). Its stubs are chosen so a failure
+costs nothing and is exact: `FakeEmbeddings(transient_failures=N)` raises the
+provider-agnostic `TransientEmbeddingError` on cue, and a corrupt PDF makes `parse_file`
+raise the real `ParseError` rather than a mock of one - the terminal path's whole contract is
+that `exc.reason` is already a legal `files.failed_reason`, and a stubbed exception would let that
 pass-through drift. `time.sleep` is stubbed everywhere the backoff runs: the delays are the
 assertion, never something a test waits out.
 
@@ -353,8 +353,9 @@ def test_the_reaper_is_silent_unless_it_actually_reclaimed_something(monkeypatch
     The silence is the load-bearing half. At a 2s poll a line per reap is 30 a minute of
     "nothing happened", which buries the lines that matter - the same argument that keeps
     `process_one`'s empty tick silent. The WARNING is the other half: a reclaim means a worker
-    died or the lease was too short, which ADR 0028 names as the evidence that would move the
-    lease number, so it must not be logged at INFO where the default config drops it.
+    died or the lease was too short - one of the signals ADR 0028 §Consequences names as
+    evidence that would move the lease number, so it must not be logged at INFO where the
+    default config drops it.
     """
     _events, _slept = _script_the_loop(monkeypatch, [False, False], reclaims=[0, 3])
 
@@ -380,7 +381,12 @@ def test_a_raising_reaper_stops_the_loop(monkeypatch):
     def boom(conn):
         raise psycopg.OperationalError("connection lost")
 
+    def unreached(conn, **kwargs):
+        raise Stop  # so a SWALLOWED reaper error fails as `Stop`, not as an incidental
+        # AttributeError from the sentinel connection reaching a real `require_idle`
+
     monkeypatch.setattr(worker, "reclaim_expired", boom)
+    monkeypatch.setattr(worker, "process_one", unreached)
 
     with pytest.raises(psycopg.OperationalError):
         worker.run(object(), embedder=None, chunk_size=1, chunk_overlap=0)
@@ -418,9 +424,8 @@ def test_served_backoff_never_exceeds_the_curve_or_the_remaining_lease():
     four `process_one` ticks to observe two numbers — the arithmetic deserves the same cheap,
     exact coverage the curve already has.
 
-    Asserted against the constants, never literals: the four numbers are provisional until PR
-    3's ADR (ADR 0020), and a test in literals would go red on a tuning change that broke
-    nothing.
+    Asserted against the constants, never literals: ADR 0028 ratified the four numbers without
+    measuring them, so a test in literals would go red on a tuning change that broke nothing.
     """
     plenty = DEFAULT_LEASE_SECONDS
 
@@ -818,6 +823,11 @@ def test_a_reclaimed_job_reruns_and_leaves_one_chunk_set(db, db_other, tmp_path)
         (file_id,),
     ).fetchone()
 
+    assert len(embedder.calls) == 2, (
+        "B must RE-RUN the pipeline, not inherit A's chunks - without this the test passes "
+        "for a worker that claimed and completed while skipping the ingest entirely, which "
+        "is what `FakeEmbeddings.calls` exists to catch (was an embed actually bought?)"
+    )
     assert chunk_count == published, (
         "the re-run must REPLACE the chunk set, not add to it - a doubled corpus is the "
         "at-least-once failure ADR 0020's delete-then-insert exists to make impossible"

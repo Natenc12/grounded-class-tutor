@@ -72,8 +72,10 @@ logger = logging.getLogger(__name__)
 
 # The four numbers, ratified by ADR 0028 - which also records that NOTHING HAS MEASURED any of
 # them. They are chosen to be safe-if-wrong in the direction that costs least; the ADR names that
-# direction per number, and the evidence that would move each one (all four signals are emitted
-# by the code below). Ratified is not measured: change them when a log line says to, not on taste.
+# direction per number, and the evidence that would move each one - THREE of which this module
+# emits; the poll number has no in-process signal by construction, because a slow poll costs
+# latency a student feels and the worker cannot see. Ratified is not measured: change these when
+# the evidence says to, not on taste.
 # The lease errs LONG on purpose: too short reclaims a job a healthy worker is still ingesting
 # and pays the embedding bill twice; too long only delays reclaim after a genuine crash - and,
 # per ADR 0028 §Consequences, delays it after a Ctrl-C too, which is where the number is really
@@ -373,8 +375,8 @@ def process_one(
     except TransientEmbeddingError as exc:
         # TRANSIENT: bad luck, and a NARROWER class than ADR 0020 §1 first drew - a DB blip is
         # not in it (ADR 0020 §1, DB-blip class amended per ADR 0028). Nothing was committed -
-        # the index transaction never
-        # opened (ADR 0020 §3) - so the job goes back to `queued` with no cleanup, and
+        # the index transaction never opened (ADR 0020 §3) - so the job goes back to `queued`
+        # with no cleanup, and
         # `files.status` stays `processing`, which is still TRUE: the file is mid-flight and the
         # student has nothing new to learn from a status flicker. Only budget exhaustion moves
         # it to `failed`.
@@ -463,32 +465,26 @@ def run(
     A tick that DID process a job polls again immediately - a non-empty queue means there is
     likely more work, and sleeping between real jobs just adds latency the student sees.
 
-    THE REAPER RUNS ON EVERY TICK, BEFORE THE CLAIM (ADR 0011 addendum, cadence fixed by
-    ADR 0028 §5). It lives here rather than in `process_one` because the addendum puts it on the
-    POLL LOOP, and because `process_one` is called directly by a dozen tests - a reap inside it
-    would silently collect the expired leases those tests construct.
+    THE REAPER RUNS ON EVERY TICK, BEFORE THE CLAIM (ADR 0011 addendum; cadence, and the
+    argument for it, ADR 0028 §5). Every tick rather than only the idle one, and ahead of the
+    claim rather than after it - both are the ADR's reasoning, not restated here.
 
-    Every tick rather than only the idle one: reaping only when the queue looks empty makes
-    reclaim latency unbounded under load, with a crashed job stranded in `processing` behind
-    every queued file and the student's status frozen with no reason shown. The saving would be
-    nil - one indexed UPDATE matching zero rows on a normal tick - so it costs a guarantee and
-    buys nothing. BEFORE the claim so a job stranded by the previous crash is picked up by this
-    tick instead of the next.
-
-    THIS WORKER CANNOT REAP ITS OWN LIVE LEASE, and the reason is topology, not the reaper: `run`
-    is single-threaded, the lease is held only between `claim` and its settle verb - both inside
-    `process_one`, as is the backoff sleep - so the reaper only ever runs at an instant when this
-    worker holds nothing. Worker concurrency is what breaks that, and it is the first thing to
-    re-examine there (ADR 0028 §5).
+    What the ADR cannot say, because it is a fact about this file: the reaper lives in `run`
+    rather than in `process_one` because a dozen tests call `process_one` directly, and a reap
+    inside it would silently collect the expired leases those tests construct. §5's safety
+    argument also rests on a property of THIS loop - single-threaded, holding a lease only
+    between `claim` and its settle verb, both of them inside `process_one` along with the
+    backoff sleep - so an edit that makes this loop concurrent invalidates the ADR, not just
+    this comment.
 
     A reap of ZERO is not logged. At a 2s poll that is 30 lines a minute of "nothing happened",
     the same argument that keeps the empty tick in `process_one` silent. A non-zero reap IS
-    logged, at WARNING: it means a worker died or a lease was too short, which is exactly the
-    evidence ADR 0028 says would move the lease number.
+    logged at WARNING, because ADR 0028 §Consequences counts it among the evidence that would
+    move the lease number, and INFO is dropped by the default config.
 
-    A raising reaper crashes the loop, on purpose and without a handler - the same stance the
-    module takes on every unclassified exception, and the one ADR 0028 §4 ratifies for a DB
-    error specifically. Catching here would quietly contradict the ADR.
+    A raising reaper crashes the loop, on purpose and without a handler - the module's stance on
+    every unclassified exception, ratified for a DB error specifically by ADR 0028 §4. Catching
+    here would quietly contradict it.
     """
 
     logger.info(

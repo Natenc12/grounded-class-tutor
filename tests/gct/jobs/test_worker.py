@@ -35,7 +35,12 @@ from gct.config import EMBEDDING_DIM
 from gct.ingest.chunk import CHUNK_OVERLAP_WORDS, CHUNK_SIZE_WORDS
 from gct.jobs import worker
 from gct.jobs.queue import enqueue
-from gct.jobs.worker import backoff_seconds, process_one
+from gct.jobs.worker import (
+    DEFAULT_LEASE_SECONDS,
+    backoff_seconds,
+    process_one,
+    served_backoff,
+)
 from gct.providers.base import TransientEmbeddingError
 
 
@@ -82,6 +87,28 @@ def write_corrupt_pdf(path: Path) -> Path:
     return path
 
 
+def tick(conn, embedder, **overrides):
+    """One `process_one` at the default chunk window; `overrides` is what a test is varying.
+
+    The window is REQUIRED by `process_one` and forwarded verbatim - never hardcoded inside it
+    (ADR 0019/0026). That requirement is a contract worth keeping, and repeating it at ten call
+    sites is what buried the one kwarg each test is actually about (`max_attempts=2`,
+    `lease_seconds=5`). Passing it here keeps the contract and makes the deviation the only
+    thing visible where it matters.
+
+    `test_chunk_window_reaches_ingest` deliberately does NOT use this - the whole point of that
+    test is that both values are passed explicitly, so routing it through a helper that supplies
+    them would test the helper.
+    """
+    return process_one(
+        conn,
+        embedder=embedder,
+        chunk_size=CHUNK_SIZE_WORDS,
+        chunk_overlap=CHUNK_OVERLAP_WORDS,
+        **overrides,
+    )
+
+
 def write_pdf(path: Path, page_texts: list[str]) -> Path:
     """A real, parseable PDF - one page per entry in `page_texts`."""
     buf = io.BytesIO()
@@ -111,12 +138,7 @@ def test_happy_path_publishes_through_a_second_connection(db, db_other, tmp_path
     source = write_pdf(tmp_path / "lecture-3.pdf", ["alpha page one words", "beta page two words"])
     file_id = enqueue(conn, path=source, owner_id=owner_id, class_id=class_id)
 
-    processed = process_one(
-        conn,
-        embedder=FakeEmbeddings(),
-        chunk_size=CHUNK_SIZE_WORDS,
-        chunk_overlap=CHUNK_OVERLAP_WORDS,
-    )
+    processed = tick(conn, FakeEmbeddings())
 
     assert processed is True
 
@@ -154,12 +176,7 @@ def test_processing_status_publishes_on_a_plain_connection(db, db_other, tmp_pat
     source = write_pdf(tmp_path / "plain-conn.pdf", ["plain connection page words"])
     file_id = enqueue(conn, path=source, owner_id=owner_id, class_id=class_id)
 
-    processed = process_one(
-        conn,
-        embedder=FakeEmbeddings(),
-        chunk_size=CHUNK_SIZE_WORDS,
-        chunk_overlap=CHUNK_OVERLAP_WORDS,
-    )
+    processed = tick(conn, FakeEmbeddings())
 
     assert processed is True
     status, state = db_other.execute(
@@ -179,12 +196,7 @@ def test_empty_queue_is_a_normal_tick(db):
     conn, _owner_id, _class_id = db
     conn.autocommit = True
 
-    processed = process_one(
-        conn,
-        embedder=FakeEmbeddings(),
-        chunk_size=CHUNK_SIZE_WORDS,
-        chunk_overlap=CHUNK_OVERLAP_WORDS,
-    )
+    processed = tick(conn, FakeEmbeddings())
 
     assert processed is False
 
@@ -211,12 +223,7 @@ def test_chunk_window_reaches_ingest(db, db_other, tmp_path):
     # leave the pairing of file to window resting on two `now()` stamps landing in the intended
     # order; with one claimable job at a time it rests on nothing.
     first_id = enqueue(conn, path=first, owner_id=owner_id, class_id=class_id)
-    assert process_one(
-        conn,
-        embedder=FakeEmbeddings(),
-        chunk_size=CHUNK_SIZE_WORDS,
-        chunk_overlap=CHUNK_OVERLAP_WORDS,
-    )
+    assert tick(conn, FakeEmbeddings())
 
     # 60 words fits whole inside the 250-word default, so the run above is one chunk; a 20-word
     # window has to split the same text. Any pair that forces different counts would do.
@@ -299,6 +306,53 @@ def test_backoff_doubles_and_is_capped(monkeypatch):
     assert backoff_seconds(49) == cap, "an uncapped curve would sail past the lease"
 
 
+def test_served_backoff_never_exceeds_the_curve_or_the_remaining_lease():
+    """The clamp, as a pure function — no DB, no worker, no fake 429 (issue #71).
+
+    `backoff_seconds` answers "how long does the curve want?"; this answers "how long can this
+    worker afford?", and only the second is the delay. Pinned here rather than only through
+    `test_the_backoff_never_outlasts_the_lease_it_is_served_under`, which needs Postgres and
+    four `process_one` ticks to observe two numbers — the arithmetic deserves the same cheap,
+    exact coverage the curve already has.
+
+    Asserted against the constants, never literals: the four numbers are provisional until PR
+    3's ADR (ADR 0020), and a test in literals would go red on a tuning change that broke
+    nothing.
+    """
+    plenty = DEFAULT_LEASE_SECONDS
+
+    # A lease with room to spare: the curve gets exactly what it asked for.
+    wanted, served = served_backoff(1, max_attempts=5, lease_seconds=plenty, elapsed=0.0)
+    assert (wanted, served) == (backoff_seconds(1), backoff_seconds(1))
+
+    # The last permitted attempt wants nothing - the next claim's budget check refuses the job,
+    # so a wait would buy a retry that never comes.
+    assert served_backoff(5, max_attempts=5, lease_seconds=plenty, elapsed=0.0) == (0.0, 0.0)
+
+    # A lease too short for the curve: `wanted` still reports what was asked, so the caller can
+    # say "cut from X to Y" - a function returning only the served value makes that unloggable.
+    wanted, served = served_backoff(3, max_attempts=5, lease_seconds=4, elapsed=0.0)
+    assert wanted == backoff_seconds(3)
+    assert served == 2.0, "the wait must fit inside the lease it is served under, halved"
+
+    # The attempt already ate the whole lease: no sleep at all, and never a negative one.
+    assert served_backoff(2, max_attempts=5, lease_seconds=10, elapsed=99.0) == (
+        backoff_seconds(2),
+        0.0,
+    )
+
+    # The invariant, swept: served is never above the curve, never above half the remaining
+    # lease, and never negative - the three ways this could be wrong at once.
+    for attempts in range(1, 8):
+        for lease in (1, 5, 60, DEFAULT_LEASE_SECONDS):
+            for elapsed in (0.0, 0.5, 3.0, 1e6):
+                wanted, served = served_backoff(
+                    attempts, max_attempts=5, lease_seconds=lease, elapsed=elapsed
+                )
+                assert 0.0 <= served <= wanted
+                assert served <= max(0.0, lease - elapsed) / 2
+
+
 def test_a_corrupt_file_fails_terminally_and_buys_no_embed(db, db_other, tmp_path, monkeypatch):
     """queued -> processing -> failed(unparseable), with ZERO retries spent (acceptance, #71).
 
@@ -328,15 +382,9 @@ def test_a_corrupt_file_fails_terminally_and_buys_no_embed(db, db_other, tmp_pat
     source = write_corrupt_pdf(tmp_path / "shredded.pdf")
     file_id = enqueue(conn, path=source, owner_id=owner_id, class_id=class_id)
 
-    assert (
-        process_one(
-            conn,
-            embedder=embedder,
-            chunk_size=CHUNK_SIZE_WORDS,
-            chunk_overlap=CHUNK_OVERLAP_WORDS,
-        )
-        is True
-    ), "a failed job is still work - the tick must not read as idle"
+    assert tick(conn, embedder) is True, (
+        "a failed job is still work - the tick must not read as idle"
+    )
 
     status, failed_reason = db_other.execute(
         "select status, failed_reason from files where file_id = %s::uuid", (file_id,)
@@ -386,15 +434,7 @@ def test_a_transient_failure_backs_off_then_requeues_the_job(db, db_other, tmp_p
     source = write_pdf(tmp_path / "flaky.pdf", ["some words the provider choked on"])
     file_id = enqueue(conn, path=source, owner_id=owner_id, class_id=class_id)
 
-    assert (
-        process_one(
-            conn,
-            embedder=embedder,
-            chunk_size=CHUNK_SIZE_WORDS,
-            chunk_overlap=CHUNK_OVERLAP_WORDS,
-        )
-        is True
-    )
+    assert tick(conn, embedder) is True
 
     state, attempts, leased_until, last_error = db_other.execute(
         "select state, attempts, leased_until, last_error from jobs where file_id = %s::uuid",
@@ -434,15 +474,7 @@ def test_a_retry_after_a_transient_failure_publishes_normally(db, db_other, tmp_
     file_id = enqueue(conn, path=source, owner_id=owner_id, class_id=class_id)
 
     for _ in range(2):
-        assert (
-            process_one(
-                conn,
-                embedder=embedder,
-                chunk_size=CHUNK_SIZE_WORDS,
-                chunk_overlap=CHUNK_OVERLAP_WORDS,
-            )
-            is True
-        )
+        assert tick(conn, embedder) is True
 
     status, failed_reason = db_other.execute(
         "select status, failed_reason from files where file_id = %s::uuid", (file_id,)
@@ -490,16 +522,7 @@ def test_the_budget_runs_out_and_the_file_fails_transient_exhausted(
     file_id = enqueue(conn, path=source, owner_id=owner_id, class_id=class_id)
 
     for _ in range(3):
-        assert (
-            process_one(
-                conn,
-                embedder=embedder,
-                chunk_size=CHUNK_SIZE_WORDS,
-                chunk_overlap=CHUNK_OVERLAP_WORDS,
-                max_attempts=2,
-            )
-            is True
-        )
+        assert tick(conn, embedder, max_attempts=2) is True
 
     status, failed_reason = db_other.execute(
         "select status, failed_reason from files where file_id = %s::uuid", (file_id,)
@@ -546,15 +569,7 @@ def test_a_terminal_failure_cannot_unpublish_a_file_that_is_already_ready(
     # The run that won, standing in for worker B's `index_file`.
     conn.execute("update files set status = 'ready' where file_id = %s::uuid", (file_id,))
 
-    assert (
-        process_one(
-            conn,
-            embedder=FakeEmbeddings(),
-            chunk_size=CHUNK_SIZE_WORDS,
-            chunk_overlap=CHUNK_OVERLAP_WORDS,
-        )
-        is True
-    )
+    assert tick(conn, FakeEmbeddings()) is True
 
     status, failed_reason = db_other.execute(
         "select status, failed_reason from files where file_id = %s::uuid", (file_id,)
@@ -600,13 +615,7 @@ def test_the_backoff_never_outlasts_the_lease_it_is_served_under(
     enqueue(conn, path=source, owner_id=owner_id, class_id=class_id)
 
     for _ in range(4):
-        process_one(
-            conn,
-            embedder=embedder,
-            chunk_size=CHUNK_SIZE_WORDS,
-            chunk_overlap=CHUNK_OVERLAP_WORDS,
-            lease_seconds=lease_seconds,
-        )
+        tick(conn, embedder, lease_seconds=lease_seconds)
 
     assert slept, "the transient path served no backoff at all"
     assert max(slept) <= lease_seconds / 2, (

@@ -21,8 +21,10 @@ The retryable/terminal split (ADR 0020 §1) is this module's, and it is a two-li
 corrupt file is exactly as corrupt on the next attempt. `TransientEmbeddingError` is bad LUCK -
 back off, hand the job back to `queued` via `release`, and let a later claim retry it. Anything
 else propagates and crashes the worker, deliberately: an unclassified exception is a bug we do
-not want swallowed into a `failed_reason` that names the wrong cause, and the durable budget
-below terminates the resulting crash loop anyway.
+not want swallowed into a `failed_reason` that names the wrong cause. The durable budget below
+WILL bound the resulting crash loop, but not yet in this PR: bounding it needs something to move
+a crashed job out of `processing` so the next claim can spend an attempt on it, and that is the
+reaper (PR 3). Until then a crash parks its job under an expiring lease that nothing collects.
 
 WHY THE BUDGET IS COUNTED IN THE DATABASE, not in a `for` loop around the ingest. `jobs.attempts`
 survives the worker process; a loop counter does not. The failure that most needs bounding is the
@@ -108,13 +110,46 @@ def backoff_seconds(attempts: int) -> float:
     return min(BACKOFF_BASE_SECONDS * 2 ** (attempts - 1), BACKOFF_MAX_SECONDS)
 
 
+def served_backoff(
+    attempts: int, *, max_attempts: int, lease_seconds: int, elapsed: float
+) -> tuple[float, float]:
+    """`(wanted, served)` - the curve's answer, and what this worker can actually afford.
+
+    Split from `backoff_seconds` because they answer different questions and only one of them
+    is the delay: the curve is a WANT, and the lease is the budget. Returning both is what lets
+    the caller say "cut from X to Y" - a cut is evidence the lease number is wrong, and a
+    function returning only the served value would make that unreportable.
+
+    Three things bound the wait, and each is a different failure if it is missing:
+      - THE CURVE - retrying a provider that just said "slow down" with no delay at all is the
+        one answer ADR 0020 calls genuinely wrong;
+      - THE BUDGET - the sleep is served while the lease is HELD (that is the point: it holds
+        every worker off the row, not just this one's next poll). A delay outlasting the lease
+        lets the reaper hand the job to a second worker mid-wait, and two runs embed one file.
+        `BACKOFF_MAX_SECONDS` sits far under `DEFAULT_LEASE_SECONDS`, but `lease_seconds` is a
+        PARAMETER and the curve is module constants - they cannot see each other, so the rule
+        held only by coincidence of the defaults until it was enforced here. Measured at
+        `lease_seconds=5`, where the unclamped curve slept 16s under a 5s lease;
+      - THE LAST ATTEMPT - no wait at all, because the next claim's budget check refuses the
+        job and the delay would buy a retry that never comes. A READER of `max_attempts`, not
+        a second decider: the outcome is still settled by `process_one`'s one check.
+
+    HALVED, not merely fitted, and `elapsed` is why: the caller measures it from just before
+    the `processing` write, a hair AFTER `claim` stamped the lease, so `lease_seconds - elapsed`
+    slightly OVER-estimates what is left. The margin absorbs that, the `release` write that
+    follows the sleep, and clock skew against the server whose clock the lease is stamped in.
+    """
+    wanted = backoff_seconds(attempts) if attempts < max_attempts else 0.0
+    return wanted, min(wanted, max(0.0, lease_seconds - elapsed) / 2)
+
+
 def _bury(conn: psycopg.Connection, job: Job, *, reason: str, error: str) -> None:
     """Terminal failure on BOTH axes: `files.status='failed'` + `failed_reason`, then `jobs`.
 
     The two writes are one event and always travel together, which is why they are one
     function rather than two calls a future handler could get half-right.
 
-    `reason` goes into a CHECK-constrained column of five values (migrations/0001_init.sql:28)
+    `reason` goes into `files.failed_reason`, a CHECK-constrained column of five values
     and is passed through UNTRANSLATED from `ParseError.reason`, which is drawn from the same
     taxonomy for exactly this reason (ADR 0020; `parse.py`'s docstring promises the
     pass-through). `error` is the free-text `jobs.last_error` - the diagnostic detail the
@@ -209,10 +244,13 @@ def process_one(
     would mean guessing a `failed_reason` from the closed set, and the wrong reason shown to a
     student is worse than none. Crash-mid-processing committed nothing (ADR 0020), so there is
     zero cleanup; the lease expires, the reaper (PR 3) requeues, and the durable budget bounds
-    the loop instead of the handler doing it. A DB blip - which ADR 0020 lists as transient -
-    lands here rather than on the retry path: psycopg errors are not classified anywhere in the
-    corpus today, so the honest thing is to leave them loud rather than silently absorb every
-    programming error alongside them.
+    the loop instead of the handler doing it.
+
+    DELIBERATE DEVIATION, NOT YET RATIFIED: ADR 0020 §1 lists a DB blip as *transient*, and it
+    lands here on the crash path instead, because nothing in the corpus classifies psycopg
+    errors and absorbing them would absorb every programming error alongside. That is a
+    decision an ADR should own rather than this docstring - PR 3's four-numbers ADR is where
+    it goes, and until it does this paragraph is the only record that the gap is known.
     """
 
     job = claim(conn, lease_seconds=lease_seconds)
@@ -279,10 +317,12 @@ def process_one(
     # BOTH its writes - the crash window between them is the whole point of its ordering, and
     # `update files set status='processing' ... and status <> 'ready'` writes 1 row against a
     # `failed` row when you run it.)
-    # This write's guard is UNTESTED until PR 3 - `reclaim_expired` is what makes the sequence
-    # reachable, and the guard's effect here is transient (a later `ready` overwrites it either
-    # way), so the test belongs with the reaper. The IDENTICAL guard on the failure write is
-    # testable today and is tested - see `_bury`.
+    # Pinned by `test_a_terminal_failure_cannot_unpublish_a_file_that_is_already_ready`: drop
+    # this guard and that test goes red. It reaches this line without needing PR 3's reaper -
+    # it publishes `ready` directly, which is what a won run leaves behind however it got
+    # there - and without the guard the file lands on `processing` here and `failed` in
+    # `_bury`, whose own identical guard then sees `processing` rather than `ready`. So the two
+    # guards are not redundant: this one is what keeps the other one's precondition true.
     #
     # `conn.transaction()` rather than a bare execute: a bare statement only commits if the
     # caller wired autocommit, and on a plain connection it would sit unpublished in the
@@ -337,10 +377,8 @@ def process_one(
         #
         # THE BACKOFF IS SERVED BEFORE THE RELEASE, while this worker still holds the lease, so
         # the delay applies to every worker and not just to this one's next poll (see
-        # `release`'s docstring). It is skipped on the last permitted attempt: the next claim's
-        # budget check refuses the job, so the wait would buy a retry that never comes. That is
-        # a READER of `max_attempts`, not a second decider - the outcome is still settled in the
-        # one check above.
+        # `release`'s docstring). How long it is - the curve, the lease budget, and the
+        # last-attempt zero - is `served_backoff`'s, which carries the argument for all three.
         #
         # ACCEPTED COST: this worker is blocked for the delay, so one flaky file holds up every
         # other queued file for up to BACKOFF_MAX_SECONDS. That is a real head-of-line block,
@@ -350,30 +388,22 @@ def process_one(
         # database (a `visible_after` column claim filters on) rather than in a sleeping
         # process. Recorded so that change is a decision someone makes, not a bug someone finds.
         elapsed = time.perf_counter() - started
-        wanted = backoff_seconds(job.attempts) if job.attempts < max_attempts else 0.0
-        # THE CURVE IS A WANT; THE LEASE IS WHAT THIS WORKER CAN AFFORD. The sleep is served
-        # while the lease is still held (that is the point - see above), so a delay that
-        # outlasts the lease lets the reaper hand the job to a second worker mid-wait, and two
-        # runs embed one file. `BACKOFF_MAX_SECONDS` sits far under `DEFAULT_LEASE_SECONDS`,
-        # but `lease_seconds` is a PARAMETER and the curve is module constants: a caller that
-        # shortens the lease breaks a relationship neither of them can see. This is the one
-        # place that knows both numbers, so it is the only place the rule can be enforced
-        # rather than asserted - measured at `lease_seconds=5`, where the uncapped curve slept
-        # 16s under a 5s lease.
-        #
-        # Halved, not merely fitted, and `elapsed` is why: it is measured from just before the
-        # `processing` write, a hair AFTER `claim` stamped the lease, so `lease_seconds -
-        # elapsed` slightly OVER-estimates what is actually left. The halving absorbs that, the
-        # `release` write that follows the sleep, and clock skew between this process and the
-        # server whose clock the lease is stamped in.
-        delay = min(wanted, max(0.0, lease_seconds - elapsed) / 2)
+        wanted, delay = served_backoff(
+            job.attempts,
+            max_attempts=max_attempts,
+            lease_seconds=lease_seconds,
+            elapsed=elapsed,
+        )
+        # The two outcomes say OPPOSITE things and must not share a message. A delay means a
+        # retry is coming; a zero delay on the last permitted attempt means the next claim will
+        # bury the job, and "retrying in 0s" told an operator the reverse of what happens.
         logger.warning(
-            "job %s: transient failure on attempt %s/%s after %.1fs, retrying in %.0fs - %s",
+            "job %s: transient failure on attempt %s/%s after %.1fs - %s - %s",
             job.job_id,
             job.attempts,
             max_attempts,
             elapsed,
-            delay,
+            f"retrying in {delay:.0f}s" if delay else "no retry left, the next claim buries it",
             exc,
         )
         if delay < wanted:

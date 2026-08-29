@@ -297,15 +297,16 @@ def _settle(
             """,
             {"job_id": job_id, "lease_token": lease_token, **params},
         )
+        settled = cursor.rowcount == 1
         # Only asked when the update wrote nothing, and inside the same transaction so the
         # answer cannot be overtaken between the two statements.
-        job_exists = cursor.rowcount == 1 or (
-            conn.execute(
+        job_exists = (
+            settled
+            or conn.execute(
                 "select 1 from jobs where job_id = %(job_id)s::uuid", {"job_id": job_id}
             ).fetchone()
             is not None
         )
-        settled = cursor.rowcount == 1
 
     # Raised AFTER the block so the connection is left IDLE either way - the ADR 0025
     # contract this module's writers all keep.
@@ -341,19 +342,11 @@ def complete(conn: psycopg.Connection, *, job_id: str, lease_token: str) -> bool
     version this docstring described, and the version the tests covered. `_settle` carries
     the mechanism; migration 0002 carries the argument.
 
-    THE TWO WAYS THIS CAN WRITE NOTHING ARE NOT THE SAME EVENT, so they are not
-    reported the same way:
-      - the job exists but is no longer `processing` -> this worker LOST ITS LEASE.
-        Routine under at-least-once (the guard above is what makes it routine), so it
-        returns False. Raising here would turn an expected outcome into an exception on
-        a normal poll cycle.
-      - no such `job_id` at all -> a programming error, and the caller's belief that a
-        job finished is simply false. `LookupError`, loudly. Same reasoning as
-        `index_file`'s zero-chunk `ValueError`: a public entry point does not trust its
-        caller (#23), and silence here costs a re-ingest per lease expiry until #71's
-        retry budget terminal-fails the file for the wrong reason.
-
-    Returns True when this call is the one that finished the job.
+    Returns False on a lost lease, raises `LookupError` on an unknown `job_id`, returns
+    True when this call is the one that finished the job - the three-way split `_settle`
+    owns and states, for all three verbs at once. That statement lives there and only
+    there: this docstring used to carry its own copy naming ONE way to get False, and the
+    lease token added a second the copy never learned about.
     """
     return _settle(
         conn,
@@ -383,7 +376,7 @@ def fail(conn: psycopg.Connection, *, job_id: str, lease_token: str, error: str)
 
     Returns False on a lost lease, raises `LookupError` on an unknown `job_id`, returns
     True when this call is the one that failed the job - the same three-way split
-    `complete` makes, for the same reasons. Kept symmetrical deliberately: a worker
+    `_settle` makes for all three verbs. Kept symmetrical deliberately: a worker
     handles both outcomes in one place, and a split that differed between the success
     and failure paths would be read as meaningful.
     """
@@ -428,11 +421,8 @@ def release(conn: psycopg.Connection, *, job_id: str, lease_token: str, error: s
     Returns False on a lost lease, raises `LookupError` on an unknown `job_id`, returns True
     when this call is the one that requeued the job - the same three-way split, behind the same
     two-condition lease guard, that `complete` and `fail` make. THIS IS THE VERB THAT MOST
-    NEEDS THE TOKEN HALF of it. `complete` and `fail` are terminal, so a zombie writing over
-    the current holder leaves a wrong row and stops; `release` puts the job back INTO
-    CIRCULATION, so a zombie's release hands a third worker a file the second is still
-    embedding - two runs, one file, two embedding bills, which is precisely the double charge
-    the lease was introduced to prevent.
+    NEEDS THE TOKEN HALF of it, because this is the one that puts a job back INTO CIRCULATION
+    rather than ending it; migrations/0002_lease_token.sql carries what that costs.
 
     Commits before returning, same contract as `claim` (its docstring has the argument).
     """

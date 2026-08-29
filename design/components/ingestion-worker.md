@@ -62,7 +62,8 @@ fresh uuid per claim, and `complete`/`fail`/`release` match on it, so a worker w
 whose job was re-handed out is **refused** rather than allowed to write over the run that now holds it.
 The state alone could not say that — `processing` is equally true of a job re-handed to someone else,
 which let a stalled worker's `release` return a job another worker was still embedding to `queued`
-(migrations/0002_lease_token.sql carries the sequence). `staging_ref` is here because of step 1's ADR 0025 precondition, not for convenience: a worker
+(migrations/0002_lease_token.sql carries the sequence). `staging_ref` is here because of step 1's
+ADR 0025 precondition, not for convenience: a worker
 that had to look the path up would run a statement *after* its claim committed, and a bare `SELECT`
 reopens psycopg's implicit transaction exactly as a write does — putting the connection back `INTRANS`
 and degrading step 6's transaction to a SAVEPOINT that publishes nothing. Handing the path over at

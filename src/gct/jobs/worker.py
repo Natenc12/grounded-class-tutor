@@ -85,8 +85,8 @@ DEFAULT_POLL_SECONDS = 2.0
 # How many attempts actually RUN before the job is buried as `transient_exhausted`. Counted in
 # `jobs.attempts`, so a crash costs an attempt exactly as a caught 429 does - see the module
 # docstring for why that is the point rather than an approximation. A doomed job is always
-# claimed once MORE than this, to be buried: burying writes `files`, which needs the lease
-# (ADR 0028 §1). That claim buys no embed.
+# claimed once MORE than this, to be buried: burying writes `files`, a table `queue.py` may not
+# touch, so only a worker holding the job can do it (ADR 0028 §1). That claim buys no embed.
 DEFAULT_MAX_ATTEMPTS = 5
 # Backoff between attempts: doubling, and capped. The cap is what keeps the delay a delay - an
 # uncapped curve reaches hours by the fifth attempt for a provider blip that cleared in seconds.
@@ -376,7 +376,7 @@ def process_one(
         # TRANSIENT: bad luck, and a NARROWER class than ADR 0020 §1 first drew - a DB blip is
         # not in it (ADR 0020 §1, DB-blip class amended per ADR 0028). Nothing was committed -
         # the index transaction never opened (ADR 0020 §3) - so the job goes back to `queued`
-        # with no cleanup, and
+        # with no cleanup at all, and
         # `files.status` stays `processing`, which is still TRUE: the file is mid-flight and the
         # student has nothing new to learn from a status flicker. Only budget exhaustion moves
         # it to `failed`.
@@ -479,8 +479,14 @@ def run(
 
     A reap of ZERO is not logged. At a 2s poll that is 30 lines a minute of "nothing happened",
     the same argument that keeps the empty tick in `process_one` silent. A non-zero reap IS
-    logged at WARNING, because ADR 0028 §Consequences counts it among the evidence that would
-    move the lease number, and INFO is dropped by the default config.
+    logged at WARNING because a reclaim is abnormal - it means a worker died without settling
+    its job - and because it must survive a caller that configures no logging at all: Python's
+    unconfigured root drops INFO. `scripts/worker.py` does not, which is why the INFO lines in
+    `process_one` are worth emitting; a library cannot assume that wiring.
+
+    It is NOT evidence that the lease is too short (ADR 0028 §Consequences): a single worker
+    that overruns its lease still completes, because the settle verbs guard on state and token
+    and never on `leased_until`. A reap means something died.
 
     A raising reaper crashes the loop, on purpose and without a handler - the module's stance on
     every unclassified exception, ratified for a DB error specifically by ADR 0028 §4. Catching
@@ -497,8 +503,8 @@ def run(
         reclaimed = reclaim_expired(conn)
         if reclaimed:
             logger.warning(
-                "reaper: %s job(s) past their lease requeued - a worker died, or %ss was too "
-                "short for the file it was ingesting",
+                "reaper: %s job(s) requeued after their %ss lease elapsed - a worker died or "
+                "was stopped mid-ingest, and those files read `processing` until now",
                 reclaimed,
                 lease_seconds,
             )

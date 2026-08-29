@@ -353,9 +353,8 @@ def test_the_reaper_is_silent_unless_it_actually_reclaimed_something(monkeypatch
     The silence is the load-bearing half. At a 2s poll a line per reap is 30 a minute of
     "nothing happened", which buries the lines that matter - the same argument that keeps
     `process_one`'s empty tick silent. The WARNING is the other half: a reclaim means a worker
-    died or the lease was too short - one of the signals ADR 0028 §Consequences names as
-    evidence that would move the lease number, so it must not be logged at INFO where the
-    default config drops it.
+    died without settling its job, which is abnormal, and the level has to survive a caller
+    that configures no logging - Python's unconfigured root drops INFO.
     """
     _events, _slept = _script_the_loop(monkeypatch, [False, False], reclaims=[0, 3])
 
@@ -809,6 +808,15 @@ def test_a_reclaimed_job_reruns_and_leaves_one_chunk_set(db, db_other, tmp_path)
     # so B's claim is attempt 2 - well inside the default budget, which is what lets it run.
     _backdate_lease(conn, file_id)
     assert reclaim_expired(conn) == 1
+    # Read through `db_other` because it is the reclaim's durable effect, not a return value.
+    # Asserted here rather than left to the `complete` at the bottom: by then B has moved the
+    # job to `done`, so the guard's STATE half alone refuses A and the token clearing goes
+    # unpinned - dropping `lease_token = null` from `reclaim_expired` leaves this whole file
+    # green without it.
+    (token_after_reclaim,) = db_other.execute(
+        "select lease_token from jobs where file_id = %s::uuid", (file_id,)
+    ).fetchone()
+    assert token_after_reclaim is None, "the lease and its proof must die together"
 
     # Worker B: the full tick, from a clean claim through to `complete`.
     assert tick(conn, embedder) is True
@@ -839,4 +847,53 @@ def test_a_reclaimed_job_reruns_and_leaves_one_chunk_set(db, db_other, tmp_path)
     # A finally wakes up. Its token died with its lease, so the run that won is safe from it.
     assert complete(conn, job_id=stalled.job_id, lease_token=stalled.lease_token) is False, (
         "a stalled worker must not be able to settle a job that was re-handed out"
+    )
+
+
+def test_run_reaps_a_stranded_job_on_a_real_connection(db, db_other, tmp_path):
+    """The one thing the stubbed loop tests cannot prove: `run`'s reap works on a REAL conn.
+
+    Every other loop test stubs `reclaim_expired`, so the call site `run` now owns is never
+    driven against Postgres - and that call site has a connection precondition. `reclaim_expired`
+    calls `require_idle` and RAISES on a connection left inside a transaction (ADR 0025, guarded
+    per ADR 0027), so a loop that reaped at the wrong moment would not return a wrong answer, it
+    would crash the worker on the first tick. Stubbing the reaper everywhere would leave that
+    entirely uncovered while looking thorough.
+
+    Driven on a PLAIN connection - no autocommit - deliberately. `scripts/worker.py` wires
+    autocommit as defense in depth, so testing under it would prove the wiring rather than the
+    loop; the contract is that every writer commits inside its own `conn.transaction()` and
+    leaves the connection idle for the next one.
+
+    `process_one` is stubbed to end the loop after one tick, so what runs here is the real
+    reaper against a real stranded job and nothing else.
+    """
+    conn, owner_id, class_id = db
+    pdf = write_pdf(tmp_path / "stranded.pdf", ["a page the dead worker never finished"])
+    file_id = enqueue(conn, path=pdf, owner_id=owner_id, class_id=class_id)
+
+    # A worker claims the job and dies: the row stays `processing` under a lease nothing settles.
+    stranded = claim(conn, lease_seconds=3600)
+    assert stranded is not None
+    _backdate_lease(conn, file_id)
+
+    ticks = iter([Stop])
+
+    def stop_after_one_tick(conn, **kwargs):
+        raise next(ticks)
+
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setattr(worker, "process_one", stop_after_one_tick)
+        with pytest.raises(Stop):
+            worker.run(conn, embedder=None, chunk_size=1, chunk_overlap=0)
+
+    state, leased_until, token = db_other.execute(
+        "select state, leased_until, lease_token from jobs where file_id = %s::uuid", (file_id,)
+    ).fetchone()
+    assert (state, leased_until, token) == ("queued", None, None), (
+        "the loop's reaper must return a stranded job to the queue, on a real connection, "
+        "with the lease and its proof both cleared"
+    )
+    assert conn.info.transaction_status == psycopg.pq.TransactionStatus.IDLE, (
+        "the reap must leave the connection idle for the claim that follows it (ADR 0025)"
     )

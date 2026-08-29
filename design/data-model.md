@@ -76,7 +76,7 @@ The **execution substrate** (ADR 0011) — one ingestion job per file. Distinct 
 | `file_id` | uuid FK → files | the work unit |
 | `owner_id` / `class_id` | id / uuid | carried for scope; written onto the chunks |
 | `state` | enum | `queued · processing · done · failed` (queue-level; not the same axis as `files.status`) |
-| `attempts` | int | retry count vs the ADR 0028 budget (transient only; terminal skips retries, ADR 0020). counts CLAIMS, so a crash costs one exactly as a caught 429 does - and the last claim on a doomed job exists only to bury it (ADR 0028 §1) |
+| `attempts` | int | retry count vs the ADR 0028 budget (transient only; terminal skips retries, ADR 0020). Counts CLAIMS, so a crash costs one exactly as a caught 429 does — and the last claim on a transient-doomed job exists only to bury it (ADR 0028 §1) |
 | `leased_until` | timestamptz \| null | visibility timeout; a `processing` job past this is reclaimed → `queued` by the reaper (ADR 0011) |
 | `last_error` | text \| null | diagnostics for the most recent failure |
 | `lease_token` | uuid \| null | proof of holding, minted per `claim`; the settle verbs match on it so a worker whose lease was reclaimed cannot write over the run that now holds the job. Cleared by the reaper — the lease and its proof die together |

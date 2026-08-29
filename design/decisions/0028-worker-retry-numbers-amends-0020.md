@@ -160,10 +160,15 @@ of the topology, not of the reaper, and it is the first thing to re-examine unde
     so a single worker that overruns its lease still finishes normally and leaves the reaper
     nothing to find. On V1 a non-zero reap means a process DIED — it cannot mean a healthy run
     outran its lease. What it does argue is the opposite of "too short": the reap can only land
-    once the whole lease has elapsed, so every reaper line measures how long a student's file
-    sat UNCLAIMABLE after a crash — showing whatever status that run had reached, which is
-    `processing` only if the crash came after the status write, and `queued` or `failed`
-    otherwise. That is the Ctrl-C bullet above, arriving as a log line.
+    once the whole lease has elapsed, so every reaper line measures how long the JOB sat
+    unclaimable after a crash. Not necessarily how long the student waited, because the reap
+    says nothing about `files.status` — it is a single `update jobs`. All four legal statuses
+    are reachable under a reaped job, depending on where the run died: `queued` before
+    `process_one`'s status write, `processing` after it, `failed` inside `_bury`'s two-write
+    window, and **`ready`** if the crash landed between `index_file`'s commit and `complete` —
+    the case the `status <> 'ready'` guards in `process_one` and `_bury` exist for. In that
+    last one the student waited for nothing: the file was queryable the whole time. That is the
+    Ctrl-C bullet above, arriving as a log line.
   - **budget** — a file that exhausts it on genuine 429s rather than on crashes.
   - **backoff** — the same "backoff cut" warning, which says the curve did not fit its lease.
   - **poll** — nothing in-process, by construction: the cost of a slow poll is latency a student

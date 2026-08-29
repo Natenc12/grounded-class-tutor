@@ -1,4 +1,4 @@
-"""DB-backed tests for the worker's happy path (issue #71, PR 1).
+"""DB-backed tests for the worker: the happy path (PR 1) and the failure split (PR 2, issue #71).
 
 Same discipline as `test_queue.py`: real Postgres via the `db` fixture, and every assertion
 about what the worker PUBLISHED goes through `db_other` - a second connection. A connection
@@ -6,13 +6,21 @@ sees its own uncommitted work, so reading back through `db` would hold whether o
 was committed (ADR 0025); the durability assertion IS the point of the happy-path test, not a
 flourish on it.
 
+The PR 2 half exercises ADR 0020 §1 from both sides. Its stubs are chosen so a failure costs
+nothing and is exact: `FakeEmbeddings(transient_failures=N)` raises the provider-agnostic
+`TransientEmbeddingError` on cue, and a corrupt PDF makes `parse_file` raise the real
+`ParseError` rather than a mock of one - the terminal path's whole contract is that
+`exc.reason` is already a legal `files.failed_reason`, and a stubbed exception would let that
+pass-through drift. `time.sleep` is stubbed everywhere the backoff runs: the delays are the
+assertion, never something a test waits out.
+
 `FakeEmbeddings` and `write_pdf` are LOCAL on purpose: the root conftest records that the
 ingest factories "deliberately stayed put" in `tests/gct/ingest/`, pytest does not expose a
 conftest sideways, and `test_ask_smoke.py` set the precedent of a suite outside `ingest/`
 carrying its own minimal stubs shaped to what IT asserts. Here that shape is: real enough for
 `parse_file` to parse (the worker actually opens the file - `test_queue`'s bytes-stub is not
-enough), and an embedder whose `calls` list becomes PR 2's assertion surface for "no retries
-spent".
+enough), corrupt enough for it to refuse (the terminal path), and an embedder that can fail on
+demand and count what it was asked to do.
 """
 
 from __future__ import annotations
@@ -27,27 +35,78 @@ from gct.config import EMBEDDING_DIM
 from gct.ingest.chunk import CHUNK_OVERLAP_WORDS, CHUNK_SIZE_WORDS
 from gct.jobs import worker
 from gct.jobs.queue import enqueue
-from gct.jobs.worker import process_one
+from gct.jobs.worker import (
+    DEFAULT_LEASE_SECONDS,
+    backoff_seconds,
+    process_one,
+    served_backoff,
+)
+from gct.providers.base import TransientEmbeddingError
 
 
 class FakeEmbeddings:
     """Deterministic, free, and LOUD about how often it was called.
 
-    `calls` records every batch handed to `embed` - unused by PR 1's tests beyond existing,
-    but it is the surface PR 2's "terminal failure spends zero retries" assertion reads.
+    `calls` records every batch handed to `embed`, and it is how the PR 2 tests ask the
+    question the status columns cannot answer: "was an embed actually BOUGHT?". A terminal
+    parse failure must leave it empty, and the claim that buries an exhausted job must not
+    add to it - both are money, and both would be invisible in `files.status`.
+
+    `transient_failures` makes the first N calls raise `TransientEmbeddingError`, the
+    provider-agnostic "try again" type real adapters re-raise (`providers/base.py`). The call
+    is RECORDED BEFORE it raises on purpose: a failed attempt still cost a provider round trip,
+    so `len(calls)` counts attempts made rather than attempts that worked.
     """
 
     model_id = "fake-embed-3"
 
-    def __init__(self) -> None:
+    def __init__(self, transient_failures: int = 0) -> None:
         self.calls: list[list[str]] = []
+        self._failures_left = transient_failures
 
     def embed(self, texts):
         texts = list(texts)
         self.calls.append(texts)
+        if self._failures_left > 0:
+            self._failures_left -= 1
+            raise TransientEmbeddingError("simulated provider 429 - slow down")
         # Distinct-but-arbitrary vectors; nothing here asserts on ranking (same stance as
         # test_ask_smoke's stub).
         return [[float((hash(t) % 97) + 1)] + [0.0] * (EMBEDDING_DIM - 1) for t in texts]
+
+
+def write_corrupt_pdf(path: Path) -> Path:
+    """A file that claims to be a PDF and is not - the terminal `unparseable` case.
+
+    The header is real so nothing rejects it on the extension alone; the body is not, so pypdf
+    raises and `parse_file` converts it to `ParseError("unparseable", ...)`. Written as bytes
+    rather than mocked so the reason travelling into `files.failed_reason` is the one the real
+    parser produces.
+    """
+    path.write_bytes(b"%PDF-1.7\nthis is not a PDF at all\n")
+    return path
+
+
+def tick(conn, embedder, **overrides):
+    """One `process_one` at the default chunk window; `overrides` is what a test is varying.
+
+    The window is REQUIRED by `process_one` and forwarded verbatim - never hardcoded inside it
+    (ADR 0019/0026). That requirement is a contract worth keeping, and repeating it at ten call
+    sites is what buried the one kwarg each test is actually about (`max_attempts=2`,
+    `lease_seconds=5`). Passing it here keeps the contract and makes the deviation the only
+    thing visible where it matters.
+
+    `test_chunk_window_reaches_ingest` deliberately does NOT use this - the whole point of that
+    test is that both values are passed explicitly, so routing it through a helper that supplies
+    them would test the helper.
+    """
+    return process_one(
+        conn,
+        embedder=embedder,
+        chunk_size=CHUNK_SIZE_WORDS,
+        chunk_overlap=CHUNK_OVERLAP_WORDS,
+        **overrides,
+    )
 
 
 def write_pdf(path: Path, page_texts: list[str]) -> Path:
@@ -79,12 +138,7 @@ def test_happy_path_publishes_through_a_second_connection(db, db_other, tmp_path
     source = write_pdf(tmp_path / "lecture-3.pdf", ["alpha page one words", "beta page two words"])
     file_id = enqueue(conn, path=source, owner_id=owner_id, class_id=class_id)
 
-    processed = process_one(
-        conn,
-        embedder=FakeEmbeddings(),
-        chunk_size=CHUNK_SIZE_WORDS,
-        chunk_overlap=CHUNK_OVERLAP_WORDS,
-    )
+    processed = tick(conn, FakeEmbeddings())
 
     assert processed is True
 
@@ -122,12 +176,7 @@ def test_processing_status_publishes_on_a_plain_connection(db, db_other, tmp_pat
     source = write_pdf(tmp_path / "plain-conn.pdf", ["plain connection page words"])
     file_id = enqueue(conn, path=source, owner_id=owner_id, class_id=class_id)
 
-    processed = process_one(
-        conn,
-        embedder=FakeEmbeddings(),
-        chunk_size=CHUNK_SIZE_WORDS,
-        chunk_overlap=CHUNK_OVERLAP_WORDS,
-    )
+    processed = tick(conn, FakeEmbeddings())
 
     assert processed is True
     status, state = db_other.execute(
@@ -147,12 +196,7 @@ def test_empty_queue_is_a_normal_tick(db):
     conn, _owner_id, _class_id = db
     conn.autocommit = True
 
-    processed = process_one(
-        conn,
-        embedder=FakeEmbeddings(),
-        chunk_size=CHUNK_SIZE_WORDS,
-        chunk_overlap=CHUNK_OVERLAP_WORDS,
-    )
+    processed = tick(conn, FakeEmbeddings())
 
     assert processed is False
 
@@ -179,12 +223,7 @@ def test_chunk_window_reaches_ingest(db, db_other, tmp_path):
     # leave the pairing of file to window resting on two `now()` stamps landing in the intended
     # order; with one claimable job at a time it rests on nothing.
     first_id = enqueue(conn, path=first, owner_id=owner_id, class_id=class_id)
-    assert process_one(
-        conn,
-        embedder=FakeEmbeddings(),
-        chunk_size=CHUNK_SIZE_WORDS,
-        chunk_overlap=CHUNK_OVERLAP_WORDS,
-    )
+    assert tick(conn, FakeEmbeddings())
 
     # 60 words fits whole inside the 250-word default, so the run above is one chunk; a 20-word
     # window has to split the same text. Any pair that forces different counts would do.
@@ -242,3 +281,351 @@ def test_run_sleeps_only_on_empty_ticks(monkeypatch):
 
     # Four ticks, exactly one of them empty - so exactly one sleep, at the configured interval.
     assert slept == [0.25]
+
+
+def test_backoff_doubles_and_is_capped(monkeypatch):
+    """The curve, with no DB and no worker - a pure function, pinned as one (ADR 0020).
+
+    Two properties, and the second is the one that bites in production. Doubling is what makes
+    the delay respond to a provider that is genuinely down rather than briefly busy. THE CAP is
+    what keeps the delay a delay: uncapped, attempt 10 waits over seventeen minutes, which
+    would outlast the lease and let the reaper hand the job to another worker mid-wait - two
+    workers embedding the same file, the exact double-charge the lease number exists to stop.
+
+    Asserted against the constants rather than literals: the numbers are provisional until the
+    four-numbers ADR (PR 3) ratifies them, and a test written in literals would go red on a
+    tuning change that broke nothing.
+    """
+    base = worker.BACKOFF_BASE_SECONDS
+    cap = worker.BACKOFF_MAX_SECONDS
+
+    assert backoff_seconds(1) == base
+    assert backoff_seconds(2) == base * 2
+    assert backoff_seconds(3) == base * 4
+    assert all(backoff_seconds(n) <= cap for n in range(1, 50))
+    assert backoff_seconds(49) == cap, "an uncapped curve would sail past the lease"
+
+
+def test_served_backoff_never_exceeds_the_curve_or_the_remaining_lease():
+    """The clamp, as a pure function — no DB, no worker, no fake 429 (issue #71).
+
+    `backoff_seconds` answers "how long does the curve want?"; this answers "how long can this
+    worker afford?", and only the second is the delay. Pinned here rather than only through
+    `test_the_backoff_never_outlasts_the_lease_it_is_served_under`, which needs Postgres and
+    four `process_one` ticks to observe two numbers — the arithmetic deserves the same cheap,
+    exact coverage the curve already has.
+
+    Asserted against the constants, never literals: the four numbers are provisional until PR
+    3's ADR (ADR 0020), and a test in literals would go red on a tuning change that broke
+    nothing.
+    """
+    plenty = DEFAULT_LEASE_SECONDS
+
+    # A lease with room to spare: the curve gets exactly what it asked for.
+    wanted, served = served_backoff(1, max_attempts=5, lease_seconds=plenty, elapsed=0.0)
+    assert (wanted, served) == (backoff_seconds(1), backoff_seconds(1))
+
+    # The last permitted attempt wants nothing - the next claim's budget check refuses the job,
+    # so a wait would buy a retry that never comes.
+    assert served_backoff(5, max_attempts=5, lease_seconds=plenty, elapsed=0.0) == (0.0, 0.0)
+
+    # A lease too short for the curve: `wanted` still reports what was asked, so the caller can
+    # say "cut from X to Y" - a function returning only the served value makes that unloggable.
+    wanted, served = served_backoff(3, max_attempts=5, lease_seconds=4, elapsed=0.0)
+    assert wanted == backoff_seconds(3)
+    assert served == 2.0, "the wait must fit inside the lease it is served under, halved"
+
+    # The attempt already ate the whole lease: no sleep at all, and never a negative one.
+    assert served_backoff(2, max_attempts=5, lease_seconds=10, elapsed=99.0) == (
+        backoff_seconds(2),
+        0.0,
+    )
+
+    # The invariant, swept: served is never above the curve, never above half the remaining
+    # lease, and never negative - the three ways this could be wrong at once.
+    for attempts in range(1, 8):
+        for lease in (1, 5, 60, DEFAULT_LEASE_SECONDS):
+            for elapsed in (0.0, 0.5, 3.0, 1e6):
+                wanted, served = served_backoff(
+                    attempts, max_attempts=5, lease_seconds=lease, elapsed=elapsed
+                )
+                assert 0.0 <= served <= wanted
+                assert served <= max(0.0, lease - elapsed) / 2
+
+
+def test_a_corrupt_file_fails_terminally_and_buys_no_embed(db, db_other, tmp_path, monkeypatch):
+    """queued -> processing -> failed(unparseable), with ZERO retries spent (acceptance, #71).
+
+    "No retries spent" is not the same claim as "attempts == 0", and the difference is worth
+    stating: the claim already bumped `attempts` to 1, because a claim happened. What must be
+    true is that the job is TERMINAL - `state = failed`, never back to `queued` - so nothing
+    will ever hand it out again. A corrupt file is exactly as corrupt on the next attempt; the
+    budget exists for bad luck, not bad bytes (ADR 0020 §1).
+
+    `embedder.calls == []` is the assertion the status columns cannot make. Parse comes before
+    embed, so a terminal file must cost nothing at the provider - and a worker that caught
+    `ParseError` in the wrong place (say, around the whole tick, after a retry loop) would set
+    every status column here correctly while having paid for N embeds. `sleep` is asserted
+    empty for the same reason: a terminal failure must not serve a backoff for a retry that is
+    never coming.
+
+    `failed_reason` is checked for the SPECIFIC value, not merely non-null. The whole point of
+    the terminal taxonomy is that the student is told something actionable (ADR 0020), and
+    `parse.py` promises `ParseError.reason` passes through untranslated - a worker that mapped
+    everything to one reason would satisfy a non-null check and tell the student nothing.
+    """
+    conn, owner_id, class_id = db
+    conn.autocommit = True
+    slept: list[float] = []
+    monkeypatch.setattr(worker.time, "sleep", slept.append)
+    embedder = FakeEmbeddings()
+    source = write_corrupt_pdf(tmp_path / "shredded.pdf")
+    file_id = enqueue(conn, path=source, owner_id=owner_id, class_id=class_id)
+
+    assert tick(conn, embedder) is True, (
+        "a failed job is still work - the tick must not read as idle"
+    )
+
+    status, failed_reason = db_other.execute(
+        "select status, failed_reason from files where file_id = %s::uuid", (file_id,)
+    ).fetchone()
+    assert (status, failed_reason) == ("failed", "unparseable")
+
+    state, attempts, last_error = db_other.execute(
+        "select state, attempts, last_error from jobs where file_id = %s::uuid", (file_id,)
+    ).fetchone()
+    assert state == "failed", "a terminal failure must not leave the job claimable"
+    assert attempts == 1, "the claim happened once and nothing retried it"
+    assert last_error and "unparseable" in last_error
+
+    assert embedder.calls == [], "a terminal file must cost nothing at the provider"
+    assert slept == [], "a terminal failure must not serve a retry backoff"
+    (chunk_count,) = db_other.execute(
+        "select count(*) from chunks where file_id = %s::uuid", (file_id,)
+    ).fetchone()
+    assert chunk_count == 0
+
+
+def test_a_transient_failure_backs_off_then_requeues_the_job(db, db_other, tmp_path, monkeypatch):
+    """Bad luck, not bad input: the job goes back to `queued` and the file stays mid-flight.
+
+    Four things, and each is a different bug:
+      - `jobs.state = queued` with the lease cleared - a later claim can pick it up;
+      - `files.status` STAYS `processing` - which is still true, and it is why no new status
+        transition was needed for the retry path. Only budget exhaustion moves a file to
+        `failed` (ADR 0020: "land on failed(transient_exhausted) ONLY when the budget is
+        spent"). A worker that flipped the file to `failed` on every 429 would tell the student
+        the upload died while it was in fact still being retried;
+      - nothing committed - zero chunks, because the index transaction never opened (ADR 0020
+        §3), which is what makes retry-from-scratch safe;
+      - the backoff was SERVED - one sleep, of exactly `backoff_seconds(1)`. Retrying instantly
+        after a provider says "slow down" is ADR 0020's one genuinely wrong answer, and it is
+        invisible in every status column above.
+
+    The order the backoff is served in cannot be read off `slept` alone, so the state is: the
+    sleep happens while the job is still `processing` under this worker's lease, so the delay
+    applies to every worker rather than only to this one's next poll (`release`'s docstring).
+    """
+    conn, owner_id, class_id = db
+    conn.autocommit = True
+    slept: list[float] = []
+    monkeypatch.setattr(worker.time, "sleep", slept.append)
+    embedder = FakeEmbeddings(transient_failures=1)
+    source = write_pdf(tmp_path / "flaky.pdf", ["some words the provider choked on"])
+    file_id = enqueue(conn, path=source, owner_id=owner_id, class_id=class_id)
+
+    assert tick(conn, embedder) is True
+
+    state, attempts, leased_until, last_error = db_other.execute(
+        "select state, attempts, leased_until, last_error from jobs where file_id = %s::uuid",
+        (file_id,),
+    ).fetchone()
+    assert (state, attempts, leased_until) == ("queued", 1, None)
+    assert last_error and "429" in last_error, "the provider's own words are the diagnosis"
+
+    status, failed_reason = db_other.execute(
+        "select status, failed_reason from files where file_id = %s::uuid", (file_id,)
+    ).fetchone()
+    assert (status, failed_reason) == ("processing", None), (
+        "a retryable failure must not tell the student the upload died"
+    )
+
+    (chunk_count,) = db_other.execute(
+        "select count(*) from chunks where file_id = %s::uuid", (file_id,)
+    ).fetchone()
+    assert chunk_count == 0, "a failed attempt must commit nothing (ADR 0020 §3)"
+    assert slept == [backoff_seconds(1)], "the retry was not backed off"
+
+
+def test_a_retry_after_a_transient_failure_publishes_normally(db, db_other, tmp_path, monkeypatch):
+    """The requeue is worth nothing unless a later claim actually finishes the job.
+
+    This is the half the previous test cannot see: it proves the row `release` left behind is
+    genuinely claimable and that a second attempt reaches `ready` - i.e. that the transient
+    path is a RETRY and not a slower way to lose a file. Two embed calls, one file, one full
+    chunk set: the all-or-nothing replace means the failed attempt left nothing to collide
+    with (ADR 0020 §2).
+    """
+    conn, owner_id, class_id = db
+    conn.autocommit = True
+    monkeypatch.setattr(worker.time, "sleep", lambda _: None)
+    embedder = FakeEmbeddings(transient_failures=1)
+    source = write_pdf(tmp_path / "second-time-lucky.pdf", ["alpha words", "beta words"])
+    file_id = enqueue(conn, path=source, owner_id=owner_id, class_id=class_id)
+
+    for _ in range(2):
+        assert tick(conn, embedder) is True
+
+    status, failed_reason = db_other.execute(
+        "select status, failed_reason from files where file_id = %s::uuid", (file_id,)
+    ).fetchone()
+    assert (status, failed_reason) == ("ready", None)
+
+    state, attempts = db_other.execute(
+        "select state, attempts from jobs where file_id = %s::uuid", (file_id,)
+    ).fetchone()
+    assert (state, attempts) == ("done", 2), "the second claim must be the one that finished it"
+    assert len(embedder.calls) == 2, "the retry re-embeds from scratch (ADR 0020 §2)"
+
+    (chunk_count,) = db_other.execute(
+        "select count(*) from chunks where file_id = %s::uuid", (file_id,)
+    ).fetchone()
+    assert chunk_count > 0
+
+
+def test_the_budget_runs_out_and_the_file_fails_transient_exhausted(
+    db, db_other, tmp_path, monkeypatch
+):
+    """queued -> processing -> failed(transient_exhausted) once the budget is spent (acceptance).
+
+    Run with `max_attempts=2` so the whole life of a doomed job fits in three ticks, and read
+    what each one had to do:
+      1. attempt 1 fails -> backoff `backoff_seconds(1)` -> requeued;
+      2. attempt 2 fails -> NO backoff, because this was the last permitted attempt and the
+         delay would buy a retry the budget check is about to refuse -> requeued;
+      3. attempts == 3 > 2 -> buried, having claimed the job purely in order to bury it.
+
+    `len(embedder.calls) == 2` is the sharp assertion: it says the budget bounded the number of
+    PAID attempts at exactly `max_attempts`, and that tick 3 - which had to claim the job to
+    write `failed_reason` at all, since `queue.py` may not touch `files` - spent nothing doing
+    it. A budget that was checked one tick late would look identical in every status column and
+    cost one extra embedding run per doomed file.
+
+    `slept == [backoff_seconds(1)]` pins the same boundary from the delay side.
+    """
+    conn, owner_id, class_id = db
+    conn.autocommit = True
+    slept: list[float] = []
+    monkeypatch.setattr(worker.time, "sleep", slept.append)
+    embedder = FakeEmbeddings(transient_failures=99)
+    source = write_pdf(tmp_path / "doomed.pdf", ["words the provider never accepts"])
+    file_id = enqueue(conn, path=source, owner_id=owner_id, class_id=class_id)
+
+    for _ in range(3):
+        assert tick(conn, embedder, max_attempts=2) is True
+
+    status, failed_reason = db_other.execute(
+        "select status, failed_reason from files where file_id = %s::uuid", (file_id,)
+    ).fetchone()
+    assert (status, failed_reason) == ("failed", "transient_exhausted")
+
+    state, attempts = db_other.execute(
+        "select state, attempts from jobs where file_id = %s::uuid", (file_id,)
+    ).fetchone()
+    assert state == "failed", "an exhausted job must not stay claimable"
+    assert attempts == 3, "two paid attempts plus the claim that buried it"
+
+    assert len(embedder.calls) == 2, "the budget must bound PAID attempts, not just claims"
+    assert slept == [backoff_seconds(1)], "the last permitted attempt must not wait for nothing"
+    (chunk_count,) = db_other.execute(
+        "select count(*) from chunks where file_id = %s::uuid", (file_id,)
+    ).fetchone()
+    assert chunk_count == 0
+
+
+def test_a_terminal_failure_cannot_unpublish_a_file_that_is_already_ready(
+    db, db_other, tmp_path, monkeypatch
+):
+    """The monotonic guard on the failure write - the direction that costs the student something.
+
+    Reachable under at-least-once: worker A claims and stalls, the reaper requeues, worker B
+    claims and publishes `ready`, then A wakes up and fails. Nothing stops A from running the
+    failure handler - `complete`/`fail`/`release`'s lease guards protect the JOBS axis, and
+    `files` is a table `queue.py` is not allowed to touch, so the guard has to live in the
+    worker. Without it, a queryable file flips to `failed` in the student's UI while its chunks
+    sit there answering questions.
+
+    The `ready` row is set directly rather than by staging a real reclaim: `reclaim_expired` is
+    wired into the poll loop in PR 3, and this test is about the WRITE's guard, not about the
+    sequence that reaches it. A published `ready` file is a published `ready` file however it
+    got there. The sibling assertion is that the jobs axis still records the failure - the
+    guard suppresses the student-facing lie, not the operational trail.
+    """
+    conn, owner_id, class_id = db
+    conn.autocommit = True
+    monkeypatch.setattr(worker.time, "sleep", lambda _: None)
+    source = write_corrupt_pdf(tmp_path / "already-published.pdf")
+    file_id = enqueue(conn, path=source, owner_id=owner_id, class_id=class_id)
+    # The run that won, standing in for worker B's `index_file`.
+    conn.execute("update files set status = 'ready' where file_id = %s::uuid", (file_id,))
+
+    assert tick(conn, FakeEmbeddings()) is True
+
+    status, failed_reason = db_other.execute(
+        "select status, failed_reason from files where file_id = %s::uuid", (file_id,)
+    ).fetchone()
+    assert (status, failed_reason) == ("ready", None), (
+        "a zombie must not unpublish a file another run already made queryable"
+    )
+    (state,) = db_other.execute(
+        "select state from jobs where file_id = %s::uuid", (file_id,)
+    ).fetchone()
+    assert state == "failed", "the jobs axis still records what this attempt did"
+
+
+def test_the_backoff_never_outlasts_the_lease_it_is_served_under(
+    db, db_other, tmp_path, monkeypatch
+):
+    """The sleep is bounded by the lease this worker actually holds, not by the module constants.
+
+    The rule is stated where the constants live - both sit far under `DEFAULT_LEASE_SECONDS`
+    because the sleep is served while the lease is HELD, so a delay outlasting it lets the
+    reaper hand the job to a second worker mid-wait and two runs embed one file. But
+    `lease_seconds` is a PARAMETER and the curve is module constants: they cannot see each
+    other, so the relationship held only by coincidence of the defaults. At `lease_seconds=5`
+    the uncapped curve slept 2s, 4s, 8s, then 16s - three times the lease it was holding.
+
+    Driven at a 5-second lease precisely because the defaults CANNOT fail this: 60s under a
+    900s lease passes whether or not the clamp exists, so a test written at the defaults would
+    be green on both sides of the fix and prove nothing. The assertion is against
+    `lease_seconds`, never a literal - the four numbers are provisional until PR 3's ADR
+    (ADR 0020), and a test in literals would go red on a tuning change that broke nothing.
+
+    Both halves are asserted. The bound alone would pass a worker that never slept at all -
+    which is ADR 0020's one genuinely wrong answer to a provider saying "slow down" - so the
+    first tick's delay is pinned to the full curve value it was always allowed to serve.
+    """
+    conn, owner_id, class_id = db
+    conn.autocommit = True
+    lease_seconds = 5
+    slept: list[float] = []
+    monkeypatch.setattr(worker.time, "sleep", slept.append)
+    embedder = FakeEmbeddings(transient_failures=99)
+    source = write_pdf(tmp_path / "flaky-under-a-short-lease.pdf", ["words"])
+    enqueue(conn, path=source, owner_id=owner_id, class_id=class_id)
+
+    for _ in range(4):
+        tick(conn, embedder, lease_seconds=lease_seconds)
+
+    assert slept, "the transient path served no backoff at all"
+    assert max(slept) <= lease_seconds / 2, (
+        f"the worker slept {max(slept)}s while holding a {lease_seconds}s lease - the reaper "
+        "can hand the job to a second worker mid-wait, and both embed the same file"
+    )
+    assert slept[0] == backoff_seconds(1), (
+        "the first delay fits inside the lease and must still be the full curve value - "
+        "clamping something that already fit would turn a bound into a blanket cut"
+    )
+    assert any(d < backoff_seconds(n + 1) for n, d in enumerate(slept)), (
+        "nothing was actually clamped, so this test would pass without the fix"
+    )

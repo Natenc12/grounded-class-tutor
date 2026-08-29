@@ -40,9 +40,15 @@ class Job:
     the value removes the worker's REASON to talk to the database between claim and ingest,
     which is a stronger guarantee than telling it not to.
 
-    Wider than `ingestion-worker.md`'s `Job{ file_id, owner_id, class_id }` by three fields:
-    `job_id` and `attempts` are the queue handle and the retry trail this module owns, and
-    `staging_ref` is the above. The spec's §Interface/contract records the widening.
+    Wider than `ingestion-worker.md`'s `Job{ file_id, owner_id, class_id }` by four fields:
+    `job_id` and `attempts` are the queue handle and the retry trail this module owns,
+    `staging_ref` is the above, and `lease_token` is the proof of holding described below.
+    The spec's §Interface/contract records the widening.
+
+    `lease_token` is what makes "this lease is MINE" checkable. `claim` mints a fresh uuid per
+    claim; the settle verbs match on it, so a worker whose lease expired and whose job was
+    re-handed out is refused instead of overwriting the run that now holds it. Carry it back
+    verbatim - it is a capability, not a value to inspect or reconstruct.
     """
 
     job_id: str
@@ -51,6 +57,7 @@ class Job:
     class_id: str
     attempts: int
     staging_ref: str
+    lease_token: str
 
 
 def enqueue(
@@ -142,7 +149,10 @@ def enqueue(
 def claim(conn: psycopg.Connection, *, lease_seconds: int) -> Job | None:
     """Take the oldest queued job, or None. SELECT ... FOR UPDATE SKIP LOCKED (ADR 0011).
 
-    Sets state='processing', bumps attempts, stamps leased_until.
+    Sets state='processing', bumps attempts, stamps leased_until, and mints a fresh
+    `lease_token` - the proof of holding that `complete`/`fail`/`release` match on. A new
+    token PER CLAIM is the point: after a reclaim the next claim's token differs, which is
+    exactly what makes the previous holder's write refusable.
 
     COMMITS BEFORE RETURNING - that is the contract, not a detail (decided
     2026-08-11): both statements run inside this function's own `conn.transaction()`,
@@ -206,17 +216,23 @@ def claim(conn: psycopg.Connection, *, lease_seconds: int) -> Job | None:
         # now() on the SERVER, not Python's clock: `reclaim_expired` compares
         # `leased_until < now()` on the server's clock, so stamping the lease from a
         # worker machine's clock would let clock drift expire leases early or late.
-        conn.execute(
+        # `gen_random_uuid()` on the SERVER for the same reason `now()` is: one source of
+        # truth for a value the row is the authority on. RETURNING it rather than minting it
+        # in Python keeps the token the row actually carries and the token the worker holds
+        # the same value by construction, with no second write to get wrong.
+        lease_token = conn.execute(
             """
             update jobs
             set state = 'processing',
                 attempts = attempts + 1,
+                lease_token = gen_random_uuid(),
                 leased_until = now() + make_interval(secs => %(lease_seconds)s),
                 updated_at = now()
             where job_id = %(job_id)s::uuid
+            returning lease_token::text
             """,
             {"lease_seconds": lease_seconds, "job_id": job_id},
-        )
+        ).fetchone()[0]
 
     return Job(
         job_id=job_id,
@@ -225,10 +241,83 @@ def claim(conn: psycopg.Connection, *, lease_seconds: int) -> Job | None:
         class_id=class_id,
         attempts=attempts + 1,
         staging_ref=staging_ref,
+        lease_token=lease_token,
     )
 
 
-def complete(conn: psycopg.Connection, *, job_id: str) -> bool:
+def _settle(
+    conn: psycopg.Connection,
+    *,
+    verb: str,
+    job_id: str,
+    lease_token: str,
+    assignments: str,
+    params: dict[str, object],
+    orphan_note: str,
+) -> bool:
+    """The shared body of `complete`/`fail`/`release`: one guarded write, one three-way answer.
+
+    All three are the same move - "this worker is putting the job down" - and differ only in
+    which state they put it down IN. That difference is the `assignments` fragment each verb
+    passes; everything around it (the idle precondition, the lease guard, the existence
+    re-query, the LookupError, the boolean) is one rule that must not be able to differ between
+    them. It WAS three copies until #71 PR 2 added the third, at which point a guard change
+    meant editing the same twenty lines in three places and getting all three right.
+
+    `assignments` is interpolated into the statement rather than parameterized because SQL has
+    no placeholder for a SET clause. It is safe by construction and must STAY so: every caller
+    is inside this module and passes a literal. A caller-supplied fragment here would be
+    injection - if a future verb ever needs a dynamic column, parameterize the VALUE and keep
+    the column name literal.
+
+    THE LEASE GUARD IS TWO CONDITIONS, and only together do they mean what the verbs claim.
+    `state = 'processing'` says the job is somebody's in-flight work; `lease_token = ...` says
+    that somebody is THIS caller. The state half alone is what shipped in #70/#71 PR 1, and it
+    is not an ownership check: after a reclaim and a re-claim the row reads `processing` again,
+    so a stalled worker's write passed a guard whose docstring promised it would not. Measured,
+    not argued - the probe is `test_release_refuses_a_job_another_worker_now_holds`.
+
+    The three-way answer, unchanged from when each verb spelled it out:
+      - True  - this call is the one that settled the job;
+      - False - the job exists but this worker no longer holds it: either it is no longer
+                `processing`, or it is, under someone else's token. Both are "your lease is
+                gone", routine under at-least-once, so it is a return value not an exception;
+      - LookupError - no such `job_id`. A programming error: the caller believes something about
+                a job that does not exist, and `orphan_note` says what that belief was.
+    """
+    require_idle(conn, verb)
+    with conn.transaction():
+        cursor = conn.execute(
+            f"""
+            update jobs
+            set {assignments}, updated_at = now()
+            where job_id = %(job_id)s::uuid
+              and state = 'processing'
+              and lease_token = %(lease_token)s::uuid
+            """,
+            {"job_id": job_id, "lease_token": lease_token, **params},
+        )
+        settled = cursor.rowcount == 1
+        # Only asked when the update wrote nothing, and inside the same transaction so the
+        # answer cannot be overtaken between the two statements.
+        job_exists = (
+            settled
+            or conn.execute(
+                "select 1 from jobs where job_id = %(job_id)s::uuid", {"job_id": job_id}
+            ).fetchone()
+            is not None
+        )
+
+    # Raised AFTER the block so the connection is left IDLE either way - the ADR 0025
+    # contract this module's writers all keep.
+    if not job_exists:
+        raise LookupError(
+            f"{verb}() called with job_id={job_id}, which names no row in `jobs`; {orphan_note}"
+        )
+    return settled
+
+
+def complete(conn: psycopg.Connection, *, job_id: str, lease_token: str) -> bool:
     """Terminal success: state='done'. The worker calls this after ingest_file returns.
 
     Commits before returning, same contract as `claim` (its docstring has the
@@ -236,62 +325,41 @@ def complete(conn: psycopg.Connection, *, job_id: str) -> bool:
     filters on state, so a stale lease on a terminal row is inert, and clearing it
     would erase the record of when the winning run held the job.
 
-    ONLY THE CURRENT LEASEHOLDER MAY FINISH A JOB - hence `and state = 'processing'`.
-    Without it, a worker whose lease expired and whose job was re-handed out can wake
-    up and write a terminal state over the run that actually won. That is not
-    hypothetical: `reclaim_expired`'s own docstring predicts this caller ("a
-    stalled-but-alive worker keeps running and may finish after its job is re-handed
-    out"), and the sequence claim -> reclaim -> re-claim -> the WINNER completes ->
-    the zombie fails leaves the row `failed` for a file that is `ready`. Every
-    argument in that sequence is correct; the guard is the only thing separating the
-    two writers. It does NOT decide retryable-vs-terminal policy, which stays #71's -
-    it only says a lease means what it says.
+    ONLY THE CURRENT LEASEHOLDER MAY FINISH A JOB - `state = 'processing'` AND
+    `lease_token`, together, in `_settle`. Without them, a worker whose lease expired and
+    whose job was re-handed out can wake up and write a terminal state over the run that
+    actually won. That is not hypothetical: `reclaim_expired`'s own docstring predicts this
+    caller ("a stalled-but-alive worker keeps running and may finish after its job is
+    re-handed out"), and the sequence claim -> reclaim -> re-claim -> the WINNER completes ->
+    the zombie fails leaves the row `failed` for a file that is `ready`. Every argument in
+    that sequence is correct; the guard is the only thing separating the two writers. It does
+    NOT decide retryable-vs-terminal policy, which stays #71's - it only says a lease means
+    what it says.
 
-    THE TWO WAYS THIS CAN WRITE NOTHING ARE NOT THE SAME EVENT, so they are not
-    reported the same way:
-      - the job exists but is no longer `processing` -> this worker LOST ITS LEASE.
-        Routine under at-least-once (the guard above is what makes it routine), so it
-        returns False. Raising here would turn an expected outcome into an exception on
-        a normal poll cycle.
-      - no such `job_id` at all -> a programming error, and the caller's belief that a
-        job finished is simply false. `LookupError`, loudly. Same reasoning as
-        `index_file`'s zero-chunk `ValueError`: a public entry point does not trust its
-        caller (#23), and silence here costs a re-ingest per lease expiry until #71's
-        retry budget terminal-fails the file for the wrong reason.
+    THE STATE HALF ALONE DID NOT SAY THAT, which is why the token exists. `processing` is
+    true of a job that has been re-handed out to someone else, so the sequence above passed
+    the guard whenever the winner was still RUNNING rather than already finished - the
+    version this docstring described, and the version the tests covered. `_settle` carries
+    the mechanism; migration 0002 carries the argument.
 
-    Returns True when this call is the one that finished the job.
+    Returns False on a lost lease, raises `LookupError` on an unknown `job_id`, returns
+    True when this call is the one that finished the job - the three-way split `_settle`
+    owns and states, for all three verbs at once. That statement lives there and only
+    there: this docstring used to carry its own copy naming ONE way to get False, and the
+    lease token added a second the copy never learned about.
     """
-    require_idle(conn, "complete")
-    with conn.transaction():
-        cursor = conn.execute(
-            """
-            update jobs
-            set state = 'done', updated_at = now()
-            where job_id = %(job_id)s::uuid and state = 'processing'
-            """,
-            {"job_id": job_id},
-        )
-        # Only asked when the update wrote nothing, and inside the same transaction so the
-        # answer cannot be overtaken between the two statements.
-        job_exists = cursor.rowcount == 1 or (
-            conn.execute(
-                "select 1 from jobs where job_id = %(job_id)s::uuid", {"job_id": job_id}
-            ).fetchone()
-            is not None
-        )
-        finished = cursor.rowcount == 1
-
-    # Raised AFTER the block so the connection is left IDLE either way - the ADR 0025
-    # contract this module's writers all keep.
-    if not job_exists:
-        raise LookupError(
-            f"complete() called with job_id={job_id}, which names no row in `jobs`; "
-            "the caller believes a job finished that does not exist"
-        )
-    return finished
+    return _settle(
+        conn,
+        verb="complete",
+        job_id=job_id,
+        lease_token=lease_token,
+        assignments="state = 'done'",
+        params={},
+        orphan_note="the caller believes a job finished that does not exist",
+    )
 
 
-def fail(conn: psycopg.Connection, *, job_id: str, error: str) -> bool:
+def fail(conn: psycopg.Connection, *, job_id: str, lease_token: str, error: str) -> bool:
     """Terminal failure: state='failed' + last_error.
 
     `last_error` is free text - distinct from `files.failed_reason`, which is a
@@ -301,41 +369,73 @@ def fail(conn: psycopg.Connection, *, job_id: str, error: str) -> bool:
     the trail of how many tries this job burned is exactly what a human reading a
     failed row wants to see.
 
-    `and state = 'processing'` for the same reason `complete` carries it, and this is
-    the direction that actually costs something: a zombie's `fail` overwriting a
-    genuine success is worse than a zombie's `complete` overwriting a genuine
-    failure, because the second is at least true of some run. See `complete`.
+    Behind the same TWO-CONDITION lease guard as the other verbs - `state = 'processing'`
+    AND `lease_token` - and this is the direction that actually costs something: a zombie's
+    `fail` overwriting a genuine success is worse than a zombie's `complete` overwriting a
+    genuine failure, because the second is at least true of some run. `_settle` owns the
+    mechanism; `complete` carries why the state half alone was never an ownership check.
 
     Returns False on a lost lease, raises `LookupError` on an unknown `job_id`, returns
     True when this call is the one that failed the job - the same three-way split
-    `complete` makes, for the same reasons. Kept symmetrical deliberately: a worker
+    `_settle` makes for all three verbs. Kept symmetrical deliberately: a worker
     handles both outcomes in one place, and a split that differed between the success
     and failure paths would be read as meaningful.
     """
-    require_idle(conn, "fail")
-    with conn.transaction():
-        cursor = conn.execute(
-            """
-            update jobs
-            set state = 'failed', last_error = %(error)s, updated_at = now()
-            where job_id = %(job_id)s::uuid and state = 'processing'
-            """,
-            {"error": error, "job_id": job_id},
-        )
-        job_exists = cursor.rowcount == 1 or (
-            conn.execute(
-                "select 1 from jobs where job_id = %(job_id)s::uuid", {"job_id": job_id}
-            ).fetchone()
-            is not None
-        )
-        recorded = cursor.rowcount == 1
+    return _settle(
+        conn,
+        verb="fail",
+        job_id=job_id,
+        lease_token=lease_token,
+        assignments="state = 'failed', last_error = %(error)s",
+        params={"error": error},
+        orphan_note="the error message it carried has been discarded, not recorded",
+    )
 
-    if not job_exists:
-        raise LookupError(
-            f"fail() called with job_id={job_id}, which names no row in `jobs`; "
-            "the error message it carried has been discarded, not recorded"
-        )
-    return recorded
+
+def release(conn: psycopg.Connection, *, job_id: str, lease_token: str, error: str) -> bool:
+    """NON-terminal failure: state back to 'queued' so a later claim retries this job (#71).
+
+    The third outcome `complete`/`fail` do not cover. Those two are the ends of a job's life;
+    this one says "this attempt lost, the job has not". The worker calls it when the pipeline
+    raises a TRANSIENT failure and the retry budget still has room - deciding WHICH failures
+    are transient, and when the budget is spent, stays the worker's (see this module's opening
+    lines: it records job state, it does not decide it).
+
+    `attempts` is deliberately NOT decremented, and that is the whole point of the verb: the
+    bump `claim` made is the retry trail the worker's budget counts against, so a release that
+    gave it back would hand a poison file a fresh budget on every transient blip - the same
+    failure `reclaim_expired` avoids by not resetting it. `last_error` IS overwritten, because
+    the useful error is the one from the attempt that just failed.
+
+    `leased_until` is cleared, unlike `complete`/`fail`, and the asymmetry is not an
+    oversight: those leave a terminal row's lease in place because `reclaim_expired` filters
+    on state and an inert stale lease is a record of when the winning run held the job. This
+    row is going back to `queued`, where a leftover lease would be a live lie about a worker
+    that no longer holds it.
+
+    THE CALLER SERVES THE BACKOFF BEFORE CALLING THIS, not after. While the row is still
+    `processing` the lease keeps every other worker off it, so the delay is enforced for the
+    whole system; release first and the next poll tick - this worker's or another's - can
+    re-claim it seconds later, which is ADR 0020's one genuinely wrong answer to a provider
+    saying "slow down".
+
+    Returns False on a lost lease, raises `LookupError` on an unknown `job_id`, returns True
+    when this call is the one that requeued the job - the same three-way split, behind the same
+    two-condition lease guard, that `complete` and `fail` make. THIS IS THE VERB THAT MOST
+    NEEDS THE TOKEN HALF of it, because this is the one that puts a job back INTO CIRCULATION
+    rather than ending it; migrations/0002_lease_token.sql carries what that costs.
+
+    Commits before returning, same contract as `claim` (its docstring has the argument).
+    """
+    return _settle(
+        conn,
+        verb="release",
+        job_id=job_id,
+        lease_token=lease_token,
+        assignments="state = 'queued', leased_until = null, last_error = %(error)s",
+        params={"error": error},
+        orphan_note="the job the caller believes it handed back does not exist",
+    )
 
 
 def reclaim_expired(conn: psycopg.Connection) -> int:
@@ -354,9 +454,11 @@ def reclaim_expired(conn: psycopg.Connection) -> int:
     - without `leased_until < now()`, a live lease is yanked from a healthy worker
       mid-job. (Same server clock `claim` stamped the lease with.)
 
-    `attempts` is deliberately NOT reset - it is the retry trail #71 compares
-    against its budget. A reclaim that zeroed it would hand a poison file a fresh
-    budget after every crash.
+    `lease_token` IS cleared, unlike `attempts`, and the two are opposites on purpose: the
+    token is the current holder's proof and this statement is the act of taking it away, so
+    leaving it would let the reclaimed worker keep settling the job. `attempts` is deliberately
+    NOT reset - it is the retry trail #71 compares against its budget. A reclaim that zeroed it
+    would hand a poison file a fresh budget after every crash.
 
     Reclaiming is NOT killing: a stalled-but-alive worker keeps running and may
     finish after its job is re-handed out. That duplicate run is safe by design -
@@ -373,6 +475,7 @@ def reclaim_expired(conn: psycopg.Connection) -> int:
             update jobs
             set state = 'queued',
                 leased_until = null,
+                lease_token = null,
                 updated_at = now()
             where state = 'processing' and leased_until < now()
             """

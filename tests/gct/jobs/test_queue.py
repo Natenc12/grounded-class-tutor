@@ -19,7 +19,7 @@ from pathlib import Path
 import psycopg
 import pytest
 
-from gct.jobs.queue import claim, complete, enqueue, fail, reclaim_expired
+from gct.jobs.queue import claim, complete, enqueue, fail, reclaim_expired, release
 
 
 def _lecture(tmp_path: Path) -> Path:
@@ -42,10 +42,12 @@ def test_every_writer_refuses_a_connection_already_in_a_transaction(db, db_other
     without doing anything that looks like writing. ADR 0027 records two tests that were
     written against the rule and broke it anyway; this is the version that cannot be ignored.
 
-    All five writers, because the guard is only worth anything if it has no gap — one
-    unguarded writer is the one a worker will call. And `enqueue` is checked for having
-    written NOTHING through `db_other`: a guard that raised *after* doing half the work would
-    be worse than none, since the caller would see an exception and a partial row.
+    EVERY writer, because the guard is only worth anything if it has no gap — one
+    unguarded writer is the one a worker will call. This list is a census, not a sample:
+    a new verb in this module (`release` arrived with #71 PR 2) belongs on it the same day.
+    And `enqueue` is checked for having written NOTHING through `db_other`: a guard that
+    raised *after* doing half the work would be worse than none, since the caller would see
+    an exception and a partial row.
     """
     conn, owner_id, class_id = db
     source = _lecture(tmp_path)
@@ -61,6 +63,7 @@ def test_every_writer_refuses_a_connection_already_in_a_transaction(db, db_other
         ("claim", lambda: claim(conn, lease_seconds=60)),
         ("complete", lambda: complete(conn, job_id=job.job_id)),
         ("fail", lambda: fail(conn, job_id=job.job_id, error="x")),
+        ("release", lambda: release(conn, job_id=job.job_id, error="x")),
         ("reclaim_expired", lambda: reclaim_expired(conn)),
     ]:
         with pytest.raises(RuntimeError, match=f"{name}\\(\\) requires a connection"):
@@ -709,3 +712,86 @@ def test_fail_publishes_failed_with_the_error_and_keeps_attempts(db, db_other, t
         "select state, last_error from jobs where file_id = %s::uuid", (second,)
     ).fetchone()
     assert sibling == ("queued", None), "fail touched a job it was not given"
+
+
+def test_release_requeues_the_job_and_keeps_the_attempts_it_burned(db, db_other, tmp_path):
+    """The non-terminal outcome: claimable again, with the retry trail intact (#71 PR 2).
+
+    Three things have to be true together, and each one is a different bug if it is not:
+      - `state` back to `queued`, PUBLISHED — a release visible only to the releasing
+        connection strands the job in `processing` for every other reader (ADR 0025);
+      - `leased_until` cleared — a requeued row carrying a live lease is a lie about a worker
+        that no longer holds it, and unlike `complete`/`fail` this row is going somewhere a
+        reader acts on;
+      - `attempts` NOT given back — it is the budget the worker counts against, and a release
+        that decremented it would hand a poison file an unlimited retry allowance, the same
+        failure `reclaim_expired` avoids by not resetting it.
+    The re-claim at the end is the one that proves it: the job comes back with attempts == 2,
+    so the budget is genuinely spending down across claims rather than resetting each time.
+    """
+    conn, owner_id, class_id = db
+    source = _lecture(tmp_path)
+    first = enqueue(conn, path=source, owner_id=owner_id, class_id=class_id)
+    second = enqueue(conn, path=source, owner_id=owner_id, class_id=class_id)
+    job = claim(conn, lease_seconds=3600)
+    assert job is not None and job.file_id == first
+
+    assert release(conn, job_id=job.job_id, error="transient: provider said 429") is True
+
+    assert conn.info.transaction_status == psycopg.pq.TransactionStatus.IDLE
+    requeued = db_other.execute(
+        """
+        select state, leased_until, last_error, attempts
+        from jobs where job_id = %s::uuid
+        """,
+        (job.job_id,),
+    ).fetchone()
+    assert requeued == ("queued", None, "transient: provider said 429", 1), (
+        "release must publish a claimable row that still remembers what it cost"
+    )
+    # Scoping teeth, same as complete/fail: with one row in the table a lost WHERE clause
+    # would pass. The sibling's `last_error` is the half that catches a stray UPDATE.
+    sibling = db_other.execute(
+        "select state, last_error from jobs where file_id = %s::uuid", (second,)
+    ).fetchone()
+    assert sibling == ("queued", None), "release touched a job it was not given"
+    # `files.status` is the other axis and stays where #71's worker left it — release is queue
+    # machinery and writes nothing a student sees.
+    assert (
+        db_other.execute("select status from files where file_id = %s::uuid", (first,)).fetchone()[
+            0
+        ]
+        == "queued"
+    ), "release wrote files.status — that axis belongs to the worker"
+
+    again = claim(conn, lease_seconds=3600)
+    assert again is not None and again.job_id == job.job_id
+    assert again.attempts == 2, "the retry budget did not spend down across the release"
+
+
+def test_release_distinguishes_a_lost_lease_from_a_job_that_never_existed(db, db_other, tmp_path):
+    """The same three-way split `complete` and `fail` make, for the same reasons.
+
+    Kept symmetrical deliberately: a worker handles all three outcomes in one place, and a
+    split that differed for the requeue path would be read as meaning something. The lost-lease
+    direction matters more here than for `fail` — a zombie whose lease expired dragging a
+    FINISHED job back to `queued` would re-ingest a file that is already `ready`, paying the
+    embedding bill again for nothing.
+    """
+    conn, owner_id, class_id = db
+    enqueue(conn, path=_lecture(tmp_path), owner_id=owner_id, class_id=class_id)
+    job = claim(conn, lease_seconds=3600)
+    assert job is not None
+    assert complete(conn, job_id=job.job_id) is True
+
+    assert release(conn, job_id=job.job_id, error="too late") is False, (
+        "a zombie must not be able to resurrect the job the winning run finished"
+    )
+    assert db_other.execute(
+        "select state, last_error from jobs where job_id = %s::uuid", (job.job_id,)
+    ).fetchone() == ("done", None), "a False return still wrote something"
+
+    ghost = str(uuid.uuid4())
+    with pytest.raises(LookupError, match=ghost):
+        release(conn, job_id=ghost, error="into the void")
+    assert conn.info.transaction_status == psycopg.pq.TransactionStatus.IDLE

@@ -338,6 +338,70 @@ def fail(conn: psycopg.Connection, *, job_id: str, error: str) -> bool:
     return recorded
 
 
+def release(conn: psycopg.Connection, *, job_id: str, error: str) -> bool:
+    """NON-terminal failure: state back to 'queued' so a later claim retries this job (#71).
+
+    The third outcome `complete`/`fail` do not cover. Those two are the ends of a job's life;
+    this one says "this attempt lost, the job has not". The worker calls it when the pipeline
+    raises a TRANSIENT failure and the retry budget still has room - deciding WHICH failures
+    are transient, and when the budget is spent, stays the worker's (see this module's opening
+    lines: it records job state, it does not decide it).
+
+    `attempts` is deliberately NOT decremented, and that is the whole point of the verb: the
+    bump `claim` made is the retry trail the worker's budget counts against, so a release that
+    gave it back would hand a poison file a fresh budget on every transient blip - the same
+    failure `reclaim_expired` avoids by not resetting it. `last_error` IS overwritten, because
+    the useful error is the one from the attempt that just failed.
+
+    `leased_until` is cleared, unlike `complete`/`fail`, and the asymmetry is not an
+    oversight: those leave a terminal row's lease in place because `reclaim_expired` filters
+    on state and an inert stale lease is a record of when the winning run held the job. This
+    row is going back to `queued`, where a leftover lease would be a live lie about a worker
+    that no longer holds it.
+
+    THE CALLER SERVES THE BACKOFF BEFORE CALLING THIS, not after. While the row is still
+    `processing` the lease keeps every other worker off it, so the delay is enforced for the
+    whole system; release first and the next poll tick - this worker's or another's - can
+    re-claim it seconds later, which is ADR 0020's one genuinely wrong answer to a provider
+    saying "slow down".
+
+    Returns False on a lost lease, raises `LookupError` on an unknown `job_id`, returns True
+    when this call is the one that requeued the job - the same three-way split, with the same
+    `and state = 'processing'` guard, that `complete` and `fail` make. Here the guard stops a
+    zombie whose lease expired from dragging a job back to `queued` after the run that
+    actually won already finished it - which would re-ingest a `ready` file for nothing.
+
+    Commits before returning, same contract as `claim` (its docstring has the argument).
+    """
+    require_idle(conn, "release")
+    with conn.transaction():
+        cursor = conn.execute(
+            """
+            update jobs
+            set state = 'queued',
+                leased_until = null,
+                last_error = %(error)s,
+                updated_at = now()
+            where job_id = %(job_id)s::uuid and state = 'processing'
+            """,
+            {"error": error, "job_id": job_id},
+        )
+        job_exists = cursor.rowcount == 1 or (
+            conn.execute(
+                "select 1 from jobs where job_id = %(job_id)s::uuid", {"job_id": job_id}
+            ).fetchone()
+            is not None
+        )
+        requeued = cursor.rowcount == 1
+
+    if not job_exists:
+        raise LookupError(
+            f"release() called with job_id={job_id}, which names no row in `jobs`; "
+            "the job the caller believes it handed back does not exist"
+        )
+    return requeued
+
+
 def reclaim_expired(conn: psycopg.Connection) -> int:
     """The reaper: processing rows past leased_until go back to queued. Returns the count.
 

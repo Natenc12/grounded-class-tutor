@@ -1,4 +1,4 @@
-"""DB-backed tests for the worker: the happy path (PR 1) and the failure split (PR 2, issue #71).
+"""DB-backed tests for the worker: the happy path, the failure split, and the reaper (issue #71).
 
 Same discipline as `test_queue.py`: real Postgres via the `db` fixture, and every assertion
 about what the worker PUBLISHED goes through `db_other` - a second connection. A connection
@@ -6,7 +6,8 @@ sees its own uncommitted work, so reading back through `db` would hold whether o
 was committed (ADR 0025); the durability assertion IS the point of the happy-path test, not a
 flourish on it.
 
-The PR 2 half exercises ADR 0020 §1 from both sides. Its stubs are chosen so a failure costs
+The failure-split half exercises ADR 0020 §1 from both sides (its transient class narrowed by
+ADR 0028 - a DB blip is not in it). Its stubs are chosen so a failure costs
 nothing and is exact: `FakeEmbeddings(transient_failures=N)` raises the provider-agnostic
 `TransientEmbeddingError` on cue, and a corrupt PDF makes `parse_file` raise the real
 `ParseError` rather than a mock of one - the terminal path's whole contract is that
@@ -28,13 +29,15 @@ from __future__ import annotations
 import io
 from pathlib import Path
 
+import psycopg
 import pytest
 from reportlab.pdfgen import canvas
 
 from gct.config import EMBEDDING_DIM
 from gct.ingest.chunk import CHUNK_OVERLAP_WORDS, CHUNK_SIZE_WORDS
+from gct.ingest.pipeline import ingest_file
 from gct.jobs import worker
-from gct.jobs.queue import enqueue
+from gct.jobs.queue import claim, complete, enqueue, reclaim_expired
 from gct.jobs.worker import (
     DEFAULT_LEASE_SECONDS,
     backoff_seconds,
@@ -250,37 +253,137 @@ def test_chunk_window_reaches_ingest(db, db_other, tmp_path):
     assert default_chunks != small_chunks
 
 
+class Stop(Exception):
+    """Sentinel - the only way out of `run`'s `while True`.
+
+    Shared by every loop test below. `run` takes no `max_ticks` knob on purpose: that would put
+    a branch in production code which only tests ever take, so the loop is exited by making a
+    stubbed collaborator raise once its script runs out.
+    """
+
+
+def _script_the_loop(monkeypatch, ticks, *, reclaims=None):
+    """Stub out both of the loop's collaborators and record what it did, in order.
+
+    Returns `(events, slept)`. `events` interleaves `("reap", conn)` and `("tick", conn)` so a
+    test can assert not just THAT the reaper ran but that it ran BEFORE the claim - the ordering
+    is the decision (ADR 0028 §5), and a test that only counted calls would pass a loop that
+    reaped afterwards.
+
+    Both stubs record the connection they were handed. `run` is driven with a SENTINEL object
+    rather than `None` so "passed the wrong thing" is a distinguishable failure: a stub that
+    accepts anything would survive the mutation `reclaim_expired(conn)` -> `reclaim_expired(x)`.
+
+    `time.sleep` is stubbed because the scripts below contain empty ticks and the real
+    `DEFAULT_POLL_SECONDS` is 2s - the delays are the assertion, never something a test waits
+    out (the same rule the backoff tests keep).
+    """
+    events: list[tuple[str, object]] = []
+    slept: list[float] = []
+    reclaims = iter(reclaims if reclaims is not None else [])
+    remaining = iter(ticks)
+
+    def fake_reclaim(conn):
+        events.append(("reap", conn))
+        return next(reclaims, 0)
+
+    def fake_process_one(conn, **kwargs):
+        events.append(("tick", conn))
+        try:
+            return next(remaining)
+        except StopIteration:
+            raise Stop from None
+
+    monkeypatch.setattr(worker, "reclaim_expired", fake_reclaim)
+    monkeypatch.setattr(worker, "process_one", fake_process_one)
+    monkeypatch.setattr(worker.time, "sleep", slept.append)
+    return events, slept
+
+
 def test_run_sleeps_only_on_empty_ticks(monkeypatch):
     """The loop naps on an idle tick and polls straight through a productive one.
-
-    No DB and no `run` parameter added for testability: `while True` is exited by making the
-    stubbed `process_one` raise once its script runs out. The alternative - a `max_ticks` knob
-    on `run` - would put a branch in production code that only tests ever take.
 
     This pins the bug the loop shipped with in review: forwarding nothing and sleeping after
     EVERY tick, which adds `poll_seconds` of dead time to every job in a busy queue.
     """
-
-    class Stop(Exception):
-        """Sentinel - the only way out of the loop."""
-
-    ticks = iter([True, True, False, True])
-    slept: list[float] = []
-
-    def fake_process_one(conn, **kwargs):
-        try:
-            return next(ticks)
-        except StopIteration:
-            raise Stop from None
-
-    monkeypatch.setattr(worker, "process_one", fake_process_one)
-    monkeypatch.setattr(worker.time, "sleep", slept.append)
+    _events, slept = _script_the_loop(monkeypatch, [True, True, False, True])
 
     with pytest.raises(Stop):
-        worker.run(None, embedder=None, chunk_size=1, chunk_overlap=0, poll_seconds=0.25)
+        worker.run(object(), embedder=None, chunk_size=1, chunk_overlap=0, poll_seconds=0.25)
 
     # Four ticks, exactly one of them empty - so exactly one sleep, at the configured interval.
     assert slept == [0.25]
+
+
+def test_the_reaper_runs_before_the_claim_on_every_tick(monkeypatch):
+    """The reaper is on the poll loop, every iteration, ahead of `process_one` (ADR 0028 §5).
+
+    Three properties, and each fails a different plausible wiring:
+      - EVERY tick, not only the idle one. Reaping only when the queue looks empty leaves a
+        crashed job stranded behind every queued file, with the student's status frozen -
+        reclaim latency unbounded under exactly the load that makes it matter.
+      - BEFORE `process_one`, so a job stranded by the previous crash is claimable by THIS tick
+        rather than the next.
+      - handed the worker's OWN connection. Asserted against a sentinel because a recording stub
+        accepts any argument, so passing the wrong object would otherwise go green.
+
+    Deliberately a pure test: `reclaim_expired` has its own DB coverage in `test_queue.py`, and
+    what is unproven until here is the WIRING, which needs no database to state.
+    """
+    conn = object()
+    # Two scripted ticks - one productive, one empty - then a third that raises out of the loop.
+    events, _slept = _script_the_loop(monkeypatch, [True, False])
+
+    with pytest.raises(Stop):
+        worker.run(conn, embedder=None, chunk_size=1, chunk_overlap=0, poll_seconds=0)
+
+    assert events == [
+        ("reap", conn),
+        ("tick", conn),  # a PRODUCTIVE tick still got reaped first
+        ("reap", conn),
+        ("tick", conn),  # ... and so did the EMPTY one that followed it
+        ("reap", conn),
+        ("tick", conn),  # ... and the reap happens before the claim that ends the loop
+    ], "the reaper must run once per tick, before the claim, on the worker's own connection"
+
+
+def test_the_reaper_is_silent_unless_it_actually_reclaimed_something(monkeypatch, caplog):
+    """Zero reclaims logs nothing; a non-zero reclaim logs once, at WARNING.
+
+    The silence is the load-bearing half. At a 2s poll a line per reap is 30 a minute of
+    "nothing happened", which buries the lines that matter - the same argument that keeps
+    `process_one`'s empty tick silent. The WARNING is the other half: a reclaim means a worker
+    died or the lease was too short, which ADR 0028 names as the evidence that would move the
+    lease number, so it must not be logged at INFO where the default config drops it.
+    """
+    _events, _slept = _script_the_loop(monkeypatch, [False, False], reclaims=[0, 3])
+
+    with caplog.at_level("WARNING", logger="gct.jobs.worker"):
+        with pytest.raises(Stop):
+            worker.run(object(), embedder=None, chunk_size=1, chunk_overlap=0, poll_seconds=0)
+
+    reaper_lines = [r for r in caplog.records if r.message.startswith("reaper:")]
+    assert len(reaper_lines) == 1, "only the tick that reclaimed something may log"
+    assert "3 job(s)" in reaper_lines[0].getMessage()
+    assert reaper_lines[0].levelname == "WARNING"
+
+
+def test_a_raising_reaper_stops_the_loop(monkeypatch):
+    """No handler around the reaper - a DB error crashes the worker (ADR 0028 §4).
+
+    Pins a rule that is otherwise invisible: the module's stance is that an unclassified
+    exception propagates rather than being guessed into a `failed_reason`, and ADR 0028 ratifies
+    that a DB error is in that class. Without this test a future defensive `except Exception`
+    around the reap - the exact thing the ADR argues against - goes in green.
+    """
+
+    def boom(conn):
+        raise psycopg.OperationalError("connection lost")
+
+    monkeypatch.setattr(worker, "reclaim_expired", boom)
+
+    with pytest.raises(psycopg.OperationalError):
+        worker.run(object(), embedder=None, chunk_size=1, chunk_overlap=0)
 
 
 def test_backoff_doubles_and_is_capped(monkeypatch):
@@ -292,9 +395,9 @@ def test_backoff_doubles_and_is_capped(monkeypatch):
     would outlast the lease and let the reaper hand the job to another worker mid-wait - two
     workers embedding the same file, the exact double-charge the lease number exists to stop.
 
-    Asserted against the constants rather than literals: the numbers are provisional until the
-    four-numbers ADR (PR 3) ratifies them, and a test written in literals would go red on a
-    tuning change that broke nothing.
+    Asserted against the constants rather than literals: ADR 0028 ratified the numbers without
+    MEASURING them and names the log lines that would move them, so a test written in literals
+    would go red on a tuning change that broke nothing.
     """
     base = worker.BACKOFF_BASE_SECONDS
     cap = worker.BACKOFF_MAX_SECONDS
@@ -556,7 +659,7 @@ def test_a_terminal_failure_cannot_unpublish_a_file_that_is_already_ready(
     sit there answering questions.
 
     The `ready` row is set directly rather than by staging a real reclaim: `reclaim_expired` is
-    wired into the poll loop in PR 3, and this test is about the WRITE's guard, not about the
+    wired into the poll loop by `run`, and this test is about the WRITE's guard, not about the
     sequence that reaches it. A published `ready` file is a published `ready` file however it
     got there. The sibling assertion is that the jobs axis still records the failure - the
     guard suppresses the student-facing lie, not the operational trail.
@@ -598,8 +701,8 @@ def test_the_backoff_never_outlasts_the_lease_it_is_served_under(
     Driven at a 5-second lease precisely because the defaults CANNOT fail this: 60s under a
     900s lease passes whether or not the clamp exists, so a test written at the defaults would
     be green on both sides of the fix and prove nothing. The assertion is against
-    `lease_seconds`, never a literal - the four numbers are provisional until PR 3's ADR
-    (ADR 0020), and a test in literals would go red on a tuning change that broke nothing.
+    `lease_seconds`, never a literal - ADR 0028 ratified the four numbers without measuring
+    them, so a test in literals would go red on a tuning change that broke nothing.
 
     Both halves are asserted. The bound alone would pass a worker that never slept at all -
     which is ADR 0020's one genuinely wrong answer to a provider saying "slow down" - so the
@@ -628,4 +731,102 @@ def test_the_backoff_never_outlasts_the_lease_it_is_served_under(
     )
     assert any(d < backoff_seconds(n + 1) for n, d in enumerate(slept)), (
         "nothing was actually clamped, so this test would pass without the fix"
+    )
+
+
+def _backdate_lease(conn, file_id: str) -> None:
+    """Push a claimed job's lease an hour into the past - a worker that died mid-job.
+
+    Expiry is simulated by editing the timestamp rather than claiming with a tiny
+    `lease_seconds` and sleeping: no wall-clock wait, and the lease is unambiguously expired
+    rather than racing the test's own speed. Commits, so `reclaim_expired` starts outside a
+    transaction (its contract; ADR 0025).
+
+    Duplicated from `test_queue.py` rather than imported: pytest does not expose a conftest
+    sideways, and this file already carries its own stubs for that reason (see the module
+    docstring). Two lines of SQL is the cheaper duplication.
+    """
+    conn.execute(
+        "update jobs set leased_until = now() - interval '1 hour' where file_id = %s::uuid",
+        (file_id,),
+    )
+    conn.commit()
+
+
+def test_a_reclaimed_job_reruns_and_leaves_one_chunk_set(db, db_other, tmp_path):
+    """At-least-once redelivery leaves ONE full chunk set, not two (ADR 0020 §2, issue #71).
+
+    The acceptance criterion the failure-split PR could not reach, because reaching it needs a
+    reclaim. The scenario is the one `reclaim_expired`'s docstring warns about and no test had
+    yet driven end to end through the WORKER: reclaiming is not killing, so a stalled-but-alive
+    worker keeps running and its job gets re-handed out while it is still holding results.
+
+    Worker A claims and ingests - it has genuinely published `ready` and a full chunk set - but
+    is slow, and its lease expires before it can call `complete`. The reaper requeues the job.
+    Worker B claims the SAME job and re-runs the whole pipeline from scratch.
+
+    What must be true afterwards is the invariant the differentiator rests on: the file has
+    exactly ONE chunk set. `index_file`'s delete-then-insert is what makes the duplicate run
+    free of consequence rather than merely survivable - a Retriever reading a doubled corpus
+    would rank the same passage twice and the Grounder would cite it twice. Every assertion goes
+    through `db_other`, because a doubled set would be just as invisible to the connection that
+    wrote it as a published one is.
+
+    NOTE ON WHAT THIS DOES AND DOES NOT COVER: it drives `reclaim_expired` and `process_one`
+    directly, never `run`, so it proves the IDEMPOTENCY acceptance box and passes identically
+    with or without the reaper being wired into the poll loop. The wiring is covered by
+    `test_the_reaper_runs_before_the_claim_on_every_tick`. Two different claims, two tests.
+    """
+    conn, owner_id, class_id = db
+    embedder = FakeEmbeddings()
+    pdf = write_pdf(tmp_path / "lecture-4.pdf", ["reclaimed page one", "reclaimed page two"])
+    file_id = enqueue(conn, path=pdf, owner_id=owner_id, class_id=class_id)
+
+    # Worker A: claims, does the whole job, publishes - and then stalls before settling it.
+    stalled = claim(conn, lease_seconds=3600)
+    assert stalled is not None
+    ingest_file(
+        stalled.staging_ref,
+        stalled.owner_id,
+        stalled.class_id,
+        file_id=stalled.file_id,
+        embedder=embedder,
+        conn=conn,
+        chunk_size=CHUNK_SIZE_WORDS,
+        chunk_overlap=CHUNK_OVERLAP_WORDS,
+    )
+    (published,) = db_other.execute(
+        "select count(*) from chunks where file_id = %s::uuid", (file_id,)
+    ).fetchone()
+    assert published > 0, "the scenario needs A to have really published something to double"
+
+    # A's lease expires; the reaper hands the job back. `attempts` is deliberately NOT reset,
+    # so B's claim is attempt 2 - well inside the default budget, which is what lets it run.
+    _backdate_lease(conn, file_id)
+    assert reclaim_expired(conn) == 1
+
+    # Worker B: the full tick, from a clean claim through to `complete`.
+    assert tick(conn, embedder) is True
+
+    status, chunk_count, state, attempts = db_other.execute(
+        """
+        select f.status, (select count(*) from chunks c where c.file_id = f.file_id),
+               j.state, j.attempts
+        from files f join jobs j using (file_id)
+        where f.file_id = %s::uuid
+        """,
+        (file_id,),
+    ).fetchone()
+
+    assert chunk_count == published, (
+        "the re-run must REPLACE the chunk set, not add to it - a doubled corpus is the "
+        "at-least-once failure ADR 0020's delete-then-insert exists to make impossible"
+    )
+    assert status == "ready", "B republished the file; the student never saw it leave ready"
+    assert state == "done"
+    assert attempts == 2, "the reclaim preserves the retry trail rather than granting a fresh one"
+
+    # A finally wakes up. Its token died with its lease, so the run that won is safe from it.
+    assert complete(conn, job_id=stalled.job_id, lease_token=stalled.lease_token) is False, (
+        "a stalled worker must not be able to settle a job that was re-handed out"
     )

@@ -166,8 +166,8 @@ def _bury(conn: psycopg.Connection, job: Job, *, reason: str, error: str) -> Non
     argument as the `processing` write in `process_one`: under at-least-once a zombie whose
     lease expired can reach this line after the run that actually won already published the
     file, and flipping a queryable file to `failed` is the one direction that costs the student
-    something real. `fail`'s own `state = 'processing'` guard covers the jobs half; this covers
-    the half `queue.py` is not allowed to touch.
+    something real. `fail`'s own lease guard covers the jobs half; this covers the half
+    `queue.py` is not allowed to touch.
 
     A lost lease is reported, not raised: it is the routine at-least-once outcome (`fail`'s
     docstring), and the guard above already made it harmless.

@@ -369,10 +369,11 @@ def fail(conn: psycopg.Connection, *, job_id: str, lease_token: str, error: str)
     the trail of how many tries this job burned is exactly what a human reading a
     failed row wants to see.
 
-    `and state = 'processing'` for the same reason `complete` carries it, and this is
-    the direction that actually costs something: a zombie's `fail` overwriting a
-    genuine success is worse than a zombie's `complete` overwriting a genuine
-    failure, because the second is at least true of some run. See `complete`.
+    Behind the same TWO-CONDITION lease guard as the other verbs - `state = 'processing'`
+    AND `lease_token` - and this is the direction that actually costs something: a zombie's
+    `fail` overwriting a genuine success is worse than a zombie's `complete` overwriting a
+    genuine failure, because the second is at least true of some run. `_settle` owns the
+    mechanism; `complete` carries why the state half alone was never an ownership check.
 
     Returns False on a lost lease, raises `LookupError` on an unknown `job_id`, returns
     True when this call is the one that failed the job - the same three-way split

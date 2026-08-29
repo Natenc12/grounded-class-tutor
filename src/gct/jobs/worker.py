@@ -85,7 +85,9 @@ DEFAULT_MAX_ATTEMPTS = 5
 # Both sit far under DEFAULT_LEASE_SECONDS on purpose: the worker serves the backoff while still
 # HOLDING the lease (see `process_one`), so a backoff that could outlast the lease would let the
 # reaper hand the job to someone else mid-wait, which is the double-embed ADR 0011's lease number
-# exists to prevent.
+# exists to prevent. That relationship is ENFORCED in `process_one`, not just intended here -
+# `lease_seconds` is a parameter, so these two constants cannot see the number they must stay
+# under, and a caller passing a short lease would otherwise break the rule silently.
 BACKOFF_BASE_SECONDS = 2.0
 BACKOFF_MAX_SECONDS = 60.0
 
@@ -347,16 +349,44 @@ def process_one(
         # what makes it stop being affordable - at which point the delay wants to live in the
         # database (a `visible_after` column claim filters on) rather than in a sleeping
         # process. Recorded so that change is a decision someone makes, not a bug someone finds.
-        delay = backoff_seconds(job.attempts) if job.attempts < max_attempts else 0.0
+        elapsed = time.perf_counter() - started
+        wanted = backoff_seconds(job.attempts) if job.attempts < max_attempts else 0.0
+        # THE CURVE IS A WANT; THE LEASE IS WHAT THIS WORKER CAN AFFORD. The sleep is served
+        # while the lease is still held (that is the point - see above), so a delay that
+        # outlasts the lease lets the reaper hand the job to a second worker mid-wait, and two
+        # runs embed one file. `BACKOFF_MAX_SECONDS` sits far under `DEFAULT_LEASE_SECONDS`,
+        # but `lease_seconds` is a PARAMETER and the curve is module constants: a caller that
+        # shortens the lease breaks a relationship neither of them can see. This is the one
+        # place that knows both numbers, so it is the only place the rule can be enforced
+        # rather than asserted - measured at `lease_seconds=5`, where the uncapped curve slept
+        # 16s under a 5s lease.
+        #
+        # Halved, not merely fitted, and `elapsed` is why: it is measured from just before the
+        # `processing` write, a hair AFTER `claim` stamped the lease, so `lease_seconds -
+        # elapsed` slightly OVER-estimates what is actually left. The halving absorbs that, the
+        # `release` write that follows the sleep, and clock skew between this process and the
+        # server whose clock the lease is stamped in.
+        delay = min(wanted, max(0.0, lease_seconds - elapsed) / 2)
         logger.warning(
             "job %s: transient failure on attempt %s/%s after %.1fs, retrying in %.0fs - %s",
             job.job_id,
             job.attempts,
             max_attempts,
-            time.perf_counter() - started,
+            elapsed,
             delay,
             exc,
         )
+        if delay < wanted:
+            # Reported rather than absorbed: a cut backoff means this attempt ate a lease that
+            # was meant to cover it, which is evidence the lease number is wrong - exactly the
+            # measurement PR 3's four-numbers ADR needs. Silently clamping would swallow it.
+            logger.warning(
+                "job %s: backoff cut from %.0fs to %.0fs - the %ss lease could not cover it",
+                job.job_id,
+                wanted,
+                delay,
+                lease_seconds,
+            )
         if delay:
             time.sleep(delay)
         if not release(

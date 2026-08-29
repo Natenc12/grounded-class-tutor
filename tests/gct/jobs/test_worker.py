@@ -566,3 +566,57 @@ def test_a_terminal_failure_cannot_unpublish_a_file_that_is_already_ready(
         "select state from jobs where file_id = %s::uuid", (file_id,)
     ).fetchone()
     assert state == "failed", "the jobs axis still records what this attempt did"
+
+
+def test_the_backoff_never_outlasts_the_lease_it_is_served_under(
+    db, db_other, tmp_path, monkeypatch
+):
+    """The sleep is bounded by the lease this worker actually holds, not by the module constants.
+
+    The rule is stated where the constants live - both sit far under `DEFAULT_LEASE_SECONDS`
+    because the sleep is served while the lease is HELD, so a delay outlasting it lets the
+    reaper hand the job to a second worker mid-wait and two runs embed one file. But
+    `lease_seconds` is a PARAMETER and the curve is module constants: they cannot see each
+    other, so the relationship held only by coincidence of the defaults. At `lease_seconds=5`
+    the uncapped curve slept 2s, 4s, 8s, then 16s - three times the lease it was holding.
+
+    Driven at a 5-second lease precisely because the defaults CANNOT fail this: 60s under a
+    900s lease passes whether or not the clamp exists, so a test written at the defaults would
+    be green on both sides of the fix and prove nothing. The assertion is against
+    `lease_seconds`, never a literal - the four numbers are provisional until PR 3's ADR
+    (ADR 0020), and a test in literals would go red on a tuning change that broke nothing.
+
+    Both halves are asserted. The bound alone would pass a worker that never slept at all -
+    which is ADR 0020's one genuinely wrong answer to a provider saying "slow down" - so the
+    first tick's delay is pinned to the full curve value it was always allowed to serve.
+    """
+    conn, owner_id, class_id = db
+    conn.autocommit = True
+    lease_seconds = 5
+    slept: list[float] = []
+    monkeypatch.setattr(worker.time, "sleep", slept.append)
+    embedder = FakeEmbeddings(transient_failures=99)
+    source = write_pdf(tmp_path / "flaky-under-a-short-lease.pdf", ["words"])
+    enqueue(conn, path=source, owner_id=owner_id, class_id=class_id)
+
+    for _ in range(4):
+        process_one(
+            conn,
+            embedder=embedder,
+            chunk_size=CHUNK_SIZE_WORDS,
+            chunk_overlap=CHUNK_OVERLAP_WORDS,
+            lease_seconds=lease_seconds,
+        )
+
+    assert slept, "the transient path served no backoff at all"
+    assert max(slept) <= lease_seconds / 2, (
+        f"the worker slept {max(slept)}s while holding a {lease_seconds}s lease - the reaper "
+        "can hand the job to a second worker mid-wait, and both embed the same file"
+    )
+    assert slept[0] == backoff_seconds(1), (
+        "the first delay fits inside the lease and must still be the full curve value - "
+        "clamping something that already fit would turn a bound into a blanket cut"
+    )
+    assert any(d < backoff_seconds(n + 1) for n, d in enumerate(slept)), (
+        "nothing was actually clamped, so this test would pass without the fix"
+    )

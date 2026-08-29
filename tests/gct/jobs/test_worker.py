@@ -850,7 +850,7 @@ def test_a_reclaimed_job_reruns_and_leaves_one_chunk_set(db, db_other, tmp_path)
     )
 
 
-def test_run_reaps_a_stranded_job_on_a_real_connection(db, db_other, tmp_path):
+def test_run_reaps_a_stranded_job_on_a_real_connection(db, db_other, tmp_path, monkeypatch):
     """The one thing the stubbed loop tests cannot prove: `run`'s reap works on a REAL conn.
 
     Every other loop test stubs `reclaim_expired`, so the call site `run` now owns is never
@@ -882,10 +882,9 @@ def test_run_reaps_a_stranded_job_on_a_real_connection(db, db_other, tmp_path):
     def stop_after_one_tick(conn, **kwargs):
         raise next(ticks)
 
-    with pytest.MonkeyPatch.context() as mp:
-        mp.setattr(worker, "process_one", stop_after_one_tick)
-        with pytest.raises(Stop):
-            worker.run(conn, embedder=None, chunk_size=1, chunk_overlap=0)
+    monkeypatch.setattr(worker, "process_one", stop_after_one_tick)
+    with pytest.raises(Stop):
+        worker.run(conn, embedder=None, chunk_size=1, chunk_overlap=0)
 
     state, leased_until, token = db_other.execute(
         "select state, leased_until, lease_token from jobs where file_id = %s::uuid", (file_id,)

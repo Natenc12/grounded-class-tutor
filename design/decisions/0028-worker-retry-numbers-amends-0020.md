@@ -38,13 +38,14 @@ next reader argues with a decision instead of guessing at a constant.
 
 | number | value | constant | safe-if-wrong direction |
 |---|---|---|---|
-| **lease** | 15 min | `DEFAULT_LEASE_SECONDS` | errs **long**. Too short reclaims a job a healthy worker is still ingesting and pays the embedding bill twice; too long only delays reclaim after a worker dies. |
+| **lease** | 15 min | `DEFAULT_LEASE_SECONDS` | errs **long**. Too short reclaims a job a healthy worker is still ingesting and pays the embedding bill twice — **once a SECOND worker exists**, which `claim`'s `SKIP LOCKED` is built for even though V1 deploys one (§Consequences says what a short lease costs the single-worker case, which is much less). Too long only delays reclaim after a worker dies. |
 | **retry budget** | 5 attempts that run | `DEFAULT_MAX_ATTEMPTS` | errs **generous**. Too few gives up on a provider having a bad minute and shows the student `transient_exhausted` for a file that was fine; too many only spends more time and more embed calls on a file that was going to fail anyway. Counted in `jobs.attempts`, so a crash costs an attempt exactly as a caught 429 does. |
 | **backoff** | `min(2 · 2^(n-1), 60)` s | `BACKOFF_BASE_SECONDS` / `BACKOFF_MAX_SECONDS` | errs **short**. Too short re-asks a provider that is still busy — it wastes an attempt but breaks nothing; too long burns lease the attempt needed (§2) and, uncapped, stops being a delay at all. |
 | **poll** | 2 s | `DEFAULT_POLL_SECONDS` | errs **fast**. Too fast costs idle queries, which are free against local Postgres for one user; too slow is latency the student feels on every upload with nothing to say why. |
 
 **The budget is five attempts that RUN, and a sixth claim always happens on a job doomed by
-TRANSIENT failures.** (A terminal failure gets one claim and no budget at all — §4's other half.)
+TRANSIENT failures.** (A terminal failure gets one claim and no budget at all — ADR 0020 §1's terminal half,
+which this ADR leaves standing.)
 `process_one` checks `job.attempts > max_attempts` against the post-bump value `claim` returns,
 so attempts 1–5 execute the pipeline and the sixth claim exists only to write
 `files.status='failed'` + `failed_reason='transient_exhausted'`. That claim is not a wasted
@@ -115,10 +116,13 @@ of the topology, not of the reaper, and it is the first thing to re-examine unde
   leaving them formally un-ratified is what produced the dangling citation this ADR closes, and
   a constant nobody has decided on is harder to argue with than one that has been written down
   wrong. The logging in §2 is what turns the next run into evidence.
-- **A shorter lease** (say 60 s, "long enough for a small file") — rejected. The failure it
-  causes is invisible and expensive: the reaper reclaims a job a healthy worker is still
-  embedding, and the all-or-nothing replace means the duplicate run *corrupts nothing* and
-  *fails no test* — it just bills OpenAI twice. Erring long makes the failure a delay instead.
+- **A shorter lease** (say 60 s, "long enough for a small file") — rejected. **On a second
+  worker** the failure it causes is invisible and expensive: the reaper reclaims a job a
+  healthy worker is still embedding, and the all-or-nothing replace means the duplicate run
+  *corrupts nothing* and *fails no test* — it just bills OpenAI twice. Erring long makes that
+  failure a delay instead. On today's single worker the cost is smaller and different: a lease
+  short enough to bite shows up as a **cut backoff** (§2), never as a double bill, because the
+  reaper cannot run while `process_one` holds the loop.
 - **Jitter on the backoff** — rejected for V1. Jitter de-synchronises a fleet retrying in
   lockstep; one worker has nothing to de-synchronise from, so it would add a moving part with no
   failure to prevent. Revisit with concurrency.
@@ -148,8 +152,11 @@ of the topology, not of the reaper, and it is the first thing to re-examine unde
   cost of the number rather than a bug someone rediscovers.
 - What would move each number, and where the evidence comes from:
   - **lease** — a completion log whose `elapsed` approaches `lease_seconds`, or a **"backoff
-    cut" warning**. NOT the reaper log, and §5 is why: this worker never reaps its own live
-    lease, and `complete`/`fail`/`release` guard on state and token but never on `leased_until`,
+    cut" warning**. NOT the reaper log, and §5 is why: this worker never reaps its own
+    in-flight job — not merely while its lease is live, which is vacuous (`leased_until <
+    now()` matches no live lease, for anyone), but even once that lease has EXPIRED, because
+    the reap and the job run on one thread and `process_one` holds it. `complete`/`fail`/
+    `release` then guard on state and token but never on `leased_until`,
     so a single worker that overruns its lease still finishes normally and leaves the reaper
     nothing to find. On V1 a non-zero reap means a process DIED — it cannot mean a healthy run
     outran its lease. What it does argue is the opposite of "too short": the reap can only land

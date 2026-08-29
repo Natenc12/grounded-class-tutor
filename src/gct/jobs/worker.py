@@ -77,7 +77,9 @@ logger = logging.getLogger(__name__)
 # latency a student feels and the worker cannot see. Ratified is not measured: change these when
 # the evidence says to, not on taste.
 # The lease errs LONG on purpose: too short reclaims a job a healthy worker is still ingesting
-# and pays the embedding bill twice; too long only delays reclaim after a genuine crash - and,
+# and pays the embedding bill twice ONCE A SECOND WORKER EXISTS - on today's single worker the
+# reaper cannot run while `process_one` holds the loop, so a short lease shows up as a cut
+# backoff instead (ADR 0028 §1). Too long only delays reclaim after a genuine crash - and,
 # per ADR 0028 §Consequences, delays it after a Ctrl-C too, which is where the number is really
 # paid and which this worker does not yet handle.
 DEFAULT_LEASE_SECONDS = 15 * 60
@@ -503,10 +505,10 @@ def run(
         reclaimed = reclaim_expired(conn)
         if reclaimed:
             logger.warning(
-                "reaper: %s job(s) requeued after their %ss lease elapsed - a worker died or "
-                "was stopped mid-ingest, and those files read `processing` until now",
+                "reaper: %s job(s) whose lease had elapsed are claimable again - a worker died "
+                "or was stopped mid-ingest, and their files have been showing whatever status "
+                "that run reached until now",
                 reclaimed,
-                lease_seconds,
             )
         if not process_one(
             conn,

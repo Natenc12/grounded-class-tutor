@@ -61,9 +61,12 @@ def test_every_writer_refuses_a_connection_already_in_a_transaction(db, db_other
     for name, call in [
         ("enqueue", lambda: enqueue(conn, path=source, owner_id=owner_id, class_id=class_id)),
         ("claim", lambda: claim(conn, lease_seconds=60)),
-        ("complete", lambda: complete(conn, job_id=job.job_id)),
-        ("fail", lambda: fail(conn, job_id=job.job_id, error="x")),
-        ("release", lambda: release(conn, job_id=job.job_id, error="x")),
+        ("complete", lambda: complete(conn, job_id=job.job_id, lease_token=job.lease_token)),
+        ("fail", lambda: fail(conn, job_id=job.job_id, lease_token=job.lease_token, error="x")),
+        (
+            "release",
+            lambda: release(conn, job_id=job.job_id, lease_token=job.lease_token, error="x"),
+        ),
         ("reclaim_expired", lambda: reclaim_expired(conn)),
     ]:
         with pytest.raises(RuntimeError, match=f"{name}\\(\\) requires a connection"):
@@ -567,8 +570,13 @@ def test_a_zombie_worker_cannot_overwrite_the_run_that_won(db, db_other, tmp_pat
     winner = claim(conn, lease_seconds=3600)
     assert winner is not None and winner.job_id == zombie.job_id, "the same job came back around"
 
-    complete(conn, job_id=winner.job_id)  # the run that actually holds the lease finishes
-    fail(conn, job_id=zombie.job_id, error="zombie woke up long after losing its lease")
+    complete(conn, job_id=winner.job_id, lease_token=winner.lease_token)  # the run that holds it
+    fail(
+        conn,
+        job_id=zombie.job_id,
+        lease_token=zombie.lease_token,
+        error="zombie woke up long after losing its lease",
+    )
 
     survived = db_other.execute(
         "select state, last_error from jobs where job_id = %s::uuid", (winner.job_id,)
@@ -587,8 +595,8 @@ def test_a_zombie_worker_cannot_overwrite_the_run_that_won(db, db_other, tmp_pat
     retry = claim(conn, lease_seconds=3600)
     assert retry is not None
 
-    fail(conn, job_id=retry.job_id, error="the real run failed")
-    complete(conn, job_id=ghost.job_id)
+    fail(conn, job_id=retry.job_id, lease_token=retry.lease_token, error="the real run failed")
+    complete(conn, job_id=ghost.job_id, lease_token=ghost.lease_token)
 
     assert db_other.execute(
         "select state, last_error from jobs where job_id = %s::uuid", (retry.job_id,)
@@ -621,13 +629,13 @@ def test_complete_and_fail_distinguish_a_lost_lease_from_a_job_that_never_existe
     assert job is not None
 
     # 1. The happy path returns True — this call is the one that finished it.
-    assert complete(conn, job_id=job.job_id) is True
+    assert complete(conn, job_id=job.job_id, lease_token=job.lease_token) is True
 
     # 2. A second call writes nothing: the row is no longer `processing`. Not an error.
-    assert complete(conn, job_id=job.job_id) is False, (
+    assert complete(conn, job_id=job.job_id, lease_token=job.lease_token) is False, (
         "a worker that no longer holds the lease must be told so, not told it succeeded"
     )
-    assert fail(conn, job_id=job.job_id, error="too late") is False
+    assert fail(conn, job_id=job.job_id, lease_token=job.lease_token, error="too late") is False
     assert db_other.execute(
         "select state, last_error from jobs where job_id = %s::uuid", (job.job_id,)
     ).fetchone() == ("done", None), "a False return still wrote something"
@@ -635,9 +643,9 @@ def test_complete_and_fail_distinguish_a_lost_lease_from_a_job_that_never_existe
     # 3. A job_id naming nothing at all is loud, on both paths.
     ghost = str(uuid.uuid4())
     with pytest.raises(LookupError, match=ghost):
-        complete(conn, job_id=ghost)
+        complete(conn, job_id=ghost, lease_token=str(uuid.uuid4()))
     with pytest.raises(LookupError, match=ghost):
-        fail(conn, job_id=ghost, error="into the void")
+        fail(conn, job_id=ghost, lease_token=str(uuid.uuid4()), error="into the void")
 
     # The raise must not leave the connection mid-transaction — every writer here owes
     # `index_file` an IDLE connection (ADR 0025), and an exception path is the easiest
@@ -648,7 +656,9 @@ def test_complete_and_fail_distinguish_a_lost_lease_from_a_job_that_never_existe
     second = enqueue(conn, path=_lecture(tmp_path), owner_id=owner_id, class_id=class_id)
     live = claim(conn, lease_seconds=3600)
     assert live is not None and live.file_id == second
-    assert fail(conn, job_id=live.job_id, error="parse blew up") is True
+    assert (
+        fail(conn, job_id=live.job_id, lease_token=live.lease_token, error="parse blew up") is True
+    )
     assert file_id != second
 
 
@@ -668,7 +678,7 @@ def test_complete_publishes_done_and_touches_only_its_job(db, db_other, tmp_path
     job = claim(conn, lease_seconds=3600)
     assert job is not None and job.file_id == first
 
-    complete(conn, job_id=job.job_id)
+    complete(conn, job_id=job.job_id, lease_token=job.lease_token)
 
     assert conn.info.transaction_status == psycopg.pq.TransactionStatus.IDLE
     done = db_other.execute(
@@ -699,7 +709,12 @@ def test_fail_publishes_failed_with_the_error_and_keeps_attempts(db, db_other, t
     job = claim(conn, lease_seconds=3600)
     assert job is not None and job.file_id == first
 
-    fail(conn, job_id=job.job_id, error="embed exploded: dimension mismatch")
+    fail(
+        conn,
+        job_id=job.job_id,
+        lease_token=job.lease_token,
+        error="embed exploded: dimension mismatch",
+    )
 
     assert conn.info.transaction_status == psycopg.pq.TransactionStatus.IDLE
     dead = db_other.execute(
@@ -736,7 +751,15 @@ def test_release_requeues_the_job_and_keeps_the_attempts_it_burned(db, db_other,
     job = claim(conn, lease_seconds=3600)
     assert job is not None and job.file_id == first
 
-    assert release(conn, job_id=job.job_id, error="transient: provider said 429") is True
+    assert (
+        release(
+            conn,
+            job_id=job.job_id,
+            lease_token=job.lease_token,
+            error="transient: provider said 429",
+        )
+        is True
+    )
 
     assert conn.info.transaction_status == psycopg.pq.TransactionStatus.IDLE
     requeued = db_other.execute(
@@ -782,16 +805,75 @@ def test_release_distinguishes_a_lost_lease_from_a_job_that_never_existed(db, db
     enqueue(conn, path=_lecture(tmp_path), owner_id=owner_id, class_id=class_id)
     job = claim(conn, lease_seconds=3600)
     assert job is not None
-    assert complete(conn, job_id=job.job_id) is True
+    assert complete(conn, job_id=job.job_id, lease_token=job.lease_token) is True
 
-    assert release(conn, job_id=job.job_id, error="too late") is False, (
-        "a zombie must not be able to resurrect the job the winning run finished"
-    )
+    assert (
+        release(conn, job_id=job.job_id, lease_token=job.lease_token, error="too late") is False
+    ), "a zombie must not be able to resurrect the job the winning run finished"
     assert db_other.execute(
         "select state, last_error from jobs where job_id = %s::uuid", (job.job_id,)
     ).fetchone() == ("done", None), "a False return still wrote something"
 
     ghost = str(uuid.uuid4())
     with pytest.raises(LookupError, match=ghost):
-        release(conn, job_id=ghost, error="into the void")
+        release(conn, job_id=ghost, lease_token=str(uuid.uuid4()), error="into the void")
     assert conn.info.transaction_status == psycopg.pq.TransactionStatus.IDLE
+
+
+def test_release_refuses_a_job_another_worker_now_holds(db, db_other, tmp_path):
+    """The half the lost-lease test above does NOT cover: the winner is still RUNNING.
+
+    `test_release_distinguishes_a_lost_lease_from_a_job_that_never_existed` proves a zombie
+    cannot resurrect a job the winner already FINISHED - there the row reads `done`, so any
+    guard at all refuses it. This is the other, likelier shape: worker B claimed the job
+    seconds ago and is still embedding, so the row reads `processing` again. Under the
+    state-only guard that shipped in #70/#71 PR 1 the zombie's write passed - measured, not
+    argued: it returned True and left the row `queued` with B's lease erased.
+
+    That is the expensive direction, and it is why `release` is the verb the token was added
+    for. `complete`/`fail` are terminal, so a zombie writing over the holder leaves a wrong
+    row and stops; `release` puts the job back into circulation, so the next claim starts
+    ingesting a file B is still embedding - two runs, one file, two embedding bills, which is
+    the double charge the lease exists to prevent (migrations/0002_lease_token.sql).
+
+    The sibling assertions matter as much as the return value: a guard that refused the write
+    but had already clobbered `leased_until` or `last_error` would satisfy `is False` and still
+    have taken B's lease away.
+    """
+    conn, owner_id, class_id = db
+    file_id = enqueue(conn, path=_lecture(tmp_path), owner_id=owner_id, class_id=class_id)
+
+    stalled = claim(conn, lease_seconds=3600)
+    assert stalled is not None
+    _backdate_lease(conn, file_id)
+    assert reclaim_expired(conn) == 1
+    holder = claim(conn, lease_seconds=3600)
+    assert holder is not None and holder.job_id == stalled.job_id, "the same job came back around"
+    assert holder.lease_token != stalled.lease_token, (
+        "claim must mint a FRESH token per claim - reusing it would make the guard decorative"
+    )
+
+    # The stalled worker wakes up mid-ingest, hits a transient error, and hands "its" job back.
+    assert (
+        release(
+            conn,
+            job_id=stalled.job_id,
+            lease_token=stalled.lease_token,
+            error="stale worker's transient error",
+        )
+        is False
+    ), "a worker whose lease was reclaimed requeued a job another worker is running"
+
+    state, leased_until, last_error = db_other.execute(
+        "select state, leased_until, last_error from jobs where job_id = %s::uuid",
+        (holder.job_id,),
+    ).fetchone()
+    assert state == "processing", "the holder's job was dragged back into the claimable pool"
+    assert leased_until is not None, "the holder's lease was erased by a worker that lost it"
+    assert last_error is None, "a refused release still wrote its error over the holder's row"
+
+    # And the current holder is unaffected - it can still settle its own job normally.
+    assert (
+        release(conn, job_id=holder.job_id, lease_token=holder.lease_token, error="transient: 429")
+        is True
+    ), "the token guard refused the worker that actually holds the lease"

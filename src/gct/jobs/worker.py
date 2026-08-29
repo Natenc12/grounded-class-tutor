@@ -148,7 +148,7 @@ def _bury(conn: psycopg.Connection, job: Job, *, reason: str, error: str) -> Non
             {"reason": reason, "file_id": job.file_id},
         )
 
-    if not fail(conn, job_id=job.job_id, error=error):
+    if not fail(conn, job_id=job.job_id, lease_token=job.lease_token, error=error):
         logger.warning(
             "job %s: lease lost before it could be failed - another worker owns it now",
             job.job_id,
@@ -179,7 +179,8 @@ def process_one(
       3. `ingest_file(job.staging_ref, ..., file_id=job.file_id, embedder=..., conn=conn,
          chunk_size=..., chunk_overlap=...)` - the UNCHANGED Slice 1 pipeline (PM-4 seam:
          wrap, do not rewrite). It publishes `ready` itself, inside the index transaction.
-      4. `complete(conn, job_id=...)` - False means the lease was lost to another writer;
+      4. `complete(conn, job_id=..., lease_token=job.lease_token)` - False means the lease
+         was lost to another writer (`claim` handed the token out for exactly this check);
          handle it (at minimum, say so) rather than ignoring the return, so PR 3's reaper
          does not have to revisit this line.
 
@@ -262,11 +263,20 @@ def process_one(
     # can be reclaimed a SECOND time after an earlier worker's `index_file` already published
     # `ready` - that worker's `complete` returned False, so the job never went `done`. Without
     # the guard, this claim flips a finished file back to `processing` in the UI.
-    # The retry path is unaffected, but NOT for the reason PR 1 predicted here (`failed ->
-    # processing` still passing the guard): a retryable failure never writes `failed` at all -
-    # it leaves the file `processing` and requeues the job - and a file that DOES reach `failed`
-    # has a terminally-failed job that nothing will claim again. So `failed -> processing` is
-    # unreachable rather than merely permitted.
+    # `failed -> processing` IS permitted here, and that is load-bearing rather than an
+    # accident. The retry path does not need it - a retryable failure never writes `failed` at
+    # all, it leaves the file `processing` and requeues the job - but `_bury` does: it writes
+    # `files` BEFORE `jobs` precisely so that a crash between the two leaves a `failed` file
+    # under a job that is still claimable. The reaper requeues it, this line writes `processing`
+    # back over `failed`, and a later attempt settles both axes. Tightening this guard to
+    # exclude `failed` would strand exactly that file forever, which is the recovery `_bury`'s
+    # write order was chosen to buy. Only `ready` is protected, because only `ready` is a
+    # promise already made to the student.
+    # (An earlier version of this comment called the transition UNREACHABLE, reasoning that a
+    # `failed` file always has a terminally-failed job. That is true only when `_bury` completed
+    # BOTH its writes - the crash window between them is the whole point of its ordering, and
+    # `update files set status='processing' ... and status <> 'ready'` writes 1 row against a
+    # `failed` row when you run it.)
     # This write's guard is UNTESTED until PR 3 - `reclaim_expired` is what makes the sequence
     # reachable, and the guard's effect here is transient (a later `ready` overwrites it either
     # way), so the test belongs with the reaper. The IDENTICAL guard on the failure write is
@@ -349,7 +359,9 @@ def process_one(
         )
         if delay:
             time.sleep(delay)
-        if not release(conn, job_id=job.job_id, error=f"transient: {exc}"):
+        if not release(
+            conn, job_id=job.job_id, lease_token=job.lease_token, error=f"transient: {exc}"
+        ):
             logger.warning(
                 "job %s: lease lost before it could be requeued - another worker owns it now",
                 job.job_id,
@@ -357,7 +369,7 @@ def process_one(
         return True
 
     elapsed = time.perf_counter() - started
-    if complete(conn, job_id=job.job_id):
+    if complete(conn, job_id=job.job_id, lease_token=job.lease_token):
         logger.info("job %s: done in %.1fs", job.job_id, elapsed)
     else:
         # The lease was too short for this file - the one signal that says so. `elapsed`

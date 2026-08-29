@@ -40,7 +40,7 @@ spike within the fixed contract, not here.
 Not a request/response function — a **job consumer** with a durable effect. The contract is the job
 shape it claims, the row set it writes, and the status transitions it guarantees.
 ```
-Job{ job_id, file_id, owner_id, class_id, attempts, staging_ref }   # claimed across the ADR 0011 boundary
+Job{ job_id, file_id, owner_id, class_id, attempts, staging_ref, lease_token }  # across the ADR 0011 boundary
 
 Effect on commit (ready):
   chunks := [ Chunk{ chunk_id, file_id, owner_id, class_id,
@@ -55,9 +55,14 @@ Guarantee: a file's chunks are ALL-from-one-successful-run or ABSENT (ADR 0020).
 The written `Chunk` shape is exactly what the Retriever selects and hands up — the write path and read
 path meet on this row. `page_or_slide` is **scalar** by the never-span rule (ADR 0019).
 
-**The `Job` shape carries three fields beyond the identity triple, and `staging_ref` is the
+**The `Job` shape carries four fields beyond the identity triple, and `staging_ref` is the
 load-bearing one.** `job_id` and `attempts` are the queue handle and the retry trail the queue module
-owns. `staging_ref` is here because of step 1's ADR 0025 precondition, not for convenience: a worker
+owns. `lease_token` is the worker's proof that it still holds the lease it was handed: `claim` mints a
+fresh uuid per claim, and `complete`/`fail`/`release` match on it, so a worker whose lease expired and
+whose job was re-handed out is **refused** rather than allowed to write over the run that now holds it.
+The state alone could not say that — `processing` is equally true of a job re-handed to someone else,
+which let a stalled worker's `release` return a job another worker was still embedding to `queued`
+(migrations/0002_lease_token.sql carries the sequence). `staging_ref` is here because of step 1's ADR 0025 precondition, not for convenience: a worker
 that had to look the path up would run a statement *after* its claim committed, and a bare `SELECT`
 reopens psycopg's implicit transaction exactly as a write does — putting the connection back `INTRANS`
 and degrading step 6's transaction to a SAVEPOINT that publishes nothing. Handing the path over at

@@ -56,19 +56,27 @@ def main() -> None:
         level=logging.INFO,
         format="%(asctime)s %(levelname)s %(name)s: %(message)s",
     )
-    # Registered BEFORE the connection is opened, so a SIGTERM arriving during startup still
-    # takes the quiet path rather than the default kill. `signal.signal` is main-thread-only,
-    # which `main()` is by construction.
+    # Registered BEFORE the connection is opened, so a SIGTERM arriving during startup takes
+    # the quiet path rather than the default kill. `signal.signal` is main-thread-only, which
+    # `main()` is by construction.
     signal.signal(signal.SIGTERM, _interrupt)
-    conn = connect()
-    # Autocommit is defense in depth here, not load-bearing: every writer on the worker path
-    # commits itself inside its own `conn.transaction()`, so a plain connection works end to
-    # end (ADR 0025, guarded per ADR 0027; the plain-connection test in test_worker.py proves
-    # it). Kept because it protects a future statement added outside a transaction block from
-    # silently opening the implicit transaction. ask_smoke.py's wiring comment carries the
-    # original argument for the mode.
-    conn.autocommit = True
+    # Bound before the `try` so the `finally` below can ask whether there is anything to close:
+    # a signal landing inside `connect()` unwinds through that block with the name unassigned,
+    # and a bare `conn.close()` would raise `UnboundLocalError` over the top of the interrupt.
+    conn = None
     try:
+        # INSIDE the try, so an interrupt during startup exits the same way one during the run
+        # does. `connect()` is the slowest step here and the likeliest to hang - a Postgres that
+        # is down, a full connection pool - which makes it a window an operator sends a signal
+        # into rather than a hypothetical one.
+        conn = connect()
+        # Autocommit is defense in depth here, not load-bearing: every writer on the worker path
+        # commits itself inside its own `conn.transaction()`, so a plain connection works end to
+        # end (ADR 0025, guarded per ADR 0027; the plain-connection test in test_worker.py proves
+        # it). Kept because it protects a future statement added outside a transaction block from
+        # silently opening the implicit transaction. ask_smoke.py's wiring comment carries the
+        # original argument for the mode.
+        conn.autocommit = True
         run(
             conn,
             # The embedder constructs itself from config (ADR 0018: never hardcode a model id);
@@ -84,10 +92,12 @@ def main() -> None:
         # the in-flight job back to `queued` on the way out, so the next start claims it at once
         # instead of waiting out its lease (ADR 0028 §Consequences, shutdown-release bullet).
         # Nothing left to do here but exit quietly: an operator who stopped the worker does not
-        # need a traceback, and the exception has already done its work upstream.
+        # need a traceback, and the exception has already done its work upstream. A signal that
+        # arrived during startup reaches here too, with no job claimed and `run` never entered.
         pass
     finally:
-        conn.close()
+        if conn is not None:
+            conn.close()
 
 
 if __name__ == "__main__":

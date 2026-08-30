@@ -1,4 +1,6 @@
-"""DB-backed tests for the worker: the happy path, the failure split, and the reaper (issue #71).
+"""DB-backed tests for the worker: the happy path, the failure split, the reaper, the shutdown.
+
+The first three are issue #71; the shutdown half is issue #82 and is now roughly half the file.
 
 Same discipline as `test_queue.py`: real Postgres via the `db` fixture, and every assertion
 about what the worker PUBLISHED goes through `db_other` - a second connection. A connection
@@ -14,6 +16,24 @@ raise the real `ParseError` rather than a mock of one - the terminal path's whol
 that `exc.reason` is already a legal `files.failed_reason`, and a stubbed exception would let that
 pass-through drift. `time.sleep` is stubbed everywhere the backoff runs: the delays are the
 assertion, never something a test waits out.
+
+The shutdown half asks a different question from the other three, and it needs saying because
+it changes what a test here has to do to be worth anything. The others ask what the worker does
+with an INPUT - a good file, a corrupt one, a 429, an expired lease. This one asks where an
+INTERRUPT LANDS, which is not an input at all: the guard in `process_one` claims to cover every
+statement between `claim` committing and the settle verb returning, so it is only as good as its
+worst-covered statement and a single test through `ingest_file` proves nothing about its edges.
+The sweep near the bottom of this file is one case per landing point for that reason, and its
+two subtle points - after `index_file` commits, and between `_bury`'s two writes - carry their
+verdict in the case rather than in a comment somewhere else.
+
+Interrupts are injected by stubbing whatever runs at the point under test, EXCEPT in
+`test_both_signals_leave_the_job_in_the_same_state`, which delivers a real SIGINT and a real
+SIGTERM through `signal.raise_signal` - so nothing about the handler-to-exception step is
+simulated, and the exception lands between bytecodes rather than at a statement the test chose.
+An expired lease is always FORCED (`_backdate_lease`), never waited out: the measured worst case
+ingests 62x inside the real lease, so a test that waited would be waiting for something that
+does not happen.
 
 `FakeEmbeddings` and `write_pdf` are LOCAL on purpose: the root conftest records that the
 ingest factories "deliberately stayed put" in `tests/gct/ingest/`, pytest does not expose a

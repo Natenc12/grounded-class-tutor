@@ -170,24 +170,37 @@ def test_the_handler_is_registered_before_the_connection_is_opened(monkeypatch, 
     assert closed == [True]
 
 
-def test_a_sigterm_arriving_during_startup_is_not_lost(monkeypatch, restore_sigterm):
-    """A REAL signal, delivered while `connect()` is still running, becomes the interrupt.
+def test_a_sigterm_arriving_during_startup_exits_as_quietly_as_one_mid_run(
+    monkeypatch, restore_sigterm
+):
+    """A REAL signal, delivered while `connect()` is still running, and the worker exits clean.
 
     The test above proves the registration happens first; this proves what that buys, by raising
     an actual SIGTERM through the interpreter's actual disposition rather than calling
     `_interrupt` by hand. Without the early registration this is a dead process and an unrunnable
     assertion.
 
-    WHAT IS PINNED, precisely: the signal is not lost and is not the default kill - it arrives as
-    the `KeyboardInterrupt` the whole shutdown path is built on. It does NOT reach `main`'s quiet
-    `except`, because that `try` opens after `connect()` returns, so it propagates out of `main`
-    and the process exits on a traceback rather than silently. Nothing is stranded by that - no
-    job has been claimed yet, and `run` was never entered - so it is a cosmetic difference in how
-    an interrupted startup reports itself, not a correctness one. Pinned as measured; if `main`'s
-    `try` is ever widened to cover `connect()`, this assertion becomes `main()` returning quietly
-    and that is an improvement rather than a regression.
+    THREE THINGS, and each fails differently:
+      - THE SIGNAL IS NOT LOST. It arrives as the `KeyboardInterrupt` the whole shutdown path is
+        built on, rather than as Python's default disposition for SIGTERM - which would kill the
+        interpreter in the C handler with no frame unwound at all.
+      - IT REACHES `main`'s QUIET `except`, because that `try` covers `connect()`. `main` returns
+        normally, so the interpreter exits 0 with no traceback: an operator who stopped a worker
+        during startup gets the same silence as one who stopped it mid-run, and there is exactly
+        one way a stopped worker exits rather than two that differ by timing.
+      - THE `finally` SURVIVES AN UNOPENED CONNECTION. It runs with `conn` still `None`, so an
+        unguarded `conn.close()` there raises over the top of the interrupt and the quiet exit
+        becomes a cleanup traceback - strictly worse than the escape it replaced. That is what
+        `if conn is not None` is for, and this is the test that reddens without it.
+
+    `run` is spied rather than left as the shared stub, and that is load-bearing: the shared stub
+    raises `KeyboardInterrupt` itself, so a `main` that somehow reached `run` would swallow that
+    one and return quietly too. Asserting `run` was never entered is what separates "the startup
+    signal was handled" from "the startup signal was ignored and the run was stopped instead".
     """
     reached_the_end_of_connect: list[bool] = []
+    entered_run: list[bool] = []
+    closed: list[bool] = []
 
     def connect_that_gets_signalled():
         # LOOK BEFORE RAISING. A real SIGTERM under Python's default disposition does not fail
@@ -207,17 +220,39 @@ def test_a_sigterm_arriving_during_startup_is_not_lost(monkeypatch, restore_sigt
         for _ in range(100):
             pass
         reached_the_end_of_connect.append(True)
-        return _FakeConn([])
+        return _FakeConn(closed)
 
     _stub_main_dependencies(monkeypatch, connect=connect_that_gets_signalled)
+    monkeypatch.setattr(worker_script, "run", lambda *_a, **_k: entered_run.append(True))
 
-    with pytest.raises(KeyboardInterrupt, match=str(int(signal.SIGTERM))):
+    # CAUGHT AT THE TEST BOUNDARY, not left to propagate. An interrupt escaping `main()` is the
+    # exact regression this test is for, and pytest reads a loose `KeyboardInterrupt` as the
+    # OPERATOR interrupting the session: it aborts the run where it stands, reports the tests it
+    # had already finished as passed, and never reaches the ones after this file. Measured, by
+    # narrowing the `try` back: no FAILED line anywhere, just a truncated session. Catching it
+    # turns that into one red test with a message.
+    escaped: list[BaseException] = []
+    try:
         worker_script.main()
+    except BaseException as exc:  # noqa: BLE001 - the escape IS the failure being reported
+        escaped.append(exc)
 
+    assert escaped == [], (
+        f"a signal during startup propagated out of `main()` as {escaped[0]!r} instead of "
+        "reaching its quiet `except` - the operator gets a traceback and a non-zero exit for "
+        "stopping a worker that had not even connected yet"
+        if escaped
+        else ""
+    )
     assert reached_the_end_of_connect == [], (
         "the signal was delivered but nothing raised - the handler was not installed yet, or it "
         "was installed as something that does not interrupt"
     )
+    assert entered_run == [], (
+        "the startup signal did not stop startup - `main` went on to enter the poll loop with a "
+        "connection the interrupt was supposed to have unwound past"
+    )
+    assert closed == [], "nothing was ever opened, so nothing should have been closed"
 
 
 def test_the_handler_is_registered_once_per_start_and_replaces_rather_than_stacks(

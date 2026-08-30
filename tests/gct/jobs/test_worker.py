@@ -896,3 +896,200 @@ def test_run_reaps_a_stranded_job_on_a_real_connection(db, db_other, tmp_path, m
     assert conn.info.transaction_status == psycopg.pq.TransactionStatus.IDLE, (
         "the reap must leave the connection idle for the claim that follows it (ADR 0025)"
     )
+
+
+# ---------------------------------------------------------------------------
+# Shutdown (issue #82): a worker killed mid-ingest hands its job back rather
+# than stranding it under a lease nothing can reach for up to 15 minutes.
+# ---------------------------------------------------------------------------
+
+
+def _interrupt(*_args, **_kwargs):
+    """Stand in for a Ctrl-C landing anywhere inside the pipeline.
+
+    `KeyboardInterrupt` rather than a custom exception because it is the ONE class the guard
+    must not miss: it derives from `BaseException`, not `Exception`, so a handler written as
+    `except Exception` would let it straight past and leave the job stranded - the exact
+    behavior this issue is about. Testing with an ordinary exception would pass against that
+    broken narrower catch.
+    """
+    raise KeyboardInterrupt("Ctrl-C mid-ingest")
+
+
+def test_an_interrupt_mid_ingest_leaves_the_job_claimable_at_once(
+    db, db_other, tmp_path, monkeypatch
+):
+    """The claim issue #82 makes: killed mid-ingest, the job is claimable NOW - no lease wait.
+
+    Two halves, and the second is the one that fails without the shutdown release:
+      - the ROW - `queued` with `leased_until` null (only `release` clears the lease;
+        `complete`/`fail` deliberately leave a terminal row's stale lease in place), and
+        `attempts` still 1 - a shutdown costs one attempt exactly as a crash or a caught 429
+        does, so there is no special case to invent (ADR 0028 §1);
+      - the CONSEQUENCE - a fresh `claim` returns this same job at attempt 2. Before this fix
+        that call returns `None` for up to `DEFAULT_LEASE_SECONDS`, because `reclaim_expired`'s
+        `leased_until < now()` is false against a live lease, by design.
+
+    The `KeyboardInterrupt` must still come out. Swallowing it would contradict ADR 0028 §4 -
+    the worker crashes on an unclassified exception on purpose - so `pytest.raises` here is
+    half the assertion, not scaffolding around it. Every durable claim is read through
+    `db_other`: through `conn` they hold whether or not the release was ever committed.
+    """
+    conn, owner_id, class_id = db
+    conn.autocommit = True
+    monkeypatch.setattr(worker, "ingest_file", _interrupt)
+    source = write_pdf(tmp_path / "interrupted.pdf", ["a page the operator never let finish"])
+    file_id = enqueue(conn, path=source, owner_id=owner_id, class_id=class_id)
+
+    with pytest.raises(KeyboardInterrupt):
+        tick(conn, FakeEmbeddings())
+
+    state, attempts, leased_until, last_error = db_other.execute(
+        """
+        select state, attempts, leased_until, last_error
+        from jobs where file_id = %s::uuid
+        """,
+        (file_id,),
+    ).fetchone()
+    assert (state, attempts, leased_until) == ("queued", 1, None)
+    assert last_error and "shutdown" in last_error, (
+        "the row must say WHY it came back, or a stopped worker is indistinguishable from a 429"
+    )
+
+    # NOT asserted: `lease_token is null`. Issue #82's acceptance text expects it, and `release`
+    # does not do it - it clears `leased_until` only, which `reclaim_expired` (which DOES null
+    # the token) makes look like an oversight. Measured, it is inert rather than wrong: with the
+    # row back on `queued`, `_settle`'s FIRST condition (`state = 'processing'`) already refuses
+    # every zombie the token would have refused, and the next `claim` mints a fresh token over
+    # it. Left alone on purpose - `release` is shared with the transient-retry path, its
+    # docstring enumerates what it clears and argues the asymmetry, and changing it is a
+    # decision about that verb rather than about shutdown.
+
+    # `files.status` is deliberately untouched - the same thing the transient-failure release
+    # does, and still true: the file is mid-flight and a later claim rewrites it. A worker that
+    # is stopped and never restarted leaves it `processing` regardless of this fix (issue #82,
+    # explicitly out of scope).
+    status, failed_reason = db_other.execute(
+        "select status, failed_reason from files where file_id = %s::uuid", (file_id,)
+    ).fetchone()
+    assert (status, failed_reason) == ("processing", None)
+
+    (chunk_count,) = db_other.execute(
+        "select count(*) from chunks where file_id = %s::uuid", (file_id,)
+    ).fetchone()
+    assert chunk_count == 0, "an interrupted run commits nothing (ADR 0020 §2/§3)"
+
+    # THE assertion this issue exists for. Note the default lease is passed explicitly: the
+    # point is that a full 15-minute lease is no obstacle, so shortening it here would test
+    # something easier than the thing that was broken.
+    requeued = claim(conn, lease_seconds=DEFAULT_LEASE_SECONDS)
+    assert requeued is not None, (
+        "the interrupted job is still stranded under its own live lease - nothing can claim it"
+    )
+    assert requeued.file_id == file_id
+    assert requeued.attempts == 2, "the retry trail is preserved, not given back (ADR 0028 §1)"
+
+
+def test_a_raising_release_does_not_mask_the_interrupt_that_triggered_it(
+    db, db_other, tmp_path, monkeypatch
+):
+    """The DB is gone - one of the very causes of the shutdown - and the release cannot run.
+
+    What must come out is the `KeyboardInterrupt`, not a psycopg traceback: turning a Ctrl-C
+    into an error about the database tells the operator the wrong story, and it would hide the
+    original from `run`'s caller. The fallback is then exactly the pre-#82 behavior - the row
+    stays `processing` under its live lease and the reaper collects it when the lease expires -
+    which is why this handler is an optimization of a path that was already safe, never a
+    correctness dependency.
+
+    Asserted through `db_other`, because "nothing was written" is a claim about what other
+    connections can see.
+    """
+    conn, owner_id, class_id = db
+    conn.autocommit = True
+
+    def db_is_gone(*_args, **_kwargs):
+        raise psycopg.OperationalError("the connection is closed")
+
+    monkeypatch.setattr(worker, "ingest_file", _interrupt)
+    monkeypatch.setattr(worker, "release", db_is_gone)
+    source = write_pdf(tmp_path / "db-gone.pdf", ["a page nobody could hand back"])
+    file_id = enqueue(conn, path=source, owner_id=owner_id, class_id=class_id)
+
+    with pytest.raises(KeyboardInterrupt):
+        tick(conn, FakeEmbeddings())
+
+    state, leased_until = db_other.execute(
+        "select state, leased_until from jobs where file_id = %s::uuid", (file_id,)
+    ).fetchone()
+    assert state == "processing", "a failed release must not half-write the row"
+    assert leased_until is not None, (
+        "the fallback IS the 15-minute lease; a cleared lease here would mean the release "
+        "partly succeeded"
+    )
+
+
+def test_a_lost_lease_on_shutdown_is_logged_not_raised(db, tmp_path, monkeypatch, caplog):
+    """`release` returning False is the zombie case, and it is a report - never an error.
+
+    The guard that produces the False is `_settle`'s `state='processing' AND lease_token = ours`
+    and it is already covered, on a real reap-and-re-claim, by
+    `test_release_refuses_a_job_another_worker_now_holds` (tests/gct/jobs/test_queue.py). Not
+    re-driven here: this test is about what `process_one` DOES with the False, which is the
+    same thing it already does on the transient and terminal paths - log the lost lease and
+    move on. A handler that raised on it would turn the routine at-least-once outcome into a
+    second traceback stacked on the interrupt.
+    """
+    conn, owner_id, class_id = db
+    conn.autocommit = True
+    monkeypatch.setattr(worker, "ingest_file", _interrupt)
+    monkeypatch.setattr(worker, "release", lambda *_a, **_k: False)
+    source = write_pdf(tmp_path / "zombie.pdf", ["a page a second worker already owns"])
+    enqueue(conn, path=source, owner_id=owner_id, class_id=class_id)
+
+    with caplog.at_level("WARNING"):
+        with pytest.raises(KeyboardInterrupt):
+            tick(conn, FakeEmbeddings())
+
+    assert any("lease lost" in record.message for record in caplog.records), (
+        "a lost lease on shutdown must be reported, the way every other settle path reports it"
+    )
+
+
+def test_the_shutdown_release_works_on_a_plain_connection_left_mid_transaction(
+    db, db_other, tmp_path, monkeypatch
+):
+    """`require_idle` must not be what stops the release (ADR 0025, guarded per ADR 0027).
+
+    `run` accepts a PLAIN connection by contract - `scripts/worker.py`'s autocommit is defense in
+    depth, not a requirement (see `test_processing_status_publishes_on_a_plain_connection`). On
+    such a connection a bare statement outside any transaction block opens psycopg's implicit
+    transaction and leaves it INTRANS, and `release` calls `require_idle`, which RAISES on that.
+    The handler would then swallow its own `RuntimeError` and requeue nothing - correct only
+    under the shipped wiring, and silently broken under the contract.
+
+    The stub reproduces exactly that: a bare `select 1` and then the interrupt, which is the
+    shape of any unclassified exception raised after the pipeline touched the connection
+    directly. `conn.rollback()` in the handler is what makes IDLE unconditional; drop it and
+    this test is the only one that reddens.
+    """
+    conn, owner_id, class_id = db  # deliberately NOT autocommit - that is the whole point
+
+    def bare_statement_then_interrupt(*_args, **kwargs):
+        kwargs["conn"].execute("select 1")
+        raise KeyboardInterrupt("Ctrl-C with the connection left INTRANS")
+
+    monkeypatch.setattr(worker, "ingest_file", bare_statement_then_interrupt)
+    source = write_pdf(tmp_path / "plain-conn-shutdown.pdf", ["a page on a plain connection"])
+    file_id = enqueue(conn, path=source, owner_id=owner_id, class_id=class_id)
+
+    with pytest.raises(KeyboardInterrupt):
+        tick(conn, FakeEmbeddings())
+
+    state, leased_until = db_other.execute(
+        "select state, leased_until from jobs where file_id = %s::uuid", (file_id,)
+    ).fetchone()
+    assert (state, leased_until) == ("queued", None), (
+        "the shutdown release refused its own connection - `require_idle` fired instead of the "
+        "requeue, so the job is stranded under a live lease on the contract's own wiring"
+    )

@@ -142,14 +142,24 @@ of the topology, not of the reaper, and it is the first thing to re-examine unde
   "feeds `components/ingestion-worker.md`").
 - The four constants in `gct/jobs/worker.py` stop being provisional and cite this ADR. Their
   *values* are unchanged by ratification — this ADR moves no number.
-- **Ctrl-C is where the 15-minute lease is actually paid, and it is not fixed here.**
-  `KeyboardInterrupt` is not caught by `process_one`, so stopping the worker mid-ingest — the
-  single most common way this process ends in development — leaves the job `processing` under a
-  lease stamped up to 15 minutes in the future. On restart the reaper's `leased_until < now()`
-  is false, so the file reads `processing` to the student and nothing can claim it until the
-  lease expires. The fix is a shutdown handler that `release`s the in-flight job, which is a
-  behavior change with its own lost-lease edge cases; it is named here so the delay is a known
-  cost of the number rather than a bug someone rediscovers.
+- **A stopped worker hands its job back; only a death that runs no handler still pays the
+  15 minutes.** This bullet originally recorded the opposite — that stopping the worker
+  mid-ingest left the job `processing` under a lease up to 15 minutes ahead, unreachable by the
+  reaper's `leased_until < now()`, and that the fix was named but not built. Issue #82 built it:
+  `process_one` wraps everything after the claim in a guard that `release`s the in-flight job and
+  **re-raises**, and `scripts/worker.py` routes SIGTERM onto the same unwind. A Ctrl-C, a `kill`,
+  or an unclassified exception therefore leaves the job claimable at once. Written here rather
+  than in a new ADR because **no decision in this one moved**: §1's lease is unchanged, §4's
+  "unclassified exceptions crash the worker" stance survives a guard that only adds a cleanup
+  write on the way out, and §5's reaper is unchanged and still the backstop. What stays uncovered
+  is the class that runs no handler at all — `SIGKILL`, an OOM kill, a power cut — which still
+  pays the full lease. Two consequences worth naming: a job released this way can be one whose
+  `index_file` already committed, so **`ready` is reachable under a *released* job** exactly as
+  the next bullet says it is under a reaped one — the duplicate embed that costs is the same one
+  the reaper paid fifteen minutes later, not a new class of cost, which is why the release is
+  unconditional rather than branching on whether the pipeline returned; and a shutdown spends one
+  `attempts` exactly as a crash or a caught 429 does (§1), so the durable budget bounds a restart
+  loop with no special case to invent.
 - What would move each number, and where the evidence comes from:
   - **lease** — a completion log whose `elapsed` approaches `lease_seconds`, or a **"backoff
     cut" warning**. NOT the reaper log, and §5 is why: this worker never reaps its own
@@ -168,7 +178,9 @@ of the topology, not of the reaper, and it is the first thing to re-examine unde
     window, and **`ready`** if the crash landed between `index_file`'s commit and `complete` —
     the case the `status <> 'ready'` guards in `process_one` and `_bury` exist for. In that
     last one the student waited for nothing: the file was queryable the whole time. That is the
-    Ctrl-C bullet above, arriving as a log line.
+    shutdown bullet above, arriving as a log line — and since #82, a reaper line of that shape
+    can no longer be a Ctrl-C or a `kill`, because those hand the job back themselves. It now
+    means a death that ran no handler.
   - **budget** — a file that exhausts it on genuine 429s rather than on crashes.
   - **backoff** — the same "backoff cut" warning, which says the curve did not fit its lease.
   - **poll** — nothing in-process, by construction: the cost of a slow poll is latency a student

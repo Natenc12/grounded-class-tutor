@@ -20,10 +20,21 @@ Three things had to be settled together, because each constrains the others: **w
 **What this is NOT.** Issue #43 called it a *cost cap*. At roughly 1.5 cents per 1,000 pages
 embedded, cost is not the exposure and no number chosen for cost reasons would be defensible. The
 honest framing is a **finite ceiling against pathological input** — the property that a single
-upload cannot start unbounded work. Worker *time* is the other tempting justification and is equally
-unavailable: no ingest throughput has ever been measured (nothing in `eval/FINDINGS.md` records
-one), the same evidence gap ADR 0028 named when it ratified the lease unmeasured. A number argued
-from time would be a guess wearing a unit.
+upload cannot start unbounded work. Worker *time* is the other tempting justification and was equally
+unavailable **when this decision was made**: no ingest throughput had ever been measured, the same
+evidence gap ADR 0028 named when it ratified the lease unmeasured. A number argued from time would
+have been a guess wearing a unit.
+
+> **2026-08-30 — the gap is closed, and the decision above is unchanged.** A file at this ceiling was
+> subsequently timed end to end against the real provider; the measurement lives in
+> `eval/FINDINGS.md` (§*the first ingest throughput measurement*), which is its writer — it is not
+> reproduced here, because nothing about it is this ADR's decision content. What it changes is only
+> what a reader may now assume: worker time is no longer unmeasured, so the paragraph above should be
+> read as the *reason 250,000 was not chosen from time*, not as a standing claim that no such figure
+> exists. It does not move the number. The result shows the ceiling's worst accepted case finishing
+> with orders of magnitude of lease headroom, which is the direction that argues the ceiling is loose
+> — and 250,000 was already chosen ~12× loose on purpose (§2). The figures, their sample size, and
+> what they do *not* license are all in that entry.
 
 ## Decision
 

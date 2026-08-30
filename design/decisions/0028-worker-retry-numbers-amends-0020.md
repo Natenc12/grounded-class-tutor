@@ -26,11 +26,17 @@ durable budget (#71 PR 2) — with all four numbers as module constants in `gct/
 carrying a comment that they are provisional until this ADR. This is that ADR: the numbers stop
 being provisional, and the citation stops dangling.
 
-**Nothing here is measured.** No file has been ingested through the worker against a real
-provider with timing recorded. Every number below is chosen to be *safe if wrong* in the
-direction that costs least, and each says which direction that is. Ratifying an unmeasured
-number is not the same as claiming it is right — it is naming the current answer so that the
-next reader argues with a decision instead of guessing at a constant.
+**Nothing here was measured when these numbers were chosen.** No file had been ingested
+through the worker against a real provider with timing recorded. Every number below is chosen
+to be *safe if wrong* in the direction that costs least, and each says which direction that is.
+Ratifying an unmeasured number is not the same as claiming it is right — it is naming the
+current answer so that the next reader argues with a decision instead of guessing at a constant.
+
+> **Amended 2026-08-30 (#43/#82):** a first throughput measurement now exists — see
+> `eval/FINDINGS.md` → *2026-08-30 — the first ingest throughput measurement*, which stays the
+> writer of the figures. **It moves none of the four numbers below**, and is recorded here only
+> so this section stops asserting that no measurement exists. One file at the ingest ceiling is
+> a data point, not the evidence §Consequences names for re-choosing a number.
 
 ## Decision
 

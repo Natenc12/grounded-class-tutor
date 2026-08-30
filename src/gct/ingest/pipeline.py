@@ -21,9 +21,10 @@ from uuid import UUID, uuid4
 
 import psycopg
 
+from gct.config import MAX_INGEST_WORDS
 from gct.ingest.chunk import CHUNK_OVERLAP_WORDS, CHUNK_SIZE_WORDS, chunk_units
 from gct.ingest.index import index_file
-from gct.ingest.parse import parse_file
+from gct.ingest.parse import ParseError, parse_file
 from gct.providers.base import Embeddings
 
 # NB: pipeline importing index_file at runtime is fine - index.py imports PreparedChunk only under
@@ -61,6 +62,7 @@ def compose(
     # signature that also takes a `path` does not say what it sizes. The asymmetry is deliberate.
     chunk_size: int = CHUNK_SIZE_WORDS,
     chunk_overlap: int = CHUNK_OVERLAP_WORDS,
+    max_words: int = MAX_INGEST_WORDS,
 ) -> list[PreparedChunk]:
     """Parse -> chunk -> embed -> build the full `PreparedChunk` set, in order. Pure: no DB.
 
@@ -71,11 +73,35 @@ def compose(
     `chunk_size`/`chunk_overlap` default to the module constants and are forwarded to
     `chunk_units`, which validates them; they are provisional spike parameters (ADR 0019).
 
+    `max_words` is the input ceiling (ADR 0029), defaulting to `config.MAX_INGEST_WORDS`; past it
+    this raises `ParseError("too_long", ...)` before embedding anything. See the guard below.
+
     `ParseError` (terminal) and `TransientEmbeddingError` (transient) propagate untouched - handling
     is Slice 2's (ADR 0020). An empty parse cannot occur: `parse_file` raises
     `ParseError("empty", ...)` rather than returning `[]`.
     """
-    chunks = chunk_units(parse_file(path), size=chunk_size, overlap=chunk_overlap)
+    units = parse_file(path)
+    # The input ceiling (ADR 0029), and its POSITION is the whole point: parsing and chunking are
+    # free, `embed` below is the only call that costs money, and it is handed every chunk at once.
+    # A ceiling checked after that call bounds nothing at all. Counted over `units` rather than
+    # over `chunks` because chunks OVERLAP - overlapped words are billed once but would be counted
+    # twice, so a chunk-based count tracks the (provisional, ADR 0019) window rather than the
+    # input, and loosens on its own the next time the window moves.
+    #
+    # `.split()` mirrors `_chunk_one`'s own split exactly, so this measures the literal word stream
+    # the chunker is about to consume - not an estimate of it.
+    #
+    # Raised as `ParseError` even though nothing here parsed: `reason` is what carries meaning, and
+    # `worker.py`'s `except ParseError` writes `exc.reason` straight into `files.failed_reason`
+    # untranslated (ADR 0020's terminal class). A new exception type would need that path widened
+    # to reach the same outcome; this needs no worker change at all.
+    total_words = sum(len(unit.text.split()) for unit in units)
+    if total_words > max_words:
+        raise ParseError(
+            "too_long",
+            f"{Path(path).name} has {total_words} words, over the {max_words}-word ingest ceiling",
+        )
+    chunks = chunk_units(units, size=chunk_size, overlap=chunk_overlap)
     vectors = embedder.embed([c.text for c in chunks])
     # Alignment guard: one vector per chunk, in order. A mismatch means a chunk would carry the
     # wrong embedding and later be retrieved for text it doesn't match - a silent mis-citation, the
@@ -111,6 +137,7 @@ def ingest_file(
     conn: psycopg.Connection,
     chunk_size: int = CHUNK_SIZE_WORDS,
     chunk_overlap: int = CHUNK_OVERLAP_WORDS,
+    max_words: int = MAX_INGEST_WORDS,
 ) -> str:
     """Ingest one file end to end and return its `file_id`. Slice 1 calls this directly.
 
@@ -135,6 +162,11 @@ def ingest_file(
     `chunk_size`/`chunk_overlap` are forwarded to `compose` and default to the module constants.
     They are provisional spike parameters (ADR 0019) - a later caller wrapping this seam (Slice
     2's worker) should not treat their names or existence as settled.
+
+    `max_words` is likewise forwarded: the input ceiling lives in `compose`, one step before the
+    only paid call, so a file over it raises `ParseError("too_long", ...)` here with no embedding
+    bought and no DB touched (ADR 0029). It is a PRECONDITION, not queue machinery - the PM-4 seam
+    holds and Slice 2's worker wraps this unchanged (ADR 0020).
 
     Raises `ValueError` on a malformed `file_id`, before `compose` runs. Only the FORMAT is
     checked: nothing here or in `index_file` verifies the id names a row this caller may write.
@@ -179,6 +211,7 @@ def ingest_file(
         embedder=embedder,
         chunk_size=chunk_size,
         chunk_overlap=chunk_overlap,
+        max_words=max_words,
     )
     index_file(
         conn,

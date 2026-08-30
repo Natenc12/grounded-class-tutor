@@ -1,5 +1,5 @@
 -- Slice 2 — `files.failed_reason` gains `too_long`: the terminal reason the ingest input
--- ceiling raises (issue #43, ADR 0020 with the terminal set extended per ADR 0029).
+-- ceiling raises (issue #43, ADR 0020, terminal set extended per ADR 0029).
 --
 -- The column shipped as a CLOSED set of five values (0001_init.sql), so a new terminal reason
 -- is a schema change, not a constant. Without this migration the pipeline can produce a reason

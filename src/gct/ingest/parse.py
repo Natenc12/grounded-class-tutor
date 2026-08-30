@@ -25,8 +25,8 @@ from pypdf import PdfReader
 
 # The closed terminal-reason taxonomy, mirroring `files.failed_reason`'s CHECK
 # (migrations/0001_init.sql, widened by 0003). NOT every value is born here: `too_long` is raised
-# by the pipeline's input ceiling, downstream of parsing (ADR 0020 with the terminal set extended
-# per ADR 0029). Every entry is a legal `ParseError` reason; `parse_file` is simply not the only
+# by the pipeline's input ceiling, downstream of parsing (ADR 0020, terminal set extended per
+# ADR 0029). Every entry is a legal `ParseError` reason; `parse_file` is simply not the only
 # place one is raised.
 TERMINAL_REASONS = ("unparseable", "protected", "unsupported", "empty", "too_long")
 
@@ -39,8 +39,10 @@ _OLE_SIGNATURE = b"\xd0\xcf\x11\xe0\xa1\xb1\x1a\xe1"
 class ParseError(Exception):
     """A terminal (no-retry) parse failure.
 
-    `reason` matches `files.failed_reason`'s terminal taxonomy (ADR 0020) so a future
-    caller can pass it straight through with no translation.
+    `reason` matches `files.failed_reason`'s terminal taxonomy (ADR 0020, terminal set
+    extended per ADR 0029) so a future caller can pass it straight through with no
+    translation. That pass-through is not aspirational any more: `worker.py`'s
+    `except ParseError` writes `exc.reason` into the column untranslated.
     """
 
     def __init__(self, reason: str, message: str) -> None:

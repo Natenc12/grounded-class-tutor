@@ -33,7 +33,7 @@ DEFAULT_GENERATION_MODEL = "gpt-4o-mini"
 # --- The ingest input ceiling (ADR 0029) ----------------------------------------------------
 # The largest input the ingest pipeline will embed, counted in whitespace-split words. Past it,
 # ingest refuses TERMINALLY (`ParseError("too_long")` -> `files.failed_reason='too_long'`, ADR
-# 0020 with the terminal set extended per ADR 0029) instead of buying an unbounded embedding run.
+# 0020, terminal set extended per ADR 0029) instead of buying an unbounded embedding run.
 #
 # Why words rather than bytes, pages, or chunks - and why this number - is ADR 0029's argument,
 # measured on the dogfood corpus; do not re-derive it here. One knob: `compose`/`ingest_file`

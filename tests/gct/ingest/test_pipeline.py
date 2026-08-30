@@ -479,16 +479,26 @@ def test_the_word_ceiling_is_configurable_and_inclusive_at_the_limit(pdf_factory
     assert exc_info.value.reason == "too_long"
 
 
-def test_compose_default_ceiling_is_the_config_constant():
-    """`compose`'s own default is `MAX_INGEST_WORDS` - not a second copy of the number.
+@pytest.mark.parametrize("func", [compose, ingest_file], ids=["compose", "ingest_file"])
+def test_default_ceiling_is_the_config_constant(func):
+    """Both entry points default `max_words` to `MAX_INGEST_WORDS` - not a second copy of it.
 
-    Asserted on the signature rather than behaviorally on purpose. Proving the default from the
-    outside means a fixture just over 250,000 words, which is minutes of reportlab and pypdf per
-    run to establish one identity; and a default that had drifted to some OTHER large number would
-    still pass every ordinary-sized test in this file silently. The identity is the fact worth
-    pinning, so pin the identity.
+    BOTH, because the two defaults are not interchangeable and the one that matters in production
+    is `ingest_file`'s. `ingest_file` always forwards `max_words=` explicitly, so `compose`'s
+    default is dead on the production path; the worker (`jobs/worker.py`'s `process_one`) calls
+    `ingest_file` WITHOUT `max_words`, so `ingest_file`'s default is the ceiling every real upload
+    is actually measured against. Pinning only `compose` leaves the live number unguarded: raise
+    `ingest_file`'s default to 999_999_999 and every other test in this suite still passes, because
+    each one either passes `max_words=` explicitly or is far too small to reach any ceiling.
+
+    Asserted on the signature rather than behaviorally on purpose - but not for the reason it is
+    tempting to give. A 250,000-word fixture is cheap to BUILD (~0.5s of reportlab) and the round
+    trip through `parse_file` + `compose` measures ~6s, which is more than the whole `not live`
+    suite costs today. The real argument is the second one: a default that had drifted to some
+    OTHER large number would still pass every ordinary-sized test in this file silently, so the
+    identity is the fact worth pinning. Pin the identity, in both places.
     """
-    default = inspect.signature(compose).parameters["max_words"].default
+    default = inspect.signature(func).parameters["max_words"].default
 
     assert default == MAX_INGEST_WORDS
 

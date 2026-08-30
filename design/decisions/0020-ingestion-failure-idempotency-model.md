@@ -10,7 +10,11 @@
   ADR 0028** (a DB blip takes the crash path in V1 — nothing classifies psycopg errors, and a
   handler wide enough to catch one absorbs every programming error with it; the budget ADR 0011
   never held is now four ratified numbers. §1's terminal/bad-input half, §2 and §3 stand
-  unchanged)
+  unchanged); §1's **terminal/bad-input set extended 2026-08-30 by ADR 0029** (it enumerated three
+  kinds of bad input — corrupt, password-protected, unsupported/zero-text — and now carries a
+  fourth, `too_long`: input past a configured word ceiling, refused before the embed call. The
+  terminal *handling* below is unchanged, which is why the new reason needed no worker change; §1's
+  transient half, §2 and §3 stand unchanged)
 
 ## Context
 `architecture.md` locked the async substrate (ADR 0011: DB-backed `jobs` + in-process poll worker,

@@ -13,12 +13,14 @@ files have DB-backed tests.
 
 from __future__ import annotations
 
+import inspect
 from uuid import UUID, uuid4
 
 import pytest
 
+from gct.config import MAX_INGEST_WORDS
 from gct.ingest.chunk import CHUNK_OVERLAP_WORDS, CHUNK_SIZE_WORDS, chunk_units
-from gct.ingest.parse import ParseError, parse_file
+from gct.ingest.parse import TERMINAL_REASONS, ParseError, parse_file
 from gct.ingest.pipeline import PreparedChunk, compose, ingest_file
 
 OWNER_ID = "test-owner"
@@ -435,3 +437,117 @@ def test_ingest_file_rejects_a_malformed_file_id_before_spending_anything(pdf_fa
             conn=None,
             file_id=uuid4(),
         )
+
+
+# --- The ingest input ceiling (issue #43; ADR 0020, terminal set extended per ADR 0029) --------
+
+
+def test_compose_rejects_input_past_the_word_ceiling_before_embedding(pdf_factory):
+    """Past the ceiling, `compose` raises terminal `ParseError("too_long")` and NEVER embeds.
+
+    Embedding is the only paid call in this pipeline, so a ceiling that fires after it bounds
+    nothing - the guard's whole value is its POSITION. `_ExplodingEmbedder` is the tripwire:
+    reaching `embed` raises `RuntimeError`, so a `ParseError` escaping here is proof the guard
+    returned first. That is why this asserts the exception TYPE rather than merely that something
+    raised - move the check below `embed` and the `RuntimeError` escapes instead.
+    """
+    path = pdf_factory("huge.pdf", [" ".join(f"w{i}" for i in range(300))])
+
+    with pytest.raises(ParseError) as exc_info:
+        compose(path, OWNER_ID, CLASS_ID, embedder=_ExplodingEmbedder(), max_words=100)
+
+    assert exc_info.value.reason == "too_long"
+
+
+def test_the_word_ceiling_is_configurable_and_inclusive_at_the_limit(pdf_factory, fake_embedder):
+    """A file AT the ceiling ingests normally; the same file one word over is refused.
+
+    Two facts in one fixture, because they share a measurement. First, the knob is real: the same
+    input passes or fails purely on the value handed in. Second, the boundary - `>` and `>=` differ
+    on exactly one input, and nothing else in this file distinguishes them. The word count is taken
+    from the real `parse_file` output rather than from the string written into the PDF, so the test
+    measures what the guard measures instead of assuming the two agree.
+    """
+    path = pdf_factory("lecture.pdf", [" ".join(f"w{i}" for i in range(120))])
+    n_words = sum(len(u.text.split()) for u in parse_file(path))
+
+    at_limit = compose(path, OWNER_ID, CLASS_ID, embedder=fake_embedder, max_words=n_words)
+    assert at_limit == compose(path, OWNER_ID, CLASS_ID, embedder=fake_embedder)
+
+    with pytest.raises(ParseError) as exc_info:
+        compose(path, OWNER_ID, CLASS_ID, embedder=fake_embedder, max_words=n_words - 1)
+    assert exc_info.value.reason == "too_long"
+
+
+def test_compose_default_ceiling_is_the_config_constant():
+    """`compose`'s own default is `MAX_INGEST_WORDS` - not a second copy of the number.
+
+    Asserted on the signature rather than behaviorally on purpose. Proving the default from the
+    outside means a fixture just over 250,000 words, which is minutes of reportlab and pypdf per
+    run to establish one identity; and a default that had drifted to some OTHER large number would
+    still pass every ordinary-sized test in this file silently. The identity is the fact worth
+    pinning, so pin the identity.
+    """
+    default = inspect.signature(compose).parameters["max_words"].default
+
+    assert default == MAX_INGEST_WORDS
+
+
+def test_ingest_file_rejects_past_the_ceiling_before_the_embedder_or_the_db(pdf_factory):
+    """The ceiling holds at `ingest_file`, the seam Slice 2's worker wraps (PM-4, ADR 0020) - not
+    only inside `compose`.
+
+    Same tripwire discipline as `test_ingest_file_rejects_a_malformed_file_id_before_spending
+    _anything`: `conn=None` cannot be executed against and `_ExplodingEmbedder` raises on use, so a
+    `ParseError` escaping proves neither the paid call nor the DB was reached. The reason is
+    asserted too, because it is the value `worker.py`'s `except ParseError` writes straight into
+    `files.failed_reason` with no translation - a wrong one there is a CHECK violation at runtime.
+    """
+    path = pdf_factory("huge.pdf", [" ".join(f"w{i}" for i in range(300))])
+
+    with pytest.raises(ParseError) as exc_info:
+        ingest_file(
+            path,
+            OWNER_ID,
+            CLASS_ID,
+            embedder=_ExplodingEmbedder(),
+            conn=None,
+            max_words=100,
+        )
+
+    assert exc_info.value.reason == "too_long"
+
+
+@pytest.mark.parametrize("reason", TERMINAL_REASONS)
+def test_every_terminal_reason_is_a_legal_failed_reason(reason, db, db_other):
+    """`TERMINAL_REASONS` and `files.failed_reason`'s CHECK are one fact stored in two places -
+    this is the only thing holding them together.
+
+    `too_long` is the case this test was added for (issue #43): a new terminal reason is a schema
+    change, not a constant, and without migration 0003 it is a `CheckViolation`. But the mirror is
+    the durable hazard - `worker.py` writes `exc.reason` into the column UNTRANSLATED, so any value
+    Python can raise and Postgres will not store is a job that fails while recording why it failed,
+    surfacing as a psycopg error from inside the bury transaction rather than as the actionable
+    status the student is waiting on. Parametrized over the tuple so the next reason added to
+    either side without the other goes red on arrival.
+
+    Read back through `db_other`, a SEPARATE connection: a CHECK is evaluated per statement, so an
+    uncommitted insert proves the value parsed, not that it survives a commit - and `db`'s own
+    connection cannot tell those apart.
+    """
+    conn, owner_id, class_id = db
+    file_id = str(uuid4())
+
+    conn.execute(
+        """
+        insert into files (file_id, owner_id, class_id, filename, status, failed_reason)
+        values (%s::uuid, %s, %s::uuid, %s, 'failed', %s)
+        """,
+        (file_id, owner_id, class_id, "huge.pdf", reason),
+    )
+    conn.commit()
+
+    published = db_other.execute(
+        "select status, failed_reason from files where file_id = %s::uuid", (file_id,)
+    ).fetchone()
+    assert published == ("failed", reason)

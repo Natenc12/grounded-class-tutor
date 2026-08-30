@@ -30,6 +30,17 @@ EMBEDDING_DIM = 1536
 # Generation provisional default (ADR 0007); the GPT-vs-Claude bake-off is Spike Pass 2.
 DEFAULT_GENERATION_MODEL = "gpt-4o-mini"
 
+# --- The ingest input ceiling (ADR 0029) ----------------------------------------------------
+# The largest input the ingest pipeline will embed, counted in whitespace-split words. Past it,
+# ingest refuses TERMINALLY (`ParseError("too_long")` -> `files.failed_reason='too_long'`, ADR
+# 0020 with the terminal set extended per ADR 0029) instead of buying an unbounded embedding run.
+#
+# Why words rather than bytes, pages, or chunks - and why this number - is ADR 0029's argument,
+# measured on the dogfood corpus; do not re-derive it here. One knob: `compose`/`ingest_file`
+# take `max_words` defaulted to this, so a caller may lower it without a second constant
+# existing anywhere.
+MAX_INGEST_WORDS = 250_000
+
 
 @dataclass(frozen=True)
 class Settings:

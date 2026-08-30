@@ -23,7 +23,12 @@ from pptx import Presentation
 from pptx.enum.shapes import MSO_SHAPE_TYPE
 from pypdf import PdfReader
 
-TERMINAL_REASONS = ("unparseable", "protected", "unsupported", "empty")
+# The closed terminal-reason taxonomy, mirroring `files.failed_reason`'s CHECK
+# (migrations/0001_init.sql, widened by 0003). NOT every value is born here: `too_long` is raised
+# by the pipeline's input ceiling, downstream of parsing (ADR 0020 with the terminal set extended
+# per ADR 0029). Every entry is a legal `ParseError` reason; `parse_file` is simply not the only
+# place one is raised.
+TERMINAL_REASONS = ("unparseable", "protected", "unsupported", "empty", "too_long")
 
 # MS-CFB (OLE2) container signature. Password-protected OOXML files (.pptx/.docx/.xlsx)
 # are wrapped in this container instead of being a plain zip, so python-pptx's zip-based

@@ -102,7 +102,8 @@ Slow/external work runs with **no transaction open**; the transaction is a short
    size / overlap = spike.*
 4. **Embed** all chunks via `Embeddings.embed` (ADR 0013); attach vectors + stamp `embedding_model_id`
    (ADR 0018). Provider 429 / timeout / transient 5xx → **transient failure** → retry w/ backoff
-   (ADR 0011 budget). *No DB write yet — a failure here leaves the DB untouched.*
+   (budget, backoff + lease: **ADR 0028**). *No DB write yet — a failure here leaves the DB
+   untouched.*
    - **Sub-batching is the adapter's job, not the worker's (PM-1 / correctness floor).** A real deck can
      produce more chunks than the provider's per-request cap (OpenAI: 2048 inputs / ~300k tokens); a single
      over-cap `embed()` call is a **hard failure**, not a throughput issue. The `Embeddings` adapter
@@ -132,7 +133,8 @@ Slow/external work runs with **no transaction open**; the transaction is a short
 | mode | class | V1 behavior |
 |---|---|---|
 | **Unparseable / password-protected / unsupported / zero-text file** | terminal | → `failed(reason)` immediately, **skip retry**; actionable reason surfaced via `GET /files/:id` (ADR 0020) |
-| **Embedding provider 429 / timeout / transient 5xx** | transient | retry w/ backoff up to budget → else `failed(reason=transient_exhausted)`. DB untouched until success (ADR 0020) |
+| **Embedding provider 429 / timeout / transient 5xx** | transient | retry w/ backoff up to budget → else `failed(reason=transient_exhausted)`. DB untouched until success (ADR 0020 §1, budget numbers per ADR 0028) |
+| **DB connection error mid-job** | infra | propagates uncaught — the worker crashes. Nothing classifies psycopg errors, and a handler wide enough to catch a blip absorbs every programming error with it, putting a wrong `failed_reason` in front of a student. The run committed nothing, the lease expires, the reaper requeues, and the `attempts` budget bounds the loop (ADR 0020 §1, DB-blip class amended per ADR 0028) |
 | **Worker crash mid-`processing`** | infra | committed nothing (tx not reached); lease/reaper reclaims job → `queued`, **zero cleanup** (ADR 0011/0020) |
 | **Duplicate job delivery** (at-least-once) | infra | safe — idempotent replace re-does the same delete-then-insert; no dedup needed (ADR 0020) |
 | **Re-index of an already-`ready` file** | normal | old full set stays queryable until COMMIT, then swapped atomically — never flickers empty/partial |

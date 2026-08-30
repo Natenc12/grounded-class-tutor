@@ -4,7 +4,13 @@
 - **Status:** accepted — **publication claim amended 2026-07-27 by ADR 0025** (§2–3's "commits its
   entire chunk set" holds only if the caller's connection is not already in a transaction; psycopg
   turns a nested `conn.transaction()` into a SAVEPOINT that commits nothing. The atomicity and
-  index-write-only reasoning below stand unchanged)
+  index-write-only reasoning below stand unchanged — and ADR 0025's own status line carries what
+  later became of that precondition); §1's **classification of a DB blip as
+  transient amended, and its dangling "ADR 0011 budget" reference resolved, 2026-08-29 by
+  ADR 0028** (a DB blip takes the crash path in V1 — nothing classifies psycopg errors, and a
+  handler wide enough to catch one absorbs every programming error with it; the budget ADR 0011
+  never held is now four ratified numbers. §1's terminal/bad-input half, §2 and §3 stand
+  unchanged)
 
 ## Context
 `architecture.md` locked the async substrate (ADR 0011: DB-backed `jobs` + in-process poll worker,

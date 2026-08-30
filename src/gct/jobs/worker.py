@@ -21,10 +21,11 @@ The retryable/terminal split (ADR 0020 §1) is this module's, and it is a two-li
 corrupt file is exactly as corrupt on the next attempt. `TransientEmbeddingError` is bad LUCK -
 back off, hand the job back to `queued` via `release`, and let a later claim retry it. Anything
 else propagates and crashes the worker, deliberately: an unclassified exception is a bug we do
-not want swallowed into a `failed_reason` that names the wrong cause. The durable budget below
-WILL bound the resulting crash loop, but not yet in this PR: bounding it needs something to move
-a crashed job out of `processing` so the next claim can spend an attempt on it, and that is the
-reaper (PR 3). Until then a crash parks its job under an expiring lease that nothing collects.
+not want swallowed into a `failed_reason` that names the wrong cause. A DB error is in that
+class, which DEVIATES from ADR 0020 §1's original taxonomy and is now ratified (ADR 0020 §1,
+DB-blip class amended per ADR 0028). The durable budget bounds the resulting crash loop, and
+`run`'s reaper is what makes that true: it moves the crashed job out of `processing` so the next
+claim can spend an attempt on it.
 
 WHY THE BUDGET IS COUNTED IN THE DATABASE, not in a `for` loop around the ingest. `jobs.attempts`
 survives the worker process; a loop counter does not. The failure that most needs bounding is the
@@ -64,30 +65,38 @@ import psycopg
 
 from gct.ingest.parse import ParseError
 from gct.ingest.pipeline import ingest_file
-from gct.jobs.queue import Job, claim, complete, fail, release
+from gct.jobs.queue import Job, claim, complete, fail, reclaim_expired, release
 from gct.providers.base import Embeddings, TransientEmbeddingError
 
 logger = logging.getLogger(__name__)
 
-# Provisional numbers (issue #71) - all four of them live here now. The four-numbers ADR
-# (lease / retry budget / backoff / poll) lands in PR 3, ratifies or changes these, and repoints
-# ingestion-worker.md §4's dangling "ADR 0011 budget" citation at itself. Nothing has MEASURED
-# any of them: they are chosen to be safe-if-wrong in the direction that costs least, and the
-# per-constant comments say which direction that is.
+# The four numbers, ratified by ADR 0028 - which also records that NOTHING HAS MEASURED any of
+# them. They are chosen to be safe-if-wrong in the direction that costs least; the ADR names that
+# direction per number, and the evidence that would move each one - THREE of which this module
+# emits; the poll number has no in-process signal by construction, because a slow poll costs
+# latency a student feels and the worker cannot see. Ratified is not measured: change these when
+# the evidence says to, not on taste.
 # The lease errs LONG on purpose: too short reclaims a job a healthy worker is still ingesting
-# and pays the embedding bill twice; too long only delays reclaim after a genuine crash.
+# and pays the embedding bill twice ONCE A SECOND WORKER EXISTS - on today's single worker the
+# reaper cannot run while `process_one` holds the loop, so a short lease shows up as a cut
+# backoff instead (ADR 0028 §1). Too long only delays reclaim after a genuine crash - and,
+# per ADR 0028 §Consequences, delays it after a Ctrl-C too, which is where the number is really
+# paid and which this worker does not yet handle.
 DEFAULT_LEASE_SECONDS = 15 * 60
 DEFAULT_POLL_SECONDS = 2.0
-# How many times a job may be CLAIMED before it is buried as `transient_exhausted`. Counted in
+# How many attempts actually RUN before the job is buried as `transient_exhausted`. Counted in
 # `jobs.attempts`, so a crash costs an attempt exactly as a caught 429 does - see the module
-# docstring for why that is the point rather than an approximation.
+# docstring for why that is the point rather than an approximation. A doomed job is always
+# claimed once MORE than this, to be buried: burying writes `files`, a table `queue.py` may not
+# touch, so only a worker holding the job can do it (ADR 0028 §1). That claim buys no embed.
 DEFAULT_MAX_ATTEMPTS = 5
 # Backoff between attempts: doubling, and capped. The cap is what keeps the delay a delay - an
 # uncapped curve reaches hours by the fifth attempt for a provider blip that cleared in seconds.
 # Both sit far under DEFAULT_LEASE_SECONDS on purpose: the worker serves the backoff while still
 # HOLDING the lease (see `process_one`), so a backoff that could outlast the lease would let the
-# reaper hand the job to someone else mid-wait, which is the double-embed ADR 0011's lease number
-# exists to prevent. That relationship is ENFORCED in `process_one`, not just intended here -
+# reaper hand the job to someone else mid-wait, which is the double-embed the lease exists to
+# prevent. ADR 0011 named that mechanism and deferred its value; the value is ADR 0028 §1.
+# That relationship is ENFORCED in `process_one`, not just intended here -
 # `lease_seconds` is a parameter, so these two constants cannot see the number they must stay
 # under, and a caller passing a short lease would otherwise break the rule silently.
 BACKOFF_BASE_SECONDS = 2.0
@@ -128,8 +137,8 @@ def served_backoff(
         lets the reaper hand the job to a second worker mid-wait, and two runs embed one file.
         `BACKOFF_MAX_SECONDS` sits far under `DEFAULT_LEASE_SECONDS`, but `lease_seconds` is a
         PARAMETER and the curve is module constants - they cannot see each other, so the rule
-        held only by coincidence of the defaults until it was enforced here. Measured at
-        `lease_seconds=5`, where the unclamped curve slept 16s under a 5s lease;
+        held only by coincidence of the defaults until it was enforced here (ADR 0028 §2).
+        Measured at `lease_seconds=5`, where the unclamped curve slept 16s under a 5s lease;
       - THE LAST ATTEMPT - no wait at all, because the next claim's budget check refuses the
         job and the delay would buy a retry that never comes. A READER of `max_attempts`, not
         a second decider: the outcome is still settled by `process_one`'s one check.
@@ -218,8 +227,8 @@ def process_one(
          wrap, do not rewrite). It publishes `ready` itself, inside the index transaction.
       4. `complete(conn, job_id=..., lease_token=job.lease_token)` - False means the lease
          was lost to another writer (`claim` handed the token out for exactly this check);
-         handle it (at minimum, say so) rather than ignoring the return, so PR 3's reaper
-         does not have to revisit this line.
+         handled rather than ignored, because `run`'s reaper is what creates the writer that
+         takes it.
 
     Steps 2-4 only run if the job still HAS a budget: `job.attempts > max_attempts` is checked
     first, before the `processing` write, so an exhausted job is buried without a status
@@ -243,14 +252,12 @@ def process_one(
     and the worker still crashes - unchanged, and deliberate. Classifying an unknown exception
     would mean guessing a `failed_reason` from the closed set, and the wrong reason shown to a
     student is worse than none. Crash-mid-processing committed nothing (ADR 0020), so there is
-    zero cleanup; the lease expires, the reaper (PR 3) requeues, and the durable budget bounds
-    the loop instead of the handler doing it.
+    zero cleanup; the lease expires, `run`'s reaper requeues, and the durable budget bounds the
+    loop instead of the handler doing it.
 
-    DELIBERATE DEVIATION, NOT YET RATIFIED: ADR 0020 §1 lists a DB blip as *transient*, and it
-    lands here on the crash path instead, because nothing in the corpus classifies psycopg
-    errors and absorbing them would absorb every programming error alongside. That is a
-    decision an ADR should own rather than this docstring - PR 3's four-numbers ADR is where
-    it goes, and until it does this paragraph is the only record that the gap is known.
+    A DB error takes that path too, which reads as a deviation from ADR 0020 §1's list and is
+    now the ratified answer (ADR 0020 §1, DB-blip class amended per ADR 0028). The ADR carries
+    the argument and the revisit condition; it is not restated here.
     """
 
     job = claim(conn, lease_seconds=lease_seconds)
@@ -291,9 +298,9 @@ def process_one(
         return True
 
     # Timed from the claim, not the ingest, because the LEASE covers claim->complete: this
-    # duration is the evidence PR 3's lease number is chosen from, and `attempts` above is the
-    # same for the retry budget. Both are provisional today precisely because nothing has
-    # measured them (see the constants' comment).
+    # duration is the evidence ADR 0028's lease number will be RE-chosen from, and `attempts`
+    # above is the same for the retry budget. The ADR ratified both without measuring either,
+    # and named these two log lines as what would move them.
     started = time.perf_counter()
 
     # Keyed on `file_id`, the primary key - not `staging_ref`, which is nullable and carries
@@ -318,9 +325,9 @@ def process_one(
     # `update files set status='processing' ... and status <> 'ready'` writes 1 row against a
     # `failed` row when you run it.)
     # Pinned by `test_a_terminal_failure_cannot_unpublish_a_file_that_is_already_ready`: drop
-    # this guard and that test goes red. It reaches this line without needing PR 3's reaper -
-    # it publishes `ready` directly, which is what a won run leaves behind however it got
-    # there - and without the guard the file lands on `processing` here and `failed` in
+    # this guard and that test goes red. It reaches this line without going through the reaper
+    # at all - it publishes `ready` directly, which is what a won run leaves behind however it
+    # got there - and without the guard the file lands on `processing` here and `failed` in
     # `_bury`, whose own identical guard then sees `processing` rather than `ready`. So the two
     # guards are not redundant: this one is what keeps the other one's precondition true.
     #
@@ -369,8 +376,10 @@ def process_one(
         _bury(conn, job, reason=exc.reason, error=f"{exc.reason}: {exc}")
         return True
     except TransientEmbeddingError as exc:
-        # TRANSIENT: bad luck (ADR 0020 §1). Nothing was committed - the index transaction never
-        # opened (ADR 0020 §3) - so the job goes back to `queued` with no cleanup, and
+        # TRANSIENT: bad luck, and a NARROWER class than ADR 0020 §1 first drew - a DB blip is
+        # not in it (ADR 0020 §1, DB-blip class amended per ADR 0028). Nothing was committed -
+        # the index transaction never opened (ADR 0020 §3) - so the job goes back to `queued`
+        # with no cleanup at all, and
         # `files.status` stays `processing`, which is still TRUE: the file is mid-flight and the
         # student has nothing new to learn from a status flicker. Only budget exhaustion moves
         # it to `failed`.
@@ -409,7 +418,7 @@ def process_one(
         if delay < wanted:
             # Reported rather than absorbed: a cut backoff means this attempt ate a lease that
             # was meant to cover it, which is evidence the lease number is wrong - exactly the
-            # measurement PR 3's four-numbers ADR needs. Silently clamping would swallow it.
+            # measurement ADR 0028 §2 says would move it. Silently clamping would swallow it.
             logger.warning(
                 "job %s: backoff cut from %.0fs to %.0fs - the %ss lease could not cover it",
                 job.job_id,
@@ -454,12 +463,37 @@ def run(
     max_attempts: int = DEFAULT_MAX_ATTEMPTS,
     poll_seconds: float = DEFAULT_POLL_SECONDS,
 ) -> None:
-    """The poll loop: `process_one` forever, sleeping `poll_seconds` after each empty tick.
+    """The poll loop: reap, then `process_one`, sleeping `poll_seconds` after each empty tick.
 
     A tick that DID process a job polls again immediately - a non-empty queue means there is
     likely more work, and sleeping between real jobs just adds latency the student sees.
 
-    PR 3 adds `reclaim_expired` to this loop (the reaper, ADR 0011 addendum).
+    THE REAPER RUNS ON EVERY TICK, BEFORE THE CLAIM (ADR 0011 addendum; cadence, and the
+    argument for it, ADR 0028 §5). Every tick rather than only the idle one, and ahead of the
+    claim rather than after it - both are the ADR's reasoning, not restated here.
+
+    What the ADR cannot say, because it is a fact about this file: the reaper lives in `run`
+    rather than in `process_one` because a dozen tests call `process_one` directly, and a reap
+    inside it would silently collect the expired leases those tests construct. §5's safety
+    argument also rests on a property of THIS loop - single-threaded, holding a lease only
+    between `claim` and its settle verb, both of them inside `process_one` along with the
+    backoff sleep - so an edit that makes this loop concurrent invalidates the ADR, not just
+    this comment.
+
+    A reap of ZERO is not logged. At a 2s poll that is 30 lines a minute of "nothing happened",
+    the same argument that keeps the empty tick in `process_one` silent. A non-zero reap IS
+    logged at WARNING because a reclaim is abnormal - it means a worker died without settling
+    its job - and because it must survive a caller that configures no logging at all: Python's
+    unconfigured root drops INFO. `scripts/worker.py` does not, which is why the INFO lines in
+    `process_one` are worth emitting; a library cannot assume that wiring.
+
+    It is NOT evidence that the lease is too short (ADR 0028 §Consequences): a single worker
+    that overruns its lease still completes, because the settle verbs guard on state and token
+    and never on `leased_until`. A reap means something died.
+
+    A raising reaper crashes the loop, on purpose and without a handler - the module's stance on
+    every unclassified exception, ratified for a DB error specifically by ADR 0028 §4. Catching
+    here would quietly contradict it.
     """
 
     logger.info(
@@ -469,6 +503,14 @@ def run(
         max_attempts,
     )
     while True:
+        reclaimed = reclaim_expired(conn)
+        if reclaimed:
+            logger.warning(
+                "reaper: %s job(s) whose lease had elapsed are claimable again - a worker died "
+                "or was stopped mid-ingest. Their files keep whatever status that run reached "
+                "until some later claim moves them",
+                reclaimed,
+            )
         if not process_one(
             conn,
             embedder=embedder,

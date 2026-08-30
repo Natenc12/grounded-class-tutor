@@ -44,6 +44,13 @@ def main() -> None:
     except KeyboardInterrupt:
         # Ctrl-C is the V1 shutdown story: killed mid-ingest, the run committed nothing
         # (ADR 0020) and the lease/reaper requeues the job - zero cleanup by design.
+        #
+        # "Requeues" is not "requeues PROMPTLY", and this is where the lease number is really
+        # paid. The in-flight job keeps a lease stamped up to DEFAULT_LEASE_SECONDS ahead, so
+        # the reaper on the next run's poll loop skips it - `leased_until < now()` is false -
+        # and the student's file reads `processing` until that lease expires. The fix is a
+        # shutdown handler that releases the job; ADR 0028 §Consequences records why it is not
+        # built yet rather than leaving the delay to be rediscovered.
         pass
     finally:
         conn.close()

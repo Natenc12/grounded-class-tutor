@@ -214,11 +214,13 @@ def test_a_space_free_file_slips_the_ceiling_and_crashes_the_worker_unclassified
       - one embedding request IS bought and refused - `calls` is 1, not 0. The ceiling's promise
         to fire before the paid call does not reach this input.
       - the file is left `processing`, not `failed`. The student sees a spinner, not a reason,
-        until the reaper requeues and the durable budget grinds the job down to
-        `transient_exhausted` - which is the WRONG reason for this cause, and is the reason the
-        taxonomy has (ADR 0020 §Open records that a richer taxonomy is a V2 extension).
+        until the durable budget grinds the job down to `transient_exhausted` - which is the
+        WRONG reason for this cause, and is the reason the taxonomy has (ADR 0020 §Open records
+        that a richer taxonomy is a V2 extension).
       - so the failure is loud to an OPERATOR (a crashing worker, a stack trace) and quiet to the
-        STUDENT (a long spinner, then a misleading reason).
+        STUDENT (a spinner, then a misleading reason). The crash now hands the job back at once
+        rather than after the lease elapses (#82), so the budget is spent through faster - the
+        student reaches the wrong reason sooner, not a different one.
 
     None of that is a defect introduced by #43 - the pipeline behaves identically for any input
     one chunk too large for one request, and the blind spot is inherited from ADR 0019's
@@ -244,11 +246,13 @@ def test_a_space_free_file_slips_the_ceiling_and_crashes_the_worker_unclassified
         "no reason is guessed for an unclassified error - the file is left mid-flight, which "
         "is the honest state and NOT an actionable one"
     )
-    state, attempts = db_other.execute(
-        "select state, attempts from jobs where file_id = %s::uuid", (file_id,)
+    state, attempts, leased_until = db_other.execute(
+        "select state, attempts, leased_until from jobs where file_id = %s::uuid", (file_id,)
     ).fetchone()
-    assert (state, attempts) == ("processing", 1), (
-        "the crash left the lease held; the reaper is what reclaims it (issue #71)"
+    assert (state, attempts, leased_until) == ("queued", 1, None), (
+        "an unclassified crash hands the job back instead of leaving it under a live lease - #82's "
+        "trigger set is any worker death, not only a signal (ADR 0028 §4's crash stance is intact: "
+        "the exception still propagates, it is only the lease that is returned first)"
     )
     (chunk_count,) = db_other.execute(
         "select count(*) from chunks where file_id = %s::uuid", (file_id,)

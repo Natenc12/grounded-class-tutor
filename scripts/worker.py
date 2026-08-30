@@ -8,11 +8,44 @@ Usage:  uv run python scripts/worker.py
 """
 
 import logging
+import signal
+from types import FrameType
 
 from gct.db import connect
 from gct.ingest.chunk import CHUNK_OVERLAP_WORDS, CHUNK_SIZE_WORDS
 from gct.jobs.worker import run
 from gct.providers.openai_provider import OpenAIEmbeddings
+
+
+def _interrupt(signum: int, _frame: FrameType | None) -> None:
+    """Turn SIGTERM into the unwind Ctrl-C already produces (issue #82).
+
+    ROUTING, NOT DECIDING - the ADR 0009 line this file has to stay on. What a stopped worker
+    does about its in-flight job is `gct.jobs.worker`'s call, and it has to be: the `Job` and
+    its `lease_token` are locals of `process_one`, invisible from here. All this does is make
+    SIGTERM arrive as an exception on the same stack SIGINT already does, so
+    `_release_on_shutdown` runs for both.
+
+    Python's DEFAULT SIGTERM disposition is what makes this necessary: the interpreter dies in
+    the C handler, no frame unwinds, and no `except`/`finally` anywhere in the process runs.
+    SIGINT is the special case - the interpreter already raises `KeyboardInterrupt` for it -
+    and this makes the two signals equal rather than inventing a second shutdown path.
+
+    `KeyboardInterrupt` rather than a bespoke class or `SystemExit`, for two reasons: the guard
+    in `gct.jobs.worker` catches `BaseException` so any of them would reach it, and the `except`
+    below already says what this process does about an operator-requested stop - exits quietly,
+    no traceback, status 0. A separate type would need that statement written twice.
+
+    Signal delivery is not preemptive: CPython runs the handler between bytecodes in the main
+    thread, so one blocked in a C call (psycopg waiting on a socket, `time.sleep` serving a
+    backoff) unwinds when that call returns rather than instantly. Late is fine - `release` only
+    needs the process to still be alive to make its one write.
+
+    SIGKILL is NOT in scope and cannot be: `kill -9`, an OOM kill and a power cut run no handler
+    at all. Those still cost the full lease, and the reaper is still the only thing that
+    collects them.
+    """
+    raise KeyboardInterrupt(f"signal {signum}")
 
 
 def main() -> None:
@@ -23,15 +56,27 @@ def main() -> None:
         level=logging.INFO,
         format="%(asctime)s %(levelname)s %(name)s: %(message)s",
     )
-    conn = connect()
-    # Autocommit is defense in depth here, not load-bearing: every writer on the worker path
-    # commits itself inside its own `conn.transaction()`, so a plain connection works end to
-    # end (ADR 0025, guarded per ADR 0027; the plain-connection test in test_worker.py proves
-    # it). Kept because it protects a future statement added outside a transaction block from
-    # silently opening the implicit transaction. ask_smoke.py's wiring comment carries the
-    # original argument for the mode.
-    conn.autocommit = True
+    # Registered BEFORE the connection is opened, so a SIGTERM arriving during startup takes
+    # the quiet path rather than the default kill. `signal.signal` is main-thread-only, which
+    # `main()` is by construction.
+    signal.signal(signal.SIGTERM, _interrupt)
+    # Bound before the `try` so the `finally` below can ask whether there is anything to close:
+    # a signal landing inside `connect()` unwinds through that block with the name unassigned,
+    # and a bare `conn.close()` would raise `UnboundLocalError` over the top of the interrupt.
+    conn = None
     try:
+        # INSIDE the try, so an interrupt during startup exits the same way one during the run
+        # does. `connect()` is the slowest step here and the likeliest to hang - a Postgres that
+        # is down, a full connection pool - which makes it a window an operator sends a signal
+        # into rather than a hypothetical one.
+        conn = connect()
+        # Autocommit is defense in depth here, not load-bearing: every writer on the worker path
+        # commits itself inside its own `conn.transaction()`, so a plain connection works end to
+        # end (ADR 0025, guarded per ADR 0027; the plain-connection test in test_worker.py proves
+        # it). Kept because it protects a future statement added outside a transaction block from
+        # silently opening the implicit transaction. ask_smoke.py's wiring comment carries the
+        # original argument for the mode.
+        conn.autocommit = True
         run(
             conn,
             # The embedder constructs itself from config (ADR 0018: never hardcode a model id);
@@ -42,18 +87,17 @@ def main() -> None:
             chunk_overlap=CHUNK_OVERLAP_WORDS,
         )
     except KeyboardInterrupt:
-        # Ctrl-C is the V1 shutdown story: killed mid-ingest, the run committed nothing
-        # (ADR 0020) and the lease/reaper requeues the job - zero cleanup by design.
-        #
-        # "Requeues" is not "requeues PROMPTLY", and this is where the lease number is really
-        # paid. The in-flight job keeps a lease stamped up to DEFAULT_LEASE_SECONDS ahead, so
-        # the reaper on the next run's poll loop skips it - `leased_until < now()` is false -
-        # and the student's file reads `processing` until that lease expires. The fix is a
-        # shutdown handler that releases the job; ADR 0028 §Consequences records why it is not
-        # built yet rather than leaving the delay to be rediscovered.
+        # Ctrl-C, or the SIGTERM `_interrupt` routes onto the same stack. Either way the run
+        # committed nothing (ADR 0020), and `process_one`'s shutdown guard has already handed
+        # the in-flight job back to `queued` on the way out, so the next start claims it at once
+        # instead of waiting out its lease (ADR 0028 §Consequences, shutdown-release bullet).
+        # Nothing left to do here but exit quietly: an operator who stopped the worker does not
+        # need a traceback, and the exception has already done its work upstream. A signal that
+        # arrived during startup reaches here too, with no job claimed and `run` never entered.
         pass
     finally:
-        conn.close()
+        if conn is not None:
+            conn.close()
 
 
 if __name__ == "__main__":

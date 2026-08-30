@@ -79,9 +79,10 @@ logger = logging.getLogger(__name__)
 # The lease errs LONG on purpose: too short reclaims a job a healthy worker is still ingesting
 # and pays the embedding bill twice ONCE A SECOND WORKER EXISTS - on today's single worker the
 # reaper cannot run while `process_one` holds the loop, so a short lease shows up as a cut
-# backoff instead (ADR 0028 §1). Too long only delays reclaim after a genuine crash - and,
-# per ADR 0028 §Consequences, delays it after a Ctrl-C too, which is where the number is really
-# paid and which this worker does not yet handle.
+# backoff instead (ADR 0028 §1). Too long only delays reclaim after a genuine crash - which is
+# now the SIGKILL-shaped subset of them: `_release_on_shutdown` hands the job back on any death
+# that unwinds the stack, so this number is paid only when no handler gets to run at all
+# (ADR 0028 §Consequences, shutdown-release bullet).
 DEFAULT_LEASE_SECONDS = 15 * 60
 DEFAULT_POLL_SECONDS = 2.0
 # How many attempts actually RUN before the job is buried as `transient_exhausted`. Counted in
@@ -201,6 +202,106 @@ def _bury(conn: psycopg.Connection, job: Job, *, reason: str, error: str) -> Non
         )
 
 
+def _release_on_shutdown(conn: psycopg.Connection, job: Job, exc: BaseException) -> None:
+    """Hand the in-flight job back to `queued` while `exc` unwinds `process_one` (issue #82).
+
+    WHY `release` AND NOT `complete`/`fail`: it is the only settle verb that CLEARS
+    `leased_until`. The other two leave a terminal row's stale lease in place deliberately -
+    the reaper filters on state, so it is inert, and it records when the winning run held the
+    job. This row is going back to `queued`, where a leftover lease would be a live lie about a
+    worker that no longer holds it (`release`'s docstring). That lie is the whole defect: a
+    lease stamped up to `DEFAULT_LEASE_SECONDS` ahead does not match `reclaim_expired`'s
+    `leased_until < now()`, so nothing - not even the worker that restarts a second later - can
+    claim the job until the lease elapses.
+
+    `attempts` is left alone, which is what makes this NOT a special case: a shutdown costs one
+    attempt exactly as a crash or a caught 429 does (ADR 0028 §1), so the durable budget bounds
+    a restart loop the same way it bounds everything else.
+
+    CALLED UNCONDITIONALLY, with no "did the pipeline finish?" branch. If the interrupt landed
+    in the millisecond between `index_file`'s commit and `complete`, the file is already `ready`
+    and this sends a finished job back for a full re-ingest - a duplicate embedding bill. That
+    is not a new cost class: today's reaper does exactly the same thing to exactly that job
+    fifteen minutes later (ADR 0028 §Consequences enumerates `ready` as reachable under a
+    reaped job). Branching on the pipeline's return would buy that bill back at the price of
+    threading a "did it return" flag through the guard and a second settle path to test, and
+    was declined for this reason rather than overlooked.
+
+    NO LEASE GUARD OF ITS OWN, because `_settle` already has the one that matters:
+    `state='processing' AND lease_token = ours`. A zombie whose lease expired, was reaped and
+    was re-claimed by another worker gets `False` and writes nothing -
+    `test_release_refuses_a_job_another_worker_now_holds` (tests/gct/jobs/test_queue.py) drives
+    that on a real reap-and-re-claim. So `False` here is a REPORT, not an error.
+
+    BUT IT IS NOT THE SAME REPORT the other settle paths make, and the message must not borrow
+    theirs. On `complete`/`fail`/the transient `release`, a `False` can only mean a lost lease:
+    the job is still `processing` when they run, so the only condition that can refuse them is
+    the token half. The widened guard gives this call site a SECOND cause - it also spans the
+    sliver after a settle verb has already returned, where the row reads `done`/`failed`/
+    `queued` and `_settle`'s FIRST condition refuses the release. Nothing is wrong there and
+    nothing is written; what would be wrong is reporting it as "another worker owns it now",
+    which names a concurrency event V1 cannot have (ADR 0011: one worker; ADR 0028 §5's safety
+    argument rests on it) about a job THIS worker settled a microsecond earlier. ADR 0028
+    §Consequences reads these lines as evidence, so a false one is not cosmetic. The message
+    below therefore states the fact both causes share - this worker no longer holds the job -
+    and names both rather than diagnosing the wrong one.
+
+    `conn.rollback()` FIRST. `release` calls `gct.db.require_idle` and raises on a connection
+    left inside a transaction (ADR 0025, guarded per ADR 0027). psycopg's `transaction()` block
+    rolls itself back on `BaseException`, so an interrupt inside `ingest_file` already leaves
+    the connection IDLE - but a bare statement outside any transaction block leaves a PLAIN
+    connection INTRANS, and `run` accepts a plain connection by contract (this module's
+    connection-contract paragraph). Rolling back makes IDLE unconditional; it is a no-op on an
+    already-idle connection under either wiring (measured), and it is inside the `try` because
+    on a closed connection it is the statement that raises.
+
+    THE RELEASE MUST NOT MASK `exc`. A DB error is one of the very causes of the shutdown, so
+    "the DB is gone" is a likely reason this write fails - and a Ctrl-C that surfaced as a
+    psycopg traceback would tell the operator the wrong story. On failure the fallback is
+    precisely the pre-#82 behavior: the row keeps its live lease and the reaper collects it when
+    that lease expires. This handler is an optimization of a path that was already safe (nothing
+    was committed - ADR 0020 §2/§3), never a correctness dependency.
+
+    `Exception` rather than `BaseException` on that catch, deliberately: a SECOND interrupt
+    arriving during the release is not "the release failed", it is the operator insisting, and
+    swallowing it would be the one thing worse than losing the original - which survives as
+    `__context__` either way, and the worker exits regardless.
+
+    WHAT THIS CANNOT COVER, plainly: `SIGKILL`, an OOM kill, and a hard power loss. No handler
+    runs, nothing writes the row, and the 15-minute lease is paid in full. This narrows the
+    trigger set; it does not empty it.
+    """
+    try:
+        conn.rollback()
+        if release(
+            conn,
+            job_id=job.job_id,
+            lease_token=job.lease_token,
+            error=f"shutdown: {type(exc).__name__}: {exc}",
+        ):
+            logger.warning(
+                "job %s: requeued on shutdown (%s) - claimable at once, not after its lease",
+                job.job_id,
+                type(exc).__name__,
+            )
+        else:
+            logger.warning(
+                "job %s: nothing to requeue on shutdown - this worker no longer holds it "
+                "(it settled just before the interrupt, or its lease was reaped and re-claimed)",
+                job.job_id,
+            )
+    except Exception:
+        # Reported at WARNING with the traceback, not raised: `exc` is what the operator asked
+        # about and it is about to re-raise. The consequence is worth saying out loud in the log
+        # rather than leaving to be inferred from silence.
+        logger.warning(
+            "job %s: could not requeue on shutdown - it stays `processing` until its lease "
+            "expires and the reaper collects it",
+            job.job_id,
+            exc_info=True,
+        )
+
+
 def process_one(
     conn: psycopg.Connection,
     *,
@@ -252,8 +353,15 @@ def process_one(
     and the worker still crashes - unchanged, and deliberate. Classifying an unknown exception
     would mean guessing a `failed_reason` from the closed set, and the wrong reason shown to a
     student is worse than none. Crash-mid-processing committed nothing (ADR 0020), so there is
-    zero cleanup; the lease expires, `run`'s reaper requeues, and the durable budget bounds the
-    loop instead of the handler doing it.
+    zero cleanup, and the durable budget bounds the loop instead of the handler doing it.
+
+    WHAT THE UNWIND NOW DOES ON ITS WAY OUT (issue #82). Everything after the claim runs under
+    `_release_on_shutdown`, which hands the job back to `queued` before re-raising - so a Ctrl-C,
+    a SIGTERM the caller routed onto this unwind, or an unclassified exception leaves the job
+    CLAIMABLE AT ONCE rather than stranded under a live lease the reaper is written to refuse.
+    It adds a cleanup write and changes nothing else: the exception still propagates and the
+    worker still crashes. `run`'s reaper remains the backstop, and is the only recourse when no
+    handler runs at all - SIGKILL, OOM, power loss.
 
     A DB error takes that path too, which reads as a deviation from ADR 0020 §1's list and is
     now the ratified answer (ADR 0020 §1, DB-blip class amended per ADR 0028). The ADR carries
@@ -265,192 +373,215 @@ def process_one(
     if job is None:
         return False
 
-    # Deliberately nothing logged on the empty tick above: at a 2s poll that is 30 lines a
-    # minute of "nothing happened", which buries the lines that matter.
-    logger.info(
-        "job %s: claimed file %s (attempt %s/%s)",
-        job.job_id,
-        job.file_id,
-        job.attempts,
-        max_attempts,
-    )
-
-    # The budget check, before ANY work and before the `processing` write. `attempts` counts
-    # this claim (queue.py), so `>` rather than `>=`: at `attempts == max_attempts` this IS the
-    # last permitted attempt and it gets to run. `transient_exhausted` is the only reason in the
-    # closed set that means "we gave up after retrying", and it is written even when the
-    # attempts were burned by CRASHES rather than caught 429s - the taxonomy has no reason for
-    # "kept dying" (ADR 0020 §Open: a richer taxonomy is a clean V2 extension), and `last_error`
-    # carries the detail that distinguishes them.
-    if job.attempts > max_attempts:
-        logger.warning(
-            "job %s: retry budget spent (%s attempts) - failing file %s",
-            job.job_id,
-            max_attempts,
-            job.file_id,
-        )
-        _bury(
-            conn,
-            job,
-            reason="transient_exhausted",
-            error=f"retry budget spent: {max_attempts} attempts made, none succeeded",
-        )
-        return True
-
-    # Timed from the claim, not the ingest, because the LEASE covers claim->complete: this
-    # duration is the evidence ADR 0028's lease number will be RE-chosen from, and `attempts`
-    # above is the same for the retry budget. The ADR ratified both without measuring either,
-    # and named these two log lines as what would move them.
-    started = time.perf_counter()
-
-    # Keyed on `file_id`, the primary key - not `staging_ref`, which is nullable and carries
-    # no uniqueness constraint. `updated_at` is bumped by hand: `files` has no trigger.
+    # THE SHUTDOWN GUARD (issue #82). Everything below runs while THIS worker holds the
+    # lease, and `job.lease_token` - the proof needed to give it back - is a local of this
+    # function and of nothing else. `scripts/worker.py` therefore cannot implement this
+    # (ADR 0009: it may only route a signal onto the same unwind); the decision is here.
     #
-    # `status <> 'ready'` keeps the student-facing status monotonic. Under at-least-once a job
-    # can be reclaimed a SECOND time after an earlier worker's `index_file` already published
-    # `ready` - that worker's `complete` returned False, so the job never went `done`. Without
-    # the guard, this claim flips a finished file back to `processing` in the UI.
-    # `failed -> processing` IS permitted here, and that is load-bearing rather than an
-    # accident. The retry path does not need it - a retryable failure never writes `failed` at
-    # all, it leaves the file `processing` and requeues the job - but `_bury` does: it writes
-    # `files` BEFORE `jobs` precisely so that a crash between the two leaves a `failed` file
-    # under a job that is still claimable. The reaper requeues it, this line writes `processing`
-    # back over `failed`, and a later attempt settles both axes. Tightening this guard to
-    # exclude `failed` would strand exactly that file forever, which is the recovery `_bury`'s
-    # write order was chosen to buy. Only `ready` is protected, because only `ready` is a
-    # promise already made to the student.
-    # (An earlier version of this comment called the transition UNREACHABLE, reasoning that a
-    # `failed` file always has a terminally-failed job. That is true only when `_bury` completed
-    # BOTH its writes - the crash window between them is the whole point of its ordering, and
-    # `update files set status='processing' ... and status <> 'ready'` writes 1 row against a
-    # `failed` row when you run it.)
-    # Pinned by `test_a_terminal_failure_cannot_unpublish_a_file_that_is_already_ready`: drop
-    # this guard and that test goes red. It reaches this line without going through the reaper
-    # at all - it publishes `ready` directly, which is what a won run leaves behind however it
-    # got there - and without the guard the file lands on `processing` here and `failed` in
-    # `_bury`, whose own identical guard then sees `processing` rather than `ready`. So the two
-    # guards are not redundant: this one is what keeps the other one's precondition true.
+    # `BaseException`, not `Exception`, and that is the entire point: `KeyboardInterrupt`
+    # and `SystemExit` do not derive from `Exception`, and they are the two the guard exists
+    # for. It changes NO control flow - `_release_on_shutdown` writes and returns, and the
+    # `raise` re-raises the original - so ADR 0028 §4's stance stands unchanged: an
+    # unclassified exception still crashes the worker, it just stops stranding its job first.
     #
-    # `conn.transaction()` rather than a bare execute: a bare statement only commits if the
-    # caller wired autocommit, and on a plain connection it would sit unpublished in the
-    # implicit transaction - then `index_file` refuses the INTRANS connection AFTER the embed
-    # was paid (ADR 0025). The block commits under either wiring, like every `queue.py`
-    # writer. No `require_idle` here on purpose: `claim` just committed and nothing runs
-    # between it and this statement, so the connection cannot be anything but idle.
-    with conn.transaction():
-        conn.execute(
-            """
-            update files
-            set status = 'processing',
-                updated_at = now()
-            where file_id = %(file_id)s::uuid
-              and status <> 'ready'
-            """,
-            {"file_id": job.file_id},
-        )
-
+    # IT OPENS ON THE STATEMENT AFTER THE `None` CHECK, not after the log line below, and the
+    # boundary is the invariant rather than a tidiness preference: the lease is live from the
+    # moment `claim` commits, so ANY statement outside this block is a window in which an
+    # interrupt strands the job for the full lease - the exact defect this guard closes. The
+    # log call is not a free statement; a handler formats, locks and writes to a stream, and a
+    # signal can land in it. Pinned by `test_no_interrupt_after_the_claim_can_strand_the_job`,
+    # which drives an interrupt through that one line: move the `try` back below it and the
+    # job comes back `processing` under a live lease.
     try:
-        ingest_file(
-            job.staging_ref,
-            job.owner_id,
-            job.class_id,
-            file_id=job.file_id,
-            embedder=embedder,
-            conn=conn,
-            chunk_size=chunk_size,
-            chunk_overlap=chunk_overlap,
-        )
-    except ParseError as exc:
-        # TERMINAL: bad input (ADR 0020 §1). Zero retries - the file is exactly as corrupt on
-        # the next attempt, and the budget exists for bad luck, not bad bytes. `exc.reason` is
-        # already one of `files.failed_reason`'s legal values, so it passes straight through.
-        # Note this DID cost one `attempts` bump, from the claim; that is the trail of what
-        # happened, not a retry spent - nothing will claim this job again.
-        logger.warning(
-            "job %s: terminal failure (%s) after %.1fs - %s",
+        # Deliberately nothing logged on the empty tick above: at a 2s poll that is 30 lines a
+        # minute of "nothing happened", which buries the lines that matter.
+        logger.info(
+            "job %s: claimed file %s (attempt %s/%s)",
             job.job_id,
-            exc.reason,
-            time.perf_counter() - started,
-            exc,
-        )
-        _bury(conn, job, reason=exc.reason, error=f"{exc.reason}: {exc}")
-        return True
-    except TransientEmbeddingError as exc:
-        # TRANSIENT: bad luck, and a NARROWER class than ADR 0020 §1 first drew - a DB blip is
-        # not in it (ADR 0020 §1, DB-blip class amended per ADR 0028). Nothing was committed -
-        # the index transaction never opened (ADR 0020 §3) - so the job goes back to `queued`
-        # with no cleanup at all, and
-        # `files.status` stays `processing`, which is still TRUE: the file is mid-flight and the
-        # student has nothing new to learn from a status flicker. Only budget exhaustion moves
-        # it to `failed`.
-        #
-        # THE BACKOFF IS SERVED BEFORE THE RELEASE, while this worker still holds the lease, so
-        # the delay applies to every worker and not just to this one's next poll (see
-        # `release`'s docstring). How long it is - the curve, the lease budget, and the
-        # last-attempt zero - is `served_backoff`'s, which carries the argument for all three.
-        #
-        # ACCEPTED COST: this worker is blocked for the delay, so one flaky file holds up every
-        # other queued file for up to BACKOFF_MAX_SECONDS. That is a real head-of-line block,
-        # and it is affordable only because V1 is one worker serving one user (ADR 0011) with a
-        # cap measured in seconds. Worker concurrency (`ingestion-worker.md` §Open/deferred) is
-        # what makes it stop being affordable - at which point the delay wants to live in the
-        # database (a `visible_after` column claim filters on) rather than in a sleeping
-        # process. Recorded so that change is a decision someone makes, not a bug someone finds.
-        elapsed = time.perf_counter() - started
-        wanted, delay = served_backoff(
-            job.attempts,
-            max_attempts=max_attempts,
-            lease_seconds=lease_seconds,
-            elapsed=elapsed,
-        )
-        # The two outcomes say OPPOSITE things and must not share a message. A delay means a
-        # retry is coming; a zero delay on the last permitted attempt means the next claim will
-        # bury the job, and "retrying in 0s" told an operator the reverse of what happens.
-        logger.warning(
-            "job %s: transient failure on attempt %s/%s after %.1fs - %s - %s",
-            job.job_id,
+            job.file_id,
             job.attempts,
             max_attempts,
-            elapsed,
-            f"retrying in {delay:.0f}s" if delay else "no retry left, the next claim buries it",
-            exc,
         )
-        if delay < wanted:
-            # Reported rather than absorbed: a cut backoff means this attempt ate a lease that
-            # was meant to cover it, which is evidence the lease number is wrong - exactly the
-            # measurement ADR 0028 §2 says would move it. Silently clamping would swallow it.
+
+        # The budget check, before ANY work and before the `processing` write. `attempts` counts
+        # this claim (queue.py), so `>` rather than `>=`: at `attempts == max_attempts` this IS the
+        # last permitted attempt and it gets to run. `transient_exhausted` is the only reason in the
+        # closed set that means "we gave up after retrying", and it is written even when the
+        # attempts were burned by CRASHES rather than caught 429s - the taxonomy has no reason for
+        # "kept dying" (ADR 0020 §Open: a richer taxonomy is a clean V2 extension), and `last_error`
+        # carries the detail that distinguishes them.
+        if job.attempts > max_attempts:
             logger.warning(
-                "job %s: backoff cut from %.0fs to %.0fs - the %ss lease could not cover it",
+                "job %s: retry budget spent (%s attempts) - failing file %s",
                 job.job_id,
-                wanted,
-                delay,
+                max_attempts,
+                job.file_id,
+            )
+            _bury(
+                conn,
+                job,
+                reason="transient_exhausted",
+                error=f"retry budget spent: {max_attempts} attempts made, none succeeded",
+            )
+            return True
+
+        # Timed from the claim, not the ingest, because the LEASE covers claim->complete: this
+        # duration is the evidence ADR 0028's lease number will be RE-chosen from, and `attempts`
+        # above is the same for the retry budget. The ADR ratified both without measuring either,
+        # and named these two log lines as what would move them.
+        started = time.perf_counter()
+
+        # Keyed on `file_id`, the primary key - not `staging_ref`, which is nullable and carries
+        # no uniqueness constraint. `updated_at` is bumped by hand: `files` has no trigger.
+        #
+        # `status <> 'ready'` keeps the student-facing status monotonic. Under at-least-once a job
+        # can be reclaimed a SECOND time after an earlier worker's `index_file` already published
+        # `ready` - that worker's `complete` returned False, so the job never went `done`. Without
+        # the guard, this claim flips a finished file back to `processing` in the UI.
+        # `failed -> processing` IS permitted here, and that is load-bearing rather than an
+        # accident. The retry path does not need it - a retryable failure never writes `failed` at
+        # all, it leaves the file `processing` and requeues the job - but `_bury` does: it writes
+        # `files` BEFORE `jobs` precisely so that a crash between the two leaves a `failed` file
+        # under a job that is still claimable. The reaper requeues it, this line writes `processing`
+        # back over `failed`, and a later attempt settles both axes. Tightening this guard to
+        # exclude `failed` would strand exactly that file forever, which is the recovery `_bury`'s
+        # write order was chosen to buy. Only `ready` is protected, because only `ready` is a
+        # promise already made to the student.
+        # (An earlier version of this comment called the transition UNREACHABLE, reasoning that a
+        # `failed` file always has a terminally-failed job. That is true only when `_bury` completed
+        # BOTH its writes - the crash window between them is the whole point of its ordering, and
+        # `update files set status='processing' ... and status <> 'ready'` writes 1 row against a
+        # `failed` row when you run it.)
+        # Pinned by `test_a_terminal_failure_cannot_unpublish_a_file_that_is_already_ready`: drop
+        # this guard and that test goes red. It reaches this line without going through the reaper
+        # at all - it publishes `ready` directly, which is what a won run leaves behind however it
+        # got there - and without the guard the file lands on `processing` here and `failed` in
+        # `_bury`, whose own identical guard then sees `processing` rather than `ready`. So the two
+        # guards are not redundant: this one is what keeps the other one's precondition true.
+        #
+        # `conn.transaction()` rather than a bare execute: a bare statement only commits if the
+        # caller wired autocommit, and on a plain connection it would sit unpublished in the
+        # implicit transaction - then `index_file` refuses the INTRANS connection AFTER the embed
+        # was paid (ADR 0025). The block commits under either wiring, like every `queue.py`
+        # writer. No `require_idle` here on purpose: `claim` just committed and nothing runs
+        # between it and this statement, so the connection cannot be anything but idle.
+        with conn.transaction():
+            conn.execute(
+                """
+                update files
+                set status = 'processing',
+                    updated_at = now()
+                where file_id = %(file_id)s::uuid
+                  and status <> 'ready'
+                """,
+                {"file_id": job.file_id},
+            )
+
+        try:
+            ingest_file(
+                job.staging_ref,
+                job.owner_id,
+                job.class_id,
+                file_id=job.file_id,
+                embedder=embedder,
+                conn=conn,
+                chunk_size=chunk_size,
+                chunk_overlap=chunk_overlap,
+            )
+        except ParseError as exc:
+            # TERMINAL: bad input (ADR 0020 §1). Zero retries - the file is exactly as corrupt on
+            # the next attempt, and the budget exists for bad luck, not bad bytes. `exc.reason` is
+            # already one of `files.failed_reason`'s legal values, so it passes straight through.
+            # Note this DID cost one `attempts` bump, from the claim; that is the trail of what
+            # happened, not a retry spent - nothing will claim this job again.
+            logger.warning(
+                "job %s: terminal failure (%s) after %.1fs - %s",
+                job.job_id,
+                exc.reason,
+                time.perf_counter() - started,
+                exc,
+            )
+            _bury(conn, job, reason=exc.reason, error=f"{exc.reason}: {exc}")
+            return True
+        except TransientEmbeddingError as exc:
+            # TRANSIENT: bad luck, and a NARROWER class than ADR 0020 §1 first drew - a DB blip is
+            # not in it (ADR 0020 §1, DB-blip class amended per ADR 0028). Nothing was committed -
+            # the index transaction never opened (ADR 0020 §3) - so the job goes back to `queued`
+            # with no cleanup at all, and
+            # `files.status` stays `processing`, which is still TRUE: the file is mid-flight and the
+            # student has nothing new to learn from a status flicker. Only budget exhaustion moves
+            # it to `failed`.
+            #
+            # THE BACKOFF IS SERVED BEFORE THE RELEASE, while this worker still holds the lease, so
+            # the delay applies to every worker and not just to this one's next poll (see
+            # `release`'s docstring). How long it is - the curve, the lease budget, and the
+            # last-attempt zero - is `served_backoff`'s, which carries the argument for all three.
+            #
+            # ACCEPTED COST: this worker is blocked for the delay, so one flaky file holds up every
+            # other queued file for up to BACKOFF_MAX_SECONDS. That is a real head-of-line block,
+            # and it is affordable only because V1 is one worker serving one user (ADR 0011) with a
+            # cap measured in seconds. Worker concurrency (`ingestion-worker.md` §Open/deferred) is
+            # what makes it stop being affordable - at which point the delay wants to live in the
+            # database (a `visible_after` column claim filters on) rather than in a sleeping
+            # process. Recorded so that change is a decision someone makes, not a bug someone finds.
+            elapsed = time.perf_counter() - started
+            wanted, delay = served_backoff(
+                job.attempts,
+                max_attempts=max_attempts,
+                lease_seconds=lease_seconds,
+                elapsed=elapsed,
+            )
+            # The two outcomes say OPPOSITE things and must not share a message. A delay means a
+            # retry is coming; a zero delay on the last permitted attempt means the next claim will
+            # bury the job, and "retrying in 0s" told an operator the reverse of what happens.
+            logger.warning(
+                "job %s: transient failure on attempt %s/%s after %.1fs - %s - %s",
+                job.job_id,
+                job.attempts,
+                max_attempts,
+                elapsed,
+                f"retrying in {delay:.0f}s" if delay else "no retry left, the next claim buries it",
+                exc,
+            )
+            if delay < wanted:
+                # Reported rather than absorbed: a cut backoff means this attempt ate a lease that
+                # was meant to cover it, which is evidence the lease number is wrong - exactly the
+                # measurement ADR 0028 §2 says would move it. Silently clamping would swallow it.
+                logger.warning(
+                    "job %s: backoff cut from %.0fs to %.0fs - the %ss lease could not cover it",
+                    job.job_id,
+                    wanted,
+                    delay,
+                    lease_seconds,
+                )
+            if delay:
+                time.sleep(delay)
+            if not release(
+                conn, job_id=job.job_id, lease_token=job.lease_token, error=f"transient: {exc}"
+            ):
+                logger.warning(
+                    "job %s: lease lost before it could be requeued - another worker owns it now",
+                    job.job_id,
+                )
+            return True
+
+        elapsed = time.perf_counter() - started
+        if complete(conn, job_id=job.job_id, lease_token=job.lease_token):
+            logger.info("job %s: done in %.1fs", job.job_id, elapsed)
+        else:
+            # The lease was too short for this file - the one signal that says so. `elapsed`
+            # against `lease_seconds` is the whole diagnosis.
+            logger.warning(
+                "job %s: lease lost after %.1fs (lease was %ss) - another worker owns it now",
+                job.job_id,
+                elapsed,
                 lease_seconds,
             )
-        if delay:
-            time.sleep(delay)
-        if not release(
-            conn, job_id=job.job_id, lease_token=job.lease_token, error=f"transient: {exc}"
-        ):
-            logger.warning(
-                "job %s: lease lost before it could be requeued - another worker owns it now",
-                job.job_id,
-            )
+
         return True
-
-    elapsed = time.perf_counter() - started
-    if complete(conn, job_id=job.job_id, lease_token=job.lease_token):
-        logger.info("job %s: done in %.1fs", job.job_id, elapsed)
-    else:
-        # The lease was too short for this file - the one signal that says so. `elapsed`
-        # against `lease_seconds` is the whole diagnosis.
-        logger.warning(
-            "job %s: lease lost after %.1fs (lease was %ss) - another worker owns it now",
-            job.job_id,
-            elapsed,
-            lease_seconds,
-        )
-
-    return True
+    except BaseException as exc:
+        _release_on_shutdown(conn, job, exc)
+        raise
 
 
 def run(
@@ -507,8 +638,9 @@ def run(
         if reclaimed:
             logger.warning(
                 "reaper: %s job(s) whose lease had elapsed are claimable again - a worker died "
-                "or was stopped mid-ingest. Their files keep whatever status that run reached "
-                "until some later claim moves them",
+                "in a way that ran no handler (SIGKILL, OOM, power loss); a stopped or crashed "
+                "one hands its own job back (issue #82). Their files keep whatever status that "
+                "run reached until some later claim moves them",
                 reclaimed,
             )
         if not process_one(

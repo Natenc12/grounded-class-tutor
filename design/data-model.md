@@ -39,7 +39,7 @@ truth `GET /files/:id` returns — distinct from the `jobs` row, which is the ex
 | `filename` | text | original name (e.g. `lecture-3.pdf`); source of the chunk's citation label |
 | `staging_ref` | text | pointer into file staging (local dir V1 → Object Storage V2, ADR 0010) |
 | `status` | enum | `queued · processing · ready · failed` (F3, ADR 0011). **`ready` ⟺ full chunk set committed** (flipped inside the index transaction — ADR 0020, publication conditional per ADR 0025 on the caller not already being in a transaction) |
-| `failed_reason` | enum \| null | populated on `failed`; **terminal** (`unparseable · protected · unsupported · empty`) vs **transient_exhausted** (ADR 0020); drives the actionable UI message |
+| `failed_reason` | enum \| null | populated on `failed`; **terminal** (`unparseable · protected · unsupported · empty · too_long`) vs **transient_exhausted** (ADR 0020, terminal set extended per ADR 0029); drives the actionable UI message |
 | `created_at` / `updated_at` | timestamptz | |
 
 ## `chunks`

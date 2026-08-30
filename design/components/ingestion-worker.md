@@ -97,6 +97,10 @@ Slow/external work runs with **no transaction open**; the transaction is a short
 2. **Parse** staged bytes → text + structure (pypdf / python-pptx / `unstructured` — tooling is a
    spike). **Source metadata (file, page/slide) is born here** — honor-point ① (F2). Unparseable /
    password-protected / zero-text → **terminal failure** (ADR 0020), no retry.
+   - **Input ceiling** — the parsed word count is checked against `MAX_INGEST_WORDS` here, one step
+     before the only paid call in the pipeline; over it → **terminal failure**
+     `too_long`, no retry, nothing embedded (ADR 0020, terminal set extended per ADR 0029). A
+     precondition on the pure pipeline, not queue machinery — the PM-4 seam holds.
 3. **Chunk** under the fixed contract (ADR 0019): each chunk carries `(file, page_or_slide)`, is
    self-contained/embeddable, maps to **exactly one** page/slide (**never spans**). *Strategy /
    size / overlap = spike.*
@@ -133,6 +137,7 @@ Slow/external work runs with **no transaction open**; the transaction is a short
 | mode | class | V1 behavior |
 |---|---|---|
 | **Unparseable / password-protected / unsupported / zero-text file** | terminal | → `failed(reason)` immediately, **skip retry**; actionable reason surfaced via `GET /files/:id` (ADR 0020) |
+| **Input past the configured word ceiling** | terminal | → `failed(reason=too_long)` immediately, **skip retry**; refused BEFORE the embed call, so nothing is bought and nothing is written. Counted in words, not bytes/pages/chunks (ADR 0020, terminal set extended per ADR 0029) |
 | **Embedding provider 429 / timeout / transient 5xx** | transient | retry w/ backoff up to budget → else `failed(reason=transient_exhausted)`. DB untouched until success (ADR 0020 §1, budget numbers per ADR 0028) |
 | **DB connection error mid-job** | infra | propagates uncaught — the worker crashes. Nothing classifies psycopg errors, and a handler wide enough to catch a blip absorbs every programming error with it, putting a wrong `failed_reason` in front of a student. The run committed nothing, the lease expires, the reaper requeues, and the `attempts` budget bounds the loop (ADR 0020 §1, DB-blip class amended per ADR 0028) |
 | **Worker crash mid-`processing`** | infra | committed nothing (tx not reached); job → `queued`, **zero cleanup** (ADR 0011/0020). Which writer requeues it turns on whether the stack unwound: any death that raises — Ctrl-C, the SIGTERM `scripts/worker.py` routes onto the same unwind, an unclassified exception — is handed back by the worker's own shutdown release and is claimable **at once**; `SIGKILL`/OOM/power loss run no handler, so those wait out the lease and the reaper collects them (ADR 0028 §Consequences, shutdown-release bullet) |
@@ -181,7 +186,8 @@ Slow/external work runs with **no transaction open**; the transaction is a short
   photo/OCR subsystem (ADR 0002, V4) — out of scope here; this is extraction-quality on an allowed
   input, not the capture subsystem.
 - **Terminal-reason taxonomy** — V1 ships a small enumerated set (unparseable / protected / unsupported
-  / empty); richer taxonomy is a clean V2 extension (ADR 0020).
+  / empty / too_long); richer taxonomy is a clean V2 extension (ADR 0020, terminal set extended per
+  ADR 0029).
 - **Throughput / batching (N6)** — embed-call batch *sizing* + worker concurrency are tuning, not
   contract; revisit with real corpus sizes. (Staying *under* the provider cap is contract, owned by the
   adapter — see pipeline §4 / PM-1.) Broker-based queue is the V2 substrate swap (ADR 0011).

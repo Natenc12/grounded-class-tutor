@@ -571,3 +571,49 @@ scores at 250/40: the scores in play are the same size as the gap being claimed.
 a Pass 2 top-5 probe should print the whole ranking, not just the expected row's position — one
 extra column at the same API cost, and it is the difference between "it ranks first" and "it ranks
 first by a margin that would survive a window change."
+
+---
+
+## 2026-08-30 — the first ingest throughput measurement
+
+### One 250,000-word file ingests in 14.5 seconds — 62× under the 15-minute lease
+Measured while settling the ingest input ceiling (issue #43, ADR 0029). A **250,000-word,
+348-page PDF** driven through the shipped pipeline at the default chunk window, against the **real**
+provider (`text-embedding-3-small`) and a local Postgres:
+
+| phase | wall clock |
+|---|---|
+| parse (pypdf, 348 pages) | 4.5 s |
+| chunk (→ **1,389** chunks) | 0.0 s |
+| **embed** (1,389 chunks, real API) | **10.1 s** |
+| **total** | **14.5 s** |
+
+Against `DEFAULT_LEASE_SECONDS = 15 * 60` that is **62× of headroom**, and against
+`MAX_INGEST_WORDS = 250_000` it is the ceiling's own worst case: no file the pipeline will *accept*
+can cost more than this, because the ceiling is what makes the number an upper bound rather than a
+sample. Embedding is ~70% of it and parsing the rest; chunking does not register.
+
+**This is the first ingest throughput number the project has.** ADR 0028 §Context ratified the
+lease, backoff, budget and poll numbers with none available ("no file has been ingested through the
+worker against a real provider with timing recorded"), and ADR 0029 §Context declined to argue the
+ceiling from worker time for the same reason. The gap both named is now closed on one axis.
+
+**What it does not license, stated because a single number invites more than it supports:**
+- **n = 1.** One file, one shape, one machine, one network, one provider, one moment. The three
+  phases sum to the total within rounding, so the index write is below this measurement's
+  resolution — that is not the same as it being free.
+- **The 1,389 chunks are more than the ~1,191 the same word count yields in a single unit**, because
+  a 348-page PDF chunks per page (ADR 0019 never-span) and every page contributes a short tail
+  chunk. Chunk count — and therefore embed time — moves with page count at fixed word count, so
+  "250,000 words" does not pin the embed bill on its own.
+- **A text-layer PDF.** The dogfood corpus contains OCR'd PDFs (see the 2026-07-27 entries), and
+  nothing here says what an image-heavy or OCR-recovered file costs to parse.
+- **It is not a lease revisit.** ADR 0028 names what would move the lease number — a completion log
+  whose `elapsed` approaches `lease_seconds`, or a "backoff cut" warning — and 14.5 s against 900 s
+  is neither. 62× of headroom argues the number is *not too short*; it argues nothing about whether
+  it is too long, which is the direction that ADR chose to err in deliberately.
+
+**Matters later:** the honest use of this figure is as a *floor under the safety margin*, not as a
+budget. When worker concurrency arrives (`ingestion-worker.md` §Open/deferred) and the lease stops
+being free to over-provision, this is the first data point a re-choice can stand on — and the
+second one should come from a completion log on real student uploads, not from a synthetic file.

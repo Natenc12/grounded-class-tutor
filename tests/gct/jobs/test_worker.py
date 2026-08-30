@@ -1035,10 +1035,17 @@ def test_a_lost_lease_on_shutdown_is_logged_not_raised(db, tmp_path, monkeypatch
     The guard that produces the False is `_settle`'s `state='processing' AND lease_token = ours`
     and it is already covered, on a real reap-and-re-claim, by
     `test_release_refuses_a_job_another_worker_now_holds` (tests/gct/jobs/test_queue.py). Not
-    re-driven here: this test is about what `process_one` DOES with the False, which is the
-    same thing it already does on the transient and terminal paths - log the lost lease and
+    re-driven here: this test is about what `process_one` DOES with the False - report it and
     move on. A handler that raised on it would turn the routine at-least-once outcome into a
     second traceback stacked on the interrupt.
+
+    What it asserts is the fact BOTH causes share, not a diagnosis. Unlike the transient and
+    terminal paths - where a `False` can only mean a lost lease, because the row is still
+    `processing` when they run - the widened guard gives this call site a second cause: the
+    sliver after a settle verb has already returned. So the message may only claim what both
+    have in common, that this worker no longer holds the job.
+    `…does_not_blame_another_worker` drives the other cause and pins that the lost-lease
+    diagnosis is not asserted for it.
     """
     conn, owner_id, class_id = db
     conn.autocommit = True
@@ -1051,8 +1058,8 @@ def test_a_lost_lease_on_shutdown_is_logged_not_raised(db, tmp_path, monkeypatch
         with pytest.raises(KeyboardInterrupt):
             tick(conn, FakeEmbeddings())
 
-    assert any("lease lost" in record.message for record in caplog.records), (
-        "a lost lease on shutdown must be reported, the way every other settle path reports it"
+    assert any("no longer holds it" in record.message for record in caplog.records), (
+        "a release the guard could not make must be reported, not swallowed"
     )
 
 
@@ -1092,4 +1099,97 @@ def test_the_shutdown_release_works_on_a_plain_connection_left_mid_transaction(
     assert (state, leased_until) == ("queued", None), (
         "the shutdown release refused its own connection - `require_idle` fired instead of the "
         "requeue, so the job is stranded under a live lease on the contract's own wiring"
+    )
+
+
+def test_a_shutdown_after_the_job_was_already_settled_does_not_blame_another_worker(
+    db, db_other, tmp_path, monkeypatch, caplog
+):
+    """`release` returning False has TWO causes since the guard was widened, not one.
+
+    The guard spans everything after the claim, so it also covers the sliver AFTER a settle verb
+    has already returned - `complete` has written `done`, or `_bury`'s `fail` has written
+    `failed`, and the interrupt lands before `process_one` returns. `_settle` then refuses the
+    shutdown release on its FIRST condition (`state = 'processing'`), which is correct and
+    writes nothing.
+
+    What is not correct is calling that "another worker owns it now". No other worker exists -
+    V1 runs one (ADR 0011, and ADR 0028 §5's safety argument rests on it) - and this worker
+    settled the job itself a microsecond earlier. That message is the diagnosis the OTHER settle
+    paths make, where it is sound because their `False` can only mean a lost lease; the widening
+    gave THIS call site a second cause its message never covered.
+
+    It matters because ADR 0028 §Consequences makes these lines evidence: it spends a section on
+    which log line may and may not be read as a signal about the lease number, and a WARNING
+    asserting a concurrency event that cannot occur in V1 is a false one.
+
+    The row is asserted through `db_other` to pin the other half - that the refused release
+    wrote nothing and the terminal settle stands.
+    """
+    conn, owner_id, class_id = db
+    conn.autocommit = True
+    real_complete = worker.complete
+
+    def settle_then_interrupt(*args, **kwargs):
+        # The real window: `complete` returns True, then the interrupt lands before
+        # `process_one` can return - on the very `logger.info("done in ...")` call below it.
+        real_complete(*args, **kwargs)
+        raise KeyboardInterrupt("Ctrl-C landing just after the job was settled")
+
+    monkeypatch.setattr(worker, "complete", settle_then_interrupt)
+    source = write_pdf(tmp_path / "settled-then-stopped.pdf", ["a page that finished in time"])
+    file_id = enqueue(conn, path=source, owner_id=owner_id, class_id=class_id)
+
+    with caplog.at_level("WARNING"):
+        with pytest.raises(KeyboardInterrupt):
+            tick(conn, FakeEmbeddings())
+
+    state, _ = db_other.execute(
+        "select state, attempts from jobs where file_id = %s::uuid", (file_id,)
+    ).fetchone()
+    assert state == "done", "the refused shutdown release must not disturb a settled job"
+
+    assert not any("another worker owns it" in record.message for record in caplog.records), (
+        "the shutdown release was refused because THIS worker had already settled the job, but "
+        "the log blames a second worker - one that cannot exist in V1 (ADR 0011)"
+    )
+
+
+def test_no_interrupt_after_the_claim_can_strand_the_job(db, db_other, tmp_path, monkeypatch):
+    """The guard's stated invariant: it covers the whole window in which the lease is held.
+
+    The lease is held from the moment `claim` commits, so every statement after it has to be
+    inside the guard - including the `claimed file` log line, which is real work (a handler can
+    format, lock and write to a stream) and is exactly where a signal can land. Left outside,
+    an interrupt there reproduces the whole defect issue #82 exists to close: the job keeps a
+    live lease, `reclaim_expired`'s `leased_until < now()` refuses it, and nothing can claim it
+    for up to `DEFAULT_LEASE_SECONDS`.
+
+    Driving it through the logger is not a contrivance about logging - it is the only statement
+    between the claim and the guard, so it is the only place this window can be demonstrated
+    from. The assertion is about the window, not the log line.
+    """
+    conn, owner_id, class_id = db
+    conn.autocommit = True
+
+    def interrupt_on_the_claim_log(*_args, **_kwargs):
+        raise KeyboardInterrupt("SIGTERM landing on the claimed-file log line")
+
+    monkeypatch.setattr(worker.logger, "info", interrupt_on_the_claim_log)
+    source = write_pdf(tmp_path / "stranded-at-the-claim.pdf", ["a page nobody got to read"])
+    file_id = enqueue(conn, path=source, owner_id=owner_id, class_id=class_id)
+
+    with pytest.raises(KeyboardInterrupt):
+        tick(conn, FakeEmbeddings())
+
+    state, leased_until = db_other.execute(
+        "select state, leased_until from jobs where file_id = %s::uuid", (file_id,)
+    ).fetchone()
+    assert (state, leased_until) == ("queued", None), (
+        "an interrupt one statement after the claim strands the job under a live lease - the "
+        "guard starts too late to cover the window it claims to cover"
+    )
+    requeued = claim(conn, lease_seconds=DEFAULT_LEASE_SECONDS)
+    assert requeued is not None and requeued.file_id == file_id, (
+        "nothing can claim the job until its lease elapses - the defect #82 exists to close"
     )

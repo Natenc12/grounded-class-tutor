@@ -231,8 +231,20 @@ def _release_on_shutdown(conn: psycopg.Connection, job: Job, exc: BaseException)
     `state='processing' AND lease_token = ours`. A zombie whose lease expired, was reaped and
     was re-claimed by another worker gets `False` and writes nothing -
     `test_release_refuses_a_job_another_worker_now_holds` (tests/gct/jobs/test_queue.py) drives
-    that on a real reap-and-re-claim. So `False` here is a REPORT, not an error, and it is
-    logged the way every other settle path in this module logs a lost lease.
+    that on a real reap-and-re-claim. So `False` here is a REPORT, not an error.
+
+    BUT IT IS NOT THE SAME REPORT the other settle paths make, and the message must not borrow
+    theirs. On `complete`/`fail`/the transient `release`, a `False` can only mean a lost lease:
+    the job is still `processing` when they run, so the only condition that can refuse them is
+    the token half. The widened guard gives this call site a SECOND cause - it also spans the
+    sliver after a settle verb has already returned, where the row reads `done`/`failed`/
+    `queued` and `_settle`'s FIRST condition refuses the release. Nothing is wrong there and
+    nothing is written; what would be wrong is reporting it as "another worker owns it now",
+    which names a concurrency event V1 cannot have (ADR 0011: one worker; ADR 0028 §5's safety
+    argument rests on it) about a job THIS worker settled a microsecond earlier. ADR 0028
+    §Consequences reads these lines as evidence, so a false one is not cosmetic. The message
+    below therefore states the fact both causes share - this worker no longer holds the job -
+    and names both rather than diagnosing the wrong one.
 
     `conn.rollback()` FIRST. `release` calls `gct.db.require_idle` and raises on a connection
     left inside a transaction (ADR 0025, guarded per ADR 0027). psycopg's `transaction()` block
@@ -274,8 +286,8 @@ def _release_on_shutdown(conn: psycopg.Connection, job: Job, exc: BaseException)
             )
         else:
             logger.warning(
-                "job %s: lease lost before it could be requeued on shutdown - "
-                "another worker owns it now",
+                "job %s: nothing to requeue on shutdown - this worker no longer holds it "
+                "(it settled just before the interrupt, or its lease was reaped and re-claimed)",
                 job.job_id,
             )
     except Exception:
@@ -361,16 +373,6 @@ def process_one(
     if job is None:
         return False
 
-    # Deliberately nothing logged on the empty tick above: at a 2s poll that is 30 lines a
-    # minute of "nothing happened", which buries the lines that matter.
-    logger.info(
-        "job %s: claimed file %s (attempt %s/%s)",
-        job.job_id,
-        job.file_id,
-        job.attempts,
-        max_attempts,
-    )
-
     # THE SHUTDOWN GUARD (issue #82). Everything below runs while THIS worker holds the
     # lease, and `job.lease_token` - the proof needed to give it back - is a local of this
     # function and of nothing else. `scripts/worker.py` therefore cannot implement this
@@ -381,7 +383,26 @@ def process_one(
     # for. It changes NO control flow - `_release_on_shutdown` writes and returns, and the
     # `raise` re-raises the original - so ADR 0028 §4's stance stands unchanged: an
     # unclassified exception still crashes the worker, it just stops stranding its job first.
+    #
+    # IT OPENS ON THE STATEMENT AFTER THE `None` CHECK, not after the log line below, and the
+    # boundary is the invariant rather than a tidiness preference: the lease is live from the
+    # moment `claim` commits, so ANY statement outside this block is a window in which an
+    # interrupt strands the job for the full lease - the exact defect this guard closes. The
+    # log call is not a free statement; a handler formats, locks and writes to a stream, and a
+    # signal can land in it. Pinned by `test_no_interrupt_after_the_claim_can_strand_the_job`,
+    # which drives an interrupt through that one line: move the `try` back below it and the
+    # job comes back `processing` under a live lease.
     try:
+        # Deliberately nothing logged on the empty tick above: at a 2s poll that is 30 lines a
+        # minute of "nothing happened", which buries the lines that matter.
+        logger.info(
+            "job %s: claimed file %s (attempt %s/%s)",
+            job.job_id,
+            job.file_id,
+            job.attempts,
+            max_attempts,
+        )
+
         # The budget check, before ANY work and before the `processing` write. `attempts` counts
         # this claim (queue.py), so `>` rather than `>=`: at `attempts == max_attempts` this IS the
         # last permitted attempt and it gets to run. `transient_exhausted` is the only reason in the

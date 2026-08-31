@@ -32,8 +32,12 @@ what the model actually wrote — annotated per sentence with whether it carried
 (issue #66's attribution probe) — and `--show-retrieved` prints the top-k that was retrieved with
 the expected source's rank and margin (issue #67's retrieval probe — the other, unconflated signal:
 ADR 0023 §1's `hit` is an ANY-MATCH rule, so `hit=yes` says nothing about what outranked the
-expected chunk). All three are strictly additive: none changes what a default run prints, and a
-default run's bytes are unchanged. Cheap assumes
+expected chunk). All three FLAGS are strictly additive: none changes what a default run prints, and
+a default run's bytes are unchanged by any of them. Read that as the claim it is — it is about the
+flags, not about the whole script. Issue #66's POOLED attribution block is not flag-gated at all:
+`_print_attribution` runs on every full run, beside the rate vector, and does change a default
+run's bytes relative to the run before #66. Only the per-sentence annotation rides `--verbose`.
+Cheap assumes
 the owner already HAS a converged corpus: convergence walks the corpus dir, never the question
 list, so under a fresh `--owner` even `--only q005` pays the full ingest first.
 

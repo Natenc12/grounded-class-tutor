@@ -909,6 +909,25 @@ class TestMeasureAttribution:
         assert (attribution.total, attribution.uncited) == (1, 0)
         assert attribution.labels_used == ("[S1]", "[S3]")
 
+    def test_labels_used_is_first_appearance_order_and_deduped_both_ways(self):
+        """Pins THREE documented claims at once: first-appearance order (not sorted), dedup
+        ACROSS sentences, and dedup WITHIN one. Every other label set in this suite is
+        already sorted and never repeats, so all three mutations are no-ops against them.
+
+        `[S3]` before `[S1]` is the discriminator: sorted() would swap them.
+
+        TWO assertions, not one, and the second is not a restatement. `labels_used` alone cannot
+        see the WITHIN-sentence dedup, because the across-sentence pass would drop the repeat
+        anyway — deleting `_labels_in`'s dedup leaves `labels_used` byte-identical. The only
+        place that claim is observable is `SentenceCitation.labels` itself, so it is asserted
+        there. (`_labels_in`'s "the dedup only affects `labels_used`" is loose for that reason:
+        the field it actually affects is this one.)
+        """
+        attribution = measure_attribution("A [S3] and [S1] and [S3]. B [S3].")
+
+        assert attribution.labels_used == ("[S3]", "[S1]")
+        assert attribution.sentences[0].labels == ("[S3]", "[S1]")
+
     def test_no_labels_anywhere_leaves_labels_used_empty(self):
         attribution = measure_attribution("One. Two.")
 

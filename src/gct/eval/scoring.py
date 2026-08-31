@@ -40,8 +40,9 @@ sentence split IS the uncited-sentence metric - the whole definition of its deno
 re-scoring a stored run must execute the same definition as the V1 human reading a bench report.
 Computing either in a runner would be the second copy this module exists to not have. REJECTED
 ALTERNATIVE, recorded because nothing else carries it: compute them inline in
-`scripts/ask_smoke.py`'s printer. It is a cheaper diff and matches issues #66/#67's own `Touches:`
-lines, and nothing in V1 would ever notice the divergence - which is precisely the failure mode
+`scripts/ask_smoke.py`'s printer. It is a cheaper diff and matches issue #67's own `Touches:` line
+(#66's already names THIS module, so the alternative contradicts it rather than following it), and
+nothing in V1 would ever notice the divergence - which is precisely the failure mode
 ADR 0017 (clamped per ADR 0024) names about its own seam: load-bearing exactly because nothing in
 V1 reads it, so a wrong choice hides until V3. It is also why the runner's own docstring says a
 scoring rule found there "belongs one layer down".
@@ -673,7 +674,10 @@ class AnswerAttribution:
         `prose = _COVERAGE_RE.sub("", raw).strip()` BEFORE `answer_prose` exists, so a marker line
         cannot reach this object at all. Excluded by construction, and pinned end-to-end through
         the real `answer()` rather than by a comment - the fact belongs to `_parse`, and only a
-        test at that seam notices if `_parse` ever stops cutting.
+        test at that seam notices if `_parse` ever stops cutting. "LINE" is exact: `_COVERAGE_RE`
+        is `^...$` under `re.M`, so a marker sharing a line with prose (`A claim [S1]. COVERAGE:
+        complete`) is not cut and lands here as one uncited sentence - a known artifact on an
+        answer that is already INTEGRITY_FLAGGED, not a case to special-case.
       - **Gap text.** Gaps live in `coverage.gaps` and never in prose. Counting them would be
         backwards: they are the OTHER, SATISFIED half of ADR 0014's rule - the claims the answer
         correctly declined to assert.
@@ -756,8 +760,15 @@ def measure_attribution(prose: str | None) -> AnswerAttribution | None:
     sentences = tuple(
         SentenceCitation(text=text, labels=_labels_in(text)) for text in split_sentences(prose)
     )
-    # An all-whitespace prose is already gone above; this catches the pathological "prose that is
-    # only terminators" shape without letting a zero-sentence object exist.
+    # DEFENSIVE, AND CURRENTLY UNREACHABLE - named as such rather than credited with a case it
+    # does not have. `_SENTENCE_SPLIT_RE` is a zero-width lookbehind split on whitespace, so
+    # splitting an already-stripped non-empty string yields a non-empty first piece no matter what
+    # it contains: even the pathological "only terminators" shape (`"..."`) returns ONE sentence,
+    # not zero. `split_sentences` therefore cannot return `[]` for anything that clears the
+    # `prose.strip()` guard one line up. The arm is kept because the invariant belongs to the
+    # splitter and not to this function: if the split rule ever gains a filter, a zero-sentence
+    # object would claim an answer was MEASURED while reporting a rate of `None`, which is the one
+    # distinction this whole readout exists to keep.
     return AnswerAttribution(sentences=sentences) if sentences else None
 
 

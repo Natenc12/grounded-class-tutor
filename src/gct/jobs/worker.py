@@ -9,7 +9,8 @@ Status ownership - who writes which `files.status` transition (issue #71):
     | transition                | writer                                                     |
     |---------------------------|------------------------------------------------------------|
     | -> queued                 | `enqueue` (#70)                                            |
-    | -> processing             | THIS module, on claim - the first-ever writer              |
+    | -> processing             | THIS module, on claim - the first-ever writer, and the     |
+    |                           | only UN-writer of `failed_reason` (#24)                    |
     | -> ready                  | `index_file`, inside the index transaction (ADR 0020 §3)   |
     | -> failed + failed_reason | THIS module - terminal input, or budget exhausted          |
 
@@ -159,11 +160,12 @@ def _bury(conn: psycopg.Connection, job: Job, *, reason: str, error: str) -> Non
     The two writes are one event and always travel together, which is why they are one
     function rather than two calls a future handler could get half-right.
 
-    `reason` goes into `files.failed_reason`, a CHECK-constrained column of five values
-    and is passed through UNTRANSLATED from `ParseError.reason`, which is drawn from the same
-    taxonomy for exactly this reason (ADR 0020; `parse.py`'s docstring promises the
-    pass-through). `error` is the free-text `jobs.last_error` - the diagnostic detail the
-    closed set cannot carry.
+    `reason` goes into `files.failed_reason`, a CHECK-constrained closed set (`migrations/`
+    owns the members, and has already widened them once - ADR 0020, terminal set extended per
+    ADR 0029; the count is derived from the schema, never stored here) and is passed through
+    UNTRANSLATED from `ParseError.reason`, which is drawn from the same taxonomy for exactly
+    this reason (ADR 0020; `parse.py`'s docstring promises the pass-through). `error` is the
+    free-text `jobs.last_error` - the diagnostic detail the closed set cannot carry.
 
     THE FILES ROW GOES FIRST, and the order is chosen for what a crash between the two writes
     leaves behind. Files-then-jobs: the file reads `failed` while the job is still `processing`
@@ -180,7 +182,8 @@ def _bury(conn: psycopg.Connection, job: Job, *, reason: str, error: str) -> Non
     `queue.py` is not allowed to touch.
 
     A lost lease is reported, not raised: it is the routine at-least-once outcome (`fail`'s
-    docstring), and the guard above already made it harmless.
+    docstring). The guard above BOUNDS the damage without removing it: a lost-lease bury can
+    still stamp a reason on a file the winner has not published `ready` yet (#86).
     """
     with conn.transaction():
         conn.execute(
@@ -465,11 +468,49 @@ def process_one(
         # was paid (ADR 0025). The block commits under either wiring, like every `queue.py`
         # writer. No `require_idle` here on purpose: `claim` just committed and nothing runs
         # between it and this statement, so the connection cannot be anything but idle.
+        #
+        # `failed_reason = null` RIDES THIS STATEMENT (issue #24). The column is the actionable
+        # message F3 surfaces to the student (ADR 0020 §1), and it is written by exactly one
+        # place - `_bury`, which sets it and never unsets it. Without the clear, a reason
+        # outlives the attempt that produced it: `_bury` commits `files` before `jobs`, so the
+        # `jobs` half can fail to settle (a crash between the two writes, or `fail` returning
+        # False because the lease expired and the reaper already requeued - logged and
+        # continued, no crash at all), the job stays claimable, and this line then flips
+        # `failed -> processing` over a row still carrying `unparseable`. The student sees a
+        # file mid-flight advertising the LAST attempt's failure, and if that attempt then
+        # succeeds against changed bytes at `staging_ref`, a published `ready` file wearing it.
+        #
+        # WHY HERE AND NOT IN `index_file`'s `DO UPDATE`, which is the obvious other home and
+        # was rejected: `_bury` is the only writer that SETS this column, so the worker owns
+        # both halves of the fact, and `index_file` is deliberately pure of job/queue/retry
+        # machinery (the PM-4 seam, ADR 0020). Clearing it there would make the publisher a
+        # second writer for a column it knows nothing about. `index_file` therefore leaves
+        # `failed_reason` alone on purpose - pinned by
+        # `test_index_file_does_not_clear_failed_reason`.
+        #
+        # ONE STATEMENT, NOT TWO, and that is load-bearing: riding inside this UPDATE puts the
+        # clear under the same `status <> 'ready'` guard. A separate unguarded
+        # `update files set failed_reason = null` would wipe the reason off a `ready` file a
+        # zombie is about to bury, and would widen the crash window between the two writes.
+        #
+        # WHAT IT DOES NOT CLOSE, recorded so it is a known cost rather than a bug someone
+        # re-finds, and OWNED BY ISSUE #86: the out-of-order path. A zombie whose lease
+        # expired can reach `_bury` AFTER a winning run's `processing` write and BEFORE its
+        # `index_file` commit; `_bury`'s files write has no lease guard, only
+        # `status <> 'ready'`, so it stamps `('failed', reason)` on a row the winner then
+        # republishes as `ready` - and the reason survives again. That is the ONE path by
+        # which `('ready', <a reason>)` is still reachable, and
+        # `test_the_claim_does_not_clear_a_reason_on_a_file_that_is_already_ready` sets that
+        # row directly rather than earning it for exactly this reason.
+        # Narrow (the two attempts must disagree about the input, and
+        # V1 runs one worker, ADR 0011). If it ever needs closing, the move is a LEASE GUARD on
+        # `_bury`'s files write, not a second writer for `failed_reason` in `index_file`.
         with conn.transaction():
             conn.execute(
                 """
                 update files
                 set status = 'processing',
+                    failed_reason = null,
                     updated_at = now()
                 where file_id = %(file_id)s::uuid
                   and status <> 'ready'

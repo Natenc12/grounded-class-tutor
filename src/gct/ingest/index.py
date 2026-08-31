@@ -89,11 +89,41 @@ def index_file(
     with conn.transaction():
         # 1. Publish the files row as `ready` (upsert). Must precede the chunk insert: chunks FK to
         #    files.file_id. A repeat file_id lands on the UPDATE branch (idempotent re-index).
+        #
+        #    THE UPDATE BRANCH REFRESHES SCOPE, not just status (issue #24). Step 3 below replaces
+        #    the chunk set wholesale from THIS call's arguments, so a `DO UPDATE` that kept the old
+        #    `filename`/`owner_id`/`class_id` published a `files` row describing a chunk set that no
+        #    longer exists: retrieval filters chunks on `owner_id AND class_id` (F6/F12) and cites
+        #    `chunks.file`, so the two rows can disagree about who owns the file, which class it is
+        #    in, and what it is called - and the disagreement is silent.
+        #
+        #    REJECTED ALTERNATIVE - REFUSE a call whose scope differs from the stored row. It keeps
+        #    the original assignment intact, which refresh does not: under F6/F12, refresh means any
+        #    caller supplying a `file_id` can silently reassign an existing file's owner and class,
+        #    and this box has no way to tell a legitimate re-ingest from that. Refresh was taken
+        #    because the alternative failure is worse - a row and its own chunks disagreeing is
+        #    unrecoverable from the data alone, while a bad reassignment is at least visible in it -
+        #    and because Slice 2's only caller derives all three from the job row it claimed.
+        #    Revisit when an API adapter starts taking `file_id` from a client (Slice 3).
+        #
+        #    `status` stays a LITERAL rather than `excluded.status`: this function is the publisher,
+        #    so `ready` is its decision, not something the caller's payload gets to supply.
+        #
+        #    `failed_reason` is DELIBERATELY ABSENT from both halves. `worker._bury` is its only
+        #    writer and the worker clears it at the claim, inside its own `processing` write, which
+        #    keeps this box pure of job/queue/retry machinery (PM-4 seam, ADR 0020). Adding it here
+        #    would make the publisher a second writer for a column it knows nothing about - pinned
+        #    by `test_index_file_does_not_clear_failed_reason`.
         conn.execute(
             """
             insert into files (file_id, owner_id, class_id, filename, status)
             values (%(file_id)s::uuid, %(owner_id)s, %(class_id)s::uuid, %(filename)s, 'ready')
-            on conflict (file_id) do update set status = 'ready', updated_at = now()
+            on conflict (file_id) do update set
+                filename   = excluded.filename,
+                owner_id   = excluded.owner_id,
+                class_id   = excluded.class_id,
+                status     = 'ready',
+                updated_at = now()
             """,
             {"file_id": file_id, "owner_id": owner_id, "class_id": class_id, "filename": filename},
         )

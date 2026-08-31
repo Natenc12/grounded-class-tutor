@@ -1414,3 +1414,295 @@ class TestShowRetrievedWiring:
         marker = "Summary — ADR 0023"
         assert marker in plain and marker in flagged
         assert plain[plain.index(marker) :] == flagged[flagged.index(marker) :]
+
+
+# --- Issue #66: the attribution readout -------------------------------------------------------
+
+# Prose shaped so the numbers below are readable at a glance rather than derived in the test.
+CITED_PROSE = "One [S1]. Two [S1]. Three [S2]."  # 3 sentences, 0 uncited
+UNCITED_PROSE = "One thing. Another thing."  # 2 sentences, 2 uncited
+MIXED_PROSE = "Cited one [S1]. Uncited one."  # 2 sentences, 1 uncited
+
+
+class TestAttributionReport:
+    """Issue #66's block, rendered — beside the ADR 0023 vector and never inside it.
+
+    Everything here is offline: `_print_attribution` takes an `AttributionTotals` and
+    `_print_verbose` takes a `GrounderResult`, so no provider, no database and no spend. The
+    `main()`-driven tests reuse `TestMainWiring`'s fakes for the same reason.
+    """
+
+    def totals(self, measured, unmeasured, sentences, uncited):
+        return ask_smoke.AttributionTotals(
+            answers_measured=measured,
+            answers_unmeasured=unmeasured,
+            sentences=sentences,
+            uncited=uncited,
+        )
+
+    def test_the_block_renders_the_rate_the_counts_and_the_coverage(self, capsys):
+        """Every rate in this report prints beside the counts it came from, and this one also
+        prints how many ANSWERS it measured — on this suite a third of the questions refuse by
+        design, so a rate whose coverage is invisible is a rate over a suite that quietly shrank."""
+        ask_smoke._print_attribution(self.totals(8, 4, 24, 9))
+        out = capsys.readouterr().out
+
+        assert "uncited_sentence_rate" in out
+        assert "37.5%" in out
+        assert "9/24" in out
+        assert "measured over 8 of 12 answer(s)" in out
+        assert "4 carried no prose to measure" in out
+
+    def test_nothing_measured_reads_n_a_never_a_zero_percent(self, capsys):
+        """`_pct` already refuses to render `None` as 0%, and this is the one rate where an
+        unmeasured run is NORMAL rather than exceptional — every refusal removes an answer."""
+        ask_smoke._print_attribution(self.totals(0, 12, 0, 0))
+        out = capsys.readouterr().out
+
+        assert "n/a" in out
+        assert "0.0%" not in out
+        assert "0/0" in out
+        assert "measured over 0 of 12 answer(s)" in out
+
+    def test_a_measured_zero_is_rendered_as_a_percentage_not_as_n_a(self, capsys):
+        """The mirror of the test above, and the reason `None` and `0.0` may never trade places:
+        a run where every sentence carried a label is a real, good result."""
+        ask_smoke._print_attribution(self.totals(8, 0, 16, 0))
+        out = capsys.readouterr().out
+
+        assert "0.0%" in out
+        assert "n/a" not in out
+
+    def test_the_block_says_out_loud_that_it_is_not_the_vector(self, capsys):
+        """The claim lives in the OUTPUT, not only in a docstring: a reader pasting this block
+        into a bake-off comparison must not take it for an ADR 0023 rate."""
+        ask_smoke._print_attribution(self.totals(8, 4, 24, 9))
+        out = capsys.readouterr().out
+
+        assert "never enforced" in out
+        assert "NOT part of the ADR 0023 vector" in out
+        assert "CRUDE" in out
+        assert "ADR 0015" in out and "ADR 0014" in out
+
+    def test_the_coverage_line_prints_even_when_nothing_is_short(self, capsys):
+        """UNCONDITIONAL, unlike the retrieval-shortfall line it sits below. For retrieval a
+        shortfall is an anomaly worth flagging; here it is the NORM, so a conditional line would
+        fire on nearly every run and mean nothing while an unconditional one keeps the denominator
+        on screen."""
+        ask_smoke._print_attribution(self.totals(8, 0, 16, 4))
+        out = capsys.readouterr().out
+
+        assert "measured over 8 of 8 answer(s)" in out
+        assert "0 carried no prose to measure" in out
+
+    def test_no_line_carries_trailing_whitespace(self, capsys):
+        ask_smoke._print_attribution(self.totals(8, 4, 24, 9))
+        out = capsys.readouterr().out
+
+        assert not any(line.rstrip() != line for line in out.splitlines())
+
+    def test_verbose_annotates_each_sentence_and_prints_the_tail(self, capsys):
+        """The per-answer block: which sentences carried a label, and the probe's own summary
+        line. `sentences=4 uncited=3 labels_used=[S1][S3]` is what issue #66's body printed."""
+        from gct.grounder.answer import GrounderState
+
+        result = grounder_result(GrounderState.GROUNDED, MIXED_PROSE, [])
+
+        ask_smoke._print_verbose(result)
+        out = capsys.readouterr().out
+
+        assert "attribution (crude sentence split — telemetry, not a verdict):" in out
+        assert "[CITED  ] Cited one [S1]." in out
+        assert "[UNCITED] Uncited one." in out
+        assert "sentences=2  uncited=1  rate= 50.0%  labels_used=[S1]" in out
+
+    def test_verbose_reports_no_labels_as_a_word_never_an_empty_field(self, capsys):
+        from gct.grounder.answer import GrounderState
+
+        ask_smoke._print_verbose(grounder_result(GrounderState.GROUNDED, UNCITED_PROSE, []))
+        out = capsys.readouterr().out
+
+        assert "labels_used=(none)" in out
+        assert "rate=100.0%" in out
+
+    def test_no_prose_prints_no_attribution_block_and_never_the_word_none(self, capsys):
+        """REFUSAL and ERROR carry no prose by contract, and `measure_attribution` returns `None`
+        on exactly those rows. An empty labelled block, or a literal "None", would read as
+        something the model wrote."""
+        from gct.grounder.answer import GrounderState
+
+        result = grounder_result(GrounderState.REFUSAL, None, ["nothing on quantum chromodynamics"])
+
+        ask_smoke._print_verbose(result)
+        out = capsys.readouterr().out
+
+        assert "attribution" not in out
+        assert "sentences=" not in out
+        assert "None" not in out
+
+    def test_a_very_long_sentence_is_flattened_but_never_clipped(self, capsys):
+        """`_clip` is not used here, deliberately. A fused heading-plus-bullets "sentence" is the
+        misfire the block exists to make visible, and clipping it would hide exactly that — while
+        flattening keeps the one-line-per-sentence layout readable. The existing `--verbose` test
+        already asserts no `...` anywhere in this output."""
+        from gct.grounder.answer import GrounderState
+
+        long_sentence = "The earth is " + "x" * 220 + " a woman [S1]."
+        result = grounder_result(GrounderState.GROUNDED, f"Heading\n- bullet\n{long_sentence}", [])
+
+        ask_smoke._print_verbose(result)
+        out = capsys.readouterr().out
+
+        assert "x" * 220 in out
+        assert "..." not in out
+        assert not any(line.rstrip() != line for line in out.splitlines())
+        # Heading + bullet + the long sentence FUSE: no terminator before the newlines.
+        assert "[CITED  ] Heading - bullet The earth is" in out
+        assert "sentences=1" in out
+
+
+class TestAttributionWiring:
+    """Driven through the real `main()` — the unit tests above cannot notice it never being called.
+
+    (That is not hypothetical: PR #63's review mutation-checked the same gap for `--verbose`, and
+    deleting the call left every unit test green.) Same fakes as `TestMainWiring`: no provider, no
+    Postgres, no spend.
+    """
+
+    QUESTIONS = TestMainWiring.QUESTIONS
+    _drive = TestMainWiring._drive
+    _FakeConn = TestMainWiring._FakeConn
+
+    ALL_UNCITED = {
+        "q001": ("GROUNDED", UNCITED_PROSE, []),
+        "q005": ("GROUNDED", UNCITED_PROSE, []),
+        "q009": ("REFUSAL", None, ["nothing on this"]),
+    }
+
+    def _states(self, table):
+        from gct.grounder.answer import GrounderState
+
+        return {
+            qid: (GrounderState[name], prose, gaps) for qid, (name, prose, gaps) in table.items()
+        }
+
+    def test_the_rate_prints_between_the_health_line_and_the_gate(
+        self, monkeypatch, tmp_path, capsys
+    ):
+        """Order asserted as an index chain over ONE buffer, the pattern `--verbose`'s own wiring
+        test uses: a two-capture comparison would build the expected order itself and could not
+        see a reordering."""
+        rc = self._drive(monkeypatch, tmp_path, [])
+        out = capsys.readouterr().out
+
+        assert rc == ask_smoke.EXIT_OK
+        assert (
+            out.index("error_count") < out.index("uncited_sentence_rate") < out.index("exit gate")
+        )
+
+    def test_every_adr_0023_rate_still_prints_in_the_same_order(
+        self, monkeypatch, tmp_path, capsys
+    ):
+        """The vector block is untouched: `_print_summary`'s body is byte-identical and the new
+        block is a separate function called after it."""
+        self._drive(monkeypatch, tmp_path, [])
+        out = capsys.readouterr().out
+
+        labels = [
+            "grounded_pass_rate",
+            "partial_rate",
+            "false_refusal_rate",
+            "integrity_flag_rate",
+            "correct_refusal_rate",
+            "hallucination_rate",
+            "refuse_integrity_flag_rate",
+            "retrieval_hit_rate",
+            "error_count / error_rate",
+        ]
+        positions = [out.index(label) for label in labels]
+
+        assert positions == sorted(positions)
+        assert out.index(labels[-1]) < out.index("uncited_sentence_rate")
+
+    def test_a_wholly_unattributed_run_still_passes_the_gate(self, monkeypatch, tmp_path, capsys):
+        """THE LOAD-BEARING TEST for issue #66's acceptance criterion: "no answer's state changes
+        because of it". Every in-corpus answer here is 100% uncited — the worst possible reading of
+        this diagnostic — and the run still exits 0, still prints PASS, and every question line
+        still reads GROUNDED / outcome=PASS. The rate reports 100.0% beside a passing gate, which
+        is exactly what "reported, never enforced" has to look like."""
+        rc = self._drive(monkeypatch, tmp_path, [], states=self._states(self.ALL_UNCITED))
+        out = capsys.readouterr().out
+
+        assert rc == ask_smoke.EXIT_OK
+        assert "PASS — exit gate" in out
+        assert "100.0%" in out and "4/4" in out
+        assert "measured over 2 of 3 answer(s)" in out
+        for qid in ("q001", "q005"):
+            line = next(ln for ln in out.splitlines() if ln.strip().startswith(qid))
+            assert "GROUNDED" in line and "outcome=PASS" in line
+
+    def test_an_all_refusal_run_reports_n_a_and_zero_measured(self, monkeypatch, tmp_path, capsys):
+        """A run that measured nothing must say so. `0.0%` here would claim the bench looked at
+        every sentence and found them all cited."""
+        table = {
+            "q001": ("REFUSAL", None, ["nothing"]),
+            "q005": ("REFUSAL", None, ["nothing"]),
+            "q009": ("REFUSAL", None, ["nothing"]),
+        }
+        rc = self._drive(monkeypatch, tmp_path, [], states=self._states(table))
+        out = capsys.readouterr().out
+
+        assert rc == ask_smoke.EXIT_GATE_FAILED  # no in-corpus GROUNDED — the gate's own verdict
+        block = out[out.index("attribution telemetry") :]
+        assert "n/a" in block
+        assert "0.0%" not in block
+        assert "measured over 0 of 3 answer(s)" in block
+
+    def test_an_errored_answer_contributes_no_sentences(self, monkeypatch, tmp_path, capsys):
+        """An ERROR generated nothing, so it is UNMEASURED rather than perfectly attributed — the
+        same line `EvalMetrics` draws by excluding ERROR from N_scored, one layer down. The counts
+        must come from the two answers that produced prose and from nothing else."""
+        table = {
+            "q001": ("GROUNDED", CITED_PROSE, []),  # 3 sentences, 0 uncited
+            "q005": ("ERROR", None, []),
+            "q009": ("REFUSAL", None, ["nothing on this"]),
+        }
+        self._drive(monkeypatch, tmp_path, [], states=self._states(table))
+        out = capsys.readouterr().out
+
+        assert "measured over 1 of 3 answer(s)" in out
+        assert "2 carried no prose to measure" in out
+        assert "0/3" in out  # 0 uncited of 3 sentences — the ERROR added neither
+
+    def test_only_suppresses_the_pooled_rate(self, monkeypatch, tmp_path, capsys):
+        """Suppressed for the same reason the vector is: a rate pooled over hand-picked answers is
+        not comparable to a full-suite run."""
+        rc = self._drive(monkeypatch, tmp_path, ["--only", "q005"])
+        out = capsys.readouterr().out
+
+        assert rc == ask_smoke.EXIT_OK
+        assert "attribution telemetry" not in out
+        assert "No pooled uncited_sentence_rate" in out
+
+    def test_only_with_verbose_still_prints_the_per_answer_block(
+        self, monkeypatch, tmp_path, capsys
+    ):
+        """The per-answer readout is a PROBE output, not an aggregate, so it cannot mislead about
+        coverage — and suppressing it would make `--only q008 --verbose` unable to reproduce the
+        probe this whole issue was filed on."""
+        rc = self._drive(monkeypatch, tmp_path, ["--only", "q005", "--verbose"])
+        out = capsys.readouterr().out
+
+        assert rc == ask_smoke.EXIT_OK
+        assert "attribution telemetry" not in out  # the aggregate stays suppressed
+        assert "attribution (crude sentence split" in out
+        assert "sentences=1" in out
+
+    def test_a_default_run_prints_no_per_answer_block(self, monkeypatch, tmp_path, capsys):
+        """`--verbose` off is still the default: the per-answer annotation rides that flag, and a
+        default run's per-question lines are unchanged."""
+        self._drive(monkeypatch, tmp_path, [])
+        out = capsys.readouterr().out
+
+        assert "crude sentence split" not in out
+        assert "attribution telemetry" in out  # the pooled block is not flag-gated

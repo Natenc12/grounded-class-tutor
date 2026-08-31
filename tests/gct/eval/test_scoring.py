@@ -12,27 +12,45 @@ Organised by the thing being defended:
     top-k, and the margin over the next result. Two things are defended there above all: that
     `None` and `0.0` never trade places (undefined vs measured), and that the diagnostic stays
     OUT of ADR 0023's metric vector.
+  - `TestSplitSentences` / `TestMeasureAttribution` / `TestAggregateAttribution` - issue #66's
+    DIAGNOSTIC: the crude sentence split behind `uncited_sentence_rate`, its known misfires
+    pinned as known, and the same `None`-vs-`0.0` line drawn one layer down (nothing measured vs
+    measured-and-fully-cited).
+  - `TestAttributionIsNotTheVector` - #66's "reported, never enforced" claim, made mechanical.
+  - `TestAttributionAcrossTheFiveStates` - the same claim driven through the REAL `answer()` on a
+    scripted stub, which is also the only place the coverage-statement exclusion can be pinned:
+    it belongs to `grounder/answer.py::_parse`, not to anything in this module.
 """
 
 from __future__ import annotations
 
 import dataclasses
 import inspect
+from collections.abc import Sequence
 
 import pytest
 
+from gct.eval import scoring
 from gct.eval.questions import ExpectedSource
 from gct.eval.scoring import (
+    AnswerAttribution,
+    AttributionTotals,
     EvalMetrics,
     EvalRecord,
     ExpectedPlacement,
     Outcome,
+    SentenceCitation,
+    aggregate_attribution,
     compute_metrics,
     expected_placement,
+    measure_attribution,
     retrieval_hit,
     score_state,
+    split_sentences,
 )
+from gct.grounder import answer as grounder_answer
 from gct.grounder.answer import Coverage, GrounderResult, GrounderState, Integrity
+from gct.providers.base import Message, TransientGenerationError
 from gct.retriever.retrieve import RetrievedChunk
 
 # ADR 0023 §2's table, transcribed INDEPENDENTLY of the module's own dict. Writing the parameters
@@ -747,3 +765,548 @@ class TestExpectedPlacement:
         assert metrics.retrieval_hit_rate == 2 / 3
         assert metrics.error_count == 1
         assert metrics.error_rate == 1 / 6
+
+
+# --- Issue #66: the attribution diagnostic ----------------------------------------------------
+
+# The q008 RECONSTRUCTION. `eval/FINDINGS.md` (2026-07-27) elides two of the four sentences with
+# `…`, so the model's real reply is UNRECOVERABLE without re-asking q008 — which costs money and
+# is not authorized. This string is consistent with every fragment FINDINGS did record (sentences
+# 1-2 verbatim; sentence 3's tail and sentence 4's middle rebuilt from the entailment spot-check
+# in the same section), and it reproduces the probe's NUMBERS: 4 sentences, 3 uncited, {S1, S3}.
+# Read it as a reconstruction, never as a captured artifact.
+Q008_PROSE = (
+    "One of the oldest and most widespread religious symbols, according to Charles H. Long, is "
+    "the symbol of Mother Earth. This symbolism arises because of the homology between creation "
+    "and woman; the woman bears children and experiences the mysteries of birth, growth, and "
+    "change. The earth itself is likened to a woman, and the process of creation to birth "
+    "[S1][S3]."
+)
+
+
+class TestSplitSentences:
+    """The crude rule, and every misfire it is KNOWN to make, pinned as known.
+
+    A misfire pinned by a test is a documented artifact; the same misfire undocumented is a defect
+    waiting to be re-derived by whoever next reads a rate that looks a sentence off. None of these
+    is a bug to fix: ADR 0015 ruled a smart splitter out of the ENFORCEMENT ladder, and issue #66
+    mandates the crude one for measurement precisely because measuring cannot misfire into a
+    false failure.
+    """
+
+    def test_empty_and_whitespace_prose_split_into_nothing(self):
+        """`[]`, never `[""]`. An empty fragment is not a sentence, and one in the denominator
+        would be a guaranteed-uncited row nobody wrote."""
+        assert split_sentences("") == []
+        assert split_sentences("   \n\t  \n ") == []
+
+    def test_prose_with_no_terminal_punctuation_is_one_sentence(self):
+        assert split_sentences("The earth is a woman [S1]") == ["The earth is a woman [S1]"]
+
+    def test_a_terminator_plus_whitespace_splits(self):
+        assert split_sentences("A. B.") == ["A.", "B."]
+
+    @pytest.mark.parametrize("terminator", [".", "!", "?"])
+    def test_all_three_terminators_split(self, terminator):
+        """`!` and `?` are terminators too — an answer that asks a rhetorical question and then
+        cites the answer must not read as one fused sentence."""
+        assert split_sentences(f"First{terminator} Second.") == [f"First{terminator}", "Second."]
+
+    def test_the_whitespace_class_spans_newlines(self):
+        r"""`\s+` covers a newline, so a paragraph break after a terminator splits like a space.
+        This is NOT a newline RULE — a newline with no terminator before it does not split, which
+        is what fuses a heading into the block below it."""
+        assert split_sentences("First one.\n\nSecond one.") == ["First one.", "Second one."]
+
+    def test_a_heading_and_bullets_with_no_terminators_fuse_into_one_sentence(self):
+        """THE BIGGEST UNDER-SPLIT, pinned deliberately. A markdown-ish block with no terminal
+        punctuation is ONE crude sentence, so a single `[S#]` anywhere in it marks the whole block
+        cited. Exactly the "lists, headings" misfire ADR 0015 named — here it costs a number, not
+        a verdict."""
+        block = "Cosmogony\n- creation from nothing [S1]\n- creation from chaos"
+
+        assert split_sentences(block) == [block]
+
+    def test_a_decimal_point_does_not_split(self):
+        """The whitespace requirement is load-bearing: `[.!?]` alone would cut `0.85` in half."""
+        assert split_sentences("The score is 0.85 [S1].") == ["The score is 0.85 [S1]."]
+
+    def test_charles_h_long_splits_in_two(self):
+        """THE q008 MISFIRE ITSELF, pinned as known-wrong. "Charles H. Long" is one name and the
+        crude rule makes it two sentences — and the reference case this whole issue was filed on
+        is built on top of that misfire. Recording it is more honest than tuning it away; a
+        capital-letter rule would fix this row and break the numbered-list rows below."""
+        assert split_sentences("According to Charles H. Long, it is a symbol.") == [
+            "According to Charles H.",
+            "Long, it is a symbol.",
+        ]
+
+    def test_a_numbered_list_turns_its_numbers_into_sentences(self):
+        """`1.` and `2.` become one-token sentences, each necessarily uncited. A list of five
+        labelled items can therefore report five extra uncited "sentences"."""
+        assert split_sentences("Types [S1]. 1. From nothing. 2. From chaos.") == [
+            "Types [S1].",
+            "1.",
+            "From nothing.",
+            "2.",
+            "From chaos.",
+        ]
+
+    def test_a_quoted_terminator_under_splits(self):
+        """The opposite misfire from the two above: `"yes."` is followed by a `"` rather than
+        whitespace, so the two sentences FUSE and one label covers both."""
+        assert split_sentences('He said "yes." Then he left [S1].') == [
+            'He said "yes." Then he left [S1].'
+        ]
+
+    def test_fragments_are_stripped_and_empties_dropped(self):
+        assert split_sentences("  One.    \n\n   Two.   ") == ["One.", "Two."]
+
+
+class TestMeasureAttribution:
+    """One answer's prose -> its readout. `None` means UNMEASURED; `0.0` is a measurement."""
+
+    def test_a_fully_cited_answer_has_a_measured_zero(self):
+        """`0.0`, not `None`. A measured zero is a real and good result — every sentence carried a
+        label — and it must be distinguishable from "there was nothing to measure"."""
+        attribution = measure_attribution("One [S1]. Two [S2].")
+
+        assert attribution is not None
+        assert (attribution.total, attribution.uncited) == (2, 0)
+        assert attribution.uncited_sentence_rate == 0.0
+
+    def test_a_fully_uncited_answer_rates_one(self):
+        attribution = measure_attribution("One thing. Another thing.")
+
+        assert attribution.uncited_sentence_rate == 1.0
+
+    def test_none_prose_is_none_not_a_zero(self):
+        """REFUSAL and ERROR carry no prose by contract. `0.0` here would say "we measured, and
+        everything was attributed" — dragging refusals in as free wins and making the rate IMPROVE
+        the more the system refuses."""
+        assert measure_attribution(None) is None
+
+    def test_empty_and_whitespace_prose_are_none(self):
+        assert measure_attribution("") is None
+        assert measure_attribution("   \n  ") is None
+
+    def test_a_label_mid_sentence_cites_it(self):
+        attribution = measure_attribution("The earth [S1] is a woman.")
+
+        assert attribution.uncited == 0
+
+    def test_a_label_at_the_end_cites_it(self):
+        """Position carries no meaning — presence anywhere in the sentence is the whole rule."""
+        attribution = measure_attribution("The earth is a woman [S1].")
+
+        assert attribution.uncited == 0
+
+    def test_two_labels_in_one_sentence_are_one_cited_sentence_and_two_labels(self):
+        """The sentence is cited ONCE — it is a sentence count, not a label count — while
+        `labels_used` records both."""
+        attribution = measure_attribution("The earth is a woman [S1][S3].")
+
+        assert (attribution.total, attribution.uncited) == (1, 0)
+        assert attribution.labels_used == ("[S1]", "[S3]")
+
+    def test_no_labels_anywhere_leaves_labels_used_empty(self):
+        attribution = measure_attribution("One. Two.")
+
+        assert attribution.uncited_sentence_rate == 1.0
+        assert attribution.labels_used == ()
+
+    def test_a_dangling_label_still_counts_as_cited(self):
+        """PRESENCE, NOT VALIDITY. `[S9]` against three sources is a dangling ordinal, and
+        `_validate` already catches it as INTEGRITY_FLAGGED. Re-litigating validity here would
+        make this a second writer for that fact."""
+        attribution = measure_attribution("The earth is a woman [S9].")
+
+        assert attribution.uncited == 0
+        assert attribution.labels_used == ("[S9]",)
+
+    @pytest.mark.parametrize("near_miss", ["[S1, S2]", "[Source 1]", "[s1]", "[ S1 ]"])
+    def test_near_miss_label_forms_are_not_labels(self, near_miss):
+        """The strict form is load-bearing in the other direction: the Grounder would not resolve
+        any of these either, so a sentence carrying only one really does rest on nothing the
+        citation spine can render."""
+        attribution = measure_attribution(f"The earth is a woman {near_miss}.")
+
+        assert attribution.uncited == 1
+        assert attribution.labels_used == ()
+
+    def test_a_two_digit_ordinal_is_a_label(self):
+        """`\\d+`, not `\\d` — a top-k of 12 produces `[S12]`, and reading it as uncited would
+        under-report exactly on the runs with the most sources."""
+        attribution = measure_attribution("The earth is a woman [S12].")
+
+        assert attribution.uncited == 0
+        assert attribution.labels_used == ("[S12]",)
+
+    def test_the_q008_reference_case(self):
+        """THE ACCEPTANCE NUMBER: `sentences=4  uncited=3  labels_used=[S1][S3]`, reproducing the
+        2026-07-27 probe in `eval/FINDINGS.md` and issue #66's own body.
+
+        `Q008_PROSE` IS A RECONSTRUCTION, not a captured artifact — FINDINGS elides two sentences
+        with `…` and re-asking q008 costs money. See the constant's comment. The reproduction
+        claim is over the numbers and the label SET; the original probe printed a throwaway
+        script's list repr (`['[S1]', '[S3]']`), which is not a format anything here promises.
+        """
+        attribution = measure_attribution(Q008_PROSE)
+
+        assert attribution.total == 4
+        assert attribution.uncited == 3
+        assert attribution.labels_used == ("[S1]", "[S3]")
+        assert attribution.uncited_sentence_rate == 0.75
+
+    def test_a_label_after_the_period_becomes_its_own_sentence(self):
+        """A KNOWN ARTIFACT, deliberately not mitigated. When the model writes `... woman. [S1]`
+        instead of `... woman [S1].`, the labels split off into a fragment of their own: the
+        prose sentence reads UNCITED and the label fragment reads CITED, so the count is one
+        sentence high and the rate reports 50% where a human would say 0%.
+
+        Re-attaching a label-only fragment to the sentence before it is step one of the smart
+        splitter issue #66 rules out. How OFTEN the model writes it this way is unmeasured — the
+        first live run settles it; until then this is an artifact, not a defect.
+        """
+        attribution = measure_attribution("The earth is a woman. [S1][S3]")
+
+        assert attribution.total == 2
+        assert attribution.uncited == 1
+        assert [s.cited for s in attribution.sentences] == [False, True]
+
+    def test_the_signature_cannot_see_a_state(self):
+        """THE SIGNATURE IS THE INVARIANT, the same move `score_state` makes one class up. This
+        takes prose and nothing else, so it CANNOT misread a state — which is the mechanical half
+        of issue #66's "no answer's state changes because of it"."""
+        assert list(inspect.signature(measure_attribution).parameters) == ["prose"]
+
+    def test_the_label_regex_is_a_string_identical_twin_of_the_grounders(self):
+        """The Grounder OWNS the `[S#]` vocabulary; this module keeps a twin rather than importing
+        an underscore-private across a module boundary (`ask.py::_retrieval_error` refused that
+        same import and documented why, and issue #66 must leave `src/gct/grounder/` untouched).
+
+        A twin is only safe if drift is LOUD. If the Grounder ever widens its regex — which it may
+        only do alongside a prompt change, per its own comment — this fires, and that is exactly
+        when this metric's definition has to be revisited: a label the Grounder would resolve must
+        count as a citation here too.
+        """
+        assert scoring._LABEL_RE.pattern == grounder_answer._LABEL_RE.pattern
+
+    def test_the_objects_are_frozen(self):
+        attribution = measure_attribution("One [S1].")
+
+        with pytest.raises(dataclasses.FrozenInstanceError):
+            attribution.sentences = ()
+        with pytest.raises(dataclasses.FrozenInstanceError):
+            attribution.sentences[0].text = "other"
+
+
+class TestAggregateAttribution:
+    """Pooling a run. MICRO, and `None` entries are unmeasured rather than zero."""
+
+    def test_aggregation_is_micro_not_macro(self):
+        """The two readings differ by a factor of two here, so they cannot be confused for a
+        rounding difference: one answer of 1 uncited sentence and one of 3 fully-cited sentences
+        pool to 1/4 = 0.25, while the mean of the per-answer rates (1.0 and 0.0) is 0.5.
+
+        Micro is right for the same reason `GroundingCounts` keeps counts as the primitive: the
+        question is "what share of the SENTENCES this bench asserted carried no label", and a
+        macro mean would weight a one-sentence answer the same as a twelve-sentence one — the
+        wrong unit for a rate whose subject is the individual claim.
+        """
+        one = measure_attribution("No label here.")
+        three = measure_attribution("One [S1]. Two [S1]. Three [S2].")
+        assert (one.uncited_sentence_rate, three.uncited_sentence_rate) == (1.0, 0.0)
+
+        totals = aggregate_attribution([one, three])
+
+        assert (totals.sentences, totals.uncited) == (4, 1)
+        assert totals.uncited_sentence_rate == 0.25
+
+    def test_none_entries_are_counted_as_unmeasured_and_contribute_no_sentences(self):
+        measured = measure_attribution("One. Two [S1].")
+
+        totals = aggregate_attribution([measured, None, None])
+
+        assert (totals.answers_measured, totals.answers_unmeasured) == (1, 2)
+        assert (totals.sentences, totals.uncited) == (2, 1)
+        assert totals.uncited_sentence_rate == 0.5
+
+    def test_an_all_none_run_reports_no_rate_rather_than_zero(self):
+        """A refusal-only run measured NOTHING. `0.0` would read as "every sentence was cited"."""
+        totals = aggregate_attribution([None, None, None])
+
+        assert totals.uncited_sentence_rate is None
+        assert (totals.answers_measured, totals.sentences) == (0, 0)
+
+    def test_an_empty_run_is_zeros_and_no_rate(self):
+        totals = aggregate_attribution([])
+
+        assert totals == AttributionTotals(
+            answers_measured=0, answers_unmeasured=0, sentences=0, uncited=0
+        )
+        assert totals.uncited_sentence_rate is None
+
+    @pytest.mark.parametrize(
+        "measurements",
+        [
+            [],
+            [None],
+            [measure_attribution("One [S1].")],
+            [measure_attribution("One."), None, measure_attribution("Two [S1]. Three.")],
+        ],
+    )
+    def test_measured_plus_unmeasured_always_equals_what_was_handed_in(self, measurements):
+        """So a report can say how much of the suite it measured. On this corpus a third of the
+        questions refuse by design, so the denominator is routinely short — a rate whose coverage
+        is invisible is the "clean rate over a suite that quietly shrank" this module exists to
+        prevent."""
+        totals = aggregate_attribution(measurements)
+
+        assert totals.answers_measured + totals.answers_unmeasured == len(measurements)
+
+
+class TestAttributionIsNotTheVector:
+    """ISSUE #66'S "REPORTED, NEVER ENFORCED" CLAIM, MADE MECHANICAL rather than asserted.
+
+    NOT REPEATED HERE: that `EvalRecord`'s fields are exactly `("expectation", "state", "hit")`.
+    `TestExpectedPlacement::test_expected_placement_is_absent_from_the_adr_0023_vector` already
+    asserts it, and that check is not #67-specific — it is the same wall, and it fires for a
+    prose field added for #66 exactly as it would for a rank field. A second copy of one fact is
+    the drift this repo's CLAUDE.md is about; if that test ever moves, this comment is the
+    pointer to follow.
+    """
+
+    def test_the_rate_is_not_on_the_metric_vector(self):
+        """`EvalMetrics` IS the ADR 0023 vector by its own docstring, and §3 fixes it. A property
+        added to that class is IN the vector by construction, and its denominator could not be
+        `N_scored` anyway — this divides sentences by sentences, over a different population."""
+        assert not hasattr(EvalMetrics, "uncited_sentence_rate")
+
+        rates = {
+            name
+            for name, attr in vars(EvalMetrics).items()
+            if isinstance(attr, property) and not name.startswith("_")
+        }
+        assert rates == {
+            "grounded_pass_rate",
+            "correct_refusal_rate",
+            "partial_rate",
+            "integrity_flag_rate",
+            "false_refusal_rate",
+            "hallucination_rate",
+            "refuse_integrity_flag_rate",
+            "error_count",
+            "error_rate",
+            "retrieval_hit_rate",
+        }
+
+    def test_the_metrics_are_identical_whatever_prose_those_answers_carried(self):
+        """The strongest structural statement available: `compute_metrics` takes `EvalRecord`s,
+        `EvalRecord` cannot carry prose, so two runs whose answers were worded completely
+        differently — one fully cited, one fully uncited — produce the SAME rate vector while
+        their attribution totals differ."""
+        records = [
+            EvalRecord("answer", GrounderState.GROUNDED, hit=True),
+            EvalRecord("answer", GrounderState.GROUNDED, hit=True),
+            EvalRecord("refuse", GrounderState.REFUSAL, hit=None),
+        ]
+        well_attributed = [
+            measure_attribution("One [S1]. Two [S2]."),
+            measure_attribution("Three [S1]."),
+            None,
+        ]
+        badly_attributed = [
+            measure_attribution("One. Two."),
+            measure_attribution("Three."),
+            None,
+        ]
+
+        metrics = compute_metrics(records)
+
+        assert metrics.grounded_pass_rate == 1.0
+        assert metrics.correct_refusal_rate == 1.0
+        assert aggregate_attribution(well_attributed).uncited_sentence_rate == 0.0
+        assert aggregate_attribution(badly_attributed).uncited_sentence_rate == 1.0
+        # Same records, same vector — the attribution above cannot reach any of these figures.
+        assert compute_metrics(records) == metrics
+
+
+class ScriptedGeneration:
+    """A `Generation`-shaped stub: replays `script` in order; RAISES any exception in it.
+
+    Lives in this module rather than in a shared conftest for the same reason `BrokenEmbeddings`
+    lives inside `test_ask.py`: `tests/gct/eval/` has no conftest of its own, and the grounder
+    suite's `scripted` fixture is not visible from here (pytest exposes a conftest only to its own
+    directory and below). Nothing here constructs a real provider client, so no test in this file
+    takes a `live_*` fixture and none is paid.
+    """
+
+    def __init__(self, *script: str | Exception) -> None:
+        self._script = list(script)
+
+    @property
+    def model_id(self) -> str:
+        return "fake-gen-1"
+
+    def generate(self, messages: Sequence[Message]) -> str:
+        if not self._script:
+            pytest.fail("generate() called more times than the test scripted replies")
+        item = self._script.pop(0)
+        if isinstance(item, Exception):
+            raise item
+        return item
+
+
+def sources(n: int = 3) -> list[RetrievedChunk]:
+    """`n` retrieved chunks in rank order — enough for `[S1]..[Sn]` to resolve."""
+    return [
+        RetrievedChunk(
+            chunk_id=f"chunk-{i}",
+            text=f"Source text number {i}.",
+            file=f"lecture-{i}.pdf",
+            page_or_slide=i,
+            score=1.0 - i / 100,
+        )
+        for i in range(1, n + 1)
+    ]
+
+
+def grounded(*script: str | Exception) -> GrounderResult:
+    """Drive the REAL `answer()` over a scripted reply. No network, no DB, no spend."""
+    return grounder_answer.answer(
+        "what is the symbol of Mother Earth?",
+        sources(),
+        "owner-1",
+        generator=ScriptedGeneration(*script),
+    )
+
+
+class TestAttributionAcrossTheFiveStates:
+    """The five states, through the REAL `answer()` — `None` vs `0.0` decided by PROSE, not state.
+
+    Driving the real Grounder rather than hand-building `GrounderResult`s is the point in two
+    places specifically: the coverage statement's exclusion belongs to `_parse`, and a hand-built
+    result would let this file assert a fact it also constructed. A scripted stub reaches every
+    branch deterministically and reaches none of them by paying for it.
+    """
+
+    def test_grounded_prose_is_measured(self):
+        """The case issue #66 exists for: q008 scored GROUNDED with three of four sentences
+        carrying no label, and nothing in V1 noticed."""
+        result = grounded(
+            "The earth is a mother [S1]. This arises from a homology. "
+            "Creation is likened to birth.\nCOVERAGE: complete"
+        )
+        assert result.state is GrounderState.GROUNDED
+
+        attribution = measure_attribution(result.answer_prose)
+
+        assert (attribution.total, attribution.uncited) == (3, 2)
+
+    def test_partial_prose_is_measured_by_the_same_rule(self):
+        """PARTIAL has NEVER fired on the real corpus (ADR 0026), so this arm is covered BY
+        CONSTRUCTION, not by observation. Said plainly rather than implied: a scripted PARTIAL
+        proves the rule applies, not that the rule has ever been exercised in anger."""
+        result = grounded("Chaos is one type [S2]. The rest is unclear.\nCOVERAGE: gaps: others")
+        assert result.state is GrounderState.PARTIAL
+
+        attribution = measure_attribution(result.answer_prose)
+
+        assert (attribution.total, attribution.uncited) == (2, 1)
+
+    def test_a_refusal_is_unmeasured_never_a_zero(self):
+        """A refusal asserts nothing, so there is nothing to attribute. `0.0` would drag every
+        honest decline in as a free win and make the rate improve as the product refuses more —
+        `retrieval_hit`'s cannot-reach-1.0 argument, inverted."""
+        result = grounded("COVERAGE: gaps: nothing on quantum chromodynamics")
+
+        assert result.state is GrounderState.REFUSAL
+        assert result.answer_prose is None
+        assert measure_attribution(result.answer_prose) is None
+
+    def test_an_error_is_unmeasured(self):
+        """Nothing was generated. An infra fact is not an attribution fact (ADR 0016) — the same
+        line `EvalMetrics` draws by excluding ERROR from N_scored."""
+        result = grounded(TransientGenerationError("boom"), TransientGenerationError("again"))
+
+        assert result.state is GrounderState.ERROR
+        assert measure_attribution(result.answer_prose) is None
+
+    def test_integrity_flagged_with_surviving_prose_is_measured(self):
+        """ADR 0023 §1's independence principle, one layer down: retrieval counts on an ERRORed
+        row when retrieval ran, "regardless of the final state". A flagged answer that still
+        carries prose still ASSERTED those sentences, so they are attributable — and here every
+        one of them carried a label, which is a MEASURED `0.0`, not a `None`."""
+        reply = "The earth is a mother [S9]. It bears children [S1].\nCOVERAGE: complete"
+        result = grounded(reply, reply)
+
+        assert result.state is GrounderState.INTEGRITY_FLAGGED
+        attribution = measure_attribution(result.answer_prose)
+
+        assert (attribution.total, attribution.uncited) == (2, 0)
+        assert attribution.uncited_sentence_rate == 0.0
+
+    def test_integrity_flagged_with_no_prose_is_unmeasured(self):
+        """THE STATE DOES NOT DECIDE — THE PROSE DOES. The mirror of the test above, in the same
+        state: an unparseable coverage line leaves `_integrity_flagged` with `parsed.prose or
+        None`, so there is nothing to attribute and the answer is unmeasured."""
+        reply = "COVERAGE: bananas"
+        result = grounded(reply, reply)
+
+        assert result.state is GrounderState.INTEGRITY_FLAGGED
+        assert result.answer_prose is None
+        assert measure_attribution(result.answer_prose) is None
+
+    def test_the_coverage_statement_never_enters_the_denominator(self):
+        """EXCLUDED BY CONSTRUCTION, and pinned HERE rather than by a comment because the fact
+        belongs to `grounder/answer.py::_parse` — it does `_COVERAGE_RE.sub("", raw).strip()`
+        before `answer_prose` exists. Only a test at that seam notices if `_parse` ever stops
+        cutting; a unit test in this module would be asserting its own fixture.
+
+        The gap text lands in `coverage.gaps` instead, which is the OTHER, SATISFIED half of ADR
+        0014's rule: the claims the answer correctly declined to assert. Counting them as uncited
+        sentences would be exactly backwards.
+        """
+        result = grounded(
+            "Chaos is one type [S2]. Nothing else is supported.\n"
+            "COVERAGE: gaps: the Babylonian account; the Egyptian account"
+        )
+
+        assert result.coverage.gaps == ["the Babylonian account", "the Egyptian account"]
+        attribution = measure_attribution(result.answer_prose)
+
+        assert attribution.total == 2
+        assert not any("COVERAGE" in s.text.upper() for s in attribution.sentences)
+        assert not any("Babylonian" in s.text for s in attribution.sentences)
+
+    def test_two_coverage_markers_are_both_cut(self):
+        """`_parse` subs over EVERY marker, not just the one it read — an earlier version cut only
+        the selected one and left internal protocol text on the trust surface. Two markers also
+        flag the answer, which is the state this reply legitimately lands in; the point here is
+        that neither marker reaches the denominator."""
+        reply = "The earth is a mother [S1].\nCOVERAGE: complete\nCOVERAGE: gaps: everything else"
+        result = grounded(reply, reply)
+
+        assert result.state is GrounderState.INTEGRITY_FLAGGED
+        attribution = measure_attribution(result.answer_prose)
+
+        assert attribution.total == 1
+        assert not any("COVERAGE" in s.text.upper() for s in attribution.sentences)
+
+
+class TestSentenceCitationShape:
+    """The leaf object, so `cited` cannot quietly become something other than label presence."""
+
+    @pytest.mark.parametrize(
+        ("labels", "cited"),
+        [((), False), (("[S1]",), True), (("[S1]", "[S3]"), True)],
+    )
+    def test_cited_is_exactly_label_presence(self, labels, cited):
+        assert SentenceCitation(text="whatever", labels=labels).cited is cited
+
+    def test_the_measured_sentences_carry_the_text_they_were_split_from(self):
+        attribution = measure_attribution("One [S1]. Two.")
+
+        assert [s.text for s in attribution.sentences] == ["One [S1].", "Two."]
+        assert isinstance(attribution, AnswerAttribution)

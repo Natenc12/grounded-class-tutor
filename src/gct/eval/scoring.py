@@ -777,7 +777,10 @@ def _labels_in(text: str) -> tuple[str, ...]:
 
     `[S1]` rather than `1` because the label IS the vocabulary the citation spine renders (honor
     point ②) and the string the issue's probe printed. Deduped so `[S1] ... [S1]` in one sentence
-    is one label used; the sentence is cited either way, so the dedup only affects `labels_used`.
+    is one label used; the sentence is cited either way, so the dedup only affects THIS tuple -
+    never `labels_used`, whose own across-sentence pass drops the repeat regardless. That
+    asymmetry is why the test pinning this carries a SECOND assertion: drop the dedup here and
+    `labels_used` does not move, so the sentence tuple is the only place the claim is observable.
     """
     seen: list[str] = []
     for match in _LABEL_RE.finditer(text):

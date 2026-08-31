@@ -26,10 +26,31 @@ What this is NOT (ADR 0023 §5, recorded against erosion): a release gate, a qua
 an approximation of V3. It is a crude bench for RANKING bake-offs. A good `grounded_pass_rate`
 means one spike beat another on this suite - never that the system is faithful (V1 checks
 structure, not entailment; ADR 0014).
+
+TWO things here are NOT metrics, and they share the banner at the bottom of this file:
+`expected_placement` (issue #67) - the rank and margin behind a single `hit` - and the ATTRIBUTION
+readouts (`measure_attribution` / `aggregate_attribution`, issue #66) - what share of an answer's
+sentences carried no `[S#]` label at all. Both are DIAGNOSTICS. Neither joins a rate on
+`EvalMetrics`, enters `EvalRecord`, nor changes any verdict, so ADR 0023 §3's vector is exactly
+what it was; the section's own comment carries why that boundary is structural rather than tidy.
+
+They live here anyway, for the reason directly above. Rank and margin are facts about a
+`RetrievedChunk[]` list, with three genuine definitional choices apiece (see the function); the
+sentence split IS the uncited-sentence metric - the whole definition of its denominator - and V3
+re-scoring a stored run must execute the same definition as the V1 human reading a bench report.
+Computing either in a runner would be the second copy this module exists to not have. REJECTED
+ALTERNATIVE, recorded because nothing else carries it: compute them inline in
+`scripts/ask_smoke.py`'s printer. It is a cheaper diff and matches issue #67's own `Touches:` line
+(#66's already names THIS module, so the alternative contradicts it rather than following it), and
+nothing in V1 would ever notice the divergence - which is precisely the failure mode
+ADR 0017 (clamped per ADR 0024) names about its own seam: load-bearing exactly because nothing in
+V1 reads it, so a wrong choice hides until V3. It is also why the runner's own docstring says a
+scoring rule found there "belongs one layer down".
 """
 
 from __future__ import annotations
 
+import re
 from collections import Counter
 from collections.abc import Sequence
 from dataclasses import dataclass
@@ -160,8 +181,20 @@ def retrieval_hit(
     # mapping step. Chunk ids are NOT compared: the eval file names a page a human can verify,
     # and chunk ids are re-minted by every re-ingest, so a chunk-id rule would go stale the first
     # time the corpus was re-indexed with unchanged content.
-    found = {(chunk.file, chunk.page_or_slide) for chunk in retrieved}
-    return any((source.file, source.page_or_slide) in found for source in expected_sources)
+    pairs = _expected_pairs(expected_sources)
+    return any((chunk.file, chunk.page_or_slide) in pairs for chunk in retrieved)
+
+
+def _expected_pairs(expected_sources: Sequence[ExpectedSource]) -> frozenset[tuple[str, int]]:
+    """The `(file, page_or_slide)` set both retrieval readouts match on - ONE definition of
+    "this chunk is an expected source", shared by `retrieval_hit` and `expected_placement`.
+
+    Extracted rather than duplicated for the reason this module's docstring gives about the
+    V1/V3 split: a second copy of the match rule is how two "identical" rules quietly stop
+    agreeing. Exact equality on BOTH fields stays `retrieval_hit`'s rule and its argument
+    (never-span, ADR 0019); this helper only names it.
+    """
+    return frozenset((source.file, source.page_or_slide) for source in expected_sources)
 
 
 @dataclass(frozen=True)
@@ -396,4 +429,415 @@ def compute_metrics(records: Sequence[EvalRecord]) -> EvalMetrics:
             per_expectation[EXPECTATION_REFUSE], EXPECTATION_REFUSE, totals[EXPECTATION_REFUSE]
         ),
         retrieval=RetrievalCounts(applicable=applicable, hits=hits),
+    )
+
+
+# --- Diagnostics - NOT the ADR 0023 vector (§3 fixes it; these ride beside it) -----------------
+#
+# Two readouts live below: `expected_placement` (issue #67) and the attribution family
+# (`measure_attribution` / `aggregate_attribution`, issue #66). ONE banner, deliberately. A second
+# banner - or a `gct/eval/attribution.py` of its own, which was the defensible alternative here -
+# would split eval telemetry by the week it shipped, and that is not a boundary anyone can
+# maintain. #67 put its diagnostic in this module; #66 joins it.
+#
+# WHY `uncited_sentence_rate` IS NOT A PROPERTY ON `EvalMetrics`, in the order the argument runs:
+#   1. `EvalMetrics` IS the ADR 0023 vector, by its own docstring, and §3 FIXES that vector. A
+#      property added to the class is *in* the vector by construction, and no future reader can
+#      tell which properties the ADR ratified and which one an issue bolted on afterwards.
+#   2. Its denominator is not `N_scored` and cannot be. Every rate on `EvalMetrics` divides
+#      questions by questions; this divides SENTENCES by sentences, pooled, over a different
+#      population (the answers that produced prose). The shared-denominator property that class is
+#      built around - the anti-gaming argument written into its own Secondary section - would be
+#      silently false for exactly one member. That is worse than a missing number.
+#   3. Issue #66's own words are "computed ALONGSIDE the ADR 0023 metric vector" and "printed WITH
+#      the rest of the vector". Alongside is not inside; printed-with is a layout fact, satisfied
+#      by a contiguous block in the runner.
+#   4. #67 set the precedent a week earlier and it was approved: `expected_placement` is a
+#      diagnostic and stayed out for the same reason. Two diagnostics that land differently would
+#      mean the boundary is not one.
+#   5. Anti-erosion, which is the load-bearing one. Telemetry living inside the object the exit
+#      gate reads is the shape most likely to be enforced later BY ACCIDENT. ADR 0015's ruling -
+#      per-claim citation presence is not an enforcement rung in V1 - is protected best by this
+#      number staying outside the object a verdict is computed from.
+#
+# The cost is real, and named here rather than hidden: `scripts/ask_smoke.py` carries a second
+# parallel list beside `records`, because `EvalRecord` cannot carry prose and `compute_metrics`
+# therefore structurally cannot see it. That is one `.append` in a loop that already appends.
+
+
+@dataclass(frozen=True)
+class ExpectedPlacement:
+    """WHERE the expected source landed in one question's top-k, and by how much (issue #67).
+
+    A DIAGNOSTIC, not a metric, and the distinction is structural rather than stylistic: this
+    object is deliberately absent from `EvalRecord`, `GroundingCounts`, `RetrievalCounts` and
+    `EvalMetrics`. ADR 0023 §3 fixes the rate vector, nothing here aggregates over a run, and
+    adding a rank-derived rate would be a new ranking signal smuggled in as a readout. Pinned by
+    `test_expected_placement_is_absent_from_the_adr_0023_vector`.
+
+    It exists because ADR 0023 §1's retrieval signal is an ANY-MATCH membership rule (see
+    `retrieval_hit`): `hit=yes` says an expected chunk is SOMEWHERE in the top-k and says nothing
+    about what outranks it. `eval/FINDINGS.md` (2026-08-01) is where that bit: q005 scored a clean
+    `hit=yes` while four of its five retrieved blocks were a different author arguing the opposite
+    case, and finding that out took a separate hand-written probe. This is that probe, in the
+    core - here rather than in the runner for the same reason `retrieval_hit` is (module
+    docstring).
+
+    `ranks` carries EVERY matching position, not just the best one. Anchoring on the best rank
+    alone and printing "rank 2" would repeat this issue's own sin: one summary number hiding what
+    the top-k actually contained. `rank` and `found` are properties derived from it - the same
+    construction `EvalMetrics` uses for its rates, so no reported figure can disagree with the
+    tally it came from.
+
+    `margin` is `None` when there is no row below the best rank, and `0.0` on a tie. The two are
+    NOT interchangeable (`_rate` carries the general argument): `None` is "nothing was measured",
+    `0.0` is a measurement.
+    """
+
+    ranks: tuple[int, ...]
+    total: int
+    margin: float | None
+
+    @property
+    def rank(self) -> int | None:
+        """The best (lowest) matching rank, 1-based - or `None` when nothing matched.
+
+        `None` here means "we looked in the top-k and the expected source was not there", never
+        "not applicable": that second fact is the `None` `expected_placement` itself returns.
+        """
+        return self.ranks[0] if self.ranks else None
+
+    @property
+    def found(self) -> bool:
+        """Whether any expected source appeared at all - the same bit `retrieval_hit` reports."""
+        return bool(self.ranks)
+
+
+def expected_placement(
+    expected_sources: Sequence[ExpectedSource], retrieved: Sequence[RetrievedChunk]
+) -> ExpectedPlacement | None:
+    """Where the expected source(s) landed in this top-k, and the margin over the next result.
+
+    Returns `None` - not an empty placement - when `expected_sources` is empty, mirroring
+    `retrieval_hit`'s tri-state for the identical reason (ADR 0021 §3): an out-of-corpus row has
+    NO EXPECTATION, which is a different fact from "we looked and missed". Inside the returned
+    object, `rank is None` means the second thing. The two `None`s are never the same claim, and
+    a caller that coalesces them reports a miss the suite never scored.
+
+    RANK IS POSITION IN THE SEQUENCE AS HANDED, 1-based, never a re-sort. `AskResult.retrieved`
+    is contractually "the EXACT top-k list handed to the Grounder, in rank order", so sorting
+    here would report a rank the Grounder never saw. A list that is not score-ordered therefore
+    yields a NEGATIVE margin, reported signed rather than clamped - that is a real upstream
+    defect and worth surfacing, not smoothing.
+
+    MARGIN IS `score[rank] - score[rank+1]`: the expected row's score minus the row IMMEDIATELY
+    BELOW it. Headroom, not deficit. ADR 0026 §2 ("Not a margin") fixes the reading - it records
+    that q007's expected page "ranks first" while what ranked second was never captured, so the
+    margin was unmeasured; the deficit reading (`score[1] - score[rank]`) is undefined at rank 1,
+    the one case that ADR wants a margin for.
+
+    `None` at the last row (there is nothing below it), `0.0` on a tie. The distinction is
+    load-bearing - the argument `_rate` carries about an empty denominator, applied one layer
+    down: a computed zero must never be indistinguishable from a measurement never made, and
+    `+0.0000` reads as "tied with the next row".
+
+    TIES HAVE NO STABLE ORDER. `retrieve()`'s SQL is `order by distance asc` with no tiebreak, so
+    a `0.0` margin means "the rank boundary here is arbitrary" - it may swap between runs - not
+    "this row barely won".
+
+    The margin is a difference of two normalized similarities (ADR 0017, clamped per ADR 0024),
+    so it lies in [0,1] for a score-ordered list. It is comparable WITHIN ONE QUERY ONLY: ADR
+    0017 rejected batch-relative normalization precisely because corpus-relative scores are not
+    comparable across queries. Do not rank questions by margin.
+
+    `k` is not a parameter and must not become one: this is defined over the sequence it is
+    handed, so `total` is `len(retrieved)`. `retrieve()` already returns <= k, so a short list is
+    normal; a longer one is an upstream contract violation that still renders rather than raising.
+
+    NEVER RAISES, for any input shape - an empty list, a single row, duplicates, unsorted scores.
+    It is a readout printed beside a bench run; a diagnostic that can abort the run it is
+    describing is worse than no diagnostic.
+    """
+    if not expected_sources:
+        return None
+
+    pairs = _expected_pairs(expected_sources)
+    rows = list(retrieved)
+    ranks = tuple(
+        position
+        for position, chunk in enumerate(rows, start=1)
+        if (chunk.file, chunk.page_or_slide) in pairs
+    )
+
+    margin: float | None = None
+    if ranks:
+        best = ranks[0]
+        # `best < len(rows)` is the last-row guard, and it is what makes `None` mean "undefined"
+        # rather than "zero": at the last rank there is no `rows[best]` to subtract.
+        if best < len(rows):
+            margin = rows[best - 1].score - rows[best].score
+
+    return ExpectedPlacement(ranks=ranks, total=len(rows), margin=margin)
+
+
+# The crude sentence rule, and CRUDE IS THE MANDATE (issue #66), not a shortcut taken under time
+# pressure. Split on a terminator followed by whitespace. No newline rule, no capital-letter rule,
+# no abbreviation list - each of those is the first step toward a smart splitter, and a smart
+# splitter is the thing ADR 0015 ruled out at the enforcement layer.
+_SENTENCE_SPLIT_RE = re.compile(r"(?<=[.!?])\s+")
+
+# A TWIN of `grounder/answer.py::_LABEL_RE`, which OWNS this vocabulary - not an import. Reaching
+# across a module boundary for an underscore-private is the move `ask.py::_retrieval_error`
+# explicitly refused and documented; the Grounder must gain nothing from this issue. The copy is
+# made safe by a test asserting the two patterns are string-identical, so if the Grounder ever
+# widens its regex the twin fires - which is exactly when this metric's definition has to be
+# revisited, since a label the Grounder would resolve must count as a citation here too.
+_LABEL_RE = re.compile(r"\[S(?P<ordinal>\d+)\]")
+
+
+def split_sentences(prose: str) -> list[str]:
+    """Split answer prose into crude sentences: terminator + whitespace, and nothing else.
+
+    THE SPLITTER IS THE METRIC. It is the entire definition of `uncited_sentence_rate`'s
+    denominator, which is why it lives in `gct` rather than in the runner (ADR 0009): V3
+    re-scoring a stored run has to execute this same definition, not a second copy of it.
+
+    Every fragment is stripped and empties are dropped, so `""` and whitespace-only prose return
+    `[]` rather than `[""]` - a blank line is not a sentence, and counting one would put a
+    guaranteed-uncited row in the denominator.
+
+    WHAT IT GETS WRONG, measured rather than guessed (scratchpad `misfire_table.py` regenerates
+    this table; the reference row is the q008 case issue #66 was filed on):
+
+    | input                                            |  n | uncited |                          |
+    |--------------------------------------------------|----|---------|--------------------------|
+    | q008 reconstruction                              |  4 |       3 | the reference case       |
+    | `The earth is a woman. [S1][S3]`                 |  2 |       1 | label-after-period       |
+    | numbered list `1. ... 2. ...`                    |  5 |       4 | `1.` is its own sentence |
+    | `score is 0.85 [S1].`                            |  1 |       0 | decimals survive         |
+    | `He said "yes." Then he left [S1].`              |  1 |       0 | quoted terminator        |
+    | heading + 2 bullets, no terminal punctuation     |  1 |       0 | FUSES into one block     |
+    | `Well ... it is unclear [S1].`                   |  2 |       1 | spaced ellipsis splits   |
+    | `See p. 4 for details [S1].`                     |  2 |       1 | `p.` abbreviation splits |
+
+    THESE ARE EXACTLY THE MISFIRES ADR 0015 NAMED - lists, headings, transitional prose - when it
+    ruled per-claim citation presence out as an ENFORCEMENT rung. The difference is the whole
+    reason issue #66 is buildable: here each misfire costs a NUMBER, never a verdict. Nothing is
+    flagged, no state changes, and a wrong split moves a reported rate by a sentence.
+
+    The reference case is itself built on a misfire - "Charles H. / Long," splits in two - and
+    recording that is more honest than tuning it away. The label-after-period row is deliberately
+    NOT mitigated: re-attaching a label-only fragment to the sentence before it is step one of the
+    smart splitter this rule refuses to be. How often the model actually writes `... birth. [S1]`
+    rather than `... birth [S1].` is UNMEASURED; the first live run settles it.
+    """
+    return [
+        stripped
+        for stripped in (piece.strip() for piece in _SENTENCE_SPLIT_RE.split(prose.strip()))
+        if stripped
+    ]
+
+
+@dataclass(frozen=True)
+class SentenceCitation:
+    """One crude sentence and the `[S#]` labels it carries, in order, deduped.
+
+    PRESENCE, NOT VALIDITY. A sentence citing a dangling `[S9]` counts as CITED. Whether the
+    ordinal resolves is `grounder/answer.py::_validate`'s job, and it already yields
+    INTEGRITY_FLAGGED; re-litigating it here would make this a second writer for that fact, and
+    the two would disagree the first time either moved.
+
+    The strict `[S#]` form is load-bearing in the other direction: `[S1, S2]`, `[Source 1]`,
+    `[s1]` and `[ S1 ]` are not labels, so a sentence carrying only those reads UNCITED. That is
+    correct rather than harsh - the Grounder would not resolve them either, so the sentence really
+    does rest on nothing the citation spine can render.
+    """
+
+    text: str
+    labels: tuple[str, ...]
+
+    @property
+    def cited(self) -> bool:
+        """At least one `[S#]` label ANYWHERE in the sentence. Position carries no meaning."""
+        return bool(self.labels)
+
+
+@dataclass(frozen=True)
+class AnswerAttribution:
+    """The per-sentence citation readout for ONE answer's prose (issue #66).
+
+    Every figure is a property over `sentences`, the same construction `EvalMetrics` and
+    `ExpectedPlacement` use, so no reported number can disagree with the tally it came from.
+
+    WHAT IS NOT IN THE DENOMINATOR, and why each exclusion is structural rather than a filter:
+      - **The coverage statement.** `grounder/answer.py::_parse` does
+        `prose = _COVERAGE_RE.sub("", raw).strip()` BEFORE `answer_prose` exists, so a marker line
+        cannot reach this object at all. Excluded by construction, and pinned end-to-end through
+        the real `answer()` rather than by a comment - the fact belongs to `_parse`, and only a
+        test at that seam notices if `_parse` ever stops cutting. "LINE" is exact: `_COVERAGE_RE`
+        is `^...$` under `re.M`, so a marker sharing a line with prose (`A claim [S1]. COVERAGE:
+        complete`) is not cut and lands here as one uncited sentence - a known artifact on an
+        answer that is already INTEGRITY_FLAGGED, not a case to special-case.
+      - **Gap text.** Gaps live in `coverage.gaps` and never in prose. Counting them would be
+        backwards: they are the OTHER, SATISFIED half of ADR 0014's rule - the claims the answer
+        correctly declined to assert.
+      - Headings and blank lines are not excluded. A heading with no terminator FUSES into the
+        sentence after it (see `split_sentences`); a blank line contributes nothing.
+    """
+
+    sentences: tuple[SentenceCitation, ...]
+
+    @property
+    def total(self) -> int:
+        """The denominator: how many crude sentences this answer asserted."""
+        return len(self.sentences)
+
+    @property
+    def uncited(self) -> int:
+        """The numerator: sentences carrying no `[S#]` label at all."""
+        return sum(1 for sentence in self.sentences if not sentence.cited)
+
+    @property
+    def labels_used(self) -> tuple[str, ...]:
+        """Every label this answer cited, in first-appearance order, deduped.
+
+        Deduped ACROSS the whole answer, not per sentence: `[S1][S3]` in one sentence and `[S1]`
+        in the next is two distinct labels used, not three. This is the field the issue's own
+        probe printed, and the reproduction claim is over its SET, not over a list repr.
+        """
+        seen: list[str] = []
+        for sentence in self.sentences:
+            for label in sentence.labels:
+                if label not in seen:
+                    seen.append(label)
+        return tuple(seen)
+
+    @property
+    def uncited_sentence_rate(self) -> float | None:
+        """Issue #66's number, for one answer. `None` only when there were no sentences.
+
+        The name is verbatim from the issue and is fixed - it is also the printed label, so the
+        two cannot drift. `_rate` carries the `None`-vs-`0.0` argument: a measured `0.0` means
+        every sentence carried a label, which is a real and good result, while `None` means
+        nothing was measured. Callers must not coalesce them.
+        """
+        return _rate(self.uncited, self.total)
+
+
+def measure_attribution(prose: str | None) -> AnswerAttribution | None:
+    """One answer's prose -> its per-sentence citation readout, or `None` if there is no prose.
+
+    THE SIGNATURE IS THE INVARIANT, the same move `score_state` makes: this takes PROSE, never a
+    state and never a `GrounderResult`. It CANNOT misread a state because a state is not in scope
+    to read - which is the mechanical half of issue #66's "no answer's state changes" claim.
+
+    That leaves the five states falling out of the prose rather than out of a table, which is the
+    correct dependency:
+
+      - **GROUNDED** - measured. The case the issue exists for: q008 scored GROUNDED with three of
+        four sentences unlabelled.
+      - **PARTIAL** - measured, by the same rule. Note honestly that PARTIAL has NEVER fired on
+        this corpus (ADR 0026), so this arm is covered by construction, not by observation.
+      - **INTEGRITY_FLAGGED** - measured IFF prose survived. `_integrity_flagged` keeps
+        `parsed.prose or None`, so a flagged answer often still has prose, and it still asserted
+        those sentences. This follows ADR 0023 §1's independence principle, one layer down:
+        retrieval counts on an ERRORed row when retrieval ran, "regardless of the final state".
+      - **REFUSAL** -> `None`. A refusal makes no claims, so there is nothing to attribute. `0.0`
+        here would say "we measured, and everything was attributed" - dragging refusals in as free
+        wins and making the rate IMPROVE the more the system refuses. That is `retrieval_hit`'s
+        cannot-reach-1.0 argument, inverted: a metric that gets better when the product gets more
+        useless cannot rank anything.
+      - **ERROR** -> `None`. Nothing was generated. An infra fact is not an attribution fact
+        (ADR 0016), the same line `EvalMetrics` draws by excluding ERROR from N_scored.
+
+    Empty or whitespace-only prose handed in directly returns `None` for the same reason: there is
+    nothing to measure, and an `AnswerAttribution` with zero sentences would report a rate of
+    `None` anyway while claiming an answer was measured.
+    """
+    if not prose or not prose.strip():
+        return None
+
+    sentences = tuple(
+        SentenceCitation(text=text, labels=_labels_in(text)) for text in split_sentences(prose)
+    )
+    # DEFENSIVE, AND CURRENTLY UNREACHABLE - named as such rather than credited with a case it
+    # does not have. `_SENTENCE_SPLIT_RE` is a zero-width lookbehind split on whitespace, so
+    # splitting an already-stripped non-empty string yields a non-empty first piece no matter what
+    # it contains: even the pathological "only terminators" shape (`"..."`) returns ONE sentence,
+    # not zero. `split_sentences` therefore cannot return `[]` for anything that clears the
+    # `prose.strip()` guard one line up. The arm is kept because the invariant belongs to the
+    # splitter and not to this function: if the split rule ever gains a filter, a zero-sentence
+    # object would claim an answer was MEASURED while reporting a rate of `None`, which is the one
+    # distinction this whole readout exists to keep.
+    return AnswerAttribution(sentences=sentences) if sentences else None
+
+
+def _labels_in(text: str) -> tuple[str, ...]:
+    """Every `[S#]` in `text`, in order, deduped - the rendered label, not the bare ordinal.
+
+    `[S1]` rather than `1` because the label IS the vocabulary the citation spine renders (honor
+    point ②) and the string the issue's probe printed. Deduped so `[S1] ... [S1]` in one sentence
+    is one label used; the sentence is cited either way, so the dedup only affects THIS tuple -
+    never `labels_used`, whose own across-sentence pass drops the repeat regardless. That
+    asymmetry is why the test pinning this carries a SECOND assertion: drop the dedup here and
+    `labels_used` does not move, so the sentence tuple is the only place the claim is observable.
+    """
+    seen: list[str] = []
+    for match in _LABEL_RE.finditer(text):
+        label = match.group(0)
+        if label not in seen:
+            seen.append(label)
+    return tuple(seen)
+
+
+@dataclass(frozen=True)
+class AttributionTotals:
+    """A whole run's pooled attribution readout - issue #66's reported figure.
+
+    `answers_measured + answers_unmeasured` is always the number of answers handed in, so a report
+    can say HOW MUCH of the suite it measured. That is not decoration: on this corpus a third of
+    the suite is out-of-corpus and refuses, so the denominator is routinely short, and a rate whose
+    coverage is invisible is the "clean rate over a suite that quietly shrank" this whole module is
+    built to prevent.
+    """
+
+    answers_measured: int
+    answers_unmeasured: int
+    sentences: int
+    uncited: int
+
+    @property
+    def uncited_sentence_rate(self) -> float | None:
+        """MICRO (pooled): `sum(uncited) / sum(sentences)`, never the mean of per-answer rates.
+
+        Two reasons, and the first is doctrine already written down here: counts are the primitive
+        (`GroundingCounts`), and rates are derived from pooled counts everywhere else in this file.
+        The second is what the number is FOR - "what share of the sentences this bench asserted
+        carried no label" is a question about sentences, so sentences are what it divides.
+
+        A macro mean would weight a one-sentence answer the same as a twelve-sentence one, which
+        for an attribution rate is the wrong unit entirely: the thing at risk is a CLAIM, not an
+        answer. Pinned by a test whose two answers give micro 0.25 and macro 0.5, so the two
+        readings cannot be confused for a rounding difference.
+        """
+        return _rate(self.uncited, self.sentences)
+
+
+def aggregate_attribution(
+    measurements: Sequence[AnswerAttribution | None],
+) -> AttributionTotals:
+    """Pool a run's per-answer readouts. `None` entries count as UNMEASURED, never as zero.
+
+    That is the whole subtlety. A `None` (refusal, error, empty prose) contributes no sentences
+    and no uncited count - it does not enter the denominator as a perfectly-attributed answer.
+    An all-`None` run therefore reports `rate is None`, not `0.0`, and a caller must render that
+    as "n/a": a run that measured nothing must never look like a run that measured everything and
+    found every sentence cited.
+    """
+    measured = [m for m in measurements if m is not None]
+    return AttributionTotals(
+        answers_measured=len(measured),
+        answers_unmeasured=len(measurements) - len(measured),
+        sentences=sum(m.total for m in measured),
+        uncited=sum(m.uncited for m in measured),
     )

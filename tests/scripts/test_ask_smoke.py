@@ -35,6 +35,7 @@ from gct.config import EMBEDDING_DIM, Settings
 from gct.eval.questions import EvalQuestion, ExpectedSource
 from gct.ingest.chunk import CHUNK_OVERLAP_WORDS, CHUNK_SIZE_WORDS
 from gct.ingest.pipeline import ingest_file
+from gct.retriever.retrieve import RetrievedChunk
 
 # Import the script by PATH rather than by package name: `scripts/` is deliberately not a package
 # (ADR 0009 - the scripts are peers of the library, not part of it), so there is nothing to
@@ -542,6 +543,32 @@ def grounder_result(state, prose, gaps):
     )
 
 
+def retrieved_chunks(rows) -> list[RetrievedChunk]:
+    """`[(file, page, score), ...]` -> the top-k list, IN THE ORDER GIVEN.
+
+    Order is never re-sorted here, deliberately: `AskResult.retrieved` is "the EXACT top-k list
+    handed to the Grounder, in rank order", and a helper that tidied it would hide exactly the
+    out-of-order case `expected_placement` is specified against.
+    """
+    return [
+        RetrievedChunk(chunk_id=f"chunk-{i}", text="…", file=file, page_or_slide=page, score=score)
+        for i, (file, page, score) in enumerate(rows, start=1)
+    ]
+
+
+def ask_result(state, prose, gaps, retrieved, retrieval_ran=True):
+    """A canned `AskResult` — the whole reason these tests cost nothing.
+
+    `_print_retrieved` takes `(EvalQuestion, AskResult)` and reads nothing else, so the retrieval
+    report can be driven end to end with no provider, no database and no spend.
+    """
+    return ask_smoke.AskResult(
+        result=grounder_result(state, prose, gaps),
+        retrieved=retrieved_chunks(retrieved),
+        retrieval_ran=retrieval_ran,
+    )
+
+
 class TestOnlyFilter:
     """`--only` (issue #60): re-ask a hand-picked subset cheaply, without lying about it."""
 
@@ -733,9 +760,14 @@ class TestMainWiring:
         def __exit__(self, *exc):
             return False
 
-    def _drive(self, monkeypatch, tmp_path, argv_tail, states=None):
+    def _drive(self, monkeypatch, tmp_path, argv_tail, states=None, retrieved=None):
         """Run `main()` with fakes at the seams. Question text is set to the question's id so
-        the fake `ask` can answer per-question the way the real one would."""
+        the fake `ask` can answer per-question the way the real one would.
+
+        `retrieved` maps a question id to `[(file, page, score), ...]` and DEFAULTS TO AN EMPTY
+        top-k for every question - which is what keeps every test written before
+        `--show-retrieved` existed unaffected by this parameter.
+        """
         from gct.grounder.answer import GrounderState
 
         states = states or {
@@ -743,13 +775,12 @@ class TestMainWiring:
             "q005": (GrounderState.GROUNDED, "prose five [S1]", []),
             "q009": (GrounderState.REFUSAL, None, ["nothing on this"]),
         }
+        rows = retrieved or {}
         questions = [dataclasses.replace(q, question=q.id) for q in self.QUESTIONS]
 
         def fake_ask(conn, question_text, owner, class_id, *, embedder, generator, k):
             state, prose, gaps = states[question_text]
-            return ask_smoke.AskResult(
-                result=grounder_result(state, prose, gaps), retrieved=[], retrieval_ran=True
-            )
+            return ask_result(state, prose, gaps, rows.get(question_text, []))
 
         monkeypatch.setattr(ask_smoke, "_load", lambda path, suite: list(questions))
         # The wiring block reads the key through `load_settings` before constructing providers.
@@ -950,3 +981,728 @@ class TestWiringSetupFailures:
         assert rc == ask_smoke.EXIT_SETUP
         assert "SETUP FAILED" in out
         assert "cannot connect to Postgres" in out
+
+
+# Issue #67's own measurement (2026-08-01): q005's real top-5, with the expected slide THIRD
+# behind two copies of a different author's critique. `0.5648 - 0.5432 = 0.0216` is the margin the
+# bench could not previously say, and every reference assertion below is anchored to it.
+LECTURE = "Lecture 20 Evolutionist-Creationist Debate.pptx"
+LIVINGSTON = "Livingston Cosmogony.pdf"
+Q005_ROWS = [
+    (LIVINGSTON, 13, 0.6189),
+    (LIVINGSTON, 13, 0.5820),
+    (LECTURE, 2, 0.5648),
+    (LIVINGSTON, 13, 0.5432),
+    (LIVINGSTON, 13, 0.5364),
+]
+
+
+class TestShowRetrieved:
+    """`--show-retrieved` (issue #67): the retrieval probe, offline and free.
+
+    `retrieval_hit` is an ANY-MATCH rule (ADR 0023 §1), so `hit=yes` says the expected chunk is
+    SOMEWHERE in the top-k and nothing about what outranks it. Every test here drives the printer
+    on a CANNED `AskResult` - no provider, no database, no spend - which is possible precisely
+    because `_print_retrieved` takes `(EvalQuestion, AskResult)` and reads nothing else.
+
+    What these defend, over and above "it prints something": the three `None`-shaped cases are
+    three DIFFERENT facts (no expectation / looked-and-missed / found-at-the-last-row) and none of
+    them may render as a zero, because a fabricated `0.0000` in a diagnostic is worse than no
+    diagnostic.
+    """
+
+    EXPECTED = [(LECTURE, 2)]
+
+    def _print(self, capsys, rows, sources=None, retrieval_ran=True, state=None):
+        """Render one question's retrieval block and return it.
+
+        `sources=None` means the default in-corpus question (expects `LECTURE` p.2); passing `[]`
+        builds the OUT-OF-CORPUS row, which carries no `expected_sources` at all - the tri-state's
+        third case, and the one a caller must not confuse with a miss.
+        """
+        from gct.grounder.answer import GrounderState
+
+        if sources is None:
+            sources = self.EXPECTED
+        expectation = "answer" if sources else "refuse"
+        q = question("q005" if sources else "q009", expectation, sources)
+        result = ask_result(
+            state or GrounderState.GROUNDED, "prose [S1]", [], rows, retrieval_ran=retrieval_ran
+        )
+
+        ask_smoke._print_retrieved(q, result)
+        return capsys.readouterr().out
+
+    def test_default_args_leave_show_retrieved_off(self, monkeypatch):
+        """The byte-identical-default guarantee at the parse layer: an absent flag means a
+        default run never takes the new branch."""
+        monkeypatch.setattr("sys.argv", ["ask_smoke.py"])
+
+        assert ask_smoke._parse_args().show_retrieved is False
+
+    @pytest.mark.parametrize(
+        "argv_tail",
+        [
+            ["--show-retrieved"],
+            ["--show-retrieved", "--only", "q005"],
+            ["--show-retrieved", "--verbose"],
+            ["--only", "q005", "--show-retrieved", "--verbose"],
+        ],
+        ids=["alone", "with-only", "with-verbose", "with-both"],
+    )
+    def test_the_flag_parses(self, monkeypatch, argv_tail):
+        """Its own flag, composable with the others. `--verbose` is the GENERATION probe and this
+        is the RETRIEVAL probe; ADR 0023 §1 keeps those two signals unconflated at the metric
+        layer, so fusing them into one flag would re-conflate them at the reporting layer."""
+        monkeypatch.setattr("sys.argv", ["ask_smoke.py", *argv_tail])
+
+        args = ask_smoke._parse_args()
+
+        assert args.show_retrieved is True
+        assert args.verbose is ("--verbose" in argv_tail)
+
+    def test_the_q005_block_renders_the_reference_table(self, capsys):
+        """THE ACCEPTANCE TEST — issue #67's own table, and the sentence `hit=yes` could not say.
+
+        All four provenance fields per row, in the handed order, the marker on the expected row
+        ONLY, and the rank/margin line. `0.5648 - 0.5432 = 0.0216`: a margin defined the other way
+        round (deficit behind the leader) would print `0.0541` here.
+        """
+        out = self._print(capsys, Q005_ROWS)
+
+        assert "retrieved top-5" in out
+        assert "rank   score  source" in out
+        for _file, page, score in Q005_ROWS:
+            assert f"{score:.4f}" in out
+            assert f"p.{page}" in out
+        # Order as handed, never re-sorted — `AskResult.retrieved` is the exact list the Grounder
+        # was given, so a re-sort here would report a rank the Grounder never saw.
+        assert out.index("0.6189") < out.index("0.5648") < out.index("0.5364")
+        assert out.count("<-- expected") == 1
+        assert "0.5648  Lecture 20 Evolutionist-Creationist Debate.pptx p.2   <-- expected" in out
+        assert "expected source: rank 3 of 5, margin over rank 4 = +0.0216" in out
+
+    def test_every_matching_row_is_marked_when_the_source_appears_twice(self, capsys):
+        """A single marker on a source that appears twice would say the top-k contained it once —
+        one summary figure hiding composition, which is this issue's own complaint."""
+        rows = [
+            (LIVINGSTON, 13, 0.6189),
+            (LECTURE, 2, 0.5820),
+            (LIVINGSTON, 13, 0.5648),
+            (LECTURE, 2, 0.5432),
+            (LIVINGSTON, 13, 0.5364),
+        ]
+
+        out = self._print(capsys, rows)
+
+        assert out.count("<-- expected") == 2
+        assert "rank 2 of 5 (also at rank 4)" in out
+        assert "margin over rank 3 = +0.0172" in out  # measured from the BEST rank, not the last
+
+    def test_an_absent_expected_source_prints_no_margin_number(self, capsys):
+        """THE NO-FABRICATION PIN. A measured miss has no rank, so it has nothing to have a
+        margin FROM — and a `0.0000` there would be a figure nobody measured."""
+        rows = [(LIVINGSTON, 13, 0.6189 - i / 100) for i in range(5)]
+
+        out = self._print(capsys, rows)
+
+        assert "ABSENT" in out
+        assert "hit=no" in out
+        assert "margin over" not in out
+        assert "0.0000" not in out
+
+    def test_the_last_row_case_says_n_a_and_never_prints_a_zero_margin(self, capsys):
+        """`None` means UNDEFINED — nothing ranks below the last row. `+0.0000` would read as
+        "tied with the next row", a measurement that was never made (the argument `_pct` carries
+        about rates, one layer down). Exact mirror of the tie test below."""
+        rows = [
+            (LIVINGSTON, 13, 0.6189),
+            (LIVINGSTON, 13, 0.5820),
+            (LECTURE, 2, 0.5648),
+        ]
+
+        out = self._print(capsys, rows)
+
+        assert "rank 3 of 3" in out
+        assert "margin n/a (last row" in out
+        assert "0.0000" not in out
+
+    def test_a_tie_prints_a_measured_zero_margin(self, capsys):
+        """The other half of the pair: `0.0` is a MEASUREMENT, and it prints as one. The note
+        says what it means — `retrieve()` orders by distance with no tiebreak, so which of two
+        tied rows came first is arbitrary and may swap between runs."""
+        rows = [
+            (LIVINGSTON, 13, 0.6189),
+            (LECTURE, 2, 0.5820),
+            (LIVINGSTON, 13, 0.5820),
+            (LIVINGSTON, 13, 0.5364),
+        ]
+
+        out = self._print(capsys, rows)
+
+        assert "margin over rank 3 = +0.0000" in out
+        assert "arbitrary" in out
+        assert "margin n/a" not in out
+
+    def test_an_out_of_corpus_row_prints_the_table_but_says_n_a_not_absent(self, capsys):
+        """n/a is NOT a miss. A refuse row carries no `expected_sources` (ADR 0021 §3), so there
+        was nothing to look for — and calling that ABSENT would report a miss the suite never
+        scored. The table still prints: an out-of-corpus row's composition is exactly FINDINGS'
+        "attractor slides" observation, and it is free."""
+        out = self._print(capsys, Q005_ROWS, sources=[])
+
+        assert "retrieved top-5" in out  # the table is NOT suppressed
+        assert "expected source: n/a" in out
+        assert "ADR 0021" in out
+        assert "ABSENT" not in out
+        assert "<-- expected" not in out
+        assert "margin" not in out
+
+    def test_retrieval_never_ran_prints_no_table_at_all(self, capsys):
+        """The two retrieval-side ERROR paths produced NO top-k, so there is none to print.
+        Fabricating one — even an empty one — would report a measurement that never happened,
+        mirroring how the summary line already suppresses `hit` to `n/a` on those rows."""
+        from gct.grounder.answer import GrounderState
+
+        out = self._print(capsys, [], retrieval_ran=False, state=GrounderState.ERROR)
+
+        assert "retrieval never ran" in out
+        assert "retrieval-side ERROR" in out
+        assert "retrieved top-" not in out
+        assert "rank   score  source" not in out
+
+    def test_an_empty_result_set_prints_the_empty_class_wording_and_no_rows(self, capsys):
+        """Retrieval RAN and returned nothing: an empty/un-ingested class (retriever.md). That is
+        a measured miss, said in those words — never "nothing matched", which would blame
+        retrieval for a corpus that was never there."""
+        out = self._print(capsys, [])
+
+        assert "retrieved 0 chunks" in out
+        assert "empty/un-ingested class" in out
+        assert "rank   score  source" not in out
+        assert "0.0000" not in out
+
+    def test_no_line_carries_trailing_whitespace(self, capsys):
+        """This output is diffed run-against-run; invisible whitespace is noise in that diff.
+        The same assertion the `--verbose` prose test makes."""
+        out = self._print(capsys, Q005_ROWS)
+
+        assert not any(line.rstrip() != line for line in out.splitlines())
+
+    def test_a_long_filename_is_printed_in_full(self, capsys):
+        """NEVER `_clip`. The file+page pair IS the payload — it is what `retrieval_hit` compares
+        and what a citation names — so a truncated `Lecture 20 Evolutionist-Crea...` would defeat
+        the block's only purpose. A long name is allowed to make the line wide; clipping it would
+        make the line wrong."""
+        long_name = "Lecture " + "x" * 108 + ".pptx"
+        assert len(long_name) == 121
+
+        out = self._print(capsys, [(long_name, 2, 0.5)], sources=[(long_name, 2)])
+
+        assert long_name in out
+        assert "..." not in out
+
+    def test_the_printed_table_keeps_the_handed_order_and_marks_the_handed_row(self, capsys):
+        """PRINTER-SIDE order-as-handed. `_print_retrieved` enumerates `result.retrieved`
+        ITSELF, so it is a second writer of "rank" alongside `expected_placement` — and a
+        re-sort here would move the marker onto a row the Grounder never ranked there.
+
+        The scores ASCEND and the expected row is handed FIRST with the LOWEST score, so a
+        "sort by score" printer reports it at rank 3 and marks the wrong line. Every other
+        test in this class hands an already-descending list, where a re-sort is a no-op.
+        """
+        rows = [(LECTURE, 2, 0.10), (LIVINGSTON, 13, 0.50), (LIVINGSTON, 13, 0.90)]
+
+        out = self._print(capsys, rows)
+
+        assert out.index("0.1000") < out.index("0.5000") < out.index("0.9000")
+        assert "0.1000  " + LECTURE + " p.2   <-- expected" in out
+        assert "expected source: rank 1 of 3, margin over rank 2 = -0.4000" in out
+
+    def test_scores_print_at_four_decimals(self, capsys):
+        """Four decimals, matching `eval/FINDINGS.md`, so a row pasted out of a run is directly
+        comparable with the measurements recorded there."""
+        out = self._print(capsys, [(LECTURE, 2, 0.5), (LIVINGSTON, 13, 0.25)])
+
+        assert "0.5000" in out
+        assert "0.2500" in out
+
+
+class TestShowRetrievedWiring:
+    """`--show-retrieved` driven through the REAL `main()` — the seam no unit test can see.
+
+    PR #63's review found this hole empirically: deleting `main()`'s `--verbose` call left every
+    unit test above green. A printer that works perfectly and is never called prints nothing, so
+    the flag needs at least one test that runs the loop.
+
+    Reuses `TestMainWiring`'s recipe verbatim (its `_drive`, its fakes, its questions) rather than
+    subclassing it, so those tests are not silently re-run under a second name.
+    """
+
+    QUESTIONS = TestMainWiring.QUESTIONS
+    _FakeConn = TestMainWiring._FakeConn
+    _drive = TestMainWiring._drive
+
+    # q001 expects `present.pdf` p.1 and q005 expects p.2 (see `TestMainWiring.QUESTIONS`), so
+    # these rows put each question's expected source at a KNOWN rank with a known margin.
+    ROWS = {
+        "q001": [("present.pdf", 1, 0.90), ("other.pdf", 9, 0.80)],
+        "q005": [
+            ("other.pdf", 9, 0.6189),
+            ("other.pdf", 9, 0.5820),
+            ("present.pdf", 2, 0.5648),
+            ("other.pdf", 9, 0.5432),
+            ("other.pdf", 9, 0.5364),
+        ],
+        "q009": [("other.pdf", 9, 0.70)],
+    }
+
+    def test_main_wires_the_flag_and_prints_one_block_per_question(
+        self, monkeypatch, tmp_path, capsys
+    ):
+        """THE MUTATION-CHECKED SEAM: deleting `if args.show_retrieved:` from `main()` fails
+        HERE and nowhere else."""
+        rc = self._drive(monkeypatch, tmp_path, ["--show-retrieved"], retrieved=self.ROWS)
+        out = capsys.readouterr().out
+
+        assert rc == ask_smoke.EXIT_OK
+        assert out.count("retrieved top-") == 3, "one block per question, including the refuse row"
+        assert "expected source: rank 3 of 5, margin over rank 4 = +0.0216" in out
+        assert "expected source: n/a" in out  # the refuse row, not a miss
+
+    def test_a_default_run_prints_no_retrieved_block(self, monkeypatch, tmp_path, capsys):
+        """The byte-identical-default guarantee, through the real loop rather than the parser."""
+        rc = self._drive(monkeypatch, tmp_path, [], retrieved=self.ROWS)
+        out = capsys.readouterr().out
+
+        assert rc == ask_smoke.EXIT_OK
+        assert "retrieved top-" not in out
+        assert "expected source" not in out
+
+    def test_show_retrieved_prints_between_the_summary_line_and_the_prose(
+        self, monkeypatch, tmp_path, capsys
+    ):
+        """ORDER, asserted as an index chain over ONE real buffer — a two-capture comparison
+        would build the expected order itself and could not see a reordering.
+
+        Retrieval happened BEFORE generation, so a reader following "why did it answer that"
+        reads the evidence, then the answer.
+        """
+        rc = self._drive(
+            monkeypatch,
+            tmp_path,
+            ["--only", "q005", "--show-retrieved", "--verbose"],
+            retrieved=self.ROWS,
+        )
+        out = capsys.readouterr().out
+
+        assert rc == ask_smoke.EXIT_OK
+        assert (
+            out.index("q005 ")
+            < out.index("retrieved top-5")
+            < out.index("expected source:")
+            < out.index("answer_prose:")
+            < out.index("FILTERED RUN")
+        )
+
+    def test_show_retrieved_alone_prints_no_prose(self, monkeypatch, tmp_path, capsys):
+        """The unconflation, testable: you can look at retrieval composition WITHOUT a wall of
+        model prose. That is why this is its own flag and not a second meaning for `--verbose`."""
+        rc = self._drive(
+            monkeypatch, tmp_path, ["--only", "q005", "--show-retrieved"], retrieved=self.ROWS
+        )
+        out = capsys.readouterr().out
+
+        assert rc == ask_smoke.EXIT_OK
+        assert "retrieved top-5" in out
+        assert "answer_prose" not in out
+
+    def test_verbose_alone_prints_no_retrieved_block(self, monkeypatch, tmp_path, capsys):
+        """The other direction — `--verbose`'s emitted bytes are unchanged by this PR."""
+        rc = self._drive(
+            monkeypatch, tmp_path, ["--only", "q005", "--verbose"], retrieved=self.ROWS
+        )
+        out = capsys.readouterr().out
+
+        assert rc == ask_smoke.EXIT_OK
+        assert "answer_prose" in out
+        assert "retrieved top-" not in out
+
+    def test_the_per_question_summary_line_is_identical_with_and_without_the_flag(
+        self, monkeypatch, tmp_path, capsys
+    ):
+        """STRICTLY ADDITIVE means the line above the block does not move by one byte — that is
+        what keeps a probe run diffable against the bench run it is probing."""
+        self._drive(monkeypatch, tmp_path, [], retrieved=self.ROWS)
+        plain = capsys.readouterr().out
+        self._drive(monkeypatch, tmp_path, ["--show-retrieved"], retrieved=self.ROWS)
+        flagged = capsys.readouterr().out
+
+        def summary_lines(text):
+            return [
+                line
+                for line in text.splitlines()
+                if line.startswith(("  q001", "  q005", "  q009"))
+            ]
+
+        assert summary_lines(plain) == summary_lines(flagged)
+        assert len(summary_lines(plain)) == 3
+
+    @pytest.mark.parametrize("gate", ["passing", "failing"], ids=["gate-passes", "gate-fails"])
+    def test_the_exit_code_and_gate_verdict_are_identical_with_and_without_the_flag(
+        self, monkeypatch, tmp_path, capsys, gate
+    ):
+        """ISSUE #67'S "NO CHANGE TO ANY STATE" CLAIM, MADE MECHANICAL — on BOTH gate outcomes,
+        since a flag that only preserved the passing verdict would still be a behavior change."""
+        from gct.grounder.answer import GrounderState
+
+        states = None
+        if gate == "failing":
+            # No in-corpus GROUNDED -> the gate fails and main() returns EXIT_GATE_FAILED.
+            states = {
+                "q001": (GrounderState.REFUSAL, None, ["nope"]),
+                "q005": (GrounderState.REFUSAL, None, ["nope"]),
+                "q009": (GrounderState.REFUSAL, None, ["nothing on this"]),
+            }
+
+        plain_rc = self._drive(monkeypatch, tmp_path, [], states=states, retrieved=self.ROWS)
+        plain = capsys.readouterr().out
+        flag_rc = self._drive(
+            monkeypatch, tmp_path, ["--show-retrieved"], states=states, retrieved=self.ROWS
+        )
+        flagged = capsys.readouterr().out
+
+        expected_rc = ask_smoke.EXIT_OK if gate == "passing" else ask_smoke.EXIT_GATE_FAILED
+        assert plain_rc == flag_rc == expected_rc
+
+        def verdict(text):
+            return [line for line in text.splitlines() if "exit gate" in line]
+
+        assert verdict(plain) == verdict(flagged)
+        assert len(verdict(plain)) == 1
+
+    def test_show_retrieved_with_only_still_takes_the_filtered_early_return(
+        self, monkeypatch, tmp_path, capsys
+    ):
+        """The flag must not resurrect the rate vector on a subset run. Rates over a hand-picked
+        subset are not comparable to a full run, and that suppression is independent of what the
+        per-question lines print."""
+        rc = self._drive(
+            monkeypatch, tmp_path, ["--only", "q005", "--show-retrieved"], retrieved=self.ROWS
+        )
+        out = capsys.readouterr().out
+
+        assert rc == ask_smoke.EXIT_OK
+        assert "FILTERED RUN — 1 of 3" in out
+        assert "retrieved top-5" in out
+        assert "grounded_pass_rate" not in out
+        assert "PASS — exit gate" not in out and "FAIL — exit gate" not in out
+
+    def test_the_rate_vector_is_byte_identical_with_and_without_the_flag(
+        self, monkeypatch, tmp_path, capsys
+    ):
+        """THE STRONGEST SINGLE STATEMENT OF "REPORTING ONLY": from `Summary — ADR 0023` to the
+        end of the run, the two outputs are character-for-character the same string.
+
+        `expected_placement` is called only from the printer and never from the record-building
+        path, so no rate, no count and no verdict can move."""
+        self._drive(monkeypatch, tmp_path, [], retrieved=self.ROWS)
+        plain = capsys.readouterr().out
+        self._drive(monkeypatch, tmp_path, ["--show-retrieved"], retrieved=self.ROWS)
+        flagged = capsys.readouterr().out
+
+        marker = "Summary — ADR 0023"
+        assert marker in plain and marker in flagged
+        assert plain[plain.index(marker) :] == flagged[flagged.index(marker) :]
+
+
+# --- Issue #66: the attribution readout -------------------------------------------------------
+
+# Prose shaped so the numbers below are readable at a glance rather than derived in the test.
+CITED_PROSE = "One [S1]. Two [S1]. Three [S2]."  # 3 sentences, 0 uncited
+UNCITED_PROSE = "One thing. Another thing."  # 2 sentences, 2 uncited
+MIXED_PROSE = "Cited one [S1]. Uncited one."  # 2 sentences, 1 uncited
+
+
+class TestAttributionReport:
+    """Issue #66's block, rendered — beside the ADR 0023 vector and never inside it.
+
+    Everything here is offline: `_print_attribution` takes an `AttributionTotals` and
+    `_print_verbose` takes a `GrounderResult`, so no provider, no database and no spend. The
+    `main()`-driven tests reuse `TestMainWiring`'s fakes for the same reason.
+    """
+
+    def totals(self, measured, unmeasured, sentences, uncited):
+        return ask_smoke.AttributionTotals(
+            answers_measured=measured,
+            answers_unmeasured=unmeasured,
+            sentences=sentences,
+            uncited=uncited,
+        )
+
+    def test_the_block_renders_the_rate_the_counts_and_the_coverage(self, capsys):
+        """Every rate in this report prints beside the counts it came from, and this one also
+        prints how many ANSWERS it measured — on this suite a third of the questions refuse by
+        design, so a rate whose coverage is invisible is a rate over a suite that quietly shrank."""
+        ask_smoke._print_attribution(self.totals(8, 4, 24, 9))
+        out = capsys.readouterr().out
+
+        assert "uncited_sentence_rate" in out
+        assert "37.5%" in out
+        assert "9/24" in out
+        assert "measured over 8 of 12 answer(s)" in out
+        assert "4 carried no prose to measure" in out
+
+    def test_nothing_measured_reads_n_a_never_a_zero_percent(self, capsys):
+        """`_pct` already refuses to render `None` as 0%, and this is the one rate where an
+        unmeasured run is NORMAL rather than exceptional — every refusal removes an answer."""
+        ask_smoke._print_attribution(self.totals(0, 12, 0, 0))
+        out = capsys.readouterr().out
+
+        assert "n/a" in out
+        assert "0.0%" not in out
+        assert "0/0" in out
+        assert "measured over 0 of 12 answer(s)" in out
+
+    def test_a_measured_zero_is_rendered_as_a_percentage_not_as_n_a(self, capsys):
+        """The mirror of the test above, and the reason `None` and `0.0` may never trade places:
+        a run where every sentence carried a label is a real, good result."""
+        ask_smoke._print_attribution(self.totals(8, 0, 16, 0))
+        out = capsys.readouterr().out
+
+        assert "0.0%" in out
+        assert "n/a" not in out
+
+    def test_the_block_says_out_loud_that_it_is_not_the_vector(self, capsys):
+        """The claim lives in the OUTPUT, not only in a docstring: a reader pasting this block
+        into a bake-off comparison must not take it for an ADR 0023 rate."""
+        ask_smoke._print_attribution(self.totals(8, 4, 24, 9))
+        out = capsys.readouterr().out
+
+        assert "never enforced" in out
+        assert "NOT part of the ADR 0023 vector" in out
+        assert "CRUDE" in out
+        assert "ADR 0015" in out and "ADR 0014" in out
+
+    def test_the_coverage_line_prints_even_when_nothing_is_short(self, capsys):
+        """UNCONDITIONAL, unlike the retrieval-shortfall line it sits below. For retrieval a
+        shortfall is an anomaly worth flagging; here it is the NORM, so a conditional line would
+        fire on nearly every run and mean nothing while an unconditional one keeps the denominator
+        on screen."""
+        ask_smoke._print_attribution(self.totals(8, 0, 16, 4))
+        out = capsys.readouterr().out
+
+        assert "measured over 8 of 8 answer(s)" in out
+        assert "0 carried no prose to measure" in out
+
+    def test_no_line_carries_trailing_whitespace(self, capsys):
+        ask_smoke._print_attribution(self.totals(8, 4, 24, 9))
+        out = capsys.readouterr().out
+
+        assert not any(line.rstrip() != line for line in out.splitlines())
+
+    def test_verbose_annotates_each_sentence_and_prints_the_tail(self, capsys):
+        """The per-answer block: which sentences carried a label, and the probe's own summary
+        line. `sentences=4 uncited=3 labels_used=[S1][S3]` is what issue #66's body printed."""
+        from gct.grounder.answer import GrounderState
+
+        result = grounder_result(GrounderState.GROUNDED, MIXED_PROSE, [])
+
+        ask_smoke._print_verbose(result)
+        out = capsys.readouterr().out
+
+        assert "attribution (crude sentence split — telemetry, not a verdict):" in out
+        assert "[CITED  ] Cited one [S1]." in out
+        assert "[UNCITED] Uncited one." in out
+        assert "sentences=2  uncited=1  rate= 50.0%  labels_used=[S1]" in out
+
+    def test_verbose_reports_no_labels_as_a_word_never_an_empty_field(self, capsys):
+        from gct.grounder.answer import GrounderState
+
+        ask_smoke._print_verbose(grounder_result(GrounderState.GROUNDED, UNCITED_PROSE, []))
+        out = capsys.readouterr().out
+
+        assert "labels_used=(none)" in out
+        assert "rate=100.0%" in out
+
+    def test_no_prose_prints_no_attribution_block_and_never_the_word_none(self, capsys):
+        """REFUSAL and ERROR carry no prose by contract, and `measure_attribution` returns `None`
+        on exactly those rows. An empty labelled block, or a literal "None", would read as
+        something the model wrote."""
+        from gct.grounder.answer import GrounderState
+
+        result = grounder_result(GrounderState.REFUSAL, None, ["nothing on quantum chromodynamics"])
+
+        ask_smoke._print_verbose(result)
+        out = capsys.readouterr().out
+
+        assert "attribution" not in out
+        assert "sentences=" not in out
+        assert "None" not in out
+
+    def test_a_very_long_sentence_is_flattened_but_never_clipped(self, capsys):
+        """`_clip` is not used here, deliberately. A fused heading-plus-bullets "sentence" is the
+        misfire the block exists to make visible, and clipping it would hide exactly that — while
+        flattening keeps the one-line-per-sentence layout readable. The existing `--verbose` test
+        already asserts no `...` anywhere in this output."""
+        from gct.grounder.answer import GrounderState
+
+        long_sentence = "The earth is " + "x" * 220 + " a woman [S1]."
+        result = grounder_result(GrounderState.GROUNDED, f"Heading\n- bullet\n{long_sentence}", [])
+
+        ask_smoke._print_verbose(result)
+        out = capsys.readouterr().out
+
+        assert "x" * 220 in out
+        assert "..." not in out
+        assert not any(line.rstrip() != line for line in out.splitlines())
+        # Heading + bullet + the long sentence FUSE: no terminator before the newlines.
+        assert "[CITED  ] Heading - bullet The earth is" in out
+        assert "sentences=1" in out
+
+
+class TestAttributionWiring:
+    """Driven through the real `main()` — the unit tests above cannot notice it never being called.
+
+    (That is not hypothetical: PR #63's review mutation-checked the same gap for `--verbose`, and
+    deleting the call left every unit test green.) Same fakes as `TestMainWiring`: no provider, no
+    Postgres, no spend.
+    """
+
+    QUESTIONS = TestMainWiring.QUESTIONS
+    _drive = TestMainWiring._drive
+    _FakeConn = TestMainWiring._FakeConn
+
+    ALL_UNCITED = {
+        "q001": ("GROUNDED", UNCITED_PROSE, []),
+        "q005": ("GROUNDED", UNCITED_PROSE, []),
+        "q009": ("REFUSAL", None, ["nothing on this"]),
+    }
+
+    def _states(self, table):
+        from gct.grounder.answer import GrounderState
+
+        return {
+            qid: (GrounderState[name], prose, gaps) for qid, (name, prose, gaps) in table.items()
+        }
+
+    def test_the_rate_prints_between_the_health_line_and_the_gate(
+        self, monkeypatch, tmp_path, capsys
+    ):
+        """Order asserted as an index chain over ONE buffer, the pattern `--verbose`'s own wiring
+        test uses: a two-capture comparison would build the expected order itself and could not
+        see a reordering."""
+        rc = self._drive(monkeypatch, tmp_path, [])
+        out = capsys.readouterr().out
+
+        assert rc == ask_smoke.EXIT_OK
+        assert (
+            out.index("error_count") < out.index("uncited_sentence_rate") < out.index("exit gate")
+        )
+
+    def test_every_adr_0023_rate_still_prints_in_the_same_order(
+        self, monkeypatch, tmp_path, capsys
+    ):
+        """The vector block is untouched: `_print_summary`'s body is byte-identical and the new
+        block is a separate function called after it."""
+        self._drive(monkeypatch, tmp_path, [])
+        out = capsys.readouterr().out
+
+        labels = [
+            "grounded_pass_rate",
+            "partial_rate",
+            "false_refusal_rate",
+            "integrity_flag_rate",
+            "correct_refusal_rate",
+            "hallucination_rate",
+            "refuse_integrity_flag_rate",
+            "retrieval_hit_rate",
+            "error_count / error_rate",
+        ]
+        positions = [out.index(label) for label in labels]
+
+        assert positions == sorted(positions)
+        assert out.index(labels[-1]) < out.index("uncited_sentence_rate")
+
+    def test_a_wholly_unattributed_run_still_passes_the_gate(self, monkeypatch, tmp_path, capsys):
+        """THE LOAD-BEARING TEST for issue #66's acceptance criterion: "no answer's state changes
+        because of it". Every in-corpus answer here is 100% uncited — the worst possible reading of
+        this diagnostic — and the run still exits 0, still prints PASS, and every question line
+        still reads GROUNDED / outcome=PASS. The rate reports 100.0% beside a passing gate, which
+        is exactly what "reported, never enforced" has to look like."""
+        rc = self._drive(monkeypatch, tmp_path, [], states=self._states(self.ALL_UNCITED))
+        out = capsys.readouterr().out
+
+        assert rc == ask_smoke.EXIT_OK
+        assert "PASS — exit gate" in out
+        assert "100.0%" in out and "4/4" in out
+        assert "measured over 2 of 3 answer(s)" in out
+        for qid in ("q001", "q005"):
+            line = next(ln for ln in out.splitlines() if ln.strip().startswith(qid))
+            assert "GROUNDED" in line and "outcome=PASS" in line
+
+    def test_an_all_refusal_run_reports_n_a_and_zero_measured(self, monkeypatch, tmp_path, capsys):
+        """A run that measured nothing must say so. `0.0%` here would claim the bench looked at
+        every sentence and found them all cited."""
+        table = {
+            "q001": ("REFUSAL", None, ["nothing"]),
+            "q005": ("REFUSAL", None, ["nothing"]),
+            "q009": ("REFUSAL", None, ["nothing"]),
+        }
+        rc = self._drive(monkeypatch, tmp_path, [], states=self._states(table))
+        out = capsys.readouterr().out
+
+        assert rc == ask_smoke.EXIT_GATE_FAILED  # no in-corpus GROUNDED — the gate's own verdict
+        block = out[out.index("attribution telemetry") :]
+        assert "n/a" in block
+        assert "0.0%" not in block
+        assert "measured over 0 of 3 answer(s)" in block
+
+    def test_an_errored_answer_contributes_no_sentences(self, monkeypatch, tmp_path, capsys):
+        """An ERROR generated nothing, so it is UNMEASURED rather than perfectly attributed — the
+        same line `EvalMetrics` draws by excluding ERROR from N_scored, one layer down. The counts
+        must come from the two answers that produced prose and from nothing else."""
+        table = {
+            "q001": ("GROUNDED", CITED_PROSE, []),  # 3 sentences, 0 uncited
+            "q005": ("ERROR", None, []),
+            "q009": ("REFUSAL", None, ["nothing on this"]),
+        }
+        self._drive(monkeypatch, tmp_path, [], states=self._states(table))
+        out = capsys.readouterr().out
+
+        assert "measured over 1 of 3 answer(s)" in out
+        assert "2 carried no prose to measure" in out
+        assert "0/3" in out  # 0 uncited of 3 sentences — the ERROR added neither
+
+    def test_only_suppresses_the_pooled_rate(self, monkeypatch, tmp_path, capsys):
+        """Suppressed for the same reason the vector is: a rate pooled over hand-picked answers is
+        not comparable to a full-suite run."""
+        rc = self._drive(monkeypatch, tmp_path, ["--only", "q005"])
+        out = capsys.readouterr().out
+
+        assert rc == ask_smoke.EXIT_OK
+        assert "attribution telemetry" not in out
+        assert "No pooled uncited_sentence_rate" in out
+
+    def test_only_with_verbose_still_prints_the_per_answer_block(
+        self, monkeypatch, tmp_path, capsys
+    ):
+        """The per-answer readout is a PROBE output, not an aggregate, so it cannot mislead about
+        coverage — and suppressing it would make `--only q008 --verbose` unable to reproduce the
+        probe this whole issue was filed on."""
+        rc = self._drive(monkeypatch, tmp_path, ["--only", "q005", "--verbose"])
+        out = capsys.readouterr().out
+
+        assert rc == ask_smoke.EXIT_OK
+        assert "attribution telemetry" not in out  # the aggregate stays suppressed
+        assert "attribution (crude sentence split" in out
+        assert "sentences=1" in out
+
+    def test_a_default_run_prints_no_per_answer_block(self, monkeypatch, tmp_path, capsys):
+        """`--verbose` off is still the default: the per-answer annotation rides that flag, and a
+        default run's per-question lines are unchanged."""
+        self._drive(monkeypatch, tmp_path, [])
+        out = capsys.readouterr().out
+
+        assert "crude sentence split" not in out
+        assert "attribution telemetry" in out  # the pooled block is not flag-gated

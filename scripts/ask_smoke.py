@@ -8,8 +8,10 @@ crude bench Spike Pass 1 ranks on, not a release gate (ADR 0023 §5).
 
 A THIN peer caller (ADR 0009): this script wires providers, converges the corpus, loops, and
 prints. Every METRIC it reports is computed in `gct` — the scoring table is `gct.eval.scoring`,
-the five states are the Grounder's, the retrieval check is `retrieval_hit`. If you find yourself
-adding a scoring rule here, it belongs one layer down, where V3 can execute the same definition.
+the five states are the Grounder's, the retrieval check is `retrieval_hit`, the rank/margin are
+`expected_placement`, and the sentence split behind `uncited_sentence_rate` is
+`measure_attribution`. If you find yourself adding a scoring rule here, it belongs one layer down,
+where V3 can execute the same definition.
 
 "Metric", not "judgment", and the narrowing is deliberate: the exit GATE below is computed here,
 on purpose. It is issue #8's one-time acceptance ceremony, not an ADR 0023 measurement, and V3
@@ -22,10 +24,20 @@ Run (needs a migrated DB, `.env` secrets, and the corpus files present — this 
     uv run python scripts/ask_smoke.py
     uv run python scripts/ask_smoke.py --suite smoke --k 5
     uv run python scripts/ask_smoke.py --only q005 --verbose    # a probe, not a bench run
+    uv run python scripts/ask_smoke.py --only q005 --show-retrieved   # why it scored that way
     uv run python scripts/ask_smoke.py --chunk-size 400 --chunk-overlap 60 --owner nate-400-60
 
-`--only` re-asks a hand-picked subset cheaply (issue #60's generation probe) and `--verbose`
-prints what the model actually wrote. Neither changes what a default run prints. Cheap assumes
+`--only` re-asks a hand-picked subset cheaply (issue #60's generation probe), `--verbose` prints
+what the model actually wrote — annotated per sentence with whether it carried an `[S#]` label
+(issue #66's attribution probe) — and `--show-retrieved` prints the top-k that was retrieved with
+the expected source's rank and margin (issue #67's retrieval probe — the other, unconflated signal:
+ADR 0023 §1's `hit` is an ANY-MATCH rule, so `hit=yes` says nothing about what outranked the
+expected chunk). All three FLAGS are strictly additive: none changes what a default run prints, and
+a default run's bytes are unchanged by any of them. Read that as the claim it is — it is about the
+flags, not about the whole script. Issue #66's POOLED attribution block is not flag-gated at all:
+`_print_attribution` runs on every full run, beside the rate vector, and does change a default
+run's bytes relative to the run before #66. Only the per-sentence annotation rides `--verbose`.
+Cheap assumes
 the owner already HAS a converged corpus: convergence walks the corpus dir, never the question
 list, so under a fresh `--owner` even `--only q005` pays the full ingest first.
 
@@ -54,9 +66,15 @@ from gct.config import load_settings
 from gct.db import connect
 from gct.eval.questions import EXPECTATION_ANSWER, EXPECTATION_REFUSE, EvalQuestion, load_questions
 from gct.eval.scoring import (
+    AnswerAttribution,
+    AttributionTotals,
     EvalMetrics,
     EvalRecord,
+    ExpectedPlacement,
+    aggregate_attribution,
     compute_metrics,
+    expected_placement,
+    measure_attribution,
     retrieval_hit,
     score_state,
 )
@@ -65,7 +83,7 @@ from gct.ingest.chunk import CHUNK_OVERLAP_WORDS, CHUNK_SIZE_WORDS
 from gct.ingest.pipeline import ingest_file
 from gct.providers.base import Embeddings
 from gct.providers.openai_provider import OpenAIEmbeddings, OpenAIGeneration
-from gct.retriever.retrieve import DEFAULT_K
+from gct.retriever.retrieve import DEFAULT_K, RetrievedChunk
 
 DEFAULT_OWNER = "nate-dogfood"
 DEFAULT_CORPUS_DIR = "data/dogfood/religion"
@@ -458,22 +476,163 @@ def _print_question_line(question: EvalQuestion, result: AskResult, record: Eval
     )
 
 
+def _retrieved_row(rank: int, chunk: RetrievedChunk, expected: bool) -> str:
+    """One row of the `--show-retrieved` table: rank, score, provenance, expected marker.
+
+    FILENAMES ARE NEVER CLIPPED, unlike the gap and error text on the summary line, which
+    `_detail` clips at 80 chars. The file+page pair IS the payload here: it is the exact pair
+    `retrieval_hit` compares and the exact pair a citation names, so a truncated
+    `Lecture 20 Evolutionist-Crea...` would defeat the only purpose the block has — telling the
+    reader WHICH slide outranked which. A long name is allowed to make the line wide; clipping it
+    would make the line wrong.
+
+    Scores print at 4 decimals to match `eval/FINDINGS.md`, so a row pasted from a run is directly
+    comparable with the measurements recorded there.
+    """
+    marker = "   <-- expected" if expected else ""
+    return f"          {rank:>4}  {chunk.score:.4f}  {chunk.file} p.{chunk.page_or_slide}{marker}"
+
+
+def _placement_line(placement: ExpectedPlacement | None) -> str:
+    """The sentence `hit=yes` structurally cannot say: where the expected source landed.
+
+    Every MEASURED figure in it comes from `expected_placement` (ADR 0009); the only arithmetic
+    here is `rank + 1`, which names the row the margin was measured against rather than measuring
+    anything. The three `None`-shaped cases are deliberately worded so a reader cannot confuse
+    them, because they are three different facts:
+
+      - `placement is None` — the row is out-of-corpus and carries no `expected_sources` at all,
+        so there is NOTHING TO LOOK FOR (ADR 0021 §3). Not a miss.
+      - `not placement.found` — we looked at the whole top-k and it was not there. A measured
+        miss, and it prints NO margin number: there is no rank to have a margin from, and a `0.0`
+        there would be a figure nobody measured.
+      - `placement.margin is None` — found, at the last row, so nothing ranks below it. Also not
+        `0.0`, for the reason `_pct` gives about rates: a computed zero must never look like a
+        measurement that was never made. `+0.0000` is reserved for the tie, where it IS one.
+    """
+    if placement is None:
+        return (
+            "          expected source: n/a — an out-of-corpus row carries no expected_sources "
+            "(ADR 0021 §3)"
+        )
+    if not placement.found:
+        return (
+            f"          expected source: ABSENT from the top-{placement.total} — "
+            "no rank, no margin (hit=no)"
+        )
+
+    rank = placement.rank
+    # Extras are NAMED, never summarised away. A bare "rank 2" on a source that also sits at rank
+    # 4 hides composition, which is the exact failure this whole block exists to fix.
+    extras = placement.ranks[1:]
+    if len(extras) == 1:
+        also = f" (also at rank {extras[0]})"
+    elif extras:
+        also = f" (also at ranks {', '.join(str(r) for r in extras)})"
+    else:
+        also = ""
+
+    if placement.margin is None:
+        tail = "margin n/a (last row — nothing ranked below it)"
+    elif placement.margin == 0.0:
+        # A MEASURED zero, and the note says what it means: `retrieve()` orders by distance with
+        # no tiebreak, so which of two tied rows came first is arbitrary and may swap between runs.
+        tail = (
+            f"margin over rank {rank + 1} = {placement.margin:+.4f} "
+            "(tied — the rank boundary here is arbitrary)"
+        )
+    else:
+        # Signed, never clamped: a negative margin means the list was handed to us out of score
+        # order, which is an upstream contract violation worth seeing rather than smoothing.
+        tail = f"margin over rank {rank + 1} = {placement.margin:+.4f}"
+
+    return f"          expected source: rank {rank} of {placement.total}{also}, {tail}"
+
+
+def _print_retrieved(question: EvalQuestion, result: AskResult) -> None:
+    """`--show-retrieved` (issue #67): the top-k this answer was actually built from.
+
+    STRICTLY ADDITIVE — the same bargain `_print_verbose` makes, and for the same reason: it
+    prints AFTER `_print_question_line` and touches nothing above, so a default run's output stays
+    byte-identical and a probe run can be diffed against the run it is probing.
+
+    WHY THIS EXISTS. `retrieval_hit` is an ANY-MATCH membership rule (ADR 0023 §1), so `hit=yes`
+    says the expected chunk is SOMEWHERE in the top-k and nothing about what outranks it. q005
+    scored a clean `hit=yes` off a top-5 whose other four blocks were a different author arguing
+    the opposite case (`eval/FINDINGS.md`, 2026-08-01) — a fact that took a separate hand-written
+    probe to discover. This is that probe, kept.
+
+    NO METRIC IS COMPUTED HERE (ADR 0009). Margin and the multi-position list are all
+    `expected_placement`'s, one layer down where V3 executes the same definition. What this
+    function does compute is presentation: the top-k size, and the display rank per row, which it
+    enumerates OFF THE HANDED ORDER — a re-sort here would print a rank the Grounder never saw and
+    move the marker onto the wrong row, so a test pins that order.
+
+    Two shapes print no table at all, and the distinction between them is the same one
+    `AskResult.retrieval_ran` exists to carry:
+      - retrieval never ran (the two retrieval-side ERROR paths) — there is no top-k to print, and
+        fabricating one, even an empty one, would report a measurement that never happened. This
+        mirrors how the summary line already suppresses `hit` to `n/a` on those rows.
+      - retrieval ran and returned nothing — an empty or un-ingested class (retriever.md), which
+        is a MEASURED miss, said in those words rather than as "nothing matched".
+
+    An out-of-corpus row still gets its table. Its composition is exactly `FINDINGS.md`'s
+    "attractor slides" observation, and printing it is free.
+    """
+    if not result.retrieval_ran:
+        print(
+            "        retrieved: retrieval never ran (retrieval-side ERROR) — no top-k exists "
+            "to print"
+        )
+        return
+
+    if not result.retrieved:
+        print(
+            '        retrieved 0 chunks — an empty/un-ingested class, never "nothing matched" '
+            "(retriever.md)"
+        )
+        return
+
+    placement = expected_placement(question.expected_sources, result.retrieved)
+    # EVERY matching row is marked, not just the best one — a single marker on a source that
+    # appears twice would say the top-k contained it once.
+    marked = set(placement.ranks) if placement is not None else set()
+
+    total = len(result.retrieved)
+    print(f"        retrieved top-{total}:")
+    print("          rank   score  source")
+    for rank, chunk in enumerate(result.retrieved, start=1):
+        print(_retrieved_row(rank, chunk, rank in marked))
+    print(_placement_line(placement))
+
+
 def _print_verbose(result: GrounderResult) -> None:
-    """`--verbose`: the two fields the one-line scan format structurally cannot carry.
+    """`--verbose`: the fields the one-line scan format structurally cannot carry.
 
     STRICTLY ADDITIVE, and that is the requirement rather than a nicety: it prints AFTER
     `_print_question_line` and touches nothing above, so a default run's output stays
     byte-identical and a probe run can be diffed against the run it is probing.
 
-    The two chosen fields are the ones a generation probe (issue #60) is actually looking at.
+    The first two are the ones a generation probe (issue #60) is actually looking at.
     `answer_prose` is never printed anywhere else — `_detail` reports citations, gaps, integrity
     or error, never the prose the model wrote. And gaps reach the summary line only on REFUSAL,
     clipped at 80 chars by `_clip` — on PARTIAL, `_detail`'s citations branch wins and the gaps
     do not appear there at all; the gap WORDING is the evidence compared across repeated asks,
     so this is the one place it prints whole.
 
+    The third is issue #66's per-sentence ATTRIBUTION, printed between them because that is what
+    it annotates: which sentences of the prose above carried an `[S#]` label, and which are the
+    ones that escaped both halves of ADR 0014's rule (labelled, or declared in the gaps below).
+
+    NO DEDICATED FLAG for it, and the rejection is worth recording: a `--show-attribution`
+    symmetric with `--show-retrieved` would print the same sentences twice whenever both flags
+    were on, because this block IS an annotation of the prose block `--verbose` already prints.
+    `--show-retrieved` earns its own flag for the opposite reason — it prints something
+    `--verbose` does not contain (ADR 0023 §1's other, unconflated signal).
+
     No prose means no block — not an empty one and not the string "None". REFUSAL and ERROR carry
-    no prose by contract (`GrounderResult`), so on a refusal-heavy run this prints the gaps alone.
+    no prose by contract (`GrounderResult`), so on a refusal-heavy run this prints the gaps alone,
+    and `measure_attribution` returns `None` on exactly those rows for the same reason.
     """
     # Truthiness, not `is not None`: it covers the contractual None and an empty-string prose in
     # one branch, and both mean the same thing here — there is nothing to show.
@@ -483,6 +642,31 @@ def _print_verbose(result: GrounderResult) -> None:
             # `rstrip` so a blank paragraph break does not emit a trailing-whitespace line: this
             # output gets diffed run-against-run, and invisible whitespace is noise in that diff.
             print(f"          | {line}".rstrip())
+
+    # Computed HERE rather than threaded in, and computing it twice per answer (once in `main`'s
+    # loop for the pooled total, once here) is deliberate: ONE definition in `gct` called twice is
+    # ADR 0009's shape, while widening this signature would ripple into three existing tests for
+    # no gain. `measure_attribution` reads prose and nothing else, so this cannot disagree with
+    # the pooled figure printed below.
+    attribution = measure_attribution(result.answer_prose)
+    if attribution is not None:
+        print("        attribution (crude sentence split — telemetry, not a verdict):")
+        for sentence in attribution.sentences:
+            marker = "CITED  " if sentence.cited else "UNCITED"
+            # Flattened, never CLIPPED. A heading with no terminator FUSES into the sentence after
+            # it (`split_sentences`), so a "sentence" here can legitimately contain newlines — and
+            # clipping would hide the exact fusion this line exists to make visible. `rstrip` for
+            # the same run-against-run diff-noise reason as the prose block above.
+            print(f"          [{marker}] {' '.join(sentence.text.split())}".rstrip())
+        # The label SET, rendered in the citation spine's own vocabulary. The 2026-07-27 probe
+        # printed a Python list repr (`['[S1]', '[S3]']`); the reproduction claim is over the
+        # numbers and the set, not the byte format of a throwaway script.
+        labels = "".join(attribution.labels_used) or "(none)"
+        print(
+            f"          sentences={attribution.total}  uncited={attribution.uncited}  "
+            f"rate={_pct(attribution.uncited_sentence_rate)}  labels_used={labels}"
+        )
+
     # `coverage` is non-None on every state (see `_error` / `_empty_retrieval_refusal`), so this
     # needs no state switch — an ERROR simply carries no gaps and prints nothing.
     gaps = result.coverage.gaps
@@ -572,6 +756,47 @@ def _print_summary(metrics: EvalMetrics) -> None:
     )
 
 
+def _print_attribution(totals: AttributionTotals) -> None:
+    """Issue #66's `uncited_sentence_rate`, printed BESIDE the ADR 0023 vector — never inside it.
+
+    A SEPARATE FUNCTION, called by `main()` after `_print_summary`, on purpose: `_print_summary`'s
+    body is left byte-identical, so "the vector block did not change" is a one-line diff audit
+    rather than a claim in a PR body. The layout satisfies the issue's "printed with the rest of
+    the vector" — a contiguous block is what printed-with means — while the boundary the
+    diagnostics banner in `gct/eval/scoring.py` argues for stays structural.
+
+    NO ARITHMETIC HERE (ADR 0009). Every figure is `AttributionTotals`'; this function chooses
+    wording. `_rate_line` and `_pct` are reused unchanged, so an unmeasured run renders `n/a`
+    exactly like every other rate — never `0.0%`, which would say the bench measured every
+    sentence and found them all cited.
+
+    THE `^^` LINE PRINTS UNCONDITIONALLY, unlike the retrieval-shortfall line just above it in
+    `_print_summary`, and the divergence is deliberate. For retrieval a shortfall is an ANOMALY
+    (a retrieval-side ERROR ate a row), so a line that appears only then carries information. Here
+    a shortfall is the NORM — every honest refusal removes an answer from the denominator, and
+    this suite is a third refuse questions by design — so a conditional line would fire on nearly
+    every run and mean nothing, while an unconditional one keeps the denominator on screen where
+    a reader comparing two runs can see it moved.
+    """
+    print("  attribution telemetry (reported, never enforced — NOT part of the ADR 0023 vector):")
+    _rate_line(
+        "uncited_sentence_rate",
+        totals.uncited_sentence_rate,
+        totals.uncited,
+        totals.sentences,
+    )
+    answers = totals.answers_measured + totals.answers_unmeasured
+    print(
+        f"      ^^ measured over {totals.answers_measured} of {answers} answer(s) — "
+        f"{totals.answers_unmeasured} carried no prose to measure (REFUSAL and ERROR\n"
+        "         carry none by contract). The sentence split is CRUDE: its misfires are a "
+        "reporting\n"
+        "         artifact, not a verdict (ADR 0015 keeps per-claim presence out of the "
+        "enforcement\n"
+        "         ladder; ADR 0014 is the rule being measured)."
+    )
+
+
 def _print_filtered_notice(
     questions: list[EvalQuestion], suite_total: int, records: list[EvalRecord]
 ) -> None:
@@ -608,6 +833,14 @@ def _print_filtered_notice(
     print(
         "  No exit gate either: it needs >=1 in-corpus GROUNDED and >=1 out-of-corpus REFUSAL, "
         "which a subset need not contain."
+    )
+    # Suppressed for the SAME reason as the vector, one line up: a sentence rate pooled over a
+    # hand-picked subset is a rate over a suite that shrank. The per-answer block still prints
+    # under `--verbose` — that one is a probe readout, not an aggregate, so it cannot mislead
+    # about coverage.
+    print(
+        "  No pooled uncited_sentence_rate: the same argument — a rate over hand-picked "
+        "answers is not comparable either (--verbose still annotates each answer)."
     )
     errored = sum(1 for record in records if record.state is GrounderState.ERROR)
     if errored:
@@ -672,11 +905,31 @@ def _parse_args() -> argparse.Namespace:
         help="restrict the run to these question ids (e.g. q005,q009), applied after --suite; "
         "suppresses the rate vector and the exit gate",
     )
+    # Issue #66's per-sentence attribution rides THIS flag rather than gaining one of its own: it
+    # annotates the prose block `--verbose` already prints, so a dedicated flag (symmetric with
+    # `--show-retrieved` below) would print the same sentences twice whenever both were on. The
+    # help text names it, because a flag description that no longer describes the flag is exactly
+    # the drift CLAUDE.md's "cite ADRs, don't re-argue them" section is about.
     parser.add_argument(
         "--verbose",
         action="store_true",
-        help="also print each answer's full prose and un-truncated gap list, after its summary "
-        "line (the summary line itself is unchanged)",
+        help="also print each answer's full prose and un-truncated gap list, and its per-sentence "
+        "attribution (which sentences carried an [S#] label), after its summary line (the summary "
+        "line itself is unchanged)",
+    )
+    # Its OWN flag, not a second meaning for `--verbose`. `--verbose` is the GENERATION probe
+    # (issue #60: what the model actually wrote); this is the RETRIEVAL probe (issue #67: what it
+    # was given). ADR 0023 §1 keeps those two signals unconflated at the metric layer, and fusing
+    # their flags would re-conflate them at the reporting layer — you could not look at retrieval
+    # composition without a wall of model prose. Named for the field it prints
+    # (`AskResult.retrieved`): `--topk` was rejected as visually colliding with `--k`, which SETS
+    # k and takes a value, and `--retrieval` as ambiguous with ADR 0023's retrieval signal.
+    parser.add_argument(
+        "--show-retrieved",
+        action="store_true",
+        help="also print the retrieved top-k (rank, score, file, page/slide) per question, with "
+        "the expected source's rank and its margin over the next result (the default report is "
+        "unchanged)",
     )
     parser.add_argument(
         "--k",
@@ -892,6 +1145,13 @@ def main() -> int:
 
             print(f"\nAsking {len(questions)} question(s):")
             records: list[EvalRecord] = []
+            # A SECOND PARALLEL LIST, named here rather than hidden. `EvalRecord` deliberately
+            # cannot carry prose (its own docstring: "the minimum a metric needs, and nothing
+            # more"), so `compute_metrics` structurally cannot see attribution — which is the
+            # mechanism behind issue #66's "reported, never enforced" claim, not merely a
+            # convention. The price of that guarantee is this list, and it is one `.append` in a
+            # loop that already appends.
+            attributions: list[AnswerAttribution | None] = []
             for question in questions:
                 # NOT wrapped in try/except. A raise out of ask() is a TERMINAL provider error or
                 # our own bug (ask.py's error boundary converts exactly two retrieval-side
@@ -924,7 +1184,17 @@ def main() -> int:
                     ),
                 )
                 records.append(record)
+                # Prose, and nothing else, crosses into the attribution readout — the same
+                # narrowness `record` above has about coverage. A REFUSAL or ERROR carries no
+                # prose by contract, so this appends `None`: unmeasured, never a measured zero.
+                attributions.append(measure_attribution(result.result.answer_prose))
                 _print_question_line(question, result, record)
+                # Retrieval BEFORE generation, matching the order the pipeline actually ran in: a
+                # reader following "why did it answer that" reads the evidence it was handed, then
+                # what it wrote. Both blocks are strictly additive, so under `--verbose` alone the
+                # emitted bytes are unchanged from before this flag existed.
+                if args.show_retrieved:
+                    _print_retrieved(question, result)
                 if args.verbose:
                     _print_verbose(result.result)
 
@@ -939,6 +1209,10 @@ def main() -> int:
 
             metrics = compute_metrics(records)
             _print_summary(metrics)
+            # Beside the vector, after it, and BEFORE the gate — which is unchanged and still
+            # called with exactly `(records, metrics)`. Nothing computed on this line can reach
+            # the verdict on the next one.
+            _print_attribution(aggregate_attribution(attributions))
             return EXIT_OK if _print_gate(records, metrics) else EXIT_GATE_FAILED
 
     except SetupError as err:

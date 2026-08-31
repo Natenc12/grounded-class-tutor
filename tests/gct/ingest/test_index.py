@@ -336,13 +336,25 @@ def test_index_file_refuses_a_connection_already_in_a_transaction(db, db_other):
 # are indistinguishable there. Every test below VARIES the value, or it proves nothing.
 
 
-def _purge(conn, owner_id: str) -> None:
+def _purge(conn, owner_id: str, file_id: str | None = None) -> None:
     """Delete rows the `db` fixture's teardown cannot see.
 
     Teardown deletes by the FIXTURE's `owner_id`. A test that re-indexes into a different owner
     moves the `files` row and its chunks out of that scope, so they would survive the test and
     accumulate in the developer's database. FK order: chunks -> files -> classes.
+
+    THE `file_id` PASS IS NOT OPTIONAL POLISH - it is what makes this function correct when the
+    test it serves FAILS. Deleting the file by its new `owner_id` only reaches it if the refresh
+    actually moved it, which is the very thing under test: drop the `owner_id` refresh and the
+    `files` row stays under owner A while still pointing at owner B's class, so
+    `delete from classes where owner_id = B` raises `ForeignKeyViolation` from inside `finally`.
+    pytest then headlines the run with the FK error and the real assertion survives only as a
+    chained `__context__` - destroying the diagnostic these tests exist to give, and leaking the
+    rows besides. `file_id` is the key that does NOT move, so this holds either way.
     """
+    if file_id is not None:
+        conn.execute("delete from chunks where file_id = %s::uuid", (file_id,))
+        conn.execute("delete from files where file_id = %s::uuid", (file_id,))
     conn.execute("delete from chunks where owner_id = %s", (owner_id,))
     conn.execute("delete from files where owner_id = %s", (owner_id,))
     conn.execute("delete from classes where owner_id = %s", (owner_id,))
@@ -409,7 +421,7 @@ def test_reindex_refreshes_filename_owner_and_class_from_the_incoming_call(db, d
             "reader can recover from"
         )
     finally:
-        _purge(conn, owner_b)
+        _purge(conn, owner_b, file_id)
 
 
 @pytest.mark.parametrize("varying", ["filename", "owner_id", "class_id"])
@@ -472,7 +484,7 @@ def test_the_refreshed_files_row_and_its_chunks_never_disagree(db, db_other, var
         assert chunk_scopes == [published]
     finally:
         if varying == "owner_id":
-            _purge(conn, second["owner_id"])
+            _purge(conn, second["owner_id"], file_id)
 
 
 def test_index_file_does_not_clear_failed_reason(db, db_other):

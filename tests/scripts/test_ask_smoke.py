@@ -1192,7 +1192,8 @@ class TestShowRetrieved:
     def test_a_long_filename_is_printed_in_full(self, capsys):
         """NEVER `_clip`. The file+page pair IS the payload — it is what `retrieval_hit` compares
         and what a citation names — so a truncated `Lecture 20 Evolutionist-Crea...` would defeat
-        the block's only purpose. A wide line is the accepted cost (issue #67 §Risks)."""
+        the block's only purpose. A long name is allowed to make the line wide; clipping it would
+        make the line wrong."""
         long_name = "Lecture " + "x" * 108 + ".pptx"
         assert len(long_name) == 121
 
@@ -1200,6 +1201,23 @@ class TestShowRetrieved:
 
         assert long_name in out
         assert "..." not in out
+
+    def test_the_printed_table_keeps_the_handed_order_and_marks_the_handed_row(self, capsys):
+        """PRINTER-SIDE order-as-handed. `_print_retrieved` enumerates `result.retrieved`
+        ITSELF, so it is a second writer of "rank" alongside `expected_placement` — and a
+        re-sort here would move the marker onto a row the Grounder never ranked there.
+
+        The scores ASCEND and the expected row is handed FIRST with the LOWEST score, so a
+        "sort by score" printer reports it at rank 3 and marks the wrong line. Every other
+        test in this class hands an already-descending list, where a re-sort is a no-op.
+        """
+        rows = [(LECTURE, 2, 0.10), (LIVINGSTON, 13, 0.50), (LIVINGSTON, 13, 0.90)]
+
+        out = self._print(capsys, rows)
+
+        assert out.index("0.1000") < out.index("0.5000") < out.index("0.9000")
+        assert "0.1000  " + LECTURE + " p.2   <-- expected" in out
+        assert "expected source: rank 1 of 3, margin over rank 2 = -0.4000" in out
 
     def test_scores_print_at_four_decimals(self, capsys):
         """Four decimals, matching `eval/FINDINGS.md`, so a row pasted out of a run is directly

@@ -256,7 +256,7 @@ def expected_placement(
     MARGIN IS `score[rank] - score[rank+1]`: the expected row's score minus the row IMMEDIATELY
     BELOW it. Headroom, not deficit. ADR 0026 §2 ("Not a margin") fixes the reading - it records
     that q007's expected page "ranks first" while what ranked second was never captured, so the
-    margin was unmeasured; the deficit reading (`score[0] - score[rank]`) is undefined at rank 1,
+    margin was unmeasured; the deficit reading (`score[1] - score[rank]`) is undefined at rank 1,
     the one case that ADR wants a margin for.
 
     `None` at the last row (there is nothing below it), `0.0` on a tie. The distinction is

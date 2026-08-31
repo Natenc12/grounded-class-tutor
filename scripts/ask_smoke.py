@@ -469,12 +469,12 @@ def _print_question_line(question: EvalQuestion, result: AskResult, record: Eval
 def _retrieved_row(rank: int, chunk: RetrievedChunk, expected: bool) -> str:
     """One row of the `--show-retrieved` table: rank, score, provenance, expected marker.
 
-    FILENAMES ARE NEVER CLIPPED, unlike every other line in this report (`_detail` runs its text
-    through `_clip`). The file+page pair IS the payload here: it is the exact pair `retrieval_hit`
-    compares and the exact pair a citation names, so a truncated `Lecture 20 Evolutionist-Crea...`
-    would defeat the only purpose the block has — telling the reader WHICH slide outranked which.
-    A long name is allowed to make the line wide (issue #67 §Risks accepted that deliberately);
-    clipping it would make the line wrong.
+    FILENAMES ARE NEVER CLIPPED, unlike the gap and error text on the summary line, which
+    `_detail` clips at 80 chars. The file+page pair IS the payload here: it is the exact pair
+    `retrieval_hit` compares and the exact pair a citation names, so a truncated
+    `Lecture 20 Evolutionist-Crea...` would defeat the only purpose the block has — telling the
+    reader WHICH slide outranked which. A long name is allowed to make the line wide; clipping it
+    would make the line wrong.
 
     Scores print at 4 decimals to match `eval/FINDINGS.md`, so a row pasted from a run is directly
     comparable with the measurements recorded there.
@@ -483,12 +483,13 @@ def _retrieved_row(rank: int, chunk: RetrievedChunk, expected: bool) -> str:
     return f"          {rank:>4}  {chunk.score:.4f}  {chunk.file} p.{chunk.page_or_slide}{marker}"
 
 
-def _placement_line(placement: ExpectedPlacement | None, total: int) -> str:
+def _placement_line(placement: ExpectedPlacement | None) -> str:
     """The sentence `hit=yes` structurally cannot say: where the expected source landed.
 
-    Every FIGURE in it comes from `expected_placement` (ADR 0009 — this function does no
-    arithmetic, it chooses wording). The three `None`-shaped cases are deliberately worded so a
-    reader cannot confuse them, because they are three different facts:
+    Every MEASURED figure in it comes from `expected_placement` (ADR 0009); the only arithmetic
+    here is `rank + 1`, which names the row the margin was measured against rather than measuring
+    anything. The three `None`-shaped cases are deliberately worded so a reader cannot confuse
+    them, because they are three different facts:
 
       - `placement is None` — the row is out-of-corpus and carries no `expected_sources` at all,
         so there is NOTHING TO LOOK FOR (ADR 0021 §3). Not a miss.
@@ -506,7 +507,8 @@ def _placement_line(placement: ExpectedPlacement | None, total: int) -> str:
         )
     if not placement.found:
         return (
-            f"          expected source: ABSENT from the top-{total} — no rank, no margin (hit=no)"
+            f"          expected source: ABSENT from the top-{placement.total} — "
+            "no rank, no margin (hit=no)"
         )
 
     rank = placement.rank
@@ -550,9 +552,11 @@ def _print_retrieved(question: EvalQuestion, result: AskResult) -> None:
     the opposite case (`eval/FINDINGS.md`, 2026-08-01) — a fact that took a separate hand-written
     probe to discover. This is that probe, kept.
 
-    NO METRIC IS COMPUTED HERE (ADR 0009). Rank, margin and the multi-position list are all
-    `expected_placement`'s, one layer down where V3 executes the same definition; this function
-    formats and nothing else.
+    NO METRIC IS COMPUTED HERE (ADR 0009). Margin and the multi-position list are all
+    `expected_placement`'s, one layer down where V3 executes the same definition. What this
+    function does compute is presentation: the top-k size, and the display rank per row, which it
+    enumerates OFF THE HANDED ORDER — a re-sort here would print a rank the Grounder never saw and
+    move the marker onto the wrong row, so a test pins that order.
 
     Two shapes print no table at all, and the distinction between them is the same one
     `AskResult.retrieval_ran` exists to carry:
@@ -589,7 +593,7 @@ def _print_retrieved(question: EvalQuestion, result: AskResult) -> None:
     print("          rank   score  source")
     for rank, chunk in enumerate(result.retrieved, start=1):
         print(_retrieved_row(rank, chunk, rank in marked))
-    print(_placement_line(placement, total))
+    print(_placement_line(placement))
 
 
 def _print_verbose(result: GrounderResult) -> None:

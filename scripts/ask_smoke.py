@@ -8,8 +8,9 @@ crude bench Spike Pass 1 ranks on, not a release gate (ADR 0023 §5).
 
 A THIN peer caller (ADR 0009): this script wires providers, converges the corpus, loops, and
 prints. Every METRIC it reports is computed in `gct` — the scoring table is `gct.eval.scoring`,
-the five states are the Grounder's, the retrieval check is `retrieval_hit`. If you find yourself
-adding a scoring rule here, it belongs one layer down, where V3 can execute the same definition.
+the five states are the Grounder's, the retrieval check is `retrieval_hit`, the rank/margin are
+`expected_placement`. If you find yourself adding a scoring rule here, it belongs one layer down,
+where V3 can execute the same definition.
 
 "Metric", not "judgment", and the narrowing is deliberate: the exit GATE below is computed here,
 on purpose. It is issue #8's one-time acceptance ceremony, not an ADR 0023 measurement, and V3
@@ -22,10 +23,15 @@ Run (needs a migrated DB, `.env` secrets, and the corpus files present — this 
     uv run python scripts/ask_smoke.py
     uv run python scripts/ask_smoke.py --suite smoke --k 5
     uv run python scripts/ask_smoke.py --only q005 --verbose    # a probe, not a bench run
+    uv run python scripts/ask_smoke.py --only q005 --show-retrieved   # why it scored that way
     uv run python scripts/ask_smoke.py --chunk-size 400 --chunk-overlap 60 --owner nate-400-60
 
-`--only` re-asks a hand-picked subset cheaply (issue #60's generation probe) and `--verbose`
-prints what the model actually wrote. Neither changes what a default run prints. Cheap assumes
+`--only` re-asks a hand-picked subset cheaply (issue #60's generation probe), `--verbose` prints
+what the model actually wrote, and `--show-retrieved` prints the top-k that was retrieved with the
+expected source's rank and margin (issue #67's retrieval probe — the other, unconflated signal:
+ADR 0023 §1's `hit` is an ANY-MATCH rule, so `hit=yes` says nothing about what outranked the
+expected chunk). All three are strictly additive: none changes what a default run prints, and a
+default run's bytes are unchanged. Cheap assumes
 the owner already HAS a converged corpus: convergence walks the corpus dir, never the question
 list, so under a fresh `--owner` even `--only q005` pays the full ingest first.
 
@@ -56,7 +62,9 @@ from gct.eval.questions import EXPECTATION_ANSWER, EXPECTATION_REFUSE, EvalQuest
 from gct.eval.scoring import (
     EvalMetrics,
     EvalRecord,
+    ExpectedPlacement,
     compute_metrics,
+    expected_placement,
     retrieval_hit,
     score_state,
 )
@@ -65,7 +73,7 @@ from gct.ingest.chunk import CHUNK_OVERLAP_WORDS, CHUNK_SIZE_WORDS
 from gct.ingest.pipeline import ingest_file
 from gct.providers.base import Embeddings
 from gct.providers.openai_provider import OpenAIEmbeddings, OpenAIGeneration
-from gct.retriever.retrieve import DEFAULT_K
+from gct.retriever.retrieve import DEFAULT_K, RetrievedChunk
 
 DEFAULT_OWNER = "nate-dogfood"
 DEFAULT_CORPUS_DIR = "data/dogfood/religion"
@@ -458,6 +466,132 @@ def _print_question_line(question: EvalQuestion, result: AskResult, record: Eval
     )
 
 
+def _retrieved_row(rank: int, chunk: RetrievedChunk, expected: bool) -> str:
+    """One row of the `--show-retrieved` table: rank, score, provenance, expected marker.
+
+    FILENAMES ARE NEVER CLIPPED, unlike every other line in this report (`_detail` runs its text
+    through `_clip`). The file+page pair IS the payload here: it is the exact pair `retrieval_hit`
+    compares and the exact pair a citation names, so a truncated `Lecture 20 Evolutionist-Crea...`
+    would defeat the only purpose the block has — telling the reader WHICH slide outranked which.
+    A long name is allowed to make the line wide (issue #67 §Risks accepted that deliberately);
+    clipping it would make the line wrong.
+
+    Scores print at 4 decimals to match `eval/FINDINGS.md`, so a row pasted from a run is directly
+    comparable with the measurements recorded there.
+    """
+    marker = "   <-- expected" if expected else ""
+    return f"          {rank:>4}  {chunk.score:.4f}  {chunk.file} p.{chunk.page_or_slide}{marker}"
+
+
+def _placement_line(placement: ExpectedPlacement | None, total: int) -> str:
+    """The sentence `hit=yes` structurally cannot say: where the expected source landed.
+
+    Every FIGURE in it comes from `expected_placement` (ADR 0009 — this function does no
+    arithmetic, it chooses wording). The three `None`-shaped cases are deliberately worded so a
+    reader cannot confuse them, because they are three different facts:
+
+      - `placement is None` — the row is out-of-corpus and carries no `expected_sources` at all,
+        so there is NOTHING TO LOOK FOR (ADR 0021 §3). Not a miss.
+      - `not placement.found` — we looked at the whole top-k and it was not there. A measured
+        miss, and it prints NO margin number: there is no rank to have a margin from, and a `0.0`
+        there would be a figure nobody measured.
+      - `placement.margin is None` — found, at the last row, so nothing ranks below it. Also not
+        `0.0`, for the reason `_pct` gives about rates: a computed zero must never look like a
+        measurement that was never made. `+0.0000` is reserved for the tie, where it IS one.
+    """
+    if placement is None:
+        return (
+            "          expected source: n/a — an out-of-corpus row carries no expected_sources "
+            "(ADR 0021 §3)"
+        )
+    if not placement.found:
+        return (
+            f"          expected source: ABSENT from the top-{total} — no rank, no margin (hit=no)"
+        )
+
+    rank = placement.rank
+    # Extras are NAMED, never summarised away. A bare "rank 2" on a source that also sits at rank
+    # 4 hides composition, which is the exact failure this whole block exists to fix.
+    extras = placement.ranks[1:]
+    if len(extras) == 1:
+        also = f" (also at rank {extras[0]})"
+    elif extras:
+        also = f" (also at ranks {', '.join(str(r) for r in extras)})"
+    else:
+        also = ""
+
+    if placement.margin is None:
+        tail = "margin n/a (last row — nothing ranked below it)"
+    elif placement.margin == 0.0:
+        # A MEASURED zero, and the note says what it means: `retrieve()` orders by distance with
+        # no tiebreak, so which of two tied rows came first is arbitrary and may swap between runs.
+        tail = (
+            f"margin over rank {rank + 1} = {placement.margin:+.4f} "
+            "(tied — the rank boundary here is arbitrary)"
+        )
+    else:
+        # Signed, never clamped: a negative margin means the list was handed to us out of score
+        # order, which is an upstream contract violation worth seeing rather than smoothing.
+        tail = f"margin over rank {rank + 1} = {placement.margin:+.4f}"
+
+    return f"          expected source: rank {rank} of {placement.total}{also}, {tail}"
+
+
+def _print_retrieved(question: EvalQuestion, result: AskResult) -> None:
+    """`--show-retrieved` (issue #67): the top-k this answer was actually built from.
+
+    STRICTLY ADDITIVE — the same bargain `_print_verbose` makes, and for the same reason: it
+    prints AFTER `_print_question_line` and touches nothing above, so a default run's output stays
+    byte-identical and a probe run can be diffed against the run it is probing.
+
+    WHY THIS EXISTS. `retrieval_hit` is an ANY-MATCH membership rule (ADR 0023 §1), so `hit=yes`
+    says the expected chunk is SOMEWHERE in the top-k and nothing about what outranks it. q005
+    scored a clean `hit=yes` off a top-5 whose other four blocks were a different author arguing
+    the opposite case (`eval/FINDINGS.md`, 2026-08-01) — a fact that took a separate hand-written
+    probe to discover. This is that probe, kept.
+
+    NO METRIC IS COMPUTED HERE (ADR 0009). Rank, margin and the multi-position list are all
+    `expected_placement`'s, one layer down where V3 executes the same definition; this function
+    formats and nothing else.
+
+    Two shapes print no table at all, and the distinction between them is the same one
+    `AskResult.retrieval_ran` exists to carry:
+      - retrieval never ran (the two retrieval-side ERROR paths) — there is no top-k to print, and
+        fabricating one, even an empty one, would report a measurement that never happened. This
+        mirrors how the summary line already suppresses `hit` to `n/a` on those rows.
+      - retrieval ran and returned nothing — an empty or un-ingested class (retriever.md), which
+        is a MEASURED miss, said in those words rather than as "nothing matched".
+
+    An out-of-corpus row still gets its table. Its composition is exactly `FINDINGS.md`'s
+    "attractor slides" observation, and printing it is free.
+    """
+    if not result.retrieval_ran:
+        print(
+            "        retrieved: retrieval never ran (retrieval-side ERROR) — no top-k exists "
+            "to print"
+        )
+        return
+
+    if not result.retrieved:
+        print(
+            '        retrieved 0 chunks — an empty/un-ingested class, never "nothing matched" '
+            "(retriever.md)"
+        )
+        return
+
+    placement = expected_placement(question.expected_sources, result.retrieved)
+    # EVERY matching row is marked, not just the best one — a single marker on a source that
+    # appears twice would say the top-k contained it once.
+    marked = set(placement.ranks) if placement is not None else set()
+
+    total = len(result.retrieved)
+    print(f"        retrieved top-{total}:")
+    print("          rank   score  source")
+    for rank, chunk in enumerate(result.retrieved, start=1):
+        print(_retrieved_row(rank, chunk, rank in marked))
+    print(_placement_line(placement, total))
+
+
 def _print_verbose(result: GrounderResult) -> None:
     """`--verbose`: the two fields the one-line scan format structurally cannot carry.
 
@@ -677,6 +811,20 @@ def _parse_args() -> argparse.Namespace:
         action="store_true",
         help="also print each answer's full prose and un-truncated gap list, after its summary "
         "line (the summary line itself is unchanged)",
+    )
+    # Its OWN flag, not a second meaning for `--verbose`. `--verbose` is the GENERATION probe
+    # (issue #60: what the model actually wrote); this is the RETRIEVAL probe (issue #67: what it
+    # was given). ADR 0023 §1 keeps those two signals unconflated at the metric layer, and fusing
+    # their flags would re-conflate them at the reporting layer — you could not look at retrieval
+    # composition without a wall of model prose. Named for the field it prints
+    # (`AskResult.retrieved`): `--topk` was rejected as visually colliding with `--k`, which SETS
+    # k and takes a value, and `--retrieval` as ambiguous with ADR 0023's retrieval signal.
+    parser.add_argument(
+        "--show-retrieved",
+        action="store_true",
+        help="also print the retrieved top-k (rank, score, file, page/slide) per question, with "
+        "the expected source's rank and its margin over the next result (the default report is "
+        "unchanged)",
     )
     parser.add_argument(
         "--k",
@@ -925,6 +1073,12 @@ def main() -> int:
                 )
                 records.append(record)
                 _print_question_line(question, result, record)
+                # Retrieval BEFORE generation, matching the order the pipeline actually ran in: a
+                # reader following "why did it answer that" reads the evidence it was handed, then
+                # what it wrote. Both blocks are strictly additive, so under `--verbose` alone the
+                # emitted bytes are unchanged from before this flag existed.
+                if args.show_retrieved:
+                    _print_retrieved(question, result)
                 if args.verbose:
                     _print_verbose(result.result)
 

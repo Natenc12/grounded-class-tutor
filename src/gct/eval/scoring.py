@@ -26,6 +26,18 @@ What this is NOT (ADR 0023 §5, recorded against erosion): a release gate, a qua
 an approximation of V3. It is a crude bench for RANKING bake-offs. A good `grounded_pass_rate`
 means one spike beat another on this suite - never that the system is faithful (V1 checks
 structure, not entailment; ADR 0014).
+
+ONE thing here is NOT a metric: `expected_placement` (issue #67). It is a DIAGNOSTIC - the rank
+and margin behind a single `hit`. It joins no rate, enters no record, and aggregates over
+nothing, so ADR 0023 §3's vector is exactly what it was. It lives here anyway, for the reason
+directly above: rank and margin are facts about a `RetrievedChunk[]` list, with three genuine
+definitional choices apiece (see the function), and computing them in a runner would be the
+second copy this module exists to not have. REJECTED ALTERNATIVE, recorded because nothing else
+carries it: compute them inline in `scripts/ask_smoke.py`'s printer. It is a cheaper diff and
+matches issue #67's own `Touches:` line, and nothing in V1 would ever notice the divergence -
+which is precisely the failure mode ADR 0017 (clamped per ADR 0024) names about its own seam:
+load-bearing exactly because nothing in V1 reads it, so a wrong choice hides until V3. It is also
+why the runner's own docstring says a scoring rule found there "belongs one layer down".
 """
 
 from __future__ import annotations
@@ -160,8 +172,135 @@ def retrieval_hit(
     # mapping step. Chunk ids are NOT compared: the eval file names a page a human can verify,
     # and chunk ids are re-minted by every re-ingest, so a chunk-id rule would go stale the first
     # time the corpus was re-indexed with unchanged content.
-    found = {(chunk.file, chunk.page_or_slide) for chunk in retrieved}
-    return any((source.file, source.page_or_slide) in found for source in expected_sources)
+    pairs = _expected_pairs(expected_sources)
+    return any((chunk.file, chunk.page_or_slide) in pairs for chunk in retrieved)
+
+
+def _expected_pairs(expected_sources: Sequence[ExpectedSource]) -> frozenset[tuple[str, int]]:
+    """The `(file, page_or_slide)` set both retrieval readouts match on - ONE definition of
+    "this chunk is an expected source", shared by `retrieval_hit` and `expected_placement`.
+
+    Extracted rather than duplicated for the reason this module's docstring gives about the
+    V1/V3 split: a second copy of the match rule is how two "identical" rules quietly stop
+    agreeing. Exact equality on BOTH fields stays `retrieval_hit`'s rule and its argument
+    (never-span, ADR 0019); this helper only names it.
+    """
+    return frozenset((source.file, source.page_or_slide) for source in expected_sources)
+
+
+@dataclass(frozen=True)
+class ExpectedPlacement:
+    """WHERE the expected source landed in one question's top-k, and by how much (issue #67).
+
+    A DIAGNOSTIC, not a metric, and the distinction is structural rather than stylistic: this
+    object is deliberately absent from `EvalRecord`, `GroundingCounts`, `RetrievalCounts` and
+    `EvalMetrics`. ADR 0023 §3 fixes the rate vector, nothing here aggregates over a run, and
+    adding a rank-derived rate would be a new ranking signal smuggled in as a readout. Pinned by
+    `test_expected_placement_is_absent_from_the_adr_0023_vector`.
+
+    It exists because ADR 0023 §1's retrieval signal is an ANY-MATCH membership rule (see
+    `retrieval_hit`): `hit=yes` says an expected chunk is SOMEWHERE in the top-k and says nothing
+    about what outranks it. `eval/FINDINGS.md` (2026-08-01) is where that bit: q005 scored a clean
+    `hit=yes` while four of its five retrieved blocks were a different author arguing the opposite
+    case, and finding that out took a separate hand-written probe. This is that probe, in the
+    core - here rather than in the runner for the same reason `retrieval_hit` is (module
+    docstring).
+
+    `ranks` carries EVERY matching position, not just the best one. Anchoring on the best rank
+    alone and printing "rank 2" would repeat this issue's own sin: one summary number hiding what
+    the top-k actually contained. `rank` and `found` are properties derived from it - the same
+    construction `EvalMetrics` uses for its rates, so no reported figure can disagree with the
+    tally it came from.
+
+    `margin` is `None` when there is no row below the best rank, and `0.0` on a tie. The two are
+    NOT interchangeable (`_rate` carries the general argument): `None` is "nothing was measured",
+    `0.0` is a measurement.
+    """
+
+    ranks: tuple[int, ...]
+    total: int
+    margin: float | None
+
+    @property
+    def rank(self) -> int | None:
+        """The best (lowest) matching rank, 1-based - or `None` when nothing matched.
+
+        `None` here means "we looked in the top-k and the expected source was not there", never
+        "not applicable": that second fact is the `None` `expected_placement` itself returns.
+        """
+        return self.ranks[0] if self.ranks else None
+
+    @property
+    def found(self) -> bool:
+        """Whether any expected source appeared at all - the same bit `retrieval_hit` reports."""
+        return bool(self.ranks)
+
+
+def expected_placement(
+    expected_sources: Sequence[ExpectedSource], retrieved: Sequence[RetrievedChunk]
+) -> ExpectedPlacement | None:
+    """Where the expected source(s) landed in this top-k, and the margin over the next result.
+
+    Returns `None` - not an empty placement - when `expected_sources` is empty, mirroring
+    `retrieval_hit`'s tri-state for the identical reason (ADR 0021 §3): an out-of-corpus row has
+    NO EXPECTATION, which is a different fact from "we looked and missed". Inside the returned
+    object, `rank is None` means the second thing. The two `None`s are never the same claim, and
+    a caller that coalesces them reports a miss the suite never scored.
+
+    RANK IS POSITION IN THE SEQUENCE AS HANDED, 1-based, never a re-sort. `AskResult.retrieved`
+    is contractually "the EXACT top-k list handed to the Grounder, in rank order", so sorting
+    here would report a rank the Grounder never saw. A list that is not score-ordered therefore
+    yields a NEGATIVE margin, reported signed rather than clamped - that is a real upstream
+    defect and worth surfacing, not smoothing.
+
+    MARGIN IS `score[rank] - score[rank+1]`: the expected row's score minus the row IMMEDIATELY
+    BELOW it. Headroom, not deficit. ADR 0026 §2 ("Not a margin") fixes the reading - it records
+    that q007's expected page "ranks first" while what ranked second was never captured, so the
+    margin was unmeasured; the deficit reading (`score[0] - score[rank]`) is undefined at rank 1,
+    the one case that ADR wants a margin for.
+
+    `None` at the last row (there is nothing below it), `0.0` on a tie. The distinction is
+    load-bearing - the argument `_rate` carries about an empty denominator, applied one layer
+    down: a computed zero must never be indistinguishable from a measurement never made, and
+    `+0.0000` reads as "tied with the next row".
+
+    TIES HAVE NO STABLE ORDER. `retrieve()`'s SQL is `order by distance asc` with no tiebreak, so
+    a `0.0` margin means "the rank boundary here is arbitrary" - it may swap between runs - not
+    "this row barely won".
+
+    The margin is a difference of two normalized similarities (ADR 0017, clamped per ADR 0024),
+    so it lies in [0,1] for a score-ordered list. It is comparable WITHIN ONE QUERY ONLY: ADR
+    0017 rejected batch-relative normalization precisely because corpus-relative scores are not
+    comparable across queries. Do not rank questions by margin.
+
+    `k` is not a parameter and must not become one: this is defined over the sequence it is
+    handed, so `total` is `len(retrieved)`. `retrieve()` already returns <= k, so a short list is
+    normal; a longer one is an upstream contract violation that still renders rather than raising.
+
+    NEVER RAISES, for any input shape - an empty list, a single row, duplicates, unsorted scores.
+    It is a readout printed beside a bench run; a diagnostic that can abort the run it is
+    describing is worse than no diagnostic.
+    """
+    if not expected_sources:
+        return None
+
+    pairs = _expected_pairs(expected_sources)
+    rows = list(retrieved)
+    ranks = tuple(
+        position
+        for position, chunk in enumerate(rows, start=1)
+        if (chunk.file, chunk.page_or_slide) in pairs
+    )
+
+    margin: float | None = None
+    if ranks:
+        best = ranks[0]
+        # `best < len(rows)` is the last-row guard, and it is what makes `None` mean "undefined"
+        # rather than "zero": at the last rank there is no `rows[best]` to subtract.
+        if best < len(rows):
+            margin = rows[best - 1].score - rows[best].score
+
+    return ExpectedPlacement(ranks=ranks, total=len(rows), margin=margin)
 
 
 @dataclass(frozen=True)

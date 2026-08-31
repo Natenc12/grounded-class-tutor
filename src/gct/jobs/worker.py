@@ -182,9 +182,8 @@ def _bury(conn: psycopg.Connection, job: Job, *, reason: str, error: str) -> Non
     `queue.py` is not allowed to touch.
 
     A lost lease is reported, not raised: it is the routine at-least-once outcome (`fail`'s
-    docstring), and the guard above already made it harmless.
-    NOT ACTUALLY HARMLESS in the interleaving where the winner has not published `ready` yet -
-    see #86.
+    docstring). The guard above BOUNDS the damage without removing it: a lost-lease bury can
+    still stamp a reason on a file the winner has not published `ready` yet (#86).
     """
     with conn.transaction():
         conn.execute(

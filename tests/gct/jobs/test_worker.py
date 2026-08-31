@@ -2386,8 +2386,11 @@ def test_the_diagnostic_trail_survives_the_clear(db, db_other, tmp_path, monkeyp
     deliberately different columns on different tables (`fail`'s docstring), and this test is
     what goes red if a future edit widens the clear into "reset the failure state".
 
-    A2's sequence, asserted from the other side: the file ends `('ready', None)` and the job's
-    last_error still names the shutdown that stopped attempt 1. `complete` does not touch
+    A2's sequence, asserted from the other side. `files.failed_reason` is deliberately NOT
+    re-asserted here: A2 owns that claim, and repeating it would make this test go red for A2's
+    reason as well as its own, which is exactly the ambiguity a second assertion buys. What is
+    asserted is that the file did reach `ready` (so the trail survived a SUCCESS, not a failure)
+    and that `last_error` is byte-for-byte what attempt 1 left. `complete` does not touch
     `last_error` - only `fail` and `release` write it - so the trail survives the success too.
     """
     conn, owner_id, class_id = db
@@ -2403,14 +2406,16 @@ def test_the_diagnostic_trail_survives_the_clear(db, db_other, tmp_path, monkeyp
     write_pdf(source, ["the real lecture text"])
     assert tick(conn, FakeEmbeddings()) is True
 
-    status, reason, state, last_error = db_other.execute(
+    status, state, last_error = db_other.execute(
         """
-        select f.status, f.failed_reason, j.state, j.last_error
+        select f.status, j.state, j.last_error
         from files f join jobs j using (file_id) where f.file_id = %s::uuid
         """,
         (file_id,),
     ).fetchone()
-    assert (status, reason, state) == ("ready", None, "done")
+    assert (status, state) == ("ready", "done"), (
+        "the retry has to have SUCCEEDED for this to mean anything"
+    )
     assert last_error == first_error, (
         "the operator's record of attempt 1 was collateral damage of clearing the student's "
         "message - they are separate axes and only one of them describes 'now'"

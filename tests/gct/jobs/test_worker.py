@@ -57,6 +57,7 @@ from reportlab.pdfgen import canvas
 from gct.config import EMBEDDING_DIM
 from gct.ingest import pipeline
 from gct.ingest.chunk import CHUNK_OVERLAP_WORDS, CHUNK_SIZE_WORDS
+from gct.ingest.parse import ParseError
 from gct.ingest.pipeline import ingest_file
 from gct.jobs import worker
 from gct.jobs.queue import claim, complete, enqueue, reclaim_expired
@@ -2120,4 +2121,395 @@ def test_a_shutdown_never_demotes_a_file_that_is_already_ready(db, db_other, tmp
     assert (state, leased_until, attempts) == ("queued", None, 2), (
         "the job half still has to be handed back - `files` being untouched is not an excuse "
         "for stranding the row"
+    )
+
+
+# --- The claim clears the previous attempt's `failed_reason` (issue #24) -----------------------
+#
+# `files.failed_reason` is the actionable message F3 surfaces to the student (ADR 0020 §1), and
+# `_bury` is its only WRITER: it sets the column and nothing ever unset it. That asymmetry is the
+# defect. `_bury` commits `files` before `jobs`, so the `jobs` half can fail to settle - a crash
+# between the two writes, or `fail` returning False because the lease expired and the reaper
+# already requeued (logged and continued, no crash at all). The job stays claimable, and the next
+# claim's `processing` write flips `failed -> processing` over a row still wearing the last
+# attempt's reason.
+#
+# These tests exercise BOTH shapes that reaches, because they cost the student different things:
+#   - a file mid-flight advertising a failure it is no longer failing (A1, A5) - the wide case,
+#     needing no input change at all, and lasting the whole backoff;
+#   - a PUBLISHED, queryable file advertising one (A2) - which additionally needs the input to
+#     have changed between attempts, and does: `staging_ref` is a plain absolute path
+#     (`enqueue`'s docstring), bytes can arrive late or be replaced, and a raised ceiling
+#     re-admits a file that was `too_long`.
+#
+# Every assertion goes through `db_other`, and here that is not ceremony: the whole subject is
+# whether the clear COMMITTED at the claim, independent of whatever the attempt goes on to do.
+
+
+def _half_bury(conn, monkeypatch, *, source, owner_id, class_id) -> str:
+    """Drive `source` to the genuinely half-buried row and DISARM: `files` `failed`, job claimable.
+
+    The recipe `test_an_interrupt_inside_bury_self_heals_on_the_next_attempt` established -
+    interrupt `_bury` between its `files` write (already committed, its own transaction) and its
+    `jobs` write. Only the arming is shared; each caller drives its own second attempt, because
+    what the SECOND attempt does is the axis these tests vary.
+
+    `worker.fail` is restored to the real one before returning, so the caller's tick settles
+    normally. Returns the `file_id`.
+    """
+    real_fail = worker.fail
+    armed = {"on": True}
+
+    def fail_or_interrupt(*args, **kwargs):
+        if armed["on"]:
+            raise KeyboardInterrupt(
+                "Ctrl-C inside `_bury`, between its files write and its jobs write"
+            )
+        return real_fail(*args, **kwargs)
+
+    monkeypatch.setattr(worker, "fail", fail_or_interrupt)
+    file_id = enqueue(conn, path=source, owner_id=owner_id, class_id=class_id)
+    with pytest.raises(KeyboardInterrupt):
+        tick(conn, FakeEmbeddings())
+    armed["on"] = False
+    return file_id
+
+
+def _file_row(db_other, file_id: str) -> tuple:
+    return db_other.execute(
+        "select status, failed_reason from files where file_id = %s::uuid", (file_id,)
+    ).fetchone()
+
+
+def test_the_claim_clears_the_previous_attempts_failed_reason(db, db_other, tmp_path, monkeypatch):
+    """The clear COMMITS at the claim, on its own - not as a side effect of a later success.
+
+    Half-bury, then make the second attempt fail transiently rather than succeed. If the reason
+    were being cleared anywhere downstream - in `index_file`'s upsert, say - this row would still
+    read `unparseable`, because nothing downstream ran: the ingest raised before the index
+    transaction ever opened (ADR 0020 §3). `('processing', None)` therefore isolates the
+    `processing` write as the thing that did it.
+
+    The half-buried row is asserted first rather than assumed: it is the precondition the whole
+    file is about, and a recipe that silently stopped producing it would make every test below
+    green for the wrong reason.
+    """
+    conn, owner_id, class_id = db
+    conn.autocommit = True
+    monkeypatch.setattr(worker.time, "sleep", lambda _: None)
+    source = write_corrupt_pdf(tmp_path / "half-buried.pdf")
+    file_id = _half_bury(conn, monkeypatch, source=source, owner_id=owner_id, class_id=class_id)
+
+    assert _file_row(db_other, file_id) == ("failed", "unparseable"), (
+        "the precondition never formed - this test is not measuring what it claims to"
+    )
+    assert db_other.execute(
+        "select state from jobs where file_id = %s::uuid", (file_id,)
+    ).fetchone() == ("queued",), "a half-buried job must still be claimable, or nothing retries it"
+
+    def transient(*_args, **_kwargs):
+        raise TransientEmbeddingError("simulated provider 429 - this attempt settles nothing")
+
+    monkeypatch.setattr(worker, "ingest_file", transient)
+    assert tick(conn, FakeEmbeddings()) is True
+
+    assert _file_row(db_other, file_id) == ("processing", None), (
+        "a file the worker is actively working on is still advertising the LAST attempt's "
+        "failure - and for the whole backoff, not an instant"
+    )
+
+
+def test_a_retry_that_succeeds_leaves_no_failed_reason_on_the_ready_file(
+    db, db_other, tmp_path, monkeypatch
+):
+    """The acceptance criterion of #24: `('ready', <a reason>)` must be unreachable.
+
+    Half-bury a corrupt file, then replace the bytes AT THE SAME `staging_ref` with a parseable
+    PDF and let the same job's next attempt run. That input change is the ordinary case, not a
+    contrivance: `enqueue` records that `path` need not exist and routes a missing or unreadable
+    file to terminal `unparseable`, and `staging_ref` is a plain absolute path that Slice 3's
+    stager writes asynchronously. Bytes arriving late, bytes being replaced, and a raised
+    `MAX_INGEST_WORDS` all reach exactly this sequence.
+
+    Asserts the chunk set as well as the columns, because `('ready', None)` on a file with no
+    chunks would be a different bug wearing this test's green.
+    """
+    conn, owner_id, class_id = db
+    conn.autocommit = True
+    monkeypatch.setattr(worker.time, "sleep", lambda _: None)
+    source = write_corrupt_pdf(tmp_path / "arrived-late.pdf")
+    file_id = _half_bury(conn, monkeypatch, source=source, owner_id=owner_id, class_id=class_id)
+    assert _file_row(db_other, file_id) == ("failed", "unparseable")
+
+    write_pdf(source, ["the real lecture text finally arrived at the staging path"])
+    assert tick(conn, FakeEmbeddings()) is True
+
+    status, reason, state, chunk_count = db_other.execute(
+        """
+        select f.status, f.failed_reason, j.state,
+               (select count(*) from chunks c where c.file_id = f.file_id)
+        from files f join jobs j using (file_id) where f.file_id = %s::uuid
+        """,
+        (file_id,),
+    ).fetchone()
+    assert (status, reason) == ("ready", None), (
+        "a published, queryable file is telling the student it failed to parse - the exact "
+        "contradiction #24 exists to remove"
+    )
+    assert state == "done", "the successful retry must settle the job, not just the file"
+    assert chunk_count > 0, "`ready` means the full chunk set is committed and queryable"
+
+
+def test_the_claim_does_not_clear_a_reason_on_a_file_that_is_already_ready(
+    db, db_other, tmp_path, monkeypatch
+):
+    """The clear is GOVERNED by `status <> 'ready'`, because it rides that one UPDATE.
+
+    THE SUBJECT HERE IS THE SQL'S SHAPE, NOT A REACHABLE HISTORY. `('ready', 'unparseable')` is
+    the state #24 removes, so the system cannot produce it any more and the row is set directly.
+    What the test pins is that the clear cannot be lifted out into a second, unguarded
+    `update files set failed_reason = null`: that version wipes the reason off a `ready` row,
+    which is a row a zombie whose lease expired is entitled to be about to bury, and it widens
+    the window between the two writes for no gain. Split the statement and this goes red; leave
+    it riding the guarded UPDATE and the row is untouched.
+
+    The rest of the tick is the ordinary terminal path: the file is corrupt, so `_bury` runs and
+    is itself stopped by its own identical `status <> 'ready'` guard. Both guards being present
+    is what the last assertion reads.
+    """
+    conn, owner_id, class_id = db
+    conn.autocommit = True
+    monkeypatch.setattr(worker.time, "sleep", lambda _: None)
+    source = write_corrupt_pdf(tmp_path / "already-published.pdf")
+    file_id = enqueue(conn, path=source, owner_id=owner_id, class_id=class_id)
+    conn.execute(
+        "update files set status = 'ready', failed_reason = 'unparseable' where file_id = %s::uuid",
+        (file_id,),
+    )
+
+    assert tick(conn, FakeEmbeddings()) is True
+
+    assert _file_row(db_other, file_id) == ("ready", "unparseable"), (
+        "the clear reached a `ready` row - it is not riding the guarded UPDATE any more"
+    )
+    (state,) = db_other.execute(
+        "select state from jobs where file_id = %s::uuid", (file_id,)
+    ).fetchone()
+    assert state == "failed", "the jobs axis still records what this attempt did"
+
+
+def test_a_terminal_failure_after_a_cleared_reason_writes_the_new_reason_not_the_old(
+    db, db_other, tmp_path, monkeypatch
+):
+    """The reason a student reads names THIS attempt, even when both attempts failed.
+
+    Half-bury with `unparseable`, then make the second attempt fail terminally for a DIFFERENT
+    cause. Without the clear the two are indistinguishable in the row - the old value would still
+    be there and `_bury` would simply overwrite it with the new one, so this test would pass on
+    the broken code too. It does not: the interesting half is the ORDER (clear at the claim, new
+    reason at the bury), and the assertion that isolates it is the intermediate one - after the
+    clear and before the bury, the row must already be clean.
+
+    `ingest_file` is stubbed rather than fed a second corrupt fixture because the point is the
+    reason CHANGING; `empty` is a real member of the terminal taxonomy `parse.py` raises.
+    """
+    conn, owner_id, class_id = db
+    conn.autocommit = True
+    monkeypatch.setattr(worker.time, "sleep", lambda _: None)
+    source = write_corrupt_pdf(tmp_path / "fails-twice.pdf")
+    file_id = _half_bury(conn, monkeypatch, source=source, owner_id=owner_id, class_id=class_id)
+    assert _file_row(db_other, file_id) == ("failed", "unparseable")
+
+    seen: list[tuple] = []
+
+    def empty_after_looking(*_args, **_kwargs):
+        # Read the row from the SECOND connection at the one moment that distinguishes the two
+        # implementations: the claim has committed, the bury has not run.
+        seen.append(_file_row(db_other, file_id))
+        raise ParseError("empty", "the file parsed but contained no extractable text")
+
+    monkeypatch.setattr(worker, "ingest_file", empty_after_looking)
+    assert tick(conn, FakeEmbeddings()) is True
+
+    assert seen == [("processing", None)], (
+        "between the claim and the bury the row still carried the PREVIOUS attempt's reason"
+    )
+    assert _file_row(db_other, file_id) == ("failed", "empty"), (
+        "the student must be told what went wrong THIS time"
+    )
+
+
+def test_a_transient_failure_after_a_half_bury_leaves_processing_with_no_reason(
+    db, db_other, tmp_path, monkeypatch
+):
+    """Sequence A end to end - the WIDE shape, which needs no input change and no success.
+
+    A half-buried file whose next attempt hits a 429 sits at `('processing', <old reason>)` for
+    the whole backoff on the broken code, and the student is looking at a spinner captioned with
+    a failure. Nothing exotic reaches it: a lost lease is the routine at-least-once outcome, and
+    `_bury` logs-and-continues when `fail` returns False rather than crashing.
+
+    Distinct from A1 in what raises: this one goes through the REAL pipeline and a real
+    `TransientEmbeddingError` from the embedder, so the classification, the served backoff and
+    the release are all the shipped ones rather than a stub of them.
+    """
+    conn, owner_id, class_id = db
+    conn.autocommit = True
+    slept: list[float] = []
+    monkeypatch.setattr(worker.time, "sleep", slept.append)
+    source = write_corrupt_pdf(tmp_path / "then-a-429.pdf")
+    file_id = _half_bury(conn, monkeypatch, source=source, owner_id=owner_id, class_id=class_id)
+    assert _file_row(db_other, file_id) == ("failed", "unparseable")
+
+    write_pdf(source, ["a page the provider refuses exactly once"])
+    embedder = FakeEmbeddings(transient_failures=1)
+    assert tick(conn, embedder) is True
+
+    assert _file_row(db_other, file_id) == ("processing", None), (
+        "the file is mid-flight, so `processing` is right and a reason is a lie - the student "
+        "sees the last attempt's failure captioning a run that is still going"
+    )
+    state, attempts = db_other.execute(
+        "select state, attempts from jobs where file_id = %s::uuid", (file_id,)
+    ).fetchone()
+    assert (state, attempts) == ("queued", 2), "a transient failure requeues, it does not bury"
+    assert len(embedder.calls) == 1, "the attempt really did reach the provider and get refused"
+    assert slept == [backoff_seconds(2)], "the transient path served its backoff as usual"
+
+
+def test_the_diagnostic_trail_survives_the_clear(db, db_other, tmp_path, monkeypatch):
+    """Clearing the STUDENT-facing message destroys no OPERATIONAL history - different axes.
+
+    `files.failed_reason` is a closed set shown to a student and must describe the current
+    attempt. `jobs.last_error` is free text kept for an operator and is a trail: it records what
+    the previous attempt did, and a published file is not a reason to forget it. The two are
+    deliberately different columns on different tables (`fail`'s docstring), and this test is
+    what goes red if a future edit widens the clear into "reset the failure state".
+
+    A2's sequence, asserted from the other side: the file ends `('ready', None)` and the job's
+    last_error still names the shutdown that stopped attempt 1. `complete` does not touch
+    `last_error` - only `fail` and `release` write it - so the trail survives the success too.
+    """
+    conn, owner_id, class_id = db
+    conn.autocommit = True
+    monkeypatch.setattr(worker.time, "sleep", lambda _: None)
+    source = write_corrupt_pdf(tmp_path / "keeps-its-trail.pdf")
+    file_id = _half_bury(conn, monkeypatch, source=source, owner_id=owner_id, class_id=class_id)
+    first_error = db_other.execute(
+        "select last_error from jobs where file_id = %s::uuid", (file_id,)
+    ).fetchone()[0]
+    assert first_error is not None and first_error.startswith("shutdown:")
+
+    write_pdf(source, ["the real lecture text"])
+    assert tick(conn, FakeEmbeddings()) is True
+
+    status, reason, state, last_error = db_other.execute(
+        """
+        select f.status, f.failed_reason, j.state, j.last_error
+        from files f join jobs j using (file_id) where f.file_id = %s::uuid
+        """,
+        (file_id,),
+    ).fetchone()
+    assert (status, reason, state) == ("ready", None, "done")
+    assert last_error == first_error, (
+        "the operator's record of attempt 1 was collateral damage of clearing the student's "
+        "message - they are separate axes and only one of them describes 'now'"
+    )
+
+
+def test_a_budget_exhausted_bury_is_not_undone_by_a_later_claim(
+    db, db_other, tmp_path, monkeypatch
+):
+    """The budget check runs BEFORE the `processing` write, so an exhausted job never clears.
+
+    The end state alone cannot pin this - `_bury` writes `transient_exhausted` either way, so a
+    `processing` write moved above the budget check leaves every status column identical. What
+    distinguishes them is whether that statement RAN AT ALL, so the tick's SQL is recorded and
+    the absence of the `processing` UPDATE is the assertion. Move the write above the check and
+    this goes red while nothing else in the suite notices.
+
+    Why it matters rather than being a tidiness point: the exhausted claim exists only to write
+    the reason. Passing the row through `processing` first would flip a `failed` file back to
+    mid-flight and clear the reason it is about to re-set - a visible flicker in the student's UI
+    for a file that is finished, and one that lasts as long as the bury takes.
+
+    Set up from a HALF-BURY rather than a plain doomed run so there is genuinely a reason present
+    for the clear to have wiped; `max_attempts=1` makes the re-claim the exhausting one.
+    """
+    conn, owner_id, class_id = db
+    conn.autocommit = True
+    monkeypatch.setattr(worker.time, "sleep", lambda _: None)
+    source = write_corrupt_pdf(tmp_path / "out-of-budget.pdf")
+    file_id = _half_bury(conn, monkeypatch, source=source, owner_id=owner_id, class_id=class_id)
+    assert _file_row(db_other, file_id) == ("failed", "unparseable")
+
+    statements: list[str] = []
+    real_execute = conn.execute
+
+    def recording_execute(query, *args, **kwargs):
+        statements.append(str(query))
+        return real_execute(query, *args, **kwargs)
+
+    monkeypatch.setattr(conn, "execute", recording_execute)
+    assert tick(conn, FakeEmbeddings(), max_attempts=1) is True
+
+    assert not any("set status = 'processing'" in sql for sql in statements), (
+        "the exhausted claim ran the `processing` write - the budget check is no longer first, "
+        "so a finished file flickers back to mid-flight with its reason cleared"
+    )
+    assert _file_row(db_other, file_id) == ("failed", "transient_exhausted"), (
+        "the file must end on the reason the budget check wrote"
+    )
+    (state,) = db_other.execute(
+        "select state from jobs where file_id = %s::uuid", (file_id,)
+    ).fetchone()
+    assert state == "failed", "an exhausted job must not stay claimable"
+
+
+def test_the_worker_publishes_a_files_row_that_agrees_with_its_chunks(
+    db, db_other, tmp_path, monkeypatch
+):
+    """Both halves of #24 on the PRODUCTION path: `enqueue` -> `process_one` -> a consistent row.
+
+    `test_index.py` proves the refresh at the seam, with hand-built `PreparedChunk`s. This proves
+    it survives the real derivation chain, which is where a plausible-looking refresh goes wrong:
+    the worker passes `job.staging_ref` (an ABSOLUTE path) as the file to ingest and
+    `job.filename`/`owner_id`/`class_id` as the scope, while every chunk's `file` comes from
+    `pipeline.py`'s `Path(path).name`. Derive the `files.filename` from the wrong one of those
+    two and the citation label the student reads becomes the uploader's home directory - green in
+    every single-column assertion, wrong in the only comparison that matters.
+
+    So the assertion is the JOIN, not a list of expected literals: the `files` row and every one
+    of its chunks must agree, whatever the values turn out to be. Plus `failed_reason is null` -
+    the other half of #24, on the path a student actually travels.
+    """
+    conn, owner_id, class_id = db
+    conn.autocommit = True
+    monkeypatch.setattr(worker.time, "sleep", lambda _: None)
+    source = write_pdf(tmp_path / "week-3-lecture.pdf", ["page one text", "page two text"])
+    file_id = enqueue(conn, path=source, owner_id=owner_id, class_id=class_id)
+
+    assert tick(conn, FakeEmbeddings()) is True
+
+    status, reason, f_owner, f_class, f_name = db_other.execute(
+        """
+        select status, failed_reason, owner_id, class_id::text, filename
+        from files where file_id = %s::uuid
+        """,
+        (file_id,),
+    ).fetchone()
+    assert (status, reason) == ("ready", None)
+
+    scopes = db_other.execute(
+        "select distinct owner_id, class_id::text, file from chunks where file_id = %s::uuid",
+        (file_id,),
+    ).fetchall()
+    assert scopes == [(f_owner, f_class, f_name)], (
+        "the published `files` row and the chunk set it describes disagree - retrieval filters "
+        "chunks on (owner_id, class_id) and cites `chunks.file`, so a status read and an answer "
+        "would be describing different files"
+    )
+    assert f_name == source.name, (
+        "`files.filename` must be the basename the citation label uses, not the staging path - "
+        "a full path here renders the uploader's home directory into every citation"
     )

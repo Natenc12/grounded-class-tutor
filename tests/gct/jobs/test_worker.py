@@ -1494,8 +1494,21 @@ def test_an_interrupt_inside_bury_self_heals_on_the_next_attempt(
     So: interrupt inside `_bury`, then run the tick that follows. The `processing` write flips
     `failed -> processing` - legal, guarded only on `ready`, and load-bearing rather than
     accidental (`process_one`'s comment says so) - the corrupt file fails terminally again, and
-    both axes end where they belong. Tighten that guard to exclude `failed` and this test is
-    what reddens.
+    both axes end where they belong.
+
+    THIS TEST DOES NOT PIN THAT GUARD'S WIDTH, and an earlier version of this docstring claimed
+    it did ("tighten that guard to exclude `failed` and this test is what reddens" - measured
+    false). Both of its attempts are corrupt, so the row converges on `('failed',
+    'unparseable')` whether or not the middle transition happened at all: a guard excluding
+    `failed` simply leaves the row where `_bury` already put it, and every assertion still
+    holds. What this test pins is the JOBS axis recovering - `queued -> failed` on the second
+    attempt - which is the half `_bury`'s ordering exists for.
+    The guard's width IS pinned, by the four #24 tests that start from `_half_bury` and read the
+    row mid-flight: `test_the_claim_clears_the_previous_attempts_failed_reason`,
+    `test_a_retry_that_succeeds_leaves_no_failed_reason_on_the_ready_file`,
+    `test_a_terminal_failure_after_a_cleared_reason_writes_the_new_reason_not_the_old` and
+    `test_a_transient_failure_after_a_half_bury_leaves_processing_with_no_reason`. They redden
+    on that mutation because they distinguish the intermediate state, which this one cannot.
     """
     conn, owner_id, class_id = db
     conn.autocommit = True
@@ -2265,8 +2278,13 @@ def test_the_claim_does_not_clear_a_reason_on_a_file_that_is_already_ready(
 ):
     """The clear is GOVERNED by `status <> 'ready'`, because it rides that one UPDATE.
 
-    THE SUBJECT HERE IS THE SQL'S SHAPE, NOT A REACHABLE HISTORY. `('ready', 'unparseable')` is
-    the state #24 removes, so the system cannot produce it any more and the row is set directly.
+    THE SUBJECT HERE IS THE SQL'S SHAPE, AND THE ROW IS SET DIRECTLY RATHER THAN EARNED.
+    `('ready', 'unparseable')` is what #24 removes from the SEQUENTIAL path - one attempt after
+    another, which is every other test in this file - so no sequence of ticks reaches it any
+    more. It is NOT unreachable in general: the out-of-order path can still produce it, and
+    `process_one`'s *WHAT IT DOES NOT CLOSE* block is where that residual is recorded - a zombie
+    whose lease expired reaching `_bury` after a winning run's `processing` write and before its
+    `index_file` commit, since `_bury`'s files write has no lease guard (#86).
     What the test pins is that the clear cannot be lifted out into a second, unguarded
     `update files set failed_reason = null`: that version wipes the reason off a `ready` row,
     which is a row a zombie whose lease expired is entitled to be about to bury, and it widens

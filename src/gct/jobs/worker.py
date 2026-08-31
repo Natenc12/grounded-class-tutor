@@ -9,7 +9,8 @@ Status ownership - who writes which `files.status` transition (issue #71):
     | transition                | writer                                                     |
     |---------------------------|------------------------------------------------------------|
     | -> queued                 | `enqueue` (#70)                                            |
-    | -> processing             | THIS module, on claim - the first-ever writer              |
+    | -> processing             | THIS module, on claim - the first-ever writer, and the     |
+    |                           | only UN-writer of `failed_reason` (#24)                    |
     | -> ready                  | `index_file`, inside the index transaction (ADR 0020 §3)   |
     | -> failed + failed_reason | THIS module - terminal input, or budget exhausted          |
 
@@ -160,12 +161,11 @@ def _bury(conn: psycopg.Connection, job: Job, *, reason: str, error: str) -> Non
     function rather than two calls a future handler could get half-right.
 
     `reason` goes into `files.failed_reason`, a CHECK-constrained closed set (`migrations/`
-    owns the members, and has already widened them once - ADR 0029; the count is derived from
-    the schema, never stored here) and is passed through UNTRANSLATED from `ParseError.reason`,
-    which is drawn from the same
-    taxonomy for exactly this reason (ADR 0020; `parse.py`'s docstring promises the
-    pass-through). `error` is the free-text `jobs.last_error` - the diagnostic detail the
-    closed set cannot carry.
+    owns the members, and has already widened them once - ADR 0020, terminal set extended per
+    ADR 0029; the count is derived from the schema, never stored here) and is passed through
+    UNTRANSLATED from `ParseError.reason`, which is drawn from the same taxonomy for exactly
+    this reason (ADR 0020; `parse.py`'s docstring promises the pass-through). `error` is the
+    free-text `jobs.last_error` - the diagnostic detail the closed set cannot carry.
 
     THE FILES ROW GOES FIRST, and the order is chosen for what a crash between the two writes
     leaves behind. Files-then-jobs: the file reads `failed` while the job is still `processing`
@@ -183,6 +183,8 @@ def _bury(conn: psycopg.Connection, job: Job, *, reason: str, error: str) -> Non
 
     A lost lease is reported, not raised: it is the routine at-least-once outcome (`fail`'s
     docstring), and the guard above already made it harmless.
+    NOT ACTUALLY HARMLESS in the interleaving where the winner has not published `ready` yet -
+    see #86.
     """
     with conn.transaction():
         conn.execute(
@@ -493,11 +495,15 @@ def process_one(
         # zombie is about to bury, and would widen the crash window between the two writes.
         #
         # WHAT IT DOES NOT CLOSE, recorded so it is a known cost rather than a bug someone
-        # re-finds: the out-of-order path. A zombie whose lease expired can reach `_bury`
-        # AFTER a winning run's `processing` write and BEFORE its `index_file` commit;
-        # `_bury`'s files write has no lease guard, only `status <> 'ready'`, so it stamps
-        # `('failed', reason)` on a row the winner then republishes as `ready` - and the
-        # reason survives again. Narrow (the two attempts must disagree about the input, and
+        # re-finds, and OWNED BY ISSUE #86: the out-of-order path. A zombie whose lease
+        # expired can reach `_bury` AFTER a winning run's `processing` write and BEFORE its
+        # `index_file` commit; `_bury`'s files write has no lease guard, only
+        # `status <> 'ready'`, so it stamps `('failed', reason)` on a row the winner then
+        # republishes as `ready` - and the reason survives again. That is the ONE path by
+        # which `('ready', <a reason>)` is still reachable, and
+        # `test_the_claim_does_not_clear_a_reason_on_a_file_that_is_already_ready` sets that
+        # row directly rather than earning it for exactly this reason.
+        # Narrow (the two attempts must disagree about the input, and
         # V1 runs one worker, ADR 0011). If it ever needs closing, the move is a LEASE GUARD on
         # `_bury`'s files write, not a second writer for `failed_reason` in `index_file`.
         with conn.transaction():

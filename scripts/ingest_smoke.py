@@ -1192,8 +1192,8 @@ def _build_parser() -> argparse.ArgumentParser:
         default=DEFAULT_SHORT_LEASE_SECONDS,
         help=f"lease worker A holds, in seconds (default and floor {DEFAULT_SHORT_LEASE_SECONDS}). "
         f"Phase 3 induces a {PHASE_THREE_EMBED_DELAY_SECONDS:.0f}s embed delay, so this must be "
-        "shorter than that delay — no longer than any file's ingest, which stopped being the "
-        "constraint when the overrun stopped depending on the corpus",
+        "shorter than that delay. File ingest speed is NOT a constraint here: it stopped "
+        "being one when the overrun became induced rather than earned from the corpus",
     )
     parser.add_argument(
         "--verbose",

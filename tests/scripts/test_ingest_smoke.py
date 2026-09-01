@@ -25,10 +25,10 @@ from __future__ import annotations
 import importlib.util
 import sys
 import uuid
+from contextlib import contextmanager
 from pathlib import Path
 
 import pytest
-from reportlab.pdfgen import canvas
 
 from gct.config import EMBEDDING_DIM
 from gct.ingest.parse import ParseError, parse_file
@@ -304,43 +304,6 @@ def test_max_files_narrows_a_sorted_corpus(tmp_path):
     assert [p.name for p in smoke._corpus_files(tmp_path, 2)] == ["a.pptx", "b.pdf"]
 
 
-def _pdf(path: Path, pages: list[str]) -> Path:
-    page = canvas.Canvas(str(path), pagesize=(612, 792))
-    for text in pages:
-        if text:
-            page.drawString(72, 700, text)
-        page.showPage()
-    page.save()
-    return path
-
-
-def test_phase_threes_target_is_picked_by_WORDS_and_not_by_BYTES(tmp_path):
-    """The measured defect this picker exists to avoid, reproduced in miniature.
-
-    On the real dogfood corpus the LARGEST file is a 7.1MB deck carrying 315 words and the SLOWEST
-    to ingest is a 3.7MB PDF carrying 12,300 — so picking by size hands phase 3 a file that
-    finishes in half a second, the lease never expires, and the reaper case silently stops being
-    demonstrated. Embedding time tracks text; bytes track images. Here the same inversion is built
-    from two PDFs: the big one is mostly blank pages.
-    """
-    big_and_empty = _pdf(tmp_path / "big.pdf", [""] * 120 + ["alpha"])
-    small_and_wordy = _pdf(tmp_path / "small.pdf", [" ".join(f"word{n}" for n in range(60))])
-
-    assert big_and_empty.stat().st_size > small_and_wordy.stat().st_size
-    assert smoke._slowest_to_embed([big_and_empty, small_and_wordy]) == small_and_wordy
-
-
-def test_an_unparseable_corpus_file_counts_as_zero_words_rather_than_raising(tmp_path):
-    """Phase 1 is the right place to report an unparseable corpus file, with its reason and history.
-
-    A picker that raised would pre-empt that with a `SetupError` naming neither, and a ceremony that
-    exits 2 for a file phase 1 was built to fail on exit 1 reports the wrong thing about the run.
-    """
-    corrupt = smoke.write_corrupt_pdf(tmp_path)
-    wordy = _pdf(tmp_path / "wordy.pdf", ["one two three four five"])
-    assert smoke._slowest_to_embed([corrupt, wordy]) == wordy
-
-
 # --- the observer's one statement ---------------------------------------------------------------
 
 
@@ -406,10 +369,756 @@ def test_the_snapshot_query_reads_both_axes_and_the_chunk_count(db, db_other):
     }
 
 
-def test_the_snapshot_query_is_not_asked_at_all_when_nothing_is_watched(db_other):
-    """`any(%s::uuid[])` over an empty array is legal SQL, so this is about round trips, not safety.
+class ExplodingConnection:
+    """A connection double that fails the test if anything asks it to run a statement."""
 
-    The observer samples every 40ms for the length of the run; a phase that has watched nothing yet
-    should cost zero statements rather than a few thousand empty ones.
+    def execute(self, *args, **kwargs):
+        raise AssertionError("_read issued a statement with nothing watched")
+
+
+def test_the_snapshot_query_is_not_asked_at_all_when_nothing_is_watched():
+    """A test that could not fail for the thing it claimed, replaced with one that can.
+
+    It used to assert only `_read(conn, []) == {}` — but the SQL returns no rows for an empty id
+    array anyway, so deleting the short circuit left the assertion green and the round trip
+    happening. It measured the RESULT of a behaviour whose whole point is that it does not happen.
+
+    A connection that raises on `execute` measures the behaviour itself. That matters because the
+    observer samples every `OBSERVE_SECONDS` for the length of the run: a phase that has watched
+    nothing yet should cost zero statements, not a few thousand empty ones.
     """
-    assert smoke._read(db_other, []) == {}
+    assert smoke._read(ExplodingConnection(), []) == {}
+
+
+# --- the ceremony's own verdict -----------------------------------------------------------------
+#
+# EVERYTHING ABOVE TESTS THE CEREMONY'S JUDGEMENT; THIS SECTION TESTS THAT IT IS ACTED ON. The two
+# are not the same guarantee, and the gap between them was measured: a mutation pass replaced
+# `_print_gate`'s verdict with a bare `return EXIT_OK` and the whole suite stayed green. Four
+# independent edits — one per phase, plus the exit code — could each make the Slice 2 acceptance
+# ceremony report success unconditionally, and nothing noticed. A gate whose own verdict is pinned
+# by nothing is not a gate; it is a print statement.
+#
+# These drive the real `_phase_*` functions with a scripted observer, a stub worker and a stub
+# `enqueue`. No database, no provider, no thread, no money — the phases' DECISIONS are pure
+# functions of the history they are handed, and that is exactly the half that can be wrong while
+# every paid run still passes.
+
+
+class ScriptedObserver:
+    """A faithful miniature of `Observer` that plays a pre-written history back to a phase.
+
+    Faithful in the two ways the phases can tell the difference, and no further:
+
+      - it REVEALS ONE SNAPSHOT PER SAMPLE, so a file whose history is longer settles later than
+        one whose history is short. A phase that stopped waiting as soon as ANY file settled would
+        then judge the others mid-flight, which is precisely the bug that shape of stub exists to
+        catch — a stub that handed every phase the final state up front would call that mutant
+        correct.
+      - `history()` returns only what has been REVEALED, never the whole script, for the same
+        reason: a phase that judged a truncated history must be seen to judge a truncated history.
+
+    `wait_until` gives up after `max_samples` instead of after a wall-clock timeout, so the
+    timeout branch is reachable in a unit test without anything sleeping.
+    """
+
+    def __init__(self, *histories, max_samples=40):
+        self._pending = [list(history) for history in histories]
+        self._history: dict[str, list] = {}
+        self._cursor: dict[str, int] = {}
+        self.max_samples = max_samples
+        self.samples = 0
+
+    def watch(self, file_id):
+        # Cursor starts at 1: the real `Observer.watch` takes a reading immediately, which is what
+        # makes the `queued` sighting a fact rather than a race (see `_phase_lifecycle`).
+        self._history[file_id] = self._pending.pop(0)
+        self._cursor[file_id] = 1
+
+    def sample(self):
+        self.samples += 1
+        current = {}
+        for file_id, history in self._history.items():
+            self._cursor[file_id] = min(self._cursor[file_id] + 1, len(history))
+            current[file_id] = history[self._cursor[file_id] - 1]
+        return current
+
+    def history(self, file_id):
+        return self._history[file_id][: self._cursor[file_id]]
+
+    def wait_until(self, predicate, *, timeout):
+        for _ in range(self.max_samples):
+            if predicate(self.sample()):
+                return True
+        return False
+
+
+class StubWorker:
+    """A worker that records that it was started and never runs anything."""
+
+    def __init__(self, *args, lease_seconds=1, **kwargs):
+        self.lease_seconds = lease_seconds
+        self.error = None
+        self.started = False
+        self.started_after_samples = None
+
+    def start(self):
+        self.started = True
+
+
+@pytest.fixture
+def stub_enqueue(monkeypatch):
+    """Replace `enqueue` with a counter that mints ids without a database.
+
+    Returned so a test can assert HOW MANY files were enqueued: a phase that silently enqueued only
+    the first of five would otherwise pass every assertion about the one file it did handle.
+    """
+    calls: list[Path] = []
+
+    def fake(conn, *, path, owner_id, class_id):
+        calls.append(path)
+        return f"file-{len(calls)}"
+
+    monkeypatch.setattr(smoke, "enqueue", fake)
+    return calls
+
+
+def happy_lifecycle(chunks=62, slow=False):
+    """A history that passes phase 1. `slow` adds the real extra sighting seen on live runs — the
+    gap between `claim` committing and the `processing` write landing — which makes this file
+    settle one sample later than a `slow=False` one."""
+    seen = [snapshot("queued", 0, job_state="queued", attempts=0)]
+    if slow:
+        seen.append(snapshot("queued", 0))
+    seen += [snapshot("processing", 0), snapshot("ready", chunks, job_state="done")]
+    return seen
+
+
+def buried_history():
+    """A history that passes phase 2: corrupt input, one attempt, no chunks, an actionable error."""
+    return [
+        snapshot("queued", 0, job_state="queued", attempts=0),
+        snapshot(
+            "failed",
+            0,
+            failed_reason="unparseable",
+            job_state="failed",
+            last_error="unparseable: could not read PDF",
+        ),
+    ]
+
+
+def reclaimed_history(chunks=62):
+    """A history that passes phase 3: two deliveries, one full chunk set, no error recorded."""
+    return [
+        snapshot("queued", 0, job_state="queued", attempts=0),
+        snapshot("processing", 0),
+        snapshot("processing", 0, attempts=2),
+        snapshot("ready", chunks, attempts=2),
+        snapshot("ready", chunks, job_state="done", attempts=2),
+    ]
+
+
+class FakeDelayGate:
+    """Stands in for `_DelayedEmbeddings`: records what phase 3 armed, and that it disarmed."""
+
+    def __init__(self):
+        self.armed_with = None
+        self.delay_seconds = 0.0
+
+    @contextmanager
+    def delaying(self, seconds):
+        self.armed_with = seconds
+        self.delay_seconds = seconds
+        try:
+            yield
+        finally:
+            self.delay_seconds = 0.0
+
+
+def run_reaper_phase(
+    observer, monkeypatch, *, target="Livingston Cosmogony.pdf", reaps=0, worker=None, gate=None
+):
+    """Drive `_phase_reaper` with worker B and the delay gate stubbed out."""
+    monkeypatch.setattr(smoke, "WorkerThread", StubWorker)
+    log = smoke.ReaperLog()
+    log.reaps = reaps
+    return smoke._phase_reaper(
+        None,
+        observer,
+        log,
+        worker or StubWorker(),
+        owner_id="o",
+        class_id="c",
+        target=Path(target),
+        embedder=gate or FakeDelayGate(),
+        lease_seconds=1,
+        chunk_size=250,
+        chunk_overlap=40,
+    )
+
+
+# --- phase 1's verdict --------------------------------------------------------------------------
+
+
+def test_phase_one_passes_a_clean_lifecycle(stub_enqueue, capsys):
+    observer = ScriptedObserver(happy_lifecycle(), happy_lifecycle(chunks=7))
+    worker = StubWorker()
+    assert (
+        smoke._phase_lifecycle(
+            None,
+            observer,
+            worker,
+            owner_id="o",
+            class_id="c",
+            corpus=[Path("a.pdf"), Path("b.pptx")],
+        )
+        is True
+    )
+    assert worker.started
+    # Both files, not just the first: a loop that quietly enqueued one of them would satisfy every
+    # other assertion here.
+    assert [p.name for p in stub_enqueue] == ["a.pdf", "b.pptx"]
+    assert "lifecycle over 2 real corpus file(s)" in capsys.readouterr().out
+
+
+def test_phase_one_fails_when_any_file_never_showed_processing(stub_enqueue, capsys):
+    """The issue's central assertion, reached through the phase rather than through the helper.
+
+    File two is the one that jumped straight to `ready`. A phase that judged only the first file's
+    history — or that computed its faults and dropped them — reports PASS on this run.
+    """
+    straight_to_ready = [
+        snapshot("queued", 0, job_state="queued", attempts=0),
+        snapshot("ready", 62, job_state="done"),
+    ]
+    observer = ScriptedObserver(happy_lifecycle(), straight_to_ready)
+    assert (
+        smoke._phase_lifecycle(
+            None,
+            observer,
+            StubWorker(),
+            owner_id="o",
+            class_id="c",
+            corpus=[Path("a.pdf"), Path("b.pptx")],
+        )
+        is False
+    )
+    assert "'processing' was never observed" in capsys.readouterr().out
+
+
+def test_phase_one_waits_for_EVERY_file_not_just_the_first_to_settle(stub_enqueue):
+    """A phase that stops waiting on the first settled file judges the rest mid-flight.
+
+    The two files here are both healthy and both end `ready`; they differ only in how many samples
+    they take to get there. Waiting for ALL of them passes. Waiting for ANY of them returns while
+    the slow one is still `processing`, and its truncated history then fails its own end-state
+    check — a red run with no defect behind it.
+    """
+    observer = ScriptedObserver(happy_lifecycle(slow=True), happy_lifecycle(chunks=7))
+    assert (
+        smoke._phase_lifecycle(
+            None,
+            observer,
+            StubWorker(),
+            owner_id="o",
+            class_id="c",
+            corpus=[Path("slow.pdf"), Path("quick.pptx")],
+        )
+        is True
+    )
+
+
+def test_phase_one_reports_a_timeout_and_the_history_it_got_to(stub_enqueue, capsys):
+    """A file wedged in `processing` never satisfies the predicate; the phase must say so and fail.
+
+    The history is printed on this path deliberately: a timeout with no evidence tells a reader
+    that something hung and nothing about where.
+    """
+    wedged = [snapshot("queued", 0, job_state="queued", attempts=0), snapshot("processing", 0)]
+    observer = ScriptedObserver(wedged)
+    assert (
+        smoke._phase_lifecycle(
+            None, observer, StubWorker(), owner_id="o", class_id="c", corpus=[Path("a.pdf")]
+        )
+        is False
+    )
+    out = capsys.readouterr().out
+    assert "TIMED OUT" in out
+    assert "files.status=processing" in out
+
+
+# --- phase 2's verdict --------------------------------------------------------------------------
+
+
+def test_phase_two_passes_a_clean_terminal_failure(stub_enqueue, capsys):
+    observer = ScriptedObserver(buried_history())
+    assert (
+        smoke._phase_terminal_failure(
+            None,
+            observer,
+            StubWorker(),
+            owner_id="o",
+            class_id="c",
+            corrupt=Path("corrupt-lecture.pdf"),
+        )
+        is True
+    )
+    out = capsys.readouterr().out
+    assert "no retry spent" in out
+    assert f"({len(smoke.CORRUPT_PDF_BYTES)} bytes" in out
+
+
+def test_phase_two_fails_when_a_retry_was_spent_on_terminal_input(stub_enqueue, capsys):
+    """ADR 0020 §1's actual claim: bad input costs ZERO retries, i.e. `attempts == 1`.
+
+    A check that only refused `attempts < 1` would pass this run — the file was handed back for a
+    second go at a corrupt PDF, which is the one thing the terminal class exists to prevent.
+    """
+    retried = buried_history()
+    retried[-1] = snapshot(
+        "failed",
+        0,
+        failed_reason="unparseable",
+        job_state="failed",
+        attempts=2,
+        last_error="unparseable: could not read PDF",
+    )
+    observer = ScriptedObserver(retried)
+    assert (
+        smoke._phase_terminal_failure(
+            None,
+            observer,
+            StubWorker(),
+            owner_id="o",
+            class_id="c",
+            corrupt=Path("corrupt-lecture.pdf"),
+        )
+        is False
+    )
+    assert "a retry was spent on terminal input" in capsys.readouterr().out
+
+
+def test_phase_two_fails_when_the_reason_is_not_the_one_it_asserts(stub_enqueue, capsys):
+    wrong = buried_history()
+    wrong[-1] = snapshot(
+        "failed", 0, failed_reason="transient_exhausted", job_state="failed", last_error="gave up"
+    )
+    observer = ScriptedObserver(wrong)
+    assert (
+        smoke._phase_terminal_failure(
+            None,
+            observer,
+            StubWorker(),
+            owner_id="o",
+            class_id="c",
+            corrupt=Path("corrupt-lecture.pdf"),
+        )
+        is False
+    )
+    assert "not 'unparseable'" in capsys.readouterr().out
+
+
+def test_phase_two_fails_when_an_unparseable_file_somehow_indexed_chunks(stub_enqueue, capsys):
+    indexed = buried_history()
+    indexed[-1] = snapshot(
+        "failed",
+        9,
+        failed_reason="unparseable",
+        job_state="failed",
+        last_error="unparseable: could not read PDF",
+    )
+    observer = ScriptedObserver(indexed)
+    assert (
+        smoke._phase_terminal_failure(
+            None,
+            observer,
+            StubWorker(),
+            owner_id="o",
+            class_id="c",
+            corrupt=Path("corrupt-lecture.pdf"),
+        )
+        is False
+    )
+    assert "chunk(s) indexed for a file that failed to parse" in capsys.readouterr().out
+
+
+def test_phase_two_fails_when_nothing_actionable_was_recorded(stub_enqueue, capsys):
+    """`failed_reason` is the closed set; `last_error` is the detail a human needs. Both or bust."""
+    silent = buried_history()
+    silent[-1] = snapshot(
+        "failed", 0, failed_reason="unparseable", job_state="failed", last_error=None
+    )
+    observer = ScriptedObserver(silent)
+    assert (
+        smoke._phase_terminal_failure(
+            None,
+            observer,
+            StubWorker(),
+            owner_id="o",
+            class_id="c",
+            corrupt=Path("corrupt-lecture.pdf"),
+        )
+        is False
+    )
+    assert "nothing actionable was recorded" in capsys.readouterr().out
+
+
+# --- phase 3's verdict --------------------------------------------------------------------------
+
+
+def test_phase_three_passes_a_real_reclaim_and_one_full_chunk_set(
+    monkeypatch, stub_enqueue, capsys
+):
+    observer = ScriptedObserver(reclaimed_history())
+    assert run_reaper_phase(observer, monkeypatch) is True
+    out = capsys.readouterr().out
+    assert "reclaimed and redelivered: attempts=2" in out
+    assert "one full chunk set after two deliveries: chunks=62" in out
+
+
+def test_phase_three_fails_when_no_lease_was_ever_reclaimed(monkeypatch, stub_enqueue, capsys):
+    """THE phase-3 claim. A run that ingested cleanly on the first delivery proves nothing about
+    the reaper, and must not be able to report PASS."""
+    once = [
+        snapshot("queued", 0, job_state="queued", attempts=0),
+        snapshot("processing", 0),
+        snapshot("ready", 62, job_state="done"),
+    ]
+    assert run_reaper_phase(ScriptedObserver(once), monkeypatch) is False
+    assert "no reclaim happened" in capsys.readouterr().out
+
+
+def test_phase_three_fails_when_the_redelivery_left_a_disagreeing_index(
+    monkeypatch, stub_enqueue, capsys
+):
+    """At-least-once is safe by IDEMPOTENT REPLACE, not by dedup — this is where that is checked.
+
+    Two deliveries that published different-sized sets means the second appended rather than
+    replaced. Delete the invariant check and this run reports PASS with a doubled corpus.
+    """
+    doubled = reclaimed_history()
+    doubled[-1] = snapshot("ready", 124, job_state="done", attempts=2)
+    assert run_reaper_phase(ScriptedObserver(doubled), monkeypatch) is False
+    assert "partial or disagreeing index" in capsys.readouterr().out
+
+
+def test_phase_three_fails_when_the_redelivered_job_was_buried(monkeypatch, stub_enqueue, capsys):
+    """A redelivery that ends `failed` has settled — the phase must judge it, not wait for `done`.
+
+    A predicate that only accepts `done` sits out the full timeout on this history and reports a
+    hang, which tells a reader the opposite of what happened.
+    """
+    buried = reclaimed_history()
+    buried[-1] = snapshot(
+        "failed", 0, failed_reason="transient_exhausted", job_state="failed", attempts=2
+    )
+    assert run_reaper_phase(ScriptedObserver(buried), monkeypatch) is False
+    out = capsys.readouterr().out
+    assert "TIMED OUT" not in out
+    assert "not 'ready'" in out
+
+
+def test_phase_three_reports_only_the_reaps_from_its_own_phase(monkeypatch, stub_enqueue, capsys):
+    """The corroboration line is phase-scoped. Reported as a running total it silently credits
+    phase 3 with every reap the run ever logged."""
+    assert run_reaper_phase(ScriptedObserver(reclaimed_history()), monkeypatch, reaps=5) is True
+    assert "logged 0 'reaper:' warning(s)" in capsys.readouterr().out
+
+
+# --- the exit code itself -----------------------------------------------------------------------
+
+
+def test_the_gate_exits_zero_only_when_every_phase_passed():
+    assert smoke._print_gate({"1": True, "2": True, "3": True}) == smoke.EXIT_OK
+
+
+@pytest.mark.parametrize(
+    "results",
+    [
+        {"1": False, "2": True, "3": True},
+        {"1": True, "2": False, "3": True},
+        {"1": True, "2": True, "3": False},
+        {"1": False, "2": False, "3": False},
+    ],
+)
+def test_one_failed_phase_is_enough_to_fail_the_gate(results):
+    """No partial credit, and no phase that can be lost in the fold.
+
+    Parametrized over WHICH phase failed rather than asserting once, because a gate that read only
+    the first result — or only the last — passes a single-case test and ships a ceremony that
+    cannot see two thirds of its own evidence.
+    """
+    assert smoke._print_gate(results) == smoke.EXIT_GATE_FAILED
+
+
+def test_the_gate_prints_the_verdict_it_returns(capsys):
+    """The exit code is for the caller; the last line is for the human. They must not disagree."""
+    smoke._print_gate({"1 lifecycle": True, "2 terminal failure": False})
+    out = capsys.readouterr().out
+    assert "1 lifecycle: PASS" in out
+    assert "2 terminal failure: FAIL" in out
+    assert out.splitlines()[-1].startswith("FAIL —")
+
+
+def test_a_passing_gate_says_so_on_its_last_line(capsys):
+    smoke._print_gate({"1 lifecycle": True})
+    assert capsys.readouterr().out.splitlines()[-1].startswith("PASS —")
+
+
+# --- a dead worker must be diagnosed where it died ------------------------------------------------
+
+
+class DeadWorker(StubWorker):
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.error = FileNotFoundError("no such file: 'Livingston Cosmogony.pdf'")
+
+
+def test_a_dangling_corpus_symlink_is_refused_at_setup(tmp_path):
+    """The shape this repo's own corpus has: `data/dogfood/**` is gitignored and those files are
+    symlinks. A broken one still globs as `*.pdf`, and `parse_file` then raises `FileNotFoundError`
+    — neither `ParseError` nor `TransientEmbeddingError`, so the worker dies unclassified.
+
+    Refusing it here costs a millisecond. Letting it through costs three phase timeouts and reports
+    a lifecycle failure whose cause was a symlink.
+    """
+    (tmp_path / "real.pdf").write_bytes(b"%PDF-1.7\n")
+    (tmp_path / "ghost.pdf").symlink_to(tmp_path / "nothing-here.pdf")
+    with pytest.raises(smoke.SetupError, match="ghost.pdf"):
+        smoke._corpus_files(tmp_path, None)
+
+
+def test_a_directory_named_like_a_corpus_file_is_refused_too(tmp_path):
+    (tmp_path / "real.pdf").write_bytes(b"%PDF-1.7\n")
+    (tmp_path / "notes.pptx").mkdir()
+    with pytest.raises(smoke.SetupError, match="notes.pptx"):
+        smoke._corpus_files(tmp_path, None)
+
+
+def test_waiting_stops_on_the_FIRST_sample_after_a_worker_dies():
+    """Promptness is the whole fix, so it is what gets asserted.
+
+    The old code caught the crash and read it once, in `main`, after all three phases had run — so
+    the diagnosis existed and arrived three timeouts too late to be one. Folding the check into the
+    predicate means the sampling loop that is already running notices it on the next tick.
+    """
+    observer = ScriptedObserver([snapshot("processing", 0)] * 3, max_samples=40)
+    reason = smoke._await(
+        observer, lambda current: False, workers=(DeadWorker(),), stalled="never mind"
+    )
+    assert reason is not None
+    assert "a worker died" in reason
+    assert observer.samples == 1
+
+
+def test_a_death_is_reported_ahead_of_the_timeout_it_also_caused():
+    """Both are true when a worker dies during a wait that would have expired anyway. Only one is
+    the cause, and a timeout message would send the reader looking for a slow worker."""
+    observer = ScriptedObserver([snapshot("processing", 0)], max_samples=1)
+    reason = smoke._await(
+        observer, lambda current: False, workers=(DeadWorker(),), stalled="the queue never drained"
+    )
+    assert "TIMED OUT" not in reason
+
+
+def test_phase_one_fails_fast_when_its_worker_died(stub_enqueue, capsys):
+    observer = ScriptedObserver([snapshot("queued", 0, job_state="queued", attempts=0)] * 3)
+    assert (
+        smoke._phase_lifecycle(
+            None, observer, DeadWorker(), owner_id="o", class_id="c", corpus=[Path("a.pdf")]
+        )
+        is False
+    )
+    out = capsys.readouterr().out
+    assert "a worker died" in out
+    assert "TIMED OUT" not in out
+
+
+def test_phase_two_fails_fast_when_its_worker_died(stub_enqueue, capsys):
+    observer = ScriptedObserver([snapshot("queued", 0, job_state="queued", attempts=0)] * 3)
+    assert (
+        smoke._phase_terminal_failure(
+            None,
+            observer,
+            DeadWorker(),
+            owner_id="o",
+            class_id="c",
+            corrupt=Path("corrupt-lecture.pdf"),
+        )
+        is False
+    )
+    assert "a worker died" in capsys.readouterr().out
+
+
+def test_phase_three_does_not_start_worker_B_until_A_has_claimed(monkeypatch, stub_enqueue):
+    """The ordering IS the mechanism. Start B first and B wins the claim on its long lease, A never
+    holds the job, nothing ever expires, and the reaper case quietly stops being demonstrated."""
+    observer = ScriptedObserver(reclaimed_history())
+    started_at: list[int] = []
+
+    class RecordingWorker(StubWorker):
+        def start(self):
+            started_at.append(observer.samples)
+            super().start()
+
+    monkeypatch.setattr(smoke, "WorkerThread", RecordingWorker)
+    log = smoke.ReaperLog()
+    assert (
+        smoke._phase_reaper(
+            None,
+            observer,
+            log,
+            StubWorker(),
+            owner_id="o",
+            class_id="c",
+            target=Path("Livingston Cosmogony.pdf"),
+            embedder=FakeDelayGate(),
+            lease_seconds=1,
+            chunk_size=250,
+            chunk_overlap=40,
+        )
+        is True
+    )
+    # B was constructed and started only after the observer had actually seen A holding the job.
+    assert started_at == [1]
+
+
+def test_phase_three_fails_when_the_history_shows_an_impossible_transition(
+    monkeypatch, stub_enqueue, capsys
+):
+    """`ready` is absorbing. A redelivery that unpublished a `ready` file is a real violation, and
+    phase 3 checks legality for the same reason phase 1 does."""
+    unpublished = [
+        snapshot("queued", 0, job_state="queued", attempts=0),
+        snapshot("processing", 0),
+        snapshot("ready", 62, attempts=2),
+        snapshot("failed", 0, job_state="failed", attempts=2),
+    ]
+    assert run_reaper_phase(ScriptedObserver(unpublished), monkeypatch) is False
+    assert "no legal path reaches" in capsys.readouterr().out
+
+
+# --- which illegal pairs a MISSED sighting could explain ------------------------------------------
+
+
+def test_exactly_three_illegal_pairs_are_bridgeable_by_a_missed_sighting():
+    """The enumeration the docstring used to get wrong, done from the map instead of from memory.
+
+    It named `failed -> ready` as "the only such pair". There are three, and the one that actually
+    matters here is `queued -> ready` — a missed `processing` on the happy path, which is the exact
+    miss `OBSERVE_SECONDS` is tuned against. Enumerated from `LEGAL_STATUS_TRANSITIONS` so the claim
+    cannot drift from the table it is about.
+    """
+    states = list(smoke.LEGAL_STATUS_TRANSITIONS)
+    # DISTINCT states only. `status_path` collapses consecutive duplicates, so no observed path can
+    # ever contain `X -> X` — `processing -> processing` and `failed -> failed` are bridgeable in
+    # the abstract and unobservable in fact, and counting them would make this assertion about the
+    # map rather than about anything the ceremony can see.
+    bridgeable = {
+        (before, after)
+        for before in states
+        for after in states
+        if before != after
+        and smoke.illegal_transitions([before, after])
+        and smoke._bridgeable(before, after)
+    }
+    assert bridgeable == {("queued", "ready"), ("queued", "failed"), ("failed", "ready")}
+
+
+def test_nothing_after_ready_is_bridgeable():
+    """`ready` is absorbing, so no missed sighting can explain a pair that leaves it — those are the
+    real violations and must not be softened."""
+    assert smoke._bridgeable("ready", "processing") is False
+    assert smoke._bridgeable("ready", "failed") is False
+
+
+def test_a_status_the_schema_does_not_have_is_never_bridgeable():
+    assert smoke._bridgeable("quarantined", "ready") is False
+
+
+def test_the_two_kinds_of_illegal_pair_do_not_get_the_same_sentence():
+    """A missed `processing` printed as "the state machine was violated" sends a reader to audit
+    guards that are working. Both still fail the gate; only the diagnosis differs."""
+    missed = smoke.transition_fault("queued", "ready")
+    assert "a sighting was missed" in missed
+
+    real = smoke.transition_fault("ready", "processing")
+    assert "no legal path reaches" in real
+    assert "missed" not in real
+
+
+# --- flag values the ceremony argues are impossible -----------------------------------------------
+
+
+def args(**overrides):
+    from argparse import Namespace
+
+    return Namespace(**{"max_files": None, "lease": smoke.DEFAULT_SHORT_LEASE_SECONDS, **overrides})
+
+
+def test_max_files_zero_is_refused_rather_than_read_as_unset():
+    """`files[:0] if 0 else files` is the whole corpus. A run that asked for no files silently got
+    every one of them, and paid for them."""
+    with pytest.raises(smoke.SetupError, match="reads as unset"):
+        smoke._validate_args(args(max_files=0))
+
+
+def test_a_negative_max_files_is_refused():
+    """`files[:-1]` drops the LAST file, which after sorting is the wordiest — the one phase 3 is
+    most likely to need. It would then fail phase 3 for a reason the output does not contain."""
+    with pytest.raises(smoke.SetupError, match="at least 1"):
+        smoke._validate_args(args(max_files=-1))
+
+
+@pytest.mark.parametrize("lease", [0, -5])
+def test_a_lease_at_or_below_zero_is_refused(lease):
+    """Three places in this repo argue 1s is the floor and that 0 would be "forcing the expiry by
+    another name". Argparse enforced none of them, so phase 3 would have passed on a lease that had
+    already expired when `claim` granted it."""
+    with pytest.raises(smoke.SetupError, match="forced rather than earned"):
+        smoke._validate_args(args(lease=lease))
+
+
+def test_the_documented_defaults_and_the_negative_control_both_validate():
+    smoke._validate_args(args())
+    smoke._validate_args(args(max_files=1, lease=30))
+
+
+# --- claims made in prose that the code has to keep -----------------------------------------------
+
+
+def test_the_amended_adr_pair_is_never_cited_in_the_slash_form():
+    """CLAUDE.md bans `ADR 0025/0027` for an amended pair: the slash says nothing about which ADR
+    owns what. ADR 0027 amends ADR 0025, and the repo's form is "(ADR 0025, guarded per ADR 0027)".
+
+    Asserted against the source because a citation-form rule is exactly the kind that is obeyed on
+    the day it is written and eroded afterwards. `ADR 0011/0020` is deliberately not covered — those
+    two are not an amendment pair.
+    """
+    source = _SCRIPT.read_text()
+    assert "ADR 0025/0027" not in source
+    assert "ADR 0025, guarded per ADR 0027" in source
+
+
+def _help_for(flag):
+    """The help string argparse actually holds for a flag, not the one the source appears to set."""
+    for action in smoke._build_parser()._actions:
+        if flag in action.option_strings:
+            return action.help
+    raise AssertionError(f"no such flag: {flag}")
+
+
+def test_the_max_files_help_describes_the_file_phase_three_actually_takes():
+    """The help said phase 3 runs on "the largest file of that subset" when the code picked by a
+    different axis entirely, and it now takes the FIRST — a third answer over two revisions. A help
+    string is read by someone choosing a flag value; it has to name what the code does."""
+    help_text = _help_for("--max-files")
+    assert "FIRST file" in help_text
+    assert "largest" not in help_text
+
+
+def test_the_lease_help_names_its_floor():
+    """The floor is now enforced (`_validate_args`), so the flag that carries it must say so —
+    otherwise the only way to learn the rule is to trip over it."""
+    assert str(smoke.DEFAULT_SHORT_LEASE_SECONDS) in _help_for("--lease")

@@ -14,7 +14,13 @@
   kinds of bad input — corrupt, password-protected, unsupported/zero-text — and now carries a
   fourth, `too_long`: input past a configured word ceiling, refused before the embed call. The
   terminal *handling* below is unchanged, which is why the new reason needed no worker change; §1's
-  transient half, §2 and §3 stand unchanged)
+  transient half, §2 and §3 stand unchanged); §2–3's **atomic index write, and the PM-4 seam
+  itself, amended 2026-09-01 by ADR 0030** (the index transaction now admits a caller-supplied
+  predicate evaluated inside it, and a False answer rolls the whole write back; the seam is
+  restated as a rule about *knowledge* — the ingest pipeline may accept a predicate it cannot
+  interpret, and still may not write a job-layer column. Atomicity, all-or-nothing replace and
+  index-write-only stand unchanged, and §1's retryable/terminal split is untouched: a refused
+  publish is neither and buys no retry)
 
 ## Context
 `architecture.md` locked the async substrate (ADR 0011: DB-backed `jobs` + in-process poll worker,

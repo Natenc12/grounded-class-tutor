@@ -564,6 +564,20 @@ class _DelayedEmbeddings:
         # Reached only for attributes this class does not define — `model_id` above all. Goes
         # through `__dict__` rather than `self._inner`, which would recurse into this method if it
         # ever fired before `__init__` bound that name.
+        #
+        # KNOWN RESIDUAL, LEFT DELIBERATELY: this collapses a BROKEN attribute into a MISSING one.
+        # If a property on the real embedder raised `AttributeError`, the exception would propagate
+        # out of here, and Python's attribute protocol reads any `AttributeError` from `__getattr__`
+        # as "no such attribute" — so `hasattr(wrapper, name)` would be False for something that
+        # exists and is failing. Unreachable today: the attributes anything reads off an embedder
+        # (`model_id`, `dim`) are plain returns on `OpenAIEmbeddings`.
+        #
+        # Not fixed, because no fix is small. Telling the two apart means probing the inner TYPE
+        # before the call and re-raising the broken case as a non-`AttributeError` — a second
+        # exception type, a `vars()` fallback that `__slots__` breaks, and a change to what
+        # `hasattr` means on this object, all bought on speculation about a property that does not
+        # exist. The residual is written down instead, which is what makes it a decision rather than
+        # an oversight.
         try:
             inner = self.__dict__["_inner"]
         except KeyError:  # pragma: no cover - only reachable mid-construction
@@ -1176,8 +1190,10 @@ def _build_parser() -> argparse.ArgumentParser:
         "--lease",
         type=int,
         default=DEFAULT_SHORT_LEASE_SECONDS,
-        help=f"lease worker A holds, in seconds (default {DEFAULT_SHORT_LEASE_SECONDS}); phase 3 "
-        "overruns it for real, so it must be shorter than the slowest file's ingest",
+        help=f"lease worker A holds, in seconds (default and floor {DEFAULT_SHORT_LEASE_SECONDS}). "
+        f"Phase 3 induces a {PHASE_THREE_EMBED_DELAY_SECONDS:.0f}s embed delay, so this must be "
+        "shorter than that delay — no longer than any file's ingest, which stopped being the "
+        "constraint when the overrun stopped depending on the corpus",
     )
     parser.add_argument(
         "--verbose",

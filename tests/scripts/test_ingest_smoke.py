@@ -886,10 +886,23 @@ def test_a_dangling_corpus_symlink_is_refused_at_setup(tmp_path):
     Refusing it here costs a millisecond. Letting it through costs three phase timeouts and reports
     a lifecycle failure whose cause was a symlink.
     """
-    (tmp_path / "real.pdf").write_bytes(b"%PDF-1.7\n")
+    for healthy in ("a.pdf", "b.pptx", "c.pptx", "d.pdf"):
+        (tmp_path / healthy).write_bytes(b"%PDF-1.7\n")
     (tmp_path / "ghost.pdf").symlink_to(tmp_path / "nothing-here.pdf")
-    with pytest.raises(smoke.SetupError, match="ghost.pdf"):
+
+    with pytest.raises(smoke.SetupError) as caught:
         smoke._corpus_files(tmp_path, None)
+
+    # FOUR HEALTHY FILES, ON PURPOSE. Matching only on "cannot be opened" left the message free to
+    # name every entry in the corpus — "5 corpus entry/entries ... cannot be opened: a.pdf, b.pptx,
+    # c.pptx, d.pdf, ghost.pdf" — which sends a reader to audit four files that are fine and is
+    # exactly as unhelpful as no message. The count and the names are the message; assert them.
+    message = str(caught.value)
+    assert "cannot be opened" in message
+    assert "ghost.pdf" in message
+    assert "1 corpus entry" in message
+    for healthy in ("a.pdf", "b.pptx", "c.pptx", "d.pdf"):
+        assert healthy not in message
 
 
 def test_a_directory_named_like_a_corpus_file_is_refused_too(tmp_path):
@@ -1068,8 +1081,10 @@ def test_max_files_zero_is_refused_rather_than_read_as_unset():
 
 
 def test_a_negative_max_files_is_refused():
-    """`files[:-1]` drops the LAST file, which after sorting is the wordiest — the one phase 3 is
-    most likely to need. It would then fail phase 3 for a reason the output does not contain."""
+    """`files[:-1]` silently drops the last file, so a run asks for a corpus and quietly gets a
+    different one — and pays for it. Phase 3 is no longer the victim (it takes `corpus[0]` and its
+    overrun is induced), which makes this purely about a flag meaning something other than it says:
+    a narrowed run and an unnarrowed one stop being comparable, for no error anyone sees."""
     with pytest.raises(smoke.SetupError, match="at least 1"):
         smoke._validate_args(args(max_files=-1))
 
@@ -1121,10 +1136,26 @@ def test_the_max_files_help_describes_the_file_phase_three_actually_takes():
     assert "largest" not in help_text
 
 
-def test_the_lease_help_names_its_floor():
-    """The floor is now enforced (`_validate_args`), so the flag that carries it must say so —
-    otherwise the only way to learn the rule is to trip over it."""
-    assert str(smoke.DEFAULT_SHORT_LEASE_SECONDS) in _help_for("--lease")
+def test_the_lease_help_names_the_constraint_that_is_actually_live():
+    """The retired rule, and a test that could not catch it keeping the flag.
+
+    The help said `--lease` "must be shorter than the slowest file's ingest". That rule died when
+    the overrun became induced: the live constraint is `PHASE_THREE_EMBED_DELAY_SECONDS`. On a
+    corpus whose slowest file takes 5s a reader would follow the printed instruction, pick
+    `--lease 4`, and watch phase 3 fail with a remedy contradicting the help they had just read.
+
+    The old assertion was `str(DEFAULT_SHORT_LEASE_SECONDS) in help` — and the help f-string
+    INTERPOLATES that constant, so it held for every value of it and for every word around it. A
+    test whose expectation is computed from the same source as the thing under test cannot fail.
+    What can fail is a NEGATIVE assertion on the retired wording and a positive one on a literal
+    the author has to type, which is the shape its `--max-files` sibling already had.
+
+    This is the drift `_build_parser` was split out to catch, catching it.
+    """
+    help_text = _help_for("--lease")
+    assert "embed delay" in help_text
+    assert "floor" in help_text
+    assert "slowest file" not in help_text
 
 
 # --- the induced delay ----------------------------------------------------------------------------
@@ -1475,10 +1506,45 @@ def test_a_wait_keeps_sampling_until_the_predicate_holds():
 
 
 def test_a_wait_that_never_settles_reports_a_timeout_rather_than_a_success():
+    """A NON-ZERO timeout, and elapsed time asserted — so the mutant fails instead of hanging.
+
+    At `timeout=0` this test caught the inverted deadline comparison by never returning: the loop
+    spins forever and CI reports a hung job rather than a red one, which is a worse signal than no
+    test (the verifier had to cap its own harness at 180s because of this).
+
+    With a real timeout the two implementations separate on DURATION rather than on liveness. The
+    correct one returns only once `monotonic() >= deadline`, so it cannot come back early; the
+    inverted one satisfies its check immediately and returns almost at once. Asserting the floor on
+    elapsed time is what turns "hangs forever" into "returned in 0.001s, expected >= 0.15".
+    """
     conn = ScriptedConnection(*[[row(status="processing")] for _ in range(3)])
     observer = smoke.Observer(conn)
     observer.watch("f1")
-    assert observer.wait_until(lambda current: False, timeout=0) is False
+
+    started = time.perf_counter()
+    settled = observer.wait_until(lambda current: False, timeout=0.2)
+    elapsed = time.perf_counter() - started
+
+    assert settled is False
+    assert elapsed >= 0.15
+
+
+def test_wait_until_requires_an_explicit_timeout():
+    """`timeout` is keyword-only AND has no default, and the second half is the load-bearing one.
+
+    Dropping the bare `*` alone is signature hygiene — no correct caller can tell, which is why the
+    other keyword-only barriers in this file are deliberately left unpinned. Giving `timeout` a
+    default of `0.0` is a different thing: it makes "never wait" the behaviour a caller gets by
+    FORGETTING, and a forgotten wait returns before the worker has done anything, so the phase
+    judges a history that has not happened yet.
+
+    Latent rather than live — every caller passes it today — and pinned for exactly that reason: a
+    fourth phase added later is the caller that would omit it.
+    """
+    observer = smoke.Observer(ScriptedConnection([row()]))
+    observer.watch("f1")
+    with pytest.raises(TypeError):
+        observer.wait_until(lambda current: True)
 
 
 def test_the_snapshot_query_ignores_a_file_that_has_no_job_row(db, db_other):
@@ -1531,3 +1597,92 @@ def test_a_missing_api_key_exits_setup_before_anything_is_wired(monkeypatch, cap
     out = capsys.readouterr().out
     assert "SETUP FAILED" in out
     assert "OPENAI_API_KEY" in out
+
+
+class FakeConn:
+    """Supports the two things `main` does to a connection: `with` it, and set autocommit."""
+
+    def __init__(self):
+        self.autocommit = False
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc_info):
+        return False
+
+
+@pytest.fixture
+def quiet_worker_logger():
+    """Put `gct.jobs.worker`'s handlers back after a test that drives `main`.
+
+    `main` attaches a `ReaperLog` to that logger and never detaches it — correct for a script that
+    exits afterwards, and a leak inside a test process where several tests call `main`. Restoring
+    keeps a handler from one test counting records emitted during another.
+    """
+    logger = logging.getLogger(smoke.run.__module__)
+    previous = list(logger.handlers)
+    try:
+        yield
+    finally:
+        logger.handlers = previous
+
+
+@pytest.fixture
+def drivable_main(monkeypatch):
+    """Stub `main`'s wiring down to nothing, leaving its own control flow real.
+
+    Everything replaced here is something `main` merely CONNECTS — the corpus listing, the settings,
+    the provider client, the two connections, the class row, the worker, the three phases. What is
+    left running is the part that is `main`'s alone and is reachable no other way: the order it does
+    things in, and what it does with the results afterwards.
+    """
+    monkeypatch.setattr(sys, "argv", ["ingest_smoke.py"])
+    monkeypatch.setattr(smoke, "_corpus_files", lambda corpus_dir, max_files: [Path("a.pdf")])
+    monkeypatch.setattr(
+        smoke, "load_settings", lambda: SimpleNamespace(openai_api_key="sk-test", database_url="")
+    )
+    monkeypatch.setattr(smoke, "OpenAIEmbeddings", RecordingEmbedder)
+    monkeypatch.setattr(smoke, "connect", FakeConn)
+    monkeypatch.setattr(smoke, "_create_class", lambda conn, owner_id, name: "class-1")
+    for phase in ("_phase_lifecycle", "_phase_terminal_failure", "_phase_reaper"):
+        monkeypatch.setattr(smoke, phase, lambda *a, **kw: True)
+    return monkeypatch
+
+
+def test_a_worker_that_died_between_phases_still_fails_the_gate(
+    drivable_main, quiet_worker_logger, capsys
+):
+    """The last remaining reader of `worker_a.error`, and the only one nothing else covers.
+
+    `_await` catches a death DURING a wait, in the phase it broke, and that path is well pinned. The
+    sliver this line keeps honest is a death BETWEEN phases, when nothing is waiting on anything —
+    no predicate is being evaluated, so the in-wait check never runs. Every phase here reports PASS
+    and the worker is dead: the gate must still come back non-zero, or a ceremony whose worker died
+    somewhere in the gaps reports success.
+
+    Invert this line and the suite was green — which is to say the backstop's own comment was the
+    only thing asserting it existed.
+    """
+    drivable_main.setattr(smoke, "WorkerThread", DeadWorker)
+
+    assert smoke.main() == smoke.EXIT_GATE_FAILED
+    out = capsys.readouterr().out
+    assert "worker A died" in out
+    assert "worker A survived: FAIL" in out
+
+
+def test_a_run_whose_worker_survived_every_phase_exits_zero(
+    drivable_main, quiet_worker_logger, capsys
+):
+    """The control for the test above: same wiring, a live worker, and the gate must pass.
+
+    Without it, a backstop that reported EVERY worker as dead would satisfy the assertion above and
+    fail every real run — the inverted mutant caught in only one direction.
+    """
+    drivable_main.setattr(smoke, "WorkerThread", StubWorker)
+
+    assert smoke.main() == smoke.EXIT_OK
+    out = capsys.readouterr().out
+    assert "worker A died" not in out
+    assert out.splitlines()[-1].startswith("PASS —")

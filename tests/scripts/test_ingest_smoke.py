@@ -159,8 +159,11 @@ def test_a_clean_first_ingest_shows_no_partial_index():
 def test_a_redelivery_that_replaced_the_set_shows_no_partial_index():
     """Two publishes of the same file under the same window are the same size — that is idempotence.
 
-    This is phase 3's shape: the zombie publishes, then the winner republishes over it. Both
-    sightings carry the full count, and the count in between never dips.
+    This WAS phase 3's shape, and is still a shape this reader must handle. Since ADR 0030 the
+    reaped worker's publish is refused, so the ceremony's phase 3 produces one publish rather than
+    two — but `partial_index_sightings` reads any history it is handed, not a phase-3-only one, so
+    the two-publish case stays covered here. Both sightings carry the full count, and the count in
+    between never dips.
     """
     history = [
         snapshot("queued", 0),

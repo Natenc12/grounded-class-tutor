@@ -15,8 +15,11 @@ Three phases, each an acceptance claim from the issue, each run against the real
      (ADR 0020 §1: bad input is exactly as bad on the next attempt, so the budget is not for it).
   3. REAPER — a worker OUTRUNS a short lease while embedding a real file, a second worker's
      reaper reclaims the job mid-flight, and the redelivered run leaves the file with ONE full
-     chunk set. At-least-once is safe by `index_file`'s idempotent replace, not by dedup logic
-     (ADR 0011/0020). The overrun is INDUCED, by a delay this script wraps around the real embedder
+     chunk set. At-least-once is made safe two ways, and since ADR 0030 this phase walks the
+     SECOND: a duplicate run is absorbed by `index_file`'s idempotent replace where the publisher
+     still holds its lease, and DISCARDED where it does not — the reaped worker's publish is
+     refused outright. Either way ONE full chunk set, and never by dedup logic (ADR 0011/0020).
+     The overrun is INDUCED, by a delay this script wraps around the real embedder
      — see `_DelayedEmbeddings` for the decision and, more importantly, for the claim it gives up.
 
 Running through all three, sampled on a SECOND connection: no partial index is ever visible — no
@@ -941,8 +944,14 @@ def _phase_reaper(
 
     So the phase no longer demonstrates that a worker overran its lease UNPROMPTED. It demonstrates
     the thing the issue actually asks for: that when a lease expires under a running worker, the
-    reaper reclaims it, the job is redelivered, and `index_file`'s all-or-nothing replace absorbs
-    the duplicate into ONE full chunk set.
+    reaper reclaims it, the job is redelivered, and the file ends with ONE full chunk set.
+
+    HOW it ends that way changed with ADR 0030, and the docstring said the old way for a while:
+    the reaped worker's publish is now REFUSED rather than absorbed, so the redelivered run's
+    publish is the only one that ever lands. A real replace-on-redelivery — a second publish
+    landing over a full set — is demonstrated by
+    `tests/gct/jobs/test_worker.py::test_a_reclaimed_job_reruns_and_leaves_one_chunk_set`, not
+    here.
 
     Bounded to exactly one redelivery, which is what makes this a phase and not a ping-pong: B
     takes the default lease, so when A finishes and reaps in its turn, B's lease is nowhere near
@@ -1054,8 +1063,10 @@ def _reaper_body(
     # THE at-least-once claim: two deliveries, ONE chunk set. `partial_index_sightings` reads
     # "full" off the largest count this file ever carried, so two runs that published different
     # sized sets — a duplicate appended rather than replaced, a half-written set published — land
-    # here as a violation. Idempotence is by `index_file`'s all-or-nothing replace, not by dedup
-    # logic (ADR 0011/0020), and this is where the ceremony checks that it actually held.
+    # here as a violation. This checks the OUTCOME, and since ADR 0030 that is all it can check:
+    # the reaped worker is refused, so the redelivered publish lands on a file carrying no chunks
+    # and replaces nothing. The replace mechanism itself (ADR 0011/0020, never dedup logic) is
+    # demonstrated by test_a_reclaimed_job_reruns_and_leaves_one_chunk_set, not by this ceremony.
     for sighting in partial_index_sightings(history):
         faults.append(
             f"redelivery left a partial or disagreeing index: status={sighting.file_status} "

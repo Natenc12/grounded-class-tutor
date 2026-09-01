@@ -73,7 +73,11 @@ def write_pdf(path: Path, page_texts: list[str]) -> Path:
 
 
 def observe(reader, file_id: str, label: str) -> tuple:
-    """Read files + jobs on a connection NEITHER writer holds (ADR 0025's `db_other` rule)."""
+    """Read files + jobs on a connection NEITHER writer holds — the `db_other` rule.
+
+    ADR 0025 states that no single-connection test can observe a publication failure;
+    `db_other` is the repo's answer to that, not the ADR's (see `tests/conftest.py`).
+    """
     status, reason = reader.execute(
         "select status, failed_reason from files where file_id = %s::uuid", (file_id,)
     ).fetchone()

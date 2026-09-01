@@ -1,4 +1,7 @@
-"""Queue - every statement that touches the `jobs` table lives here (issue #70).
+"""Queue - every statement that WRITES the `jobs` table lives here (issue #70).
+
+WRITES, not touches: a caller may READ that table inside its own UPDATE, where an
+answer this module returned would already be stale by the time it is used (#86).
 
 This module RECORDS job state; it does not DECIDE it. The poll loop, the
 retryable/terminal split, and every `files.status` transition after `queued`

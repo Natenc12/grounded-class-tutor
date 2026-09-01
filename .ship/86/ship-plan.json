@@ -65,7 +65,29 @@
       }
     ]
   },
-  "phase": "verify",
+  "phase": "done",
   "parked_on": null,
-  "decisions_recorded": ".ship/86/decisions.md"
+  "decisions_recorded": ".ship/86/decisions.md",
+  "verify": {
+    "guards_derived": 5,
+    "derivation": "derive_guards.py, adapted: code_view blanks every string literal, so it derived ZERO guards on this SQL-in-a-string diff. It now leaves a literal visible when the literal's own first word is select|update|insert|delete|with, plus five SQL decision tokens (where/exists/from/<>/=). Both changes mechanical; adapted copy kept at .ship/86/mutations/derive_guards.py.",
+    "mutations": "10 run, 8 RED / 2 GREEN. 6 cover the derived obligation (5/5 guards covered, mutate86.py's coverage assertion passed); 4 are declared beyond it.",
+    "surviving_mutants": {
+      "0004": "job_id dropped from the EXISTS - settled by differential search over 338 exhaustively enumerated jobs-table states: distinguishable in principle (needs a second `processing` row with the same lease_token, which no schema constraint forbids), unreachable in practice (lease_token is written by exactly two statements, one of which is gen_random_uuid()). No test added, and none is missing.",
+      "0007": "select 1 -> select 0. Equivalence CONTROL, not a finding."
+    },
+    "gate": {
+      "not_live": "546 passed, 1 deselected",
+      "db": "137 passed, 0 skipped",
+      "ruff_check": "pass",
+      "ruff_format_check": "49 files already formatted",
+      "evidence_script": "exit 0, FINAL: status='ready' failed_reason=None chunks=1"
+    },
+    "defect_found_and_fixed": "src/gct/jobs/queue.py:1 still read 'every statement that touches the `jobs` table lives here' - falsified by this diff's new EXISTS read. The builder narrowed the derivative copy in worker.py and left the primary. Narrowed to WRITES, one sentence naming the carve-out. UNCOMMITTED at hand-off - commit before opening the PR.",
+    "builder_worries": {
+      "shared_connection_in_the_primary_test": "honest - the three-connection evidence script and the shared-connection test agree on every one of the 10 mutants",
+      "module_docstring_narrowing": "in footprint and TRUE (census: exactly one statement in worker.py names `jobs`), but incomplete - see defect_found_and_fixed",
+      "job_id_conjunct": "see surviving_mutants.0004"
+    }
+  }
 }

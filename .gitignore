@@ -47,3 +47,8 @@ understanding/
 .DS_Store
 .idea/
 .vscode/
+
+# /ship run state (plan, decisions, mutation harness + ledger). Local to one run: the
+# reviewable copy of the ledger is committed under evidence/, and the harness scripts here
+# are throwaway. Ignored so `ruff check` (which CI runs with no paths) never lints them.
+.ship/

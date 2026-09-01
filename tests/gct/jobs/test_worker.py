@@ -3002,14 +3002,27 @@ def test_the_publish_guard_locks_the_job_row_against_a_concurrent_reaper(db, tmp
 
 
 def test_the_publish_guard_waits_for_a_contended_row_instead_of_skipping_it(db, tmp_path):
-    """The lock must WAIT. `for update skip locked` would refuse a publish we are entitled to.
+    """The lock must WAIT. `for update skip locked` reads a contended row as "not ours".
 
     The other direction of `..._locks_the_job_row_against_a_concurrent_reaper`, which only proves
-    the guard's lock blocks a reaper. Nothing proved what the guard does when somebody ELSE holds
-    the row: `skip locked` returns no row, the predicate reads that as "not ours", and a worker
-    whose lease is perfectly live throws its whole ingest away and waits for the reaper to redo it.
-    Fail-safe for #92, but it burns an attempt (ADR 0020's budget) on a job that was never in
-    danger.
+    the guard's lock BLOCKS a reaper. Nothing proved what the guard does when somebody ELSE holds
+    the row, and the two answers differ: `skip locked` returns no row, which the predicate reads
+    as "not ours", so a publish is refused on the strength of a lock rather than of ownership.
+
+    WHY THIS IS PINNED EVEN THOUGH TODAY IT IS UNREACHABLE, which is the honest version of the
+    claim: no statement in `queue.py` can hold this row while our lease is live. `claim` matches
+    `state = 'queued'` and takes `for update of j skip locked`; `reclaim_expired` matches
+    `leased_until < now()`; the settle verbs match on our `lease_token`, which no rival holds. The
+    one reachable contention is a reaper on a row we have ALREADY lost, and there both variants
+    refuse. So the difference is invisible in production - today.
+
+    It is pinned because that safety is an accident of three WHERE clauses in another module, and
+    nothing tells whoever edits them what they are holding up. A future statement that locks a
+    live `processing` row - a settle verb that stops matching on the token, an admin requeue, a
+    second reaper on a different predicate - makes a live-leased worker throw away a finished
+    ingest and wait for redelivery, spending a retry attempt (ADR 0020) on a job never in danger.
+    ADR 0030 rests on the lock WAITING, and this is the only test that can tell waiting from
+    skipping.
 
     Proved by making the guard raise rather than by timing it: a rival holds the row, the guard's
     connection carries a `lock_timeout`, and a guard that WAITS hits that timeout. Under

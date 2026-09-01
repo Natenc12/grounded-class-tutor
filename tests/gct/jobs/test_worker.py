@@ -55,6 +55,7 @@ import pytest
 from reportlab.pdfgen import canvas
 
 from gct.config import EMBEDDING_DIM
+from gct.db import connect
 from gct.ingest import pipeline
 from gct.ingest.chunk import CHUNK_OVERLAP_WORDS, CHUNK_SIZE_WORDS
 from gct.ingest.parse import ParseError
@@ -759,6 +760,23 @@ def test_the_backoff_never_outlasts_the_lease_it_is_served_under(
     assert any(d < backoff_seconds(n + 1) for n, d in enumerate(slept)), (
         "nothing was actually clamped, so this test would pass without the fix"
     )
+
+
+def _another_connection():
+    """A THIRD connection - a second concurrent WRITER, which `db_other` is not.
+
+    `db_other` exists to read back what survived and owns no writes; these tests need a rival
+    worker that claims, burys and reaps for real. Built through `gct.db.connect()` and not
+    through `psycopg.connect(conn.info.dsn)`, which is the version that shipped first and died
+    in CI: psycopg REDACTS the password out of `info.dsn`, so reconnecting through it works only
+    where the DSN needs none. Locally that is every run; in CI it is no run at all.
+
+    Autocommit for the reason every writer in this module needs it - `require_idle` refuses a
+    connection already inside a transaction (ADR 0025, guarded per ADR 0027). The caller closes it.
+    """
+    conn = connect()
+    conn.autocommit = True
+    return conn
 
 
 def _backdate_lease(conn, file_id: str) -> None:
@@ -2766,7 +2784,7 @@ def test_a_reaped_worker_publishing_after_a_live_leased_bury_writes_nothing(
     fired too late would leave this file `failed` AND stripped.
     """
     conn, owner_id, class_id = db
-    winner = psycopg.connect(db_other.info.dsn)
+    winner = _another_connection()
     winner.autocommit = True
     conn.autocommit = True
     monkeypatch.setattr(worker.time, "sleep", lambda _: None)
@@ -2893,7 +2911,7 @@ def test_a_refusal_logs_the_two_numbers_that_diagnose_it(db, tmp_path, monkeypat
     the process uptime.
     """
     conn, owner_id, class_id = db
-    winner = psycopg.connect(conn.info.dsn)
+    winner = _another_connection()
     winner.autocommit = True
     conn.autocommit = True
     monkeypatch.setattr(worker.time, "sleep", lambda _: None)
@@ -2959,7 +2977,7 @@ def test_the_publish_guard_locks_the_job_row_against_a_concurrent_reaper(db, tmp
     assert job is not None
     _backdate_lease(conn, file_id)
 
-    reaper = psycopg.connect(conn.info.dsn)
+    reaper = _another_connection()
     reaper.autocommit = True
     try:
         reaper.execute("set lock_timeout = '750ms'")

@@ -563,10 +563,10 @@ def process_one(
         # `('ready', <a reason>)` needs BOTH guards and is STILL not unreachable: a bury that
         # legitimately HOLDS its lease, followed by a publish from a worker whose lease expired,
         # reaches it through `index_file`, which reads no lease - see `_bury`'s docstring for the
-        # interleaving and why closing it is an ADR 0020 decision. That path does not run through
-        # this loop, which is why
-        # `test_the_claim_does_not_clear_a_reason_on_a_file_that_is_already_ready` still sets
-        # that row directly rather than earning it from ticks.
+        # interleaving and why closing it is an ADR 0020 decision. A sequence of ticks DOES earn
+        # that row through it - but it earns it with the job settled TERMINALLY, and
+        # `test_the_claim_does_not_clear_a_reason_on_a_file_that_is_already_ready` needs a
+        # CLAIMABLE job on such a file, which is why it still sets the row directly.
         with conn.transaction():
             conn.execute(
                 """

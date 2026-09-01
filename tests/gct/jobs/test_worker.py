@@ -2235,7 +2235,11 @@ def test_the_claim_clears_the_previous_attempts_failed_reason(db, db_other, tmp_
 def test_a_retry_that_succeeds_leaves_no_failed_reason_on_the_ready_file(
     db, db_other, tmp_path, monkeypatch
 ):
-    """The acceptance criterion of #24: `('ready', <a reason>)` must be unreachable.
+    """The acceptance criterion of #24: `('ready', <a reason>)` must not be reached THIS way.
+
+    #24's acceptance was written as unreachability outright. It is not - see `_bury`'s docstring
+    for the interleaving that still reaches it. What this pins is the retry path, which #24 does
+    close.
 
     Half-bury a corrupt file, then replace the bytes AT THE SAME `staging_ref` with a parseable
     PDF and let the same job's next attempt run. That input change is the ordinary case, not a
@@ -2281,10 +2285,17 @@ def test_the_claim_does_not_clear_a_reason_on_a_file_that_is_already_ready(
     THE SUBJECT HERE IS THE SQL'S SHAPE, AND THE ROW IS SET DIRECTLY RATHER THAN EARNED.
     `('ready', 'unparseable')` is what #24 removes from the SEQUENTIAL path - one attempt after
     another, which is every other test in this file - and #86's lease guard on `_bury` removed
-    the out-of-order path that was still producing it, so NO sequence of ticks earns this row
-    now. That is what makes setting it directly the only way to reach the statement under test,
-    rather than a shortcut past a sequence that exists (the section at the bottom of this file
-    drives the out-of-order interleaving itself).
+    ONE of the two out-of-order paths that were producing it (the section at the bottom of this
+    file drives that interleaving itself). The other is still open, and a sequence of ticks DOES
+    earn `('ready', <a reason>)` through it: a bury by the worker that legitimately HOLDS the
+    lease, then a publish by one whose lease expired, through `index_file`, which reads no lease.
+    See `_bury`'s docstring.
+
+    WHAT TICKS CANNOT EARN IS THIS TEST'S PRECONDITION, which is narrower and is the actual
+    reason the row is set directly: that path settles the job TERMINALLY on its way to the row,
+    so nothing can claim past it, and this test needs a claimable job on a `('ready', <a reason>)`
+    file. Setting the row is therefore not a shortcut past a sequence that exists - no sequence
+    reaches THIS starting state.
     What the test pins is that the clear cannot be lifted out into a second, unguarded
     `update files set failed_reason = null`: that version wipes the reason off a `ready` row,
     which is a row a zombie whose lease expired is entitled to be about to bury, and it widens

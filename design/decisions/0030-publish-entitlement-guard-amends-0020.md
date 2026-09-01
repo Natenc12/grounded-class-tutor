@@ -21,7 +21,7 @@ file. `_bury`'s docstring partitions the three by where the bury falls relative 
 claim. #24 closed bury-then-claim: the later claim's `processing` write clears the reason on the
 way past. #86 closed claim-then-bury where the burier had **lost** its lease. The third — the
 burier **holds** a live lease, so #86's guard passes exactly as designed, and the *reaped* worker
-is the one that publishes — was left open as #92, and named as an open residual in five places
+is the one that publishes — was left open as #92, and named as an open residual across five files
 rather than asserted away.
 
 It was reachable on `main` and demonstrated by execution, driven entirely through real ticks with
@@ -79,7 +79,8 @@ amendment.
   leaves `jobs='failed'` beside `files='ready'`, two tables disagreeing about one file.
 - **A lease check in the worker immediately before calling `ingest_file`.** Cheap and useless: the
   window this defect lives in is the parse/chunk/embed work itself, which runs *after* such a check.
-- **Accept and document.** The state was already documented as NOT YET HELD at five sites, honestly.
+- **Accept and document.** The state was already documented honestly — 15 mentions across five
+  files, and the spec invariant carried an explicit **NOT YET HELD (#92)**.
   Declined because the path is reachable in production and the invariant is a trust claim, which is
   the product.
 - **Make `_bury`'s two writes one transaction** so the bury is atomic across `files` and `jobs`.

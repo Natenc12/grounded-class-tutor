@@ -210,6 +210,15 @@ def _bury(conn: psycopg.Connection, job: Job, *, reason: str, error: str) -> Non
     the reason. Neither guard closes it alone: #24 covers bury-then-claim, this covers
     claim-then-bury.
 
+    THAT UNREACHABILITY RESTS ON ONE `jobs` ROW PER `file_id`, WHICH `enqueue` GUARANTEES AND THE
+    SCHEMA DOES NOT. The argument above turns on the winner's claim invalidating *this* worker's
+    token - true only while both runs contend for the same job row. Given two live jobs for one
+    file, a zombie's `EXISTS` is satisfied by its own row while the other run publishes `ready`,
+    and the forbidden state returns. No input reaches that today: `queue.py`'s insert is the only
+    one in the repo and `enqueue` mints a fresh `files` row beside it. Whoever gives a file a
+    second live job - an upload path that re-enqueues an existing `file_id` is the obvious way -
+    breaks this claim, and should read it before deciding they haven't.
+
     A lost lease is reported, not raised: it is the routine at-least-once outcome (`fail`'s
     docstring), and now both halves report the same thing rather than disagreeing.
     """

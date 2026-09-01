@@ -1,0 +1,14 @@
+{
+  "hooks": {
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash \"$HOME/claude-home/cloud/session-start.sh\""
+          }
+        ]
+      }
+    ]
+  }
+}

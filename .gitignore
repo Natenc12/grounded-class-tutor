@@ -48,8 +48,9 @@ understanding/
 .idea/
 .vscode/
 
-# /ship run state (plan, decisions, mutation harness + ledger). Local to one run: the
-# ledger and the decision record are published as a comment on the pull request, where
-# being dated is the medium's own promise, and the harness scripts here are throwaway.
-# Ignored so `ruff check` (which CI runs with no paths) never lints them.
+# /ship run state: the plan, the decisions, the mutation harness and ledger, the
+# reproduction. All of it is scoped to ONE pull request and published as a comment there;
+# none of it is committed, because a snapshot in the repo makes claims about files that
+# nothing re-checks and starts going stale the moment anything moves. Ignored here so
+# `ruff check` (which CI runs with no path arguments) never lints the throwaway harness.
 .ship/

@@ -23,10 +23,13 @@ asserting against a reason nothing produces any more.
 from __future__ import annotations
 
 import importlib.util
+import logging
 import sys
+import time
 import uuid
 from contextlib import contextmanager
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -1122,3 +1125,409 @@ def test_the_lease_help_names_its_floor():
     """The floor is now enforced (`_validate_args`), so the flag that carries it must say so —
     otherwise the only way to learn the rule is to trip over it."""
     assert str(smoke.DEFAULT_SHORT_LEASE_SECONDS) in _help_for("--lease")
+
+
+# --- the induced delay ----------------------------------------------------------------------------
+#
+# `_DelayedEmbeddings` is the one place this ceremony ARRANGES something rather than observing it,
+# which makes it the one place a quiet mistake would be least visible: every phase would still pass,
+# and phase 3's verdict would be about a wrapper instead of about the write path. The tests below
+# are what keep the wrapper honest about being a pass-through with a pause and nothing else.
+
+
+class RecordingEmbedder:
+    """A stand-in for the real embedder: deterministic vectors, and it counts its calls.
+
+    `model_id` is present and NOT the wrapper's business — the trap the proxy test is about.
+    """
+
+    model_id = "text-embedding-3-small"
+
+    def __init__(self):
+        self.calls: list[list[str]] = []
+
+    def embed(self, texts):
+        self.calls.append(list(texts))
+        return [[float(len(text))] * 3 for text in texts]
+
+
+def test_the_delay_wrapper_proxies_model_id_to_the_real_embedder():
+    """ADR 0018's stamp runs through this attribute, so the wrapper must not own it.
+
+    `chunks.embedding_model_id` is stamped from `embedder.model_id` — "the model that ACTUALLY
+    produced the stored vectors" — and the Retriever asserts that stamp against the active
+    embedder's. Three ways a wrapper breaks that, all silent until they are not: SHADOW the
+    attribute and every chunk the ceremony writes is stamped with a lie; DROP it and the ingest
+    raises mid-run; HARDCODE it and the Retriever's guard compares a constant to itself and can
+    never fire (config.py says so in as many words). Delegation is the only one of the four that
+    keeps the stamp the real model's by construction, so it is asserted rather than assumed.
+    """
+    inner = RecordingEmbedder()
+    assert smoke._DelayedEmbeddings(inner).model_id == inner.model_id
+
+
+def test_the_delay_wrapper_proxies_an_attribute_it_has_never_heard_of():
+    """The proxy is general, not a special case for `model_id`.
+
+    A wrapper that forwarded exactly the one attribute someone remembered would break the next
+    thing the pipeline reads off an embedder, and it would break it inside a paid run.
+    """
+    inner = RecordingEmbedder()
+    inner.dimensions = 1536
+    assert smoke._DelayedEmbeddings(inner).dimensions == 1536
+
+
+def test_an_attribute_neither_side_has_still_raises_attribute_error():
+    """The proxy must not turn a typo into something that looks like a value."""
+    wrapped = smoke._DelayedEmbeddings(RecordingEmbedder())
+    with pytest.raises(AttributeError):
+        # Bound to a name only to keep ruff's B018 quiet; the access is the whole test.
+        _ = wrapped.no_such_thing
+
+
+def test_the_delay_wrapper_changes_nothing_about_what_is_embedded():
+    """Same texts in, the real client's vectors back, ONE inner call per outer call.
+
+    The call count is half the assertion and the easier half to lose: a wrapper that retried, or
+    that embedded once to time it and once for real, would double the ceremony's bill and still
+    return correct-looking vectors.
+    """
+    inner = RecordingEmbedder()
+    wrapped = smoke._DelayedEmbeddings(inner)
+    texts = ["alpha beta", "gamma"]
+
+    assert wrapped.embed(texts) == inner.embed(texts)
+    assert inner.calls == [texts, texts]  # one per embed() call, ours and the control's
+
+
+def test_the_delay_is_not_applied_until_it_is_armed():
+    """Phases 1 and 2 run through this object disarmed, so disarmed has to cost nothing.
+
+    Worker A holds ONE embedder for the whole run — there is no seam at which to hand it a different
+    object mid-run — so "phases 1 and 2 are unaffected" is a claim about this branch being false,
+    not about them holding a different embedder.
+    """
+    wrapped = smoke._DelayedEmbeddings(RecordingEmbedder())
+    started = time.perf_counter()
+    wrapped.embed(["alpha"])
+    assert time.perf_counter() - started < 0.05
+
+
+def test_arming_the_delay_actually_pauses_the_embed():
+    """The whole point of the wrapper, measured rather than assumed.
+
+    A short delay, because what is under test is that the sleep happens at all — the real
+    `PHASE_THREE_EMBED_DELAY_SECONDS` is sized against the lease, and asserting on it here would buy
+    nothing but three seconds of test time.
+    """
+    wrapped = smoke._DelayedEmbeddings(RecordingEmbedder())
+    with wrapped.delaying(0.05):
+        started = time.perf_counter()
+        wrapped.embed(["alpha"])
+        elapsed = time.perf_counter() - started
+    assert elapsed >= 0.05
+
+
+def test_the_delay_is_disarmed_even_when_the_block_raises():
+    """Phase 3 is the only phase that should pay for the delay.
+
+    If an exception could leave it armed, a failing phase 3 would slow every later embed in the
+    process — and the ceremony would look like it had a performance problem rather than a fault.
+    """
+    wrapped = smoke._DelayedEmbeddings(RecordingEmbedder())
+    with pytest.raises(ZeroDivisionError):
+        with wrapped.delaying(3.0):
+            raise ZeroDivisionError
+    assert wrapped.delay_seconds == 0.0
+
+
+def test_phase_three_arms_the_delay_it_advertises(monkeypatch, stub_enqueue):
+    """The wiring assertion: the phase must arm the constant it names in its own output.
+
+    Armed with the wrong value — or not armed at all — phase 3 goes back to depending on the corpus
+    being slow enough, which is the flake this change exists to remove, and nothing else in the
+    suite would notice.
+    """
+    gate = FakeDelayGate()
+    assert run_reaper_phase(ScriptedObserver(reclaimed_history()), monkeypatch, gate=gate) is True
+    assert gate.armed_with == smoke.PHASE_THREE_EMBED_DELAY_SECONDS
+    assert gate.delay_seconds == 0.0  # and disarmed on the way out
+
+
+def test_the_induced_delay_is_longer_than_the_lease_it_has_to_outrun():
+    """The one arithmetic relationship phase 3 rests on, stated where it can go red.
+
+    The delay is what guarantees the overrun; a default lease raised past it, or a delay trimmed
+    below it, silently returns the phase to hoping the corpus is slow. `_overrun_remedy` says the
+    same thing to a human at runtime — this says it to CI.
+    """
+    assert smoke.PHASE_THREE_EMBED_DELAY_SECONDS > smoke.DEFAULT_SHORT_LEASE_SECONDS
+
+
+# --- the small guards that only fire on an input nothing normally produces ----------------------
+#
+# Every function below is one line of defence against an EMPTY or unusual history, which is exactly
+# the input no passing run ever supplies — so these are invisible to the ceremony itself and can
+# only be pinned here. A ceremony that raised `ValueError` out of `max()` while diagnosing a failure
+# would replace a readable verdict with a traceback, at the worst possible moment.
+
+
+def test_an_unsampled_file_has_no_partial_index_rather_than_an_exception():
+    """`max()` over an empty history raises, and the caller is already on a failure path."""
+    assert smoke.partial_index_sightings([]) == []
+
+
+def test_an_unsampled_file_is_not_evidence_of_a_reclaim():
+    """`history[-1]` on an empty list raises, and "no samples" is the honest answer anyway."""
+    reaped, why = smoke.reaper_evidence([])
+    assert not reaped
+    assert why == "no samples"
+
+
+def test_the_reaper_log_counts_the_reaper_and_nothing_else():
+    """It is corroboration, so a counter that counted the WRONG warnings would print a plausible
+    number beside a verdict that never depended on it — the least likely thing anyone re-derives."""
+    log = smoke.ReaperLog()
+    reaper = logging.LogRecord(
+        "gct.jobs.worker", logging.WARNING, __file__, 1, "reaper: 1 job", (), None
+    )
+    other = logging.LogRecord(
+        "gct.jobs.worker", logging.WARNING, __file__, 1, "job x: lease lost", (), None
+    )
+    log.emit(reaper)
+    log.emit(other)
+    log.emit(reaper)
+    assert log.reaps == 2
+
+
+def test_the_printed_history_shows_a_failure_reason_when_there_is_one(capsys):
+    """The history block IS the evidence a reader gets on a failing phase; a reason printed only
+    when absent would drop the one field that says WHY."""
+    smoke._print_history(
+        "corrupt-lecture.pdf",
+        [snapshot("failed", 0, failed_reason="unparseable", job_state="failed")],
+    )
+    out = capsys.readouterr().out
+    assert "reason=unparseable" in out
+    assert "files.status=failed" in out
+
+
+def test_the_printed_history_does_not_invent_a_reason_when_there_is_none(capsys):
+    smoke._print_history("a.pdf", [snapshot("ready", 62, job_state="done")])
+    assert "reason=" not in capsys.readouterr().out
+
+
+def test_the_terminal_input_is_a_header_followed_by_something_that_fails_to_parse():
+    """Both halves are load-bearing, and only one of them is asserted by the parse test.
+
+    A bare header with no body still raises `unparseable`, so the parse test alone cannot tell the
+    intended fixture from an empty one — and an empty file proves a weaker thing: that pypdf
+    rejects nothing, rather than that it met content and could not read it.
+    """
+    assert smoke.CORRUPT_PDF_BYTES.startswith(b"%PDF")
+    assert len(smoke.CORRUPT_PDF_BYTES) > len(b"%PDF-1.7\n") + 64
+
+
+# --- the faults phase 1 reports -------------------------------------------------------------------
+
+
+def test_a_file_that_ended_failed_is_told_so_and_told_which(capsys):
+    """A fault that says a file failed without saying HOW is a fault a reader cannot act on."""
+    history = [
+        snapshot("queued", 0, job_state="queued", attempts=0),
+        snapshot("processing", 0),
+        snapshot("failed", 0, failed_reason="unparseable", job_state="failed"),
+    ]
+    faults = smoke._lifecycle_faults(smoke.status_path(history), history)
+    assert any("ended 'failed', not 'ready'" in fault for fault in faults)
+
+
+def test_phase_one_checks_transition_legality_and_not_only_the_end_states():
+    """`ready` is absorbing. A history that leaves it is a real violation, and the end-state check
+    alone would pass this run — it starts `queued`, sees `processing`, and ends `ready`."""
+    history = [
+        snapshot("queued", 0, job_state="queued", attempts=0),
+        snapshot("processing", 0),
+        snapshot("ready", 62),
+        snapshot("processing", 62),
+        snapshot("ready", 62, job_state="done"),
+    ]
+    faults = smoke._lifecycle_faults(smoke.status_path(history), history)
+    assert any("no legal path reaches" in fault for fault in faults)
+
+
+def test_phase_one_checks_the_no_partial_index_invariant():
+    """The invariant the whole ceremony is named for, asserted where phase 1 applies it: a `ready`
+    sighting carrying a count that disagrees with the run that published it."""
+    history = [
+        snapshot("queued", 0, job_state="queued", attempts=0),
+        snapshot("processing", 0),
+        snapshot("ready", 40),
+        snapshot("ready", 62, job_state="done"),
+    ]
+    faults = smoke._lifecycle_faults(smoke.status_path(history), history)
+    assert any("partial index visible" in fault for fault in faults)
+
+
+# --- the remedy phase 3 offers --------------------------------------------------------------------
+
+
+def test_the_remedy_tells_a_long_lease_to_come_down():
+    """`--lease 30` is the documented negative control, so its remedy has to name the flag."""
+    remedy = smoke._overrun_remedy(30)
+    assert "Lower --lease" in remedy
+    assert "not reaching the worker" not in remedy
+
+
+def test_the_remedy_for_a_lease_already_under_the_delay_names_the_wiring_and_not_a_knob():
+    """Below the induced delay there is no knob left: an ingest that still fit inside the lease
+    means worker A is not embedding through the wrapper phase 3 armed. Telling the reader to change
+    a flag here would be a confident instruction to change something that cannot help."""
+    remedy = smoke._overrun_remedy(smoke.DEFAULT_SHORT_LEASE_SECONDS)
+    assert "not reaching the worker" in remedy
+    assert "Lower --lease" not in remedy
+
+
+# --- the real Observer ----------------------------------------------------------------------------
+#
+# Every phase test above swaps in `ScriptedObserver`, which is what makes those tests about the
+# phases' JUDGEMENT. The consequence is that the real observer — the thing that actually produces
+# every history the gate judges — is stubbed out of all of them, so nothing there would notice if it
+# dropped the first reading, collapsed transitions it should have kept, or returned from a wait that
+# had not happened. These are the tests that watch the watcher.
+
+
+class ScriptedConnection:
+    """Hands `_read` a pre-written row set per statement, and counts the statements it was asked."""
+
+    def __init__(self, *row_sets):
+        self._row_sets = list(row_sets)
+        self.statements = 0
+
+    def execute(self, sql, params=None):
+        self.statements += 1
+        rows = self._row_sets.pop(0) if self._row_sets else []
+        return SimpleNamespace(fetchall=lambda: rows)
+
+
+def row(file_id="f1", status="queued", job_state="queued", attempts=0, chunks=0):
+    """One row in the shape `_read`'s SELECT returns: both axes, then the chunk count."""
+    return (file_id, status, None, job_state, attempts, None, chunks)
+
+
+def test_watching_a_file_takes_its_first_reading_immediately():
+    """`queued` is a guaranteed sighting because `watch` reads before any worker exists to move the
+    row (`_phase_lifecycle`). A `watch` that only registered the id would make that a race."""
+    observer = smoke.Observer(ScriptedConnection([row(status="queued")]))
+    observer.watch("f1")
+    assert [s.file_status for s in observer.history("f1")] == ["queued"]
+
+
+def test_the_first_reading_survives_the_second():
+    """Drop the empty-history arm of the dedup and every file loses its `queued` sighting — the one
+    the gate requires to be first, and the one nothing else can re-derive."""
+    conn = ScriptedConnection([row(status="queued")], [row(status="processing")])
+    observer = smoke.Observer(conn)
+    observer.watch("f1")
+    observer.sample()
+    assert [s.file_status for s in observer.history("f1")] == ["queued", "processing"]
+
+
+def test_an_unchanged_reading_is_not_recorded_twice():
+    """At 40ms over a multi-second ingest, most readings are duplicates. Without the collapse the
+    history is a few thousand identical lines and the transitions are unreadable inside it."""
+    conn = ScriptedConnection(*[[row(status="processing")] for _ in range(4)])
+    observer = smoke.Observer(conn)
+    observer.watch("f1")
+    for _ in range(3):
+        observer.sample()
+    assert len(observer.history("f1")) == 1
+
+
+def test_a_wait_whose_predicate_already_holds_returns_true_at_once():
+    """Two row sets, not one: `watch` consumes the first, and `wait_until`'s own sample needs the
+    second. That is the real sequence: the observer reads once at watch time, and again on the
+    wait's first tick."""
+    settled = [row(status="ready", job_state="done", chunks=62)]
+    conn = ScriptedConnection(settled, settled)
+    observer = smoke.Observer(conn)
+    observer.watch("f1")
+    assert (
+        observer.wait_until(lambda current: current["f1"].file_status == "ready", timeout=5) is True
+    )
+
+
+def test_a_wait_keeps_sampling_until_the_predicate_holds():
+    """The deadline has to be computed from NOW and compared the right way round. Get either wrong
+    and every wait gives up on its second sample — which the phases would report as a timeout on a
+    write path that was working perfectly."""
+    conn = ScriptedConnection(
+        [row(status="queued")],
+        [row(status="processing")],
+        [row(status="ready", job_state="done", chunks=62)],
+    )
+    observer = smoke.Observer(conn)
+    observer.watch("f1")
+    assert (
+        observer.wait_until(lambda current: current["f1"].file_status == "ready", timeout=5) is True
+    )
+    assert [s.file_status for s in observer.history("f1")] == ["queued", "processing", "ready"]
+
+
+def test_a_wait_that_never_settles_reports_a_timeout_rather_than_a_success():
+    conn = ScriptedConnection(*[[row(status="processing")] for _ in range(3)])
+    observer = smoke.Observer(conn)
+    observer.watch("f1")
+    assert observer.wait_until(lambda current: False, timeout=0) is False
+
+
+def test_the_snapshot_query_ignores_a_file_that_has_no_job_row(db, db_other):
+    """The join is INNER on purpose, and the ceremony only ever watches files it enqueued.
+
+    `enqueue` writes both rows in one transaction, so a file with no job is not a state this write
+    path produces — which is exactly why a join weakened to LEFT would go unnoticed: every ceremony
+    row still comes back, and the null job axis it would now admit only appears for a row nothing
+    watches. Asserted through `db_other`, a second connection, so this is a claim about rows that
+    were actually published rather than about the writer's own uncommitted view.
+    """
+    conn, owner_id, class_id = db
+    orphan = str(uuid.uuid4())
+    conn.execute(
+        """
+        insert into files (file_id, owner_id, class_id, filename, staging_ref, status)
+        values (%s::uuid, %s, %s::uuid, %s, %s, 'queued')
+        """,
+        (orphan, owner_id, class_id, "never-enqueued.pdf", "/tmp/never-enqueued.pdf"),
+    )
+    conn.commit()
+
+    assert smoke._read(db_other, [orphan]) == {}
+
+
+def test_a_missing_api_key_exits_setup_before_anything_is_wired(monkeypatch, capsys):
+    """Exit 2, and BEFORE a connection or a thread exists — the ordering is the point.
+
+    `load_settings()` defaults a missing key to `""`, which the OpenAI client accepts at
+    construction, so an absent key does not announce itself: unchecked, it surfaces as an
+    `AuthenticationError` raised inside a worker THREAD, mid-phase, where `WorkerThread` catches it
+    and the ceremony reports a failed lifecycle. That is exit 1 — "the write path misbehaved" —
+    for a run that was never stageable. The check converts it to what it is.
+
+    Driven through `main` rather than through the branch, because what is asserted is that the check
+    is reached and that its sense is the right way round: a check that aborted on a PRESENT key
+    would satisfy any test written against the branch alone.
+    """
+    monkeypatch.setattr(sys, "argv", ["ingest_smoke.py"])
+    monkeypatch.setattr(smoke, "_corpus_files", lambda corpus_dir, max_files: [Path("a.pdf")])
+    monkeypatch.setattr(
+        smoke, "load_settings", lambda: SimpleNamespace(openai_api_key="", database_url="")
+    )
+    # Nothing may reach Postgres: if the key check is skipped or inverted, this is what it hits.
+    monkeypatch.setattr(
+        smoke, "connect", lambda: pytest.fail("main() reached connect() with no API key")
+    )
+
+    assert smoke.main() == smoke.EXIT_SETUP
+    out = capsys.readouterr().out
+    assert "SETUP FAILED" in out
+    assert "OPENAI_API_KEY" in out

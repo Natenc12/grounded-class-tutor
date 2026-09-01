@@ -1689,3 +1689,39 @@ def test_a_run_whose_worker_survived_every_phase_exits_zero(
     out = capsys.readouterr().out
     assert "worker A died" not in out
     assert out.splitlines()[-1].startswith("PASS —")
+
+
+# --- The wait must cover every axis the phase later asserts ------------------------------------
+
+
+def test_a_ready_file_whose_job_has_not_settled_yet_is_not_something_to_stop_waiting_on():
+    """`_terminal` stops on the file axis; phases 1-2 then assert the JOB axis. Hence `_settled`.
+
+    The gate reported `1 lifecycle: FAIL` on a healthy run, once in five, and this is the window it
+    sampled. `index_file` commits `ready`; `complete` is the next statement, in its own
+    transaction. A last sample landing between them reads ('ready', 'processing'), which
+    `_lifecycle_faults` correctly calls a fault — the fault was manufactured by stopping too early,
+    not by anything the worker did wrong.
+
+    Both halves are asserted here, because only together do they mean anything: `_terminal` still
+    says True (it is about the file the student watches, and that is right), while `_settled` says
+    False, which is what keeps `_await` in its loop for one more poll.
+    """
+    mid_publish = snapshot("ready", 37, job_state="processing")
+    assert smoke._terminal(mid_publish) is True
+    assert smoke._settled(mid_publish) is False
+    assert smoke._settled(snapshot("ready", 37, job_state="done")) is True
+
+
+def test_a_failed_file_whose_job_has_not_settled_yet_is_not_something_to_stop_waiting_on():
+    """Phase 2's window is WIDER than phase 1's, and guaranteed rather than incidental.
+
+    `worker._bury` writes `files` and calls `fail()` in SEPARATE transactions on purpose — its
+    docstring argues from what a crash between them must leave behind. So ('failed', 'processing')
+    with a null `last_error` is a state the design commits to producing, and phase 2 asserts both
+    `jobs.state == 'failed'` and a non-empty `last_error`, neither of which exists yet.
+    """
+    mid_bury = snapshot("failed", 0, job_state="processing", failed_reason="unparseable")
+    assert smoke._terminal(mid_bury) is True
+    assert smoke._settled(mid_bury) is False
+    assert smoke._settled(snapshot("failed", 0, job_state="failed")) is True

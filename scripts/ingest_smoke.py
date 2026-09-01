@@ -713,6 +713,30 @@ def _terminal(snapshot: Snapshot) -> bool:
     return snapshot.file_status in ("ready", "failed")
 
 
+def _settled(snapshot: Snapshot) -> bool:
+    """Finished on BOTH axes — the file AND the job that was moving it.
+
+    WAIT ON EVERY AXIS YOU LATER ASSERT, or the wait itself manufactures the failure. The file
+    axis reaches its terminal FIRST and the job axis follows in a separate transaction, so a
+    phase that stops on `_terminal` and then asserts anything about `jobs` is sampling a window
+    where the answer is legitimately "not yet":
+
+      - happy path — `index_file` commits `ready`, and `complete` is the NEXT statement. A last
+        sample landing between them reads ('ready', 'processing'), and `_lifecycle_faults` calls
+        that "file is ready but jobs.state='processing'".
+      - terminal failure — wider, and guaranteed rather than incidental: `_bury` writes `files`
+        and calls `fail()` in SEPARATE TRANSACTIONS on purpose (`worker._bury` explains what a
+        crash between them must leave behind), so ('failed', 'processing') with a null
+        `last_error` is a state the design commits to producing.
+
+    Both were reachable: the ceremony reported `1 lifecycle: FAIL` on a healthy run, once in five,
+    caught at `/land`. An exit gate that fails on a correct system is worse than no gate — it
+    teaches the reader to re-run it until it is green, which is exactly how a real red gets
+    ignored.
+    """
+    return _terminal(snapshot) and snapshot.job_state in ("done", "failed")
+
+
 def _first_death(workers: Sequence[WorkerThread]) -> BaseException | None:
     """The exception that killed the first dead worker, or None while they are all alive."""
     for worker in workers:
@@ -808,9 +832,9 @@ def _phase_lifecycle(
 
     stalled = _await(
         observer,
-        lambda current: all(_terminal(current[file_id]) for file_id in file_ids),
+        lambda current: all(_settled(current[file_id]) for file_id in file_ids),
         workers=(worker,),
-        stalled="not every file reached a terminal",
+        stalled="not every file settled on both the file and the job axis",
     )
     if stalled is not None:
         print(f"  {stalled}")
@@ -877,9 +901,9 @@ def _phase_terminal_failure(
 
     stalled = _await(
         observer,
-        lambda current: _terminal(current[file_id]),
+        lambda current: _settled(current[file_id]),
         workers=(worker,),
-        stalled="the corrupt file never settled",
+        stalled="the corrupt file never settled on both axes",
     )
     if stalled is not None:
         print(f"  {stalled}")

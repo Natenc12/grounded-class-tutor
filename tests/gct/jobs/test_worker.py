@@ -2554,7 +2554,7 @@ def test_the_worker_publishes_a_files_row_that_agrees_with_its_chunks(
 # which is what let this survive: the suite passed identically with and without the guard.
 # So the winner runs through the REAL `process_one` and the zombie's bury is injected at the one
 # instant that matters, between the `processing` write and the `index_file` commit.
-# `evidence/issue_86_zombie_bury_repro.py` prints the same five steps for a reader who would
+# `scripts/repro/issue_86_zombie_bury.py` prints the same five steps for a reader who would
 # rather watch it than read one assertion.
 #
 # The other two pin the guard's SHAPE, which is a genuine fork rather than a detail: a condition

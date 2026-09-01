@@ -3,7 +3,7 @@
 Run it against a scratch database (NEVER `grounded_class_tutor`):
 
     DATABASE_URL=postgresql://localhost:5432/gct_ship_86 uv run python \
-        evidence/issue_86_zombie_bury_repro.py
+        scripts/repro/issue_86_zombie_bury.py
 
 Costs nothing: the embedder is a local stub, so no provider is ever constructed.
 

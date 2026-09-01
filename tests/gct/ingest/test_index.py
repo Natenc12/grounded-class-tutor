@@ -727,6 +727,20 @@ def test_a_refused_publish_writes_nothing_at_all(db, db_other):
     )
 
 
+def test_publish_refused_is_an_ordinary_exception():
+    """`PublishRefused` must be catchable by `except Exception`, and nothing pins that but this.
+
+    Found by the mutation run: rebasing it on `BaseException` left the whole suite green, because
+    the one handler in the repo names the class explicitly. A `BaseException` is the wrong shape
+    for what this is - the ROUTINE at-least-once outcome (ADR 0011), not an interrupt or a
+    shutdown - and `process_one`'s outer `except BaseException` treats those two categories very
+    differently. A caller that reasonably writes `except Exception` around a publish would stop
+    seeing refusals at all, and see its process die instead.
+    """
+    assert issubclass(PublishRefused, Exception)
+    assert not issubclass(PublishRefused, (KeyboardInterrupt, SystemExit))
+
+
 def test_a_guard_that_allows_publishes_exactly_as_an_unguarded_call_does(db, db_other):
     """True is transparent: the guard is a veto, not a second condition on the publish (#92)."""
     conn, owner_id, class_id = db

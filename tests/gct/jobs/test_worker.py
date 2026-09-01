@@ -2861,6 +2861,79 @@ def test_the_publish_guard_reads_ownership_not_the_clock(db, tmp_path):
     )
     assert worker._publish_guard(other)(conn) is True
 
+    # THE STATE HALF, which the token half cannot stand in for - and the mutation run is what
+    # found this missing. `complete` and `fail` deliberately LEAVE the winner's token on the
+    # settled row (it records who finished the job), so on a settled job a token match alone
+    # still answers "ours". Drop `state = 'processing'` from the predicate and this line is the
+    # only thing in the suite that notices. Same argument, same shape, as
+    # `test_a_bury_on_a_job_that_is_no_longer_processing_writes_nothing` makes about `_bury`.
+    assert complete(conn, job_id=other.job_id, lease_token=other.lease_token) is True
+    assert conn.execute(
+        "select state, lease_token::text from jobs where file_id = %s::uuid", (file_id,)
+    ).fetchone() == ("done", other.lease_token), (
+        "the settled row lost its token, so the assertion below would pass for the wrong reason"
+    )
+    assert worker._publish_guard(other)(conn) is False, (
+        "a job that is no longer anybody's in-flight work was cleared to publish - a token "
+        "match on a SETTLED row is not ownership"
+    )
+
+
+def test_a_refusal_logs_the_two_numbers_that_diagnose_it(db, tmp_path, monkeypatch, caplog):
+    """The refusal's log line is the operator's ONLY signal, and its content is the whole signal.
+
+    A publish refused this way means one thing in practice: the lease was too short for this file.
+    `elapsed` against `lease_seconds` is the entire diagnosis, and ADR 0030 leans on it - the
+    invariant is held by throwing work away, so the line that says how much and why is what stops
+    that being invisible. A wrong `elapsed` makes the number that names the cause a fiction.
+
+    Found by the mutation run: inverting the arithmetic in that argument left the whole suite
+    green, because nothing read the line. The bound is loose on purpose - the point is that the
+    number is an ELAPSED, not a clock reading, and `perf_counter() + started` is roughly twice
+    the process uptime.
+    """
+    conn, owner_id, class_id = db
+    winner = psycopg.connect(conn.info.dsn)
+    winner.autocommit = True
+    conn.autocommit = True
+    monkeypatch.setattr(worker.time, "sleep", lambda _: None)
+    source = write_pdf(tmp_path / "refused.pdf", ["the real lecture text"])
+    file_id = enqueue(conn, path=source, owner_id=owner_id, class_id=class_id)
+
+    real_ingest = worker.ingest_file
+
+    def stall_until_the_lease_is_gone(*args, **kwargs):
+        monkeypatch.setattr(worker, "ingest_file", real_ingest)
+        _backdate_lease(conn, file_id)
+        assert reclaim_expired(winner) == 1
+        assert (
+            process_one(
+                winner,
+                embedder=FakeEmbeddings(),
+                chunk_size=CHUNK_SIZE_WORDS,
+                chunk_overlap=CHUNK_OVERLAP_WORDS,
+                max_attempts=1,
+            )
+            is True
+        )
+        return real_ingest(*args, **kwargs)
+
+    try:
+        monkeypatch.setattr(worker, "ingest_file", stall_until_the_lease_is_gone)
+        with caplog.at_level("WARNING", logger="gct.jobs.worker"):
+            assert tick(conn, FakeEmbeddings(), max_attempts=99, lease_seconds=900) is True
+
+        refusals = [r for r in caplog.records if "publish refused" in r.getMessage()]
+        assert len(refusals) == 1, "the refusal was silent, or reported more than once"
+        elapsed, lease_seconds = refusals[0].args[1], refusals[0].args[2]
+        assert lease_seconds == 900, "the log reports a lease other than the one that expired"
+        assert 0.0 <= elapsed < 600.0, (
+            f"elapsed={elapsed} is not an elapsed - the operator's one diagnostic is reporting "
+            "a clock reading, so the number that names the cause is a fiction"
+        )
+    finally:
+        winner.close()
+
 
 def test_the_publish_guard_locks_the_job_row_against_a_concurrent_reaper(db, tmp_path):
     """`FOR UPDATE` is the mechanism, not an optimisation - without it this NARROWS #92 (ADR 0030).

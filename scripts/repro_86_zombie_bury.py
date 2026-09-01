@@ -94,7 +94,7 @@ def main() -> int:
         print("refusing to run against grounded_class_tutor — use a scratch database")
         return 2
 
-    owner_id = f"evidence-86-{uuid.uuid4()}"
+    owner_id = f"repro-86-{uuid.uuid4()}"
     class_id = str(uuid.uuid4())
 
     winner = connect()  # also does the setup

@@ -172,7 +172,7 @@ Slow/external work runs with **no transaction open**; the transaction is a short
   claim-then-bury. **Neither is aimed at the third**, where the bury legitimately HOLDS its lease
   and the PUBLISH is the write that lost one: `index_file` reads no lease and does not clear
   `failed_reason`, so a slow worker can republish `ready` over a reason a live-leased `_bury` just
-  wrote. Reachable today, demonstrated by execution, and unchanged by #86 in either direction —
+  wrote. Reachable today, demonstrated by execution, and unchanged by #86 in either direction (#92) —
   closing it makes the publisher a second writer for the column, which is an ADR 0020 seam
   decision rather than a guard.
 - **Idempotent by construction** — reprocessing a file fully replaces its chunk set; safe under

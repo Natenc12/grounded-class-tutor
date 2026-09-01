@@ -2238,8 +2238,8 @@ def test_a_retry_that_succeeds_leaves_no_failed_reason_on_the_ready_file(
     """The acceptance criterion of #24: `('ready', <a reason>)` must not be reached THIS way.
 
     #24's acceptance was written as unreachability outright. It is not - see `_bury`'s docstring
-    for the interleaving that still reaches it. What this pins is the retry path, which #24 does
-    close.
+    for the interleaving that still reaches it, and #92. What this pins is the retry path, which
+    #24 does close.
 
     Half-bury a corrupt file, then replace the bytes AT THE SAME `staging_ref` with a parseable
     PDF and let the same job's next attempt run. That input change is the ordinary case, not a
@@ -2289,7 +2289,7 @@ def test_the_claim_does_not_clear_a_reason_on_a_file_that_is_already_ready(
     file drives that interleaving itself). The other is still open, and a sequence of ticks DOES
     earn `('ready', <a reason>)` through it: a bury by the worker that legitimately HOLDS the
     lease, then a publish by one whose lease expired, through `index_file`, which reads no lease.
-    See `_bury`'s docstring.
+    See `_bury`'s docstring, and #92.
 
     WHAT TICKS CANNOT EARN IS THIS TEST'S PRECONDITION, which is narrower and is the actual
     reason the row is set directly: that path settles the job TERMINALLY on its way to the row,

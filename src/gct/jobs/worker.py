@@ -210,10 +210,10 @@ def _bury(conn: psycopg.Connection, job: Job, *, reason: str, error: str) -> Non
     `processing` write clears the reason. Neither guard closes the other's: #24 covers
     bury-then-claim, this covers claim-then-bury.
 
-    THE THIRD IS STILL OPEN, AND NEITHER GUARD IS AIMED AT IT. Both close a path whose bury has
-    LOST its lease; the remaining one runs through a bury that legitimately HOLDS one. A slow
-    worker's lease expires, the reaper requeues, a second worker claims and burys with a live
-    lease - this guard passes, correctly - and the first worker then publishes through
+    THE THIRD IS STILL OPEN (#92), AND NEITHER GUARD IS AIMED AT IT. Both close a path whose
+    bury has LOST its lease; the remaining one runs through a bury that legitimately HOLDS one.
+    A slow worker's lease expires, the reaper requeues, a second worker claims and burys with
+    a live lease - this guard passes, correctly - and the first worker then publishes through
     `index_file`, which reads no lease at all and deliberately does not clear `failed_reason`
     (`gct/ingest/index.py`, and the comment on the claim's clear below). The winner burys, the
     zombie publishes, and the reason survives under `ready`. Demonstrated by execution, not
@@ -563,7 +563,8 @@ def process_one(
         # `('ready', <a reason>)` needs BOTH guards and is STILL not unreachable: a bury that
         # legitimately HOLDS its lease, followed by a publish from a worker whose lease expired,
         # reaches it through `index_file`, which reads no lease - see `_bury`'s docstring for the
-        # interleaving and why closing it is an ADR 0020 decision. A sequence of ticks DOES earn
+        # interleaving, #92 for the decision, and why closing it crosses an ADR 0020 seam. A
+        # sequence of ticks DOES earn
         # that row through it - but it earns it with the job settled TERMINALLY, and
         # `test_the_claim_does_not_clear_a_reason_on_a_file_that_is_already_ready` needs a
         # CLAIMABLE job on such a file, which is why it still sets the row directly.

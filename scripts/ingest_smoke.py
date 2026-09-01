@@ -949,13 +949,14 @@ def _phase_reaper(
     expiry and there is nothing to take back. A's `complete` then returns False — the lease it
     lost — and the job settles once, under B.
 
-    ON #92, EXPLICITLY. This phase walks the neighbourhood of the open `ready`-carries-no-reason
-    interleaving (#92, and the NOT YET HELD invariant in `design/components/ingestion-worker.md`),
-    which needs a BURY between the reclaim and the zombie's publish. This phase produces no bury at
-    all — the redelivered run succeeds — so it neither reaches that state nor asserts the invariant
-    that would forbid it. Nothing below reads `failed_reason` on a `ready` row, on purpose: an
-    assertion that happened to pass here would be read as evidence the invariant holds, and it does
-    not.
+    ON #92, EXPLICITLY. This phase walks the neighbourhood of the `ready`-carries-no-reason
+    interleaving — closed by ADR 0030's publish guard, which `process_one` supplies and this
+    phase's workers therefore run under. Reaching that state needs a BURY between the reclaim and
+    the reaped worker's publish. This phase produces no bury at all — the redelivered run succeeds
+    — so it neither reaches the state nor exercises the guard that now refuses it. Nothing below
+    reads `failed_reason` on a `ready` row, on purpose, and the reason survives the fix: an
+    assertion that passed HERE would be read as evidence about an invariant this phase never put
+    under stress. `tests/gct/jobs/test_worker.py` is where that guard is demonstrated.
     """
     print(
         f"\nPhase 3 — reaper: a {PHASE_THREE_EMBED_DELAY_SECONDS:.0f}s induced embed delay "

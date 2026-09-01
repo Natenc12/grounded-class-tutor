@@ -161,6 +161,14 @@ Slow/external work runs with **no transaction open**; the transaction is a short
   and the box now ENFORCES that: `index_file` refuses a non-IDLE connection before writing anything
   (ADR 0025, guarded per ADR 0027). §Internal approach step 1 states the precondition and what it
   costs a worker to get wrong.
+- **A `ready` file carries no failure reason** — `status='ready'` and a non-null `failed_reason`
+  never coexist. The reason is the actionable message F3 puts in front of a student (ADR 0020 §1),
+  so a queryable file wearing one contradicts the answers it is already grounding — the same trust
+  cost as a partial index, reached through the status column instead of the corpus. Held from
+  **both** ends, because at-least-once redelivery reaches the row from two directions (ADR 0011):
+  the claim's `processing` write clears the previous attempt's reason (#24), and the terminal write
+  refuses a worker whose lease is gone, on the same guard the job settle verbs use (#86). Neither
+  closes the other's interleaving — #24 covers bury-then-claim, #86 claim-then-bury.
 - **Idempotent by construction** — reprocessing a file fully replaces its chunk set; safe under
   at-least-once delivery + lease/reaper reclaim, no dedup keys (ADR 0011/0020).
 - **Transaction wraps the write, not the work** — never held across embedding-API calls (ADR 0020).

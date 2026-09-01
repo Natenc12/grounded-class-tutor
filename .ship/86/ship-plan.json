@@ -1,0 +1,71 @@
+{
+  "issue": 86,
+  "title": "[S2] `_bury`'s files write has no lease guard \u2014 a zombie can plant a failure reason on a file the winner publishes",
+  "base": {
+    "ref": "origin/main",
+    "sha": "8d641b38742912effa3525025ca35ed3da83573c",
+    "short": "8d641b3",
+    "why": "no unlanded dependency exists \u2014 0 open PRs and origin has only refs/heads/main, so origin/main is forced, not chosen"
+  },
+  "branch": "fix/86-bury-lease-guard",
+  "worktree": "../gct-ship-86",
+  "database": "gct_ship_86",
+  "touches": [
+    "src/gct/jobs/worker.py",
+    "tests/gct/jobs/test_worker.py"
+  ],
+  "gate_checks": {
+    "open": true,
+    "unassigned": true,
+    "labels": [
+      "ready",
+      "slice-2"
+    ],
+    "is_epic": false,
+    "is_blocked": false,
+    "acceptance_is_demonstrable": true,
+    "not_already_solved_on_main": {
+      "demonstrated": true,
+      "how": "evidence/issue_86_zombie_bury_repro.py reproduced FINAL: status='ready' failed_reason='unparseable' chunks=1 against origin/main @ 8d641b3"
+    }
+  },
+  "dependency": null,
+  "forks": {
+    "needs_nate": [
+      {
+        "q": "Add the invariant 'a ready file carries no failure reason' to design/components/ingestion-worker.md? The issue names it; the spec is silent; the code will enforce it from both sides. This is spec authorship outside the ticket's footprint.",
+        "answer": "yes \u2014 add the invariant to design/components/ingestion-worker.md"
+      }
+    ],
+    "delegated": [
+      {
+        "q": "guard shape: the issue's EXISTS(state='processing' AND lease_token=...) vs leased_until > now()",
+        "when": "while writing the SQL",
+        "decided": "EXISTS, verbatim from the issue - it is `_settle`'s two conditions, so both halves of `_bury` agree about ownership. `leased_until > now()` was rejected by mutation, not argument: it strands a file whose ingest outran its lease. See .ship/86/decisions.md D1."
+      },
+      {
+        "q": "does the reproduction ship as a test, or as a script under evidence/",
+        "when": "right before committing evidence",
+        "decided": "BOTH - the test is what CI runs and what the guard-deletion mutant kills; the script narrates the five-step interleaving and outlives the worktree. See decisions.md D2."
+      },
+      {
+        "q": "test placement: extend tests/gct/jobs/test_worker.py or a new module",
+        "when": "when writing the first test",
+        "decided": "extend tests/gct/jobs/test_worker.py, new titled section at the end - same shape as the #82 and #24 sections, and it reuses that module's local fixtures. See decisions.md D3."
+      },
+      {
+        "q": "_bury's docstring names #86 as an open residual and goes stale on this fix \u2014 rewrite scope",
+        "when": "after the fix is green",
+        "decided": "four sites, not one: `_bury`'s guard paragraphs, `process_one`'s WHAT IT DOES NOT CLOSE block, the module docstring's jobs-ownership line, and one test docstring. Census: grep -rn '#86' src/ tests/ design/ scripts/. See decisions.md D4."
+      },
+      {
+        "q": "pin the guard-shape edge (an ingest outrunning its lease with no reaper) with its own test",
+        "when": "after the primary test is green",
+        "decided": "yes - and a second one for the `state='processing'` half. Three tests, four mutations run, each red on exactly one test. See decisions.md D5."
+      }
+    ]
+  },
+  "phase": "verify",
+  "parked_on": null,
+  "decisions_recorded": ".ship/86/decisions.md"
+}

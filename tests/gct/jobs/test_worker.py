@@ -2538,7 +2538,14 @@ def test_the_worker_publishes_a_files_row_that_agrees_with_its_chunks(
     )
 
 
-# --- A dead lease writes NOTHING to `files` (issue #86) ----------------------------------------
+# --- A dead lease writes NOTHING through `_bury` (issue #86) -----------------------------------
+#
+# SCOPED TO `_bury`, and the name says so on purpose. Issue #86's acceptance is written as "writes
+# nothing to `files`", which is broader than what any test here pins: two other `files` writes are
+# reachable by a worker whose lease has expired and neither reads a lease - `index_file`'s upsert
+# (reachable, see `_bury`'s docstring) and `process_one`'s `processing` write, guarded only by
+# `status <> 'ready'`. A test named for the broad sentence would report a coverage it does not
+# have.
 #
 # `_bury` writes both axes, and until #86 only the `jobs` half read the lease. So the two halves
 # of one function disagreed about who owned the job: `fail` refused a zombie whose lease had
@@ -2561,7 +2568,9 @@ def test_the_worker_publishes_a_files_row_that_agrees_with_its_chunks(
 # that is too strict strands a file as surely as one that is too loose publishes a lie.
 
 
-def test_a_zombie_whose_lease_expired_writes_nothing_to_files(db, db_other, tmp_path, monkeypatch):
+def test_a_zombie_whose_lease_expired_writes_nothing_through_bury(
+    db, db_other, tmp_path, monkeypatch
+):
     """The at-least-once interleaving that produced `('ready', 'unparseable')` (issue #86).
 
     Worker A claims and stalls. Its lease expires and the reaper requeues the job. Worker B - the

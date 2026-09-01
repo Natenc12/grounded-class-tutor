@@ -203,15 +203,27 @@ def _bury(conn: psycopg.Connection, job: Job, *, reason: str, error: str) -> Non
     `processing` under a terminally `failed` job - the exact stranding this function's write ORDER
     was chosen to avoid, reintroduced by the guard meant to make it safer.
 
-    TOGETHER WITH THE CLAIM'S CLEAR (#24) THIS MAKES `('ready', <a reason>)` UNREACHABLE, which
-    is #24's acceptance and did not hold on #24 alone. The winner's `claim` strictly precedes its
-    `processing` write and invalidates this worker's token, so a bury whose `EXISTS` still passes
-    is one the winner has not claimed past yet - and that later claim's `processing` write clears
-    the reason. Neither guard closes it alone: #24 covers bury-then-claim, this covers
-    claim-then-bury.
+    TOGETHER WITH THE CLAIM'S CLEAR (#24) THIS CLOSES TWO OF THE THREE INTERLEAVINGS THAT REACH
+    `('ready', <a reason>)`, which is #24's acceptance and did not hold on #24 alone. The winner's
+    `claim` strictly precedes its `processing` write and invalidates this worker's token, so a bury
+    whose `EXISTS` still passes is one the winner has not claimed past yet - and that later claim's
+    `processing` write clears the reason. Neither guard closes the other's: #24 covers
+    bury-then-claim, this covers claim-then-bury.
 
-    THAT UNREACHABILITY RESTS ON ONE `jobs` ROW PER `file_id`, WHICH `enqueue` GUARANTEES AND THE
-    SCHEMA DOES NOT. The argument above turns on the winner's claim invalidating *this* worker's
+    THE THIRD IS STILL OPEN, AND NEITHER GUARD IS AIMED AT IT. Both close a path whose bury has
+    LOST its lease; the remaining one runs through a bury that legitimately HOLDS one. A slow
+    worker's lease expires, the reaper requeues, a second worker claims and burys with a live
+    lease - this guard passes, correctly - and the first worker then publishes through
+    `index_file`, which reads no lease at all and deliberately does not clear `failed_reason`
+    (`gct/ingest/index.py`, and the comment on the claim's clear below). The winner burys, the
+    zombie publishes, and the reason survives under `ready`. Demonstrated by execution, not
+    argued - and the same script produces the same final row on the commit BEFORE this guard, so
+    it is a residual this function never covered rather than one it introduced. Closing it means
+    making `index_file` a second writer for `failed_reason`, an ADR 0020 seam decision that is not
+    this function's to take.
+
+    THE CLAIM-THEN-BURY HALF RESTS ON ONE `jobs` ROW PER `file_id`, WHICH `enqueue` GUARANTEES AND
+    THE SCHEMA DOES NOT. The argument above turns on the winner's claim invalidating *this* worker's
     token - true only while both runs contend for the same job row. Given two live jobs for one
     file, a zombie's `EXISTS` is satisfied by its own row while the other run publishes `ready`,
     and the forbidden state returns. No input reaches that today: `queue.py`'s insert is the only
@@ -548,9 +560,13 @@ def process_one(
         # row this run then republishes as `ready`, which is a bury this line has already run
         # past. #86 closed that end instead, with a lease guard on `_bury`'s files write - the
         # move this comment named, and NOT a second writer for `failed_reason` in `index_file`.
-        # `('ready', <a reason>)` needs BOTH guards to be unreachable, which is why
+        # `('ready', <a reason>)` needs BOTH guards and is STILL not unreachable: a bury that
+        # legitimately HOLDS its lease, followed by a publish from a worker whose lease expired,
+        # reaches it through `index_file`, which reads no lease - see `_bury`'s docstring for the
+        # interleaving and why closing it is an ADR 0020 decision. That path does not run through
+        # this loop, which is why
         # `test_the_claim_does_not_clear_a_reason_on_a_file_that_is_already_ready` still sets
-        # that row directly: no sequence of ticks earns it any more.
+        # that row directly rather than earning it from ticks.
         with conn.transaction():
             conn.execute(
                 """

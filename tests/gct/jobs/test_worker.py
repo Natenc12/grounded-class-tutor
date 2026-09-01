@@ -2999,3 +2999,42 @@ def test_the_publish_guard_locks_the_job_row_against_a_concurrent_reaper(db, tmp
         assert reclaim_expired(reaper) == 1, "the lock outlived the transaction that took it"
     finally:
         reaper.close()
+
+
+def test_the_publish_guard_waits_for_a_contended_row_instead_of_skipping_it(db, tmp_path):
+    """The lock must WAIT. `for update skip locked` would refuse a publish we are entitled to.
+
+    The other direction of `..._locks_the_job_row_against_a_concurrent_reaper`, which only proves
+    the guard's lock blocks a reaper. Nothing proved what the guard does when somebody ELSE holds
+    the row: `skip locked` returns no row, the predicate reads that as "not ours", and a worker
+    whose lease is perfectly live throws its whole ingest away and waits for the reaper to redo it.
+    Fail-safe for #92, but it burns an attempt (ADR 0020's budget) on a job that was never in
+    danger.
+
+    Proved by making the guard raise rather than by timing it: a rival holds the row, the guard's
+    connection carries a `lock_timeout`, and a guard that WAITS hits that timeout. Under
+    `skip locked` there is no wait, so it returns False and this goes red.
+    """
+    conn, owner_id, class_id = db
+    conn.autocommit = True
+    source = write_pdf(tmp_path / "contended.pdf", ["a page"])
+    enqueue(conn, path=source, owner_id=owner_id, class_id=class_id)
+    job = claim(conn, lease_seconds=3600)
+    assert job is not None
+
+    rival = _another_connection()
+    try:
+        with rival.transaction():
+            rival.execute("select 1 from jobs where job_id = %s::uuid for update", (job.job_id,))
+            conn.execute("set lock_timeout = '500ms'")
+            with conn.transaction():
+                with pytest.raises(psycopg.errors.LockNotAvailable):
+                    worker._publish_guard(job)(conn)
+        conn.execute("set lock_timeout = 0")
+        with conn.transaction():
+            assert worker._publish_guard(job)(conn) is True, (
+                "uncontended the guard must still say yes, or the test above passes for the "
+                "wrong reason"
+            )
+    finally:
+        rival.close()

@@ -729,10 +729,12 @@ def _settled(snapshot: Snapshot) -> bool:
         crash between them must leave behind), so ('failed', 'processing') with a null
         `last_error` is a state the design commits to producing.
 
-    Both were reachable: the ceremony reported `1 lifecycle: FAIL` on a healthy run, once in five,
-    caught at `/land`. An exit gate that fails on a correct system is worse than no gate — it
-    teaches the reader to re-run it until it is green, which is exactly how a real red gets
-    ignored.
+    Both were reachable: the ceremony reported `1 lifecycle: FAIL` on a healthy run, caught at
+    `/land` by running it repeatedly. No rate is claimed — the window is roughly 1ms of publish
+    against a 40ms observer tick, so sightings are a few percent per file, and a failure needs the
+    sighting to land on the LAST file to settle (nothing samples after the wait returns). An exit
+    gate that fails on a correct system is worse than no gate — it teaches the reader to re-run it
+    until it is green, which is exactly how a real red gets ignored.
     """
     return _terminal(snapshot) and snapshot.job_state in ("done", "failed")
 

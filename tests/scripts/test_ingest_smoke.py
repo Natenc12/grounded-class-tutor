@@ -1697,11 +1697,11 @@ def test_a_run_whose_worker_survived_every_phase_exits_zero(
 def test_a_ready_file_whose_job_has_not_settled_yet_is_not_something_to_stop_waiting_on():
     """`_terminal` stops on the file axis; phases 1-2 then assert the JOB axis. Hence `_settled`.
 
-    The gate reported `1 lifecycle: FAIL` on a healthy run, once in five, and this is the window it
-    sampled. `index_file` commits `ready`; `complete` is the next statement, in its own
-    transaction. A last sample landing between them reads ('ready', 'processing'), which
-    `_lifecycle_faults` correctly calls a fault — the fault was manufactured by stopping too early,
-    not by anything the worker did wrong.
+    The gate reported `1 lifecycle: FAIL` on a healthy run, and this is the window it sampled.
+    `index_file` commits `ready`; `complete` is the next statement, in its own transaction. A last
+    sample landing between them reads ('ready', 'processing'), which `_lifecycle_faults` correctly
+    calls a fault — the fault was manufactured by stopping too early, not by anything the worker
+    did wrong.
 
     Both halves are asserted here, because only together do they mean anything: `_terminal` still
     says True (it is about the file the student watches, and that is right), while `_settled` says
@@ -1711,6 +1711,11 @@ def test_a_ready_file_whose_job_has_not_settled_yet_is_not_something_to_stop_wai
     assert smoke._terminal(mid_publish) is True
     assert smoke._settled(mid_publish) is False
     assert smoke._settled(snapshot("ready", 37, job_state="done")) is True
+    # `queued` too, and it is not hypothetical: `_release_on_shutdown`'s docstring names the
+    # interrupt landing "in the millisecond between `index_file`'s commit and `complete`", which
+    # hands the job back and leaves exactly ('ready', 'queued'). Pinning the two endpoints without
+    # the SET lets a predicate admit `queued` and reintroduce this whole bug.
+    assert smoke._settled(snapshot("ready", 37, job_state="queued")) is False
 
 
 def test_a_failed_file_whose_job_has_not_settled_yet_is_not_something_to_stop_waiting_on():

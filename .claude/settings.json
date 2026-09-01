@@ -9,6 +9,16 @@
           }
         ]
       }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash \"$HOME/claude-home/cloud/sync.sh\""
+          }
+        ]
+      }
     ]
   }
 }

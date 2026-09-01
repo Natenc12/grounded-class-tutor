@@ -141,13 +141,18 @@ Slow/external work runs with **no transaction open**; the transaction is a short
 | **Embedding provider 429 / timeout / transient 5xx** | transient | retry w/ backoff up to budget → else `failed(reason=transient_exhausted)`. DB untouched until success (ADR 0020 §1, budget numbers per ADR 0028) |
 | **DB connection error mid-job** | infra | propagates uncaught — the worker crashes. Nothing classifies psycopg errors, and a handler wide enough to catch a blip absorbs every programming error with it, putting a wrong `failed_reason` in front of a student. The run committed nothing, the lease expires, the reaper requeues, and the `attempts` budget bounds the loop (ADR 0020 §1, DB-blip class amended per ADR 0028) |
 | **Worker crash mid-`processing`** | infra | committed nothing (tx not reached); job → `queued`, **zero cleanup** (ADR 0011/0020). Which writer requeues it turns on whether the stack unwound: any death that raises — Ctrl-C, the SIGTERM `scripts/worker.py` routes onto the same unwind, an unclassified exception — is handed back by the worker's own shutdown release and is claimable **at once**; `SIGKILL`/OOM/power loss run no handler, so those wait out the lease and the reaper collects them (ADR 0028 §Consequences, shutdown-release bullet) |
-| **Duplicate job delivery** (at-least-once) | infra | safe — idempotent replace re-does the same delete-then-insert; no dedup needed (ADR 0020) |
+| **Duplicate job delivery** (at-least-once) | infra | safe **for the chunk set** — idempotent replace re-does the same delete-then-insert; no dedup needed (ADR 0020). NOT yet safe for the `failed_reason` column: one duplicate-delivery interleaving republishes `ready` over a reason (#92, and the invariant below) |
 | **Re-index of an already-`ready` file** | normal | old full set stays queryable until COMMIT, then swapped atomically — never flickers empty/partial |
 | **Partial embed then failure** | transient | nothing committed; retry reprocesses from scratch (accepted re-embed cost, ADR 0020) |
 | **Index write handed a connection already inside a transaction** | programming error | the index write **raises `RuntimeError` before opening the transaction** — nothing is written. The alternative was a SAVEPOINT that publishes nothing while reporting success (ADR 0025, guarded per ADR 0027); the error names the remedy (autocommit at wiring, or commit first) |
 | **Zero-chunk row set handed to the index write** | programming error | the index write **raises `ValueError` before opening the transaction** — nothing is written, not even the `files` row. Publishing `ready` over zero chunks would break `status=ready` ⟺ full chunk set queryable. Unreachable through the pipeline (parse fails an empty file first), but the index write is a public entry point and does not trust its caller (#23) |
 
 ## Invariants
+
+These are what the box is BUILT to hold, and all but one are enforced today. The
+exception is marked **NOT YET HELD** inline, with the issue that owns it — an invariant
+this section silently over-claimed would be worse than one it admits to.
+
 - **Provenance is born at parse and never lost** — every chunk carries `(file, page_or_slide)`;
   honor-point ① of the citation spine (F2, ADR 0019).
 - **`page_or_slide` is scalar** — never-span guarantees exactly-honest citation provenance with zero
@@ -161,6 +166,23 @@ Slow/external work runs with **no transaction open**; the transaction is a short
   and the box now ENFORCES that: `index_file` refuses a non-IDLE connection before writing anything
   (ADR 0025, guarded per ADR 0027). §Internal approach step 1 states the precondition and what it
   costs a worker to get wrong.
+- **A `ready` file carries no failure reason** — **NOT YET HELD (#92).** `status='ready'` and a
+  non-null `failed_reason` must not coexist. The reason is the actionable message F3 puts in front
+  of a student (ADR 0020 §1), so a queryable file wearing one contradicts the answers it is already
+  grounding — the same trust cost as a partial index, reached through the status column instead of
+  the corpus. **Two of its three interleavings are closed; the third is not.** At-least-once
+  redelivery reaches the row from more than one direction (ADR 0011), and the three are partitioned
+  by where the bury falls relative to the PUBLISHER's claim — the bury is the only writer that sets
+  the reason, the claim's `processing` write the only one that clears it. Either the publisher
+  claimed *after* the bury, and its clear removes the reason on the way past (**#24**); or it was
+  already past its claim, and then the burier either **lost** its lease, which the terminal write
+  now refuses on the same guard the job settle verbs use (**#86**), or still **held** it — which
+  nothing refuses (**#92, open**). In that third case the PUBLISH is the write whose lease is gone:
+  `index_file` reads no lease and does not clear `failed_reason`, so a slow worker republishes
+  `ready` over a reason a live-leased `_bury` committed while it was working. Reachable today and
+  demonstrated by execution; #86 neither introduced it nor widened it. Closing it makes the
+  publisher a second writer for the column, which is an ADR 0020 seam decision rather than a guard,
+  and that is what #92 decides.
 - **Idempotent by construction** — reprocessing a file fully replaces its chunk set; safe under
   at-least-once delivery + lease/reaper reclaim, no dedup keys (ADR 0011/0020).
 - **Transaction wraps the write, not the work** — never held across embedding-API calls (ADR 0020).

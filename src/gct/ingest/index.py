@@ -114,6 +114,13 @@ def index_file(
         #    keeps this box pure of job/queue/retry machinery (PM-4 seam, ADR 0020). Adding it here
         #    would make the publisher a second writer for a column it knows nothing about - pinned
         #    by `test_index_file_does_not_clear_failed_reason`.
+        #
+        #    THE OMISSION IS NOT COST-FREE, AND #92 IS THE COST. This statement is the only writer
+        #    of `ready`, reads no lease, and leaves the reason where it is - so a worker whose
+        #    lease expired mid-ingest republishes `ready` over a reason a live-leased `_bury`
+        #    committed while it was working, and a student queries a file wearing a failure
+        #    message. Reachable today, demonstrated by execution. Whether the seam or the
+        #    invariant gives way is #92's decision, not this comment's.
         conn.execute(
             """
             insert into files (file_id, owner_id, class_id, filename, status)

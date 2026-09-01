@@ -2235,7 +2235,11 @@ def test_the_claim_clears_the_previous_attempts_failed_reason(db, db_other, tmp_
 def test_a_retry_that_succeeds_leaves_no_failed_reason_on_the_ready_file(
     db, db_other, tmp_path, monkeypatch
 ):
-    """The acceptance criterion of #24: `('ready', <a reason>)` must be unreachable.
+    """The acceptance criterion of #24: `('ready', <a reason>)` must not be reached THIS way.
+
+    #24's acceptance was written as unreachability outright. It is not - see `_bury`'s docstring
+    for the interleaving that still reaches it, and #92. What this pins is the retry path, which
+    #24 does close.
 
     Half-bury a corrupt file, then replace the bytes AT THE SAME `staging_ref` with a parseable
     PDF and let the same job's next attempt run. That input change is the ordinary case, not a
@@ -2280,11 +2284,21 @@ def test_the_claim_does_not_clear_a_reason_on_a_file_that_is_already_ready(
 
     THE SUBJECT HERE IS THE SQL'S SHAPE, AND THE ROW IS SET DIRECTLY RATHER THAN EARNED.
     `('ready', 'unparseable')` is what #24 removes from the SEQUENTIAL path - one attempt after
-    another, which is every other test in this file - so no sequence of ticks reaches it any
-    more. It is NOT unreachable in general: the out-of-order path can still produce it, and
-    `process_one`'s *WHAT IT DOES NOT CLOSE* block is where that residual is recorded - a zombie
-    whose lease expired reaching `_bury` after a winning run's `processing` write and before its
-    `index_file` commit, since `_bury`'s files write has no lease guard (#86).
+    another, which is every other test in this file - and #86's lease guard on `_bury` removed
+    ONE of the two out-of-order paths that were producing it (the section at the bottom of this
+    file drives that interleaving itself). The other is still open, and a sequence of ticks DOES
+    earn `('ready', <a reason>)` through it: a bury by the worker that legitimately HOLDS the
+    lease, then a publish by one whose lease expired, through `index_file`, which reads no lease.
+    See `_bury`'s docstring, and #92.
+
+    THE ROW IS STILL SET DIRECTLY, AND THE REASON IS CONTROL, NOT UNREACHABILITY. An earlier
+    version of this docstring said no sequence of ticks earns it; a later one said none earns it
+    with the job left CLAIMABLE. Both were false, and the second was demonstrated false the same
+    way as the first - `_bury` commits its `files` write and calls `fail` in two separate
+    transactions (see `_bury`), so a reaper landing in that gap leaves the reason committed and
+    the job claimable. The subject here is one statement's SHAPE. Earning the row through a
+    concurrency race would pin the same statement while making the test depend on an interleaving
+    that has nothing to do with it, and #92 is where that interleaving is tracked.
     What the test pins is that the clear cannot be lifted out into a second, unguarded
     `update files set failed_reason = null`: that version wipes the reason off a `ready` row,
     which is a row a zombie whose lease expired is entitled to be about to bury, and it widens
@@ -2535,4 +2549,190 @@ def test_the_worker_publishes_a_files_row_that_agrees_with_its_chunks(
     assert f_name == source.name, (
         "`files.filename` must be the basename the citation label uses, not the staging path - "
         "a full path here renders the uploader's home directory into every citation"
+    )
+
+
+# --- A dead lease writes NOTHING through `_bury` (issue #86) -----------------------------------
+#
+# SCOPED TO `_bury`, and the name says so on purpose. Issue #86's acceptance is written as "writes
+# nothing to `files`", which is broader than what any test here pins: two other `files` writes are
+# reachable by a worker whose lease has expired and neither reads a lease - `index_file`'s upsert
+# (reachable, see `_bury`'s docstring) and `process_one`'s `processing` write, guarded only by
+# `status <> 'ready'`. A test named for the broad sentence would report a coverage it does not
+# have.
+#
+# `_bury` writes both axes, and until #86 only the `jobs` half read the lease. So the two halves
+# of one function disagreed about who owned the job: `fail` refused a zombie whose lease had
+# expired, and the `files` write went through anyway. `status <> 'ready'` does not cover that -
+# the window it leaves open is precisely the one where the winner is `processing`, which is where
+# a zombie stalled long enough to lose its lease is most likely to wake up.
+#
+# WHY THE FIRST TEST DRIVES THE INTERLEAVING INSTEAD OF SETTING A ROW. Every other guard in this
+# file is a property of one statement, so a directly-set row reaches it honestly. This one is a
+# property of an ORDER - claim, `processing`, bury, publish - and the end state it forbids,
+# `('ready', <a reason>)`, is reachable from several orders that are NOT this bug (#24 closed the
+# sequential one). Setting the row would pin the end state while proving nothing about the path,
+# which is what let this survive: the suite passed identically with and without the guard.
+# So the winner runs through the REAL `process_one` and the zombie's bury is injected at the one
+# instant that matters, between the `processing` write and the `index_file` commit.
+# The pull request carries a runnable script printing the same five steps, for a reader who
+# would rather watch it than read one assertion.
+#
+# The other two pin the guard's SHAPE, which is a genuine fork rather than a detail: a condition
+# that is too strict strands a file as surely as one that is too loose publishes a lie.
+
+
+def test_a_zombie_whose_lease_expired_writes_nothing_through_bury(
+    db, db_other, tmp_path, monkeypatch
+):
+    """The at-least-once interleaving that produced `('ready', 'unparseable')` (issue #86).
+
+    Worker A claims and stalls. Its lease expires and the reaper requeues the job. Worker B - the
+    winner - claims, writes `processing`, and starts a real ingest. A wakes up mid-ingest and runs
+    its terminal path against a lease it no longer holds. B then publishes.
+
+    Only A's wake-up is injected; everything else is the production path. B claims through
+    `process_one`'s own `claim`, writes `processing` through its own statement, publishes through
+    the real `index_file` and settles through the real `complete` - so nothing about the ORDER
+    under test is arranged by the test, which is the whole point of driving it rather than staging
+    the row. A's bury is the REAL `_bury` with A's real `Job`, dead token and all.
+
+    Three assertions, and the middle one is the defect: the row must be `('processing', None)`
+    both before and after A's bury. The end state alone is not enough - `process_one`'s claim-time
+    clear (#24) would scrub a reason written BEFORE B's `processing` write, so a test that only
+    read the end could go green on the wrong guard entirely.
+
+    All reads go through `db_other`, including the two inside the hook: they are claims about what
+    A COMMITTED, and A shares `conn` with B here, so `conn` would see A's write whether or not the
+    guard let it through.
+    """
+    conn, owner_id, class_id = db
+    conn.autocommit = True
+    source = write_pdf(tmp_path / "the-winner-publishes-this.pdf", ["the real lecture text"])
+    file_id = enqueue(conn, path=source, owner_id=owner_id, class_id=class_id)
+
+    zombie = claim(conn, lease_seconds=3600)
+    assert zombie is not None
+    _backdate_lease(conn, file_id)
+    assert reclaim_expired(conn) == 1, "the scenario needs the job genuinely handed back"
+
+    observed: list[tuple] = []
+    real_ingest = worker.ingest_file
+
+    def bury_from_the_zombie_then_ingest(*args, **kwargs):
+        """Worker A wakes up between B's `processing` write and B's `index_file` commit."""
+        observed.append(_file_row(db_other, file_id))
+        worker._bury(conn, zombie, reason="unparseable", error="a zombie's dead-lease bury")
+        observed.append(_file_row(db_other, file_id))
+        return real_ingest(*args, **kwargs)
+
+    monkeypatch.setattr(worker, "ingest_file", bury_from_the_zombie_then_ingest)
+    assert tick(conn, FakeEmbeddings()) is True
+
+    before, after = observed
+    assert before == ("processing", None), (
+        "the zombie did not wake up in the window this test is about - the winner had not "
+        "written `processing` yet, so any guard at all would have looked sufficient"
+    )
+    assert after == ("processing", None), (
+        "the zombie's `_bury` wrote to `files` on a lease it no longer holds - the `jobs` half "
+        "refused the same call, which is the asymmetry #86 is"
+    )
+
+    status, reason, state, chunk_count = db_other.execute(
+        """
+        select f.status, f.failed_reason, j.state,
+               (select count(*) from chunks c where c.file_id = f.file_id)
+        from files f join jobs j using (file_id) where f.file_id = %s::uuid
+        """,
+        (file_id,),
+    ).fetchone()
+    assert (status, reason) == ("ready", None), (
+        "a queryable file is carrying a failure reason - the forbidden end state, reached by "
+        "the path this test drives, which #24's claim-time clear cannot see (it is not the only "
+        "such path: #92 is the other)"
+    )
+    assert state == "done", "the winner settled its own job; the zombie's `fail` was refused"
+    assert chunk_count > 0, "`ready` means the full chunk set is committed and queryable"
+
+
+def test_a_bury_still_holding_its_claim_writes_both_halves_past_the_lease_deadline(
+    db, db_other, tmp_path, monkeypatch
+):
+    """The guard is OWNERSHIP, not the clock - `leased_until > now()` would strand this file.
+
+    An ingest can outrun its own lease with nothing behind it to reap the job: V1 runs one worker
+    (ADR 0011), and `reclaim_expired` only fires on a poll tick that has not happened yet. The job
+    is then still `processing` under THIS worker's token, with `leased_until` in the past, and
+    `fail` settles it happily - its guard reads state and token and never reads the clock.
+
+    So a files half that tested `leased_until > now()` would refuse the call `fail` accepts, and
+    leave the row `processing` under a terminally `failed` job: nothing will ever claim it again
+    and the student gets no reason. That is the exact stranding `_bury`'s files-before-jobs order
+    exists to avoid, reintroduced by the guard meant to make it safer. Matching `fail`'s two
+    conditions verbatim is what keeps the two halves agreeing.
+
+    Driven, not staged: the lease is backdated from INSIDE the ingest, which is what "the ingest
+    outran the lease" means, and the terminal failure is the real `ParseError` the worker's
+    `except` clause is written against.
+    """
+    conn, owner_id, class_id = db
+    conn.autocommit = True
+    monkeypatch.setattr(worker.time, "sleep", lambda _: None)
+    source = write_pdf(tmp_path / "slower-than-its-lease.pdf", ["a page that took too long"])
+    file_id = enqueue(conn, path=source, owner_id=owner_id, class_id=class_id)
+
+    def outrun_the_lease_then_fail_terminally(*_args, **_kwargs):
+        _backdate_lease(conn, file_id)
+        raise ParseError("unparseable", "the parse finished long after the lease did")
+
+    monkeypatch.setattr(worker, "ingest_file", outrun_the_lease_then_fail_terminally)
+    assert tick(conn, FakeEmbeddings()) is True
+
+    assert _file_row(db_other, file_id) == ("failed", "unparseable"), (
+        "the file is stranded mid-flight with no reason for the student, while its job is "
+        "terminally failed - the guard is reading the clock instead of the ownership"
+    )
+    state, lease_is_expired = db_other.execute(
+        "select state, leased_until < now() from jobs where file_id = %s::uuid", (file_id,)
+    ).fetchone()
+    assert state == "failed", "`fail` settles a job past its lease deadline; both halves must"
+    assert lease_is_expired, (
+        "the lease never actually expired, so this test would pass without the distinction it "
+        "exists to draw - compared in the SERVER's clock, the one the lease is stamped in"
+    )
+
+
+def test_a_bury_on_a_job_that_is_no_longer_processing_writes_nothing(db, db_other, tmp_path):
+    """The STATE half of the guard, which the token half cannot stand in for.
+
+    The two conditions mean ownership only together, the same argument `_settle`'s docstring
+    makes about the guard this one copies. `complete` and `fail` leave the winning run's
+    `lease_token` on the settled row deliberately - it records who finished the job - so a token
+    match alone says nothing about whether the job is still anybody's in-flight work. Drop
+    `state = 'processing'` and a bury reaching an already-settled job writes `failed` over it.
+
+    The row is set by really claiming and really completing, so the token on it is the one the
+    settle verb chose to keep rather than one the test invented. The file is left `queued`, never
+    `ready`, so the monotonic guard is out of the way and only the lease guard can refuse.
+    """
+    conn, owner_id, class_id = db
+    conn.autocommit = True
+    source = write_pdf(tmp_path / "already-settled.pdf", ["a page whose job is finished"])
+    file_id = enqueue(conn, path=source, owner_id=owner_id, class_id=class_id)
+    job = claim(conn, lease_seconds=3600)
+    assert job is not None
+    assert complete(conn, job_id=job.job_id, lease_token=job.lease_token) is True
+    assert db_other.execute(
+        "select lease_token::text from jobs where file_id = %s::uuid", (file_id,)
+    ).fetchone() == (job.lease_token,), (
+        "the settled row lost its token, so the state half is not the only thing refusing "
+        "below and this test proves less than it claims"
+    )
+
+    worker._bury(conn, job, reason="unparseable", error="a bury reaching a settled job")
+
+    assert _file_row(db_other, file_id) == ("queued", None), (
+        "a bury wrote `failed` over a job that is no longer processing - a token match on a "
+        "settled row is not ownership"
     )

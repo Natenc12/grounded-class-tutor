@@ -15,7 +15,9 @@ Status ownership - who writes which `files.status` transition (issue #71):
     | -> failed + failed_reason | THIS module - terminal input, or budget exhausted          |
 
 `jobs.state` is the OTHER axis - claim/lease/retry machinery - and `queue.py` owns every
-statement that touches that table.
+statement that WRITES that table. Exactly one statement here READS it: `_bury`'s lease guard,
+which has to ask "do I still hold this job?" inside the `files` UPDATE rather than before it,
+or the answer is stale by the time it is used (#86; the argument is in `_bury`'s docstring).
 
 The retryable/terminal split (ADR 0020 §1) is this module's, and it is a two-line rule:
 `ParseError` is bad INPUT - straight to `failed(reason)`, retry budget untouched, because a
@@ -174,16 +176,68 @@ def _bury(conn: psycopg.Connection, job: Job, *, reason: str, error: str) -> Non
     file is stranded in `processing` forever with no reason for the student. Only one of those
     two recovers on its own.
 
+    THE FILES WRITE IS GUARDED TWICE, and the two guards answer different questions. Both are
+    about the same at-least-once fact - this worker may be a zombie whose lease was reaped and
+    re-handed out while it was stalled (ADR 0011) - but they catch it at different moments.
+
     `status <> 'ready'` keeps the student-facing status monotonic, the same guard and the same
-    argument as the `processing` write in `process_one`: under at-least-once a zombie whose
-    lease expired can reach this line after the run that actually won already published the
-    file, and flipping a queryable file to `failed` is the one direction that costs the student
-    something real. `fail`'s own lease guard covers the jobs half; this covers the half
-    `queue.py` is not allowed to touch.
+    argument as the `processing` write in `process_one`: flipping a queryable file to `failed`
+    is the one direction that costs the student something real.
+
+    The `EXISTS` is the LEASE guard, and it is `_settle`'s two conditions verbatim
+    (`state = 'processing'` AND `lease_token` = ours) so that the two halves of this one function
+    agree about who owns the job. They did not: `fail` refused a dead lease while this write went
+    through regardless, so a zombie could stamp a reason on a row the winning run was mid-way
+    through publishing - `processing`, not `ready`, so the monotonic guard saw nothing wrong - and
+    `index_file` then republished it `ready` with the reason still attached (#86). Matching `fail`
+    exactly is what makes a lost-lease bury write NOTHING rather than half of an event whose two
+    writes "always travel together". It READS `jobs` from this module, which the ownership rule
+    at the top of this file permits and the module docstring now says out loud: `queue.py` owns
+    every statement that WRITES that table, and this is the one place outside it that reads one.
+    Asking `queue.py` for the answer first and then writing on it would be a check-then-act with
+    a reclaim-sized gap in the middle; inside the UPDATE the two are one statement.
+
+    NOT `leased_until > now()`, which is stricter and would strand a file. An ingest that OUTRUNS
+    its lease with nothing behind it to reap the job still settles that job through `fail`, whose
+    guard does not read the clock; a files half that refused the same call would leave the row in
+    `processing` under a terminally `failed` job - the exact stranding this function's write ORDER
+    was chosen to avoid, reintroduced by the guard meant to make it safer.
+
+    TOGETHER WITH THE CLAIM'S CLEAR (#24) THIS CLOSES TWO OF THE THREE INTERLEAVINGS THAT REACH
+    `('ready', <a reason>)`, which is #24's acceptance and did not hold on #24 alone. The winner's
+    `claim` strictly precedes its `processing` write and invalidates this worker's token, so a bury
+    whose `EXISTS` still passes is one the winner has not claimed past yet - and that later claim's
+    `processing` write clears the reason. Neither guard closes the other's: #24 covers
+    bury-then-claim, this covers claim-then-bury.
+
+    THE PARTITION IS BY WHERE THE BURY FALLS RELATIVE TO THE PUBLISHER'S CLAIM, not by whose
+    lease is alive. The end state needs a bury (the only writer that SETS the reason) with no
+    `processing` write (the only writer that CLEARS it) between it and the publish. Either the
+    publisher claimed AFTER the bury - #24's clear removes the reason on the way past - or it was
+    already past its claim, and then the burier either LOST its lease (#86, this guard) or still
+    HELD it (#92, open).
+
+    #92 IS THE ONE NEITHER GUARD IS AIMED AT. A slow worker's lease expires, the reaper requeues,
+    a second worker claims and burys with a live lease - this guard passes, correctly - and the
+    first worker then publishes through `index_file`, which reads no lease at all and deliberately
+    does not clear `failed_reason` (`gct/ingest/index.py`, and the comment on the claim's clear
+    below). The winner burys, the zombie publishes, and the reason survives under `ready`.
+    Demonstrated by execution, not argued - and the same script produces the same final row on the
+    commit BEFORE this guard, so it is a residual this function never covered rather than one it
+    introduced. Closing it means making `index_file` a second writer for `failed_reason`, an
+    ADR 0020 seam decision that is not this function's to take.
+
+    THE CLAIM-THEN-BURY HALF RESTS ON ONE `jobs` ROW PER `file_id`, WHICH `enqueue` GUARANTEES AND
+    THE SCHEMA DOES NOT. The argument above turns on the winner's claim invalidating *this* worker's
+    token - true only while both runs contend for the same job row. Given two live jobs for one
+    file, a zombie's `EXISTS` is satisfied by its own row while the other run publishes `ready`,
+    and the forbidden state returns. No input reaches that today: `queue.py`'s insert is the only
+    one in the repo and `enqueue` mints a fresh `files` row beside it. Whoever gives a file a
+    second live job - an upload path that re-enqueues an existing `file_id` is the obvious way -
+    breaks this claim, and should read it before deciding they haven't.
 
     A lost lease is reported, not raised: it is the routine at-least-once outcome (`fail`'s
-    docstring). The guard above BOUNDS the damage without removing it: a lost-lease bury can
-    still stamp a reason on a file the winner has not published `ready` yet (#86).
+    docstring), and now both halves report the same thing rather than disagreeing.
     """
     with conn.transaction():
         conn.execute(
@@ -194,8 +248,19 @@ def _bury(conn: psycopg.Connection, job: Job, *, reason: str, error: str) -> Non
                 updated_at = now()
             where file_id = %(file_id)s::uuid
               and status <> 'ready'
+              and exists (
+                  select 1 from jobs
+                  where job_id = %(job_id)s::uuid
+                    and state = 'processing'
+                    and lease_token = %(lease_token)s::uuid
+              )
             """,
-            {"reason": reason, "file_id": job.file_id},
+            {
+                "reason": reason,
+                "file_id": job.file_id,
+                "job_id": job.job_id,
+                "lease_token": job.lease_token,
+            },
         )
 
     if not fail(conn, job_id=job.job_id, lease_token=job.lease_token, error=error):
@@ -493,18 +558,20 @@ def process_one(
         # `update files set failed_reason = null` would wipe the reason off a `ready` file a
         # zombie is about to bury, and would widen the crash window between the two writes.
         #
-        # WHAT IT DOES NOT CLOSE, recorded so it is a known cost rather than a bug someone
-        # re-finds, and OWNED BY ISSUE #86: the out-of-order path. A zombie whose lease
-        # expired can reach `_bury` AFTER a winning run's `processing` write and BEFORE its
-        # `index_file` commit; `_bury`'s files write has no lease guard, only
-        # `status <> 'ready'`, so it stamps `('failed', reason)` on a row the winner then
-        # republishes as `ready` - and the reason survives again. That is the ONE path by
-        # which `('ready', <a reason>)` is still reachable, and
-        # `test_the_claim_does_not_clear_a_reason_on_a_file_that_is_already_ready` sets that
-        # row directly rather than earning it for exactly this reason.
-        # Narrow (the two attempts must disagree about the input, and
-        # V1 runs one worker, ADR 0011). If it ever needs closing, the move is a LEASE GUARD on
-        # `_bury`'s files write, not a second writer for `failed_reason` in `index_file`.
+        # WHAT THIS CLEAR CANNOT DO ALONE, and what does it alongside (#86). This statement
+        # closes the SEQUENTIAL path - a bury, then a later claim - and nothing that happens
+        # HERE can close the out-of-order one: a zombie whose lease expired reaching `_bury`
+        # AFTER this write and BEFORE the `index_file` commit stamps `('failed', reason)` on the
+        # row this run then republishes as `ready`, which is a bury this line has already run
+        # past. #86 closed that end instead, with a lease guard on `_bury`'s files write - the
+        # move this comment named, and NOT a second writer for `failed_reason` in `index_file`.
+        # `('ready', <a reason>)` needs BOTH guards and is STILL not unreachable: a bury that
+        # legitimately HOLDS its lease, followed by a publish from a worker whose lease expired,
+        # reaches it through `index_file`, which reads no lease - see `_bury`'s docstring for the
+        # interleaving, #92 for the decision, and why closing it crosses an ADR 0020 seam. A
+        # sequence of ticks DOES earn that row through it, so
+        # `test_the_claim_does_not_clear_a_reason_on_a_file_that_is_already_ready` sets it
+        # directly for CONTROL, not because nothing reaches it - see that test's docstring.
         with conn.transaction():
             conn.execute(
                 """

@@ -2291,11 +2291,14 @@ def test_the_claim_does_not_clear_a_reason_on_a_file_that_is_already_ready(
     lease, then a publish by one whose lease expired, through `index_file`, which reads no lease.
     See `_bury`'s docstring, and #92.
 
-    WHAT TICKS CANNOT EARN IS THIS TEST'S PRECONDITION, which is narrower and is the actual
-    reason the row is set directly: that path settles the job TERMINALLY on its way to the row,
-    so nothing can claim past it, and this test needs a claimable job on a `('ready', <a reason>)`
-    file. Setting the row is therefore not a shortcut past a sequence that exists - no sequence
-    reaches THIS starting state.
+    THE ROW IS STILL SET DIRECTLY, AND THE REASON IS CONTROL, NOT UNREACHABILITY. An earlier
+    version of this docstring said no sequence of ticks earns it; a later one said none earns it
+    with the job left CLAIMABLE. Both were false, and the second was demonstrated false the same
+    way as the first - `_bury` commits its `files` write and calls `fail` in two separate
+    transactions (see `_bury`), so a reaper landing in that gap leaves the reason committed and
+    the job claimable. The subject here is one statement's SHAPE. Earning the row through a
+    concurrency race would pin the same statement while making the test depend on an interleaving
+    that has nothing to do with it, and #92 is where that interleaving is tracked.
     What the test pins is that the clear cannot be lifted out into a second, unguarded
     `update files set failed_reason = null`: that version wipes the reason off a `ready` row,
     which is a row a zombie whose lease expired is entitled to be about to bury, and it widens
@@ -2646,7 +2649,8 @@ def test_a_zombie_whose_lease_expired_writes_nothing_through_bury(
     ).fetchone()
     assert (status, reason) == ("ready", None), (
         "a queryable file is carrying a failure reason - the forbidden end state, reached by "
-        "the one path #24's claim-time clear cannot see"
+        "the path this test drives, which #24's claim-time clear cannot see (it is not the only "
+        "such path: #92 is the other)"
     )
     assert state == "done", "the winner settled its own job; the zombie's `fail` was refused"
     assert chunk_count > 0, "`ready` means the full chunk set is committed and queryable"

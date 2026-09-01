@@ -502,8 +502,13 @@ def test_index_file_does_not_clear_failed_reason(db, db_other):
     `test_a_retry_that_succeeds_leaves_no_failed_reason_on_the_ready_file`, both in
     `tests/gct/jobs/test_worker.py`.
 
-    The row is seeded directly: production cannot reach `index_file` on a `failed` file without
-    going through the worker's claim, which is the whole point.
+    THE ROW IS SEEDED DIRECTLY, FOR CONTROL - NOT BECAUSE PRODUCTION CANNOT REACH IT. An earlier
+    version of this docstring said the latter, and #92 is the counterexample: a worker whose lease
+    expired mid-ingest reaches this function on a `('failed', <a reason>)` row with no claim of its
+    own in between, because a second worker burys with a LIVE lease while the first is still
+    working. So the `("ready", "unparseable")` asserted below is this statement's correct behavior
+    AND one step of a live defect. Both readings are true at once; #92 is where the conflict gets
+    resolved, by amending the seam or the invariant.
     """
     conn, owner_id, class_id = db
     conn.autocommit = True

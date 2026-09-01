@@ -210,17 +210,22 @@ def _bury(conn: psycopg.Connection, job: Job, *, reason: str, error: str) -> Non
     `processing` write clears the reason. Neither guard closes the other's: #24 covers
     bury-then-claim, this covers claim-then-bury.
 
-    THE THIRD IS STILL OPEN (#92), AND NEITHER GUARD IS AIMED AT IT. Both close a path whose
-    bury has LOST its lease; the remaining one runs through a bury that legitimately HOLDS one.
-    A slow worker's lease expires, the reaper requeues, a second worker claims and burys with
-    a live lease - this guard passes, correctly - and the first worker then publishes through
-    `index_file`, which reads no lease at all and deliberately does not clear `failed_reason`
-    (`gct/ingest/index.py`, and the comment on the claim's clear below). The winner burys, the
-    zombie publishes, and the reason survives under `ready`. Demonstrated by execution, not
-    argued - and the same script produces the same final row on the commit BEFORE this guard, so
-    it is a residual this function never covered rather than one it introduced. Closing it means
-    making `index_file` a second writer for `failed_reason`, an ADR 0020 seam decision that is not
-    this function's to take.
+    THE PARTITION IS BY WHERE THE BURY FALLS RELATIVE TO THE PUBLISHER'S CLAIM, not by whose
+    lease is alive. The end state needs a bury (the only writer that SETS the reason) with no
+    `processing` write (the only writer that CLEARS it) between it and the publish. Either the
+    publisher claimed AFTER the bury - #24's clear removes the reason on the way past - or it was
+    already past its claim, and then the burier either LOST its lease (#86, this guard) or still
+    HELD it (#92, open).
+
+    #92 IS THE ONE NEITHER GUARD IS AIMED AT. A slow worker's lease expires, the reaper requeues,
+    a second worker claims and burys with a live lease - this guard passes, correctly - and the
+    first worker then publishes through `index_file`, which reads no lease at all and deliberately
+    does not clear `failed_reason` (`gct/ingest/index.py`, and the comment on the claim's clear
+    below). The winner burys, the zombie publishes, and the reason survives under `ready`.
+    Demonstrated by execution, not argued - and the same script produces the same final row on the
+    commit BEFORE this guard, so it is a residual this function never covered rather than one it
+    introduced. Closing it means making `index_file` a second writer for `failed_reason`, an
+    ADR 0020 seam decision that is not this function's to take.
 
     THE CLAIM-THEN-BURY HALF RESTS ON ONE `jobs` ROW PER `file_id`, WHICH `enqueue` GUARANTEES AND
     THE SCHEMA DOES NOT. The argument above turns on the winner's claim invalidating *this* worker's
@@ -564,10 +569,9 @@ def process_one(
         # legitimately HOLDS its lease, followed by a publish from a worker whose lease expired,
         # reaches it through `index_file`, which reads no lease - see `_bury`'s docstring for the
         # interleaving, #92 for the decision, and why closing it crosses an ADR 0020 seam. A
-        # sequence of ticks DOES earn
-        # that row through it - but it earns it with the job settled TERMINALLY, and
-        # `test_the_claim_does_not_clear_a_reason_on_a_file_that_is_already_ready` needs a
-        # CLAIMABLE job on such a file, which is why it still sets the row directly.
+        # sequence of ticks DOES earn that row through it, so
+        # `test_the_claim_does_not_clear_a_reason_on_a_file_that_is_already_ready` sets it
+        # directly for CONTROL, not because nothing reaches it - see that test's docstring.
         with conn.transaction():
             conn.execute(
                 """

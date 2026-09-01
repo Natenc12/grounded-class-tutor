@@ -15,6 +15,7 @@ the Retriever asserts against).
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 from uuid import UUID, uuid4
@@ -138,6 +139,7 @@ def ingest_file(
     chunk_size: int = CHUNK_SIZE_WORDS,
     chunk_overlap: int = CHUNK_OVERLAP_WORDS,
     max_words: int = MAX_INGEST_WORDS,
+    publish_guard: Callable[[psycopg.Connection], bool] | None = None,
 ) -> str:
     """Ingest one file end to end and return its `file_id`. Slice 1 calls this directly.
 
@@ -151,6 +153,13 @@ def ingest_file(
     `queued` before the job was claimed (ADR 0011), so minting a fresh id here would strand the row
     the student is watching and index the chunks under a second one. With the id supplied,
     `index_file`'s upsert lands on its UPDATE branch instead and one file stays one row.
+
+    `publish_guard` is FORWARDED UNTOUCHED to `index_file`, which is the only thing this function
+    does with it (#92, ADR 0030). It belongs here rather than being the worker's own step because
+    the guard must run inside the index transaction to mean anything, and that transaction opens
+    below this frame - a caller cannot wrap it from outside. The slow parse/chunk/embed work above
+    is exactly the window in which a caller's entitlement to publish expires, so the check has to
+    be re-asked after that work, not before it.
 
     `conn` must satisfy TWO requirements, not one:
       - the pgvector adapter is registered - use `gct.db.connect()`;
@@ -220,5 +229,6 @@ def ingest_file(
         owner_id=owner_id,
         class_id=class_id,
         chunks=chunks,
+        publish_guard=publish_guard,
     )
     return file_id

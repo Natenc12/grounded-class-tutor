@@ -464,8 +464,17 @@ def reclaim_expired(conn: psycopg.Connection) -> int:
     would hand a poison file a fresh budget after every crash.
 
     Reclaiming is NOT killing: a stalled-but-alive worker keeps running and may
-    finish after its job is re-handed out. That duplicate run is safe by design -
-    at-least-once, absorbed by `index_file`'s all-or-nothing replace (ADR 0020).
+    finish after its job is re-handed out. That duplicate run is safe by design
+    (at-least-once, ADR 0011), but HOW it is made safe changed with #92 and the
+    distinction is load-bearing. It used to be ABSORBED - the reclaimed worker
+    published and `index_file`'s all-or-nothing replace made the second write
+    harmless (ADR 0020). Absorption is only harmless for the CHUNK set: the
+    publish also flips `files.status` to `ready`, over whatever the winning run
+    had written there, which is how a `ready` file came to carry a failure reason.
+    So it is now DISCARDED instead - `worker.process_one` passes a lease predicate
+    that `index_file` evaluates inside its transaction, and a reclaimed worker's
+    publish is refused rather than replayed (ADR 0030). The work is thrown away;
+    the row the winner wrote stands.
 
     Commits before returning, same contract as `claim` (its docstring has the
     argument). Returns how many rows moved; 0 is the normal tick, not an error.

@@ -16,7 +16,7 @@ import psycopg
 import pytest
 
 from gct.config import EMBEDDING_DIM
-from gct.ingest.index import index_file
+from gct.ingest.index import PublishRefused, index_file
 from gct.ingest.pipeline import PreparedChunk
 
 MODEL_ID = "fake-embed-3"
@@ -503,12 +503,15 @@ def test_index_file_does_not_clear_failed_reason(db, db_other):
     `tests/gct/jobs/test_worker.py`.
 
     THE ROW IS SEEDED DIRECTLY, FOR CONTROL - NOT BECAUSE PRODUCTION CANNOT REACH IT. An earlier
-    version of this docstring said the latter, and #92 is the counterexample: a worker whose lease
-    expired mid-ingest reaches this function on a `('failed', <a reason>)` row with no claim of its
+    version of this docstring said the latter and #92 was the counterexample: a worker whose lease
+    expired mid-ingest reached this function on a `('failed', <a reason>)` row with no claim of its
     own in between, because a second worker burys with a LIVE lease while the first is still
-    working. So the `("ready", "unparseable")` asserted below is this statement's correct behavior
-    AND one step of a live defect. Both readings are true at once; #92 is where the conflict gets
-    resolved, by amending the seam or the invariant.
+    working. #92 was resolved WITHOUT changing this statement - ADR 0030 refused that worker's
+    publish by entitlement (`publish_guard`) instead of clearing the column here, and §3 records
+    why. So the `("ready", "unparseable")` asserted below remains this statement's correct
+    behavior, and is no longer a step of a live defect on the worker path. It still is one for an
+    UNGUARDED caller, which is what this test is: passing no guard is exactly how a Slice 1 caller
+    reaches the publish, and ADR 0030's opt-in bound is the reason that stays legal.
     """
     conn, owner_id, class_id = db
     conn.autocommit = True
@@ -623,3 +626,234 @@ def test_reindex_into_a_class_that_does_not_exist_is_refused_and_publishes_nothi
     assert [t[0] for t in texts] == ["old-A", "old-B"], (
         "readers must see old-full -> new-full, never empty or partial (ADR 0020 §3)"
     )
+
+
+# --- #92: the publish guard — an entitlement check evaluated inside the index transaction -------
+#
+# ADR 0030. `index_file` was the only write to `files` that read no lease, which is how a worker
+# whose lease had been reaped could publish `ready` over a reason the live-leased winner had just
+# committed. The fix is a predicate the CALLER supplies and this box cannot interpret, so the
+# PM-4 seam (ADR 0020) holds: `index.py` still knows nothing about jobs, leases or workers.
+#
+# These tests are deliberately about the MECHANISM and not about leases — a lease-shaped guard
+# would test `worker._publish_guard` through this file and pin neither properly. What the guard
+# reads is `tests/gct/jobs/test_worker.py`'s subject; that it runs inside the transaction, before
+# every write, exactly once, on THIS connection, and rolls everything back on refusal, is this
+# file's.
+
+
+def _seed_failed_file_with_chunks(conn, owner_id: str, class_id: str) -> str:
+    """A `('failed', 'transient_exhausted')` row that ALREADY HAS a chunk set, committed.
+
+    Both halves matter for what the refusal tests assert. The row is what the winning `_bury`
+    leaves behind, and the pre-existing chunks are what makes `index_file`'s step 2 (`delete from
+    chunks`) destructive: a guard that ran after it, or outside the transaction, would leave the
+    file stripped of the chunks it is still serving even though the publish was refused.
+    """
+    file_id = str(uuid.uuid4())
+    conn.execute(
+        """
+        insert into files (file_id, owner_id, class_id, filename, status, failed_reason)
+        values (%s::uuid, %s, %s::uuid, 'lecture.pdf', 'failed', 'transient_exhausted')
+        """,
+        (file_id, owner_id, class_id),
+    )
+    index_file(
+        conn,
+        file_id=file_id,
+        filename="lecture.pdf",
+        owner_id=owner_id,
+        class_id=class_id,
+        chunks=[_chunk(owner_id, class_id, "the previous run's passage", 1)],
+    )
+    # `index_file` published it `ready` on the way in; put the bury's row back so the refusal is
+    # tested against the state the defect actually produces.
+    conn.execute(
+        """
+        update files set status = 'failed', failed_reason = 'transient_exhausted'
+        where file_id = %s::uuid
+        """,
+        (file_id,),
+    )
+    return file_id
+
+
+def test_a_refused_publish_writes_nothing_at_all(db, db_other):
+    """A False guard raises `PublishRefused` and leaves every row exactly as it was (#92).
+
+    Read back on `db_other` because the claim is about what SURVIVES, not what this connection
+    computed: a rollback that only looked like one is invisible from the connection that issued it.
+
+    Asserts THREE things, and the third is the one a careless implementation fails. The `files`
+    row still reads `('failed', 'transient_exhausted')` — the publish did not happen. No new chunk
+    landed. And the OLD chunk set is still there: `index_file` deletes before it inserts, so a
+    guard placed after step 2 would refuse the publish and still have destroyed the corpus the
+    file was serving. Rolling back is not the same as never writing, but it is the same OUTCOME
+    only if the guard sits inside the transaction — which is what this pins.
+    """
+    conn, owner_id, class_id = db
+    conn.autocommit = True
+    file_id = _seed_failed_file_with_chunks(conn, owner_id, class_id)
+
+    with pytest.raises(PublishRefused) as excinfo:
+        index_file(
+            conn,
+            file_id=file_id,
+            filename="lecture.pdf",
+            owner_id=owner_id,
+            class_id=class_id,
+            chunks=[_chunk(owner_id, class_id, "the zombie's passage", 2)],
+            publish_guard=lambda _conn: False,
+        )
+    assert excinfo.value.file_id == file_id
+
+    status, reason = db_other.execute(
+        "select status, failed_reason from files where file_id = %s::uuid", (file_id,)
+    ).fetchone()
+    assert (status, reason) == ("failed", "transient_exhausted"), (
+        "the refused publish wrote `files` anyway - the guard is not inside the transaction"
+    )
+
+    texts = [
+        r[0]
+        for r in db_other.execute(
+            "select text from chunks where file_id = %s::uuid", (file_id,)
+        ).fetchall()
+    ]
+    assert "the zombie's passage" not in texts, "a refused publish inserted its chunks"
+    assert texts == ["the previous run's passage"], (
+        "the refused publish DESTROYED the chunk set it did not replace - the guard runs after "
+        "`delete from chunks` instead of before it"
+    )
+
+
+def test_a_guard_that_allows_publishes_exactly_as_an_unguarded_call_does(db, db_other):
+    """True is transparent: the guard is a veto, not a second condition on the publish (#92)."""
+    conn, owner_id, class_id = db
+    conn.autocommit = True
+    file_id = _seed_failed_file_with_chunks(conn, owner_id, class_id)
+
+    index_file(
+        conn,
+        file_id=file_id,
+        filename="lecture.pdf",
+        owner_id=owner_id,
+        class_id=class_id,
+        chunks=[_chunk(owner_id, class_id, "the new passage", 2)],
+        publish_guard=lambda _conn: True,
+    )
+
+    status, text = db_other.execute(
+        """
+        select f.status, c.text from files f join chunks c using (file_id)
+        where f.file_id = %s::uuid
+        """,
+        (file_id,),
+    ).fetchone()
+    assert status == "ready"
+    assert text == "the new passage"
+
+
+def test_the_guard_is_asked_once_before_any_write_on_the_index_connection(db):
+    """WHEN, HOW OFTEN and ON WHAT — the three properties the veto's meaning rests on (#92).
+
+    ON WHAT is the load-bearing one and the least obvious. `index_file` passes its own `conn`, and
+    a guard that consulted any other connection would be answering a question about the world
+    OUTSIDE this transaction: whatever it locks would not be locked by the transaction doing the
+    writing, and the answer could go stale between being given and being relied on. That is the
+    entire reason `worker._publish_guard` can close #92 with `FOR UPDATE` rather than merely
+    narrow it — see its docstring.
+
+    WHEN is asserted from inside the guard rather than after the fact: the `files` row must still
+    read `failed` at the moment the guard is asked. HOW OFTEN pins it at one call, so a retry loop
+    or a second evaluation cannot make the check and the write disagree.
+    """
+    conn, owner_id, class_id = db
+    conn.autocommit = True
+    file_id = _seed_failed_file_with_chunks(conn, owner_id, class_id)
+    seen: list[tuple[psycopg.Connection, str]] = []
+
+    def guard(guard_conn: psycopg.Connection) -> bool:
+        (status,) = guard_conn.execute(
+            "select status from files where file_id = %s::uuid", (file_id,)
+        ).fetchone()
+        seen.append((guard_conn, status))
+        return True
+
+    index_file(
+        conn,
+        file_id=file_id,
+        filename="lecture.pdf",
+        owner_id=owner_id,
+        class_id=class_id,
+        chunks=[_chunk(owner_id, class_id, "the new passage", 2)],
+        publish_guard=guard,
+    )
+
+    assert len(seen) == 1, f"the guard was asked {len(seen)} times, not once"
+    guard_conn, status_when_asked = seen[0]
+    assert guard_conn is conn, (
+        "the guard was handed a connection other than the one doing the writing - anything it "
+        "locks would not be held by the index transaction"
+    )
+    assert status_when_asked == "failed", (
+        "the guard was asked AFTER the `files` upsert - by then the publish it is meant to veto "
+        "has already happened"
+    )
+
+
+def test_no_guard_leaves_the_pre_92_behavior_untouched(db, db_other):
+    """Omitting the guard publishes over a failure reason exactly as it always did (#92).
+
+    ADR 0030's opt-in bound, stated as a test rather than only as prose. Slice 1's direct callers
+    pass no guard - they hold no lease and race no bury - and must not have acquired a new way to
+    fail. It is also the exact behavior `test_index_file_does_not_clear_failed_reason` above pins
+    from the other side: the reason survives, and the `ready` is written.
+    """
+    conn, owner_id, class_id = db
+    conn.autocommit = True
+    file_id = _seed_failed_file_with_chunks(conn, owner_id, class_id)
+
+    index_file(
+        conn,
+        file_id=file_id,
+        filename="lecture.pdf",
+        owner_id=owner_id,
+        class_id=class_id,
+        chunks=[_chunk(owner_id, class_id, "the new passage", 2)],
+    )
+
+    assert db_other.execute(
+        "select status, failed_reason from files where file_id = %s::uuid", (file_id,)
+    ).fetchone() == ("ready", "transient_exhausted")
+
+
+def test_a_raising_guard_propagates_and_publishes_nothing(db, db_other):
+    """A guard that BLOWS UP is not a guard that said yes (#92).
+
+    The failure mode this forbids is `except Exception: pass` around the call, or any default
+    that treats an unusable answer as permission. The exception must reach the caller and the
+    transaction must roll back, which is what `conn.transaction()` does with any raise - the same
+    mechanism `PublishRefused` rides.
+    """
+    conn, owner_id, class_id = db
+    conn.autocommit = True
+    file_id = _seed_failed_file_with_chunks(conn, owner_id, class_id)
+
+    def guard(_conn: psycopg.Connection) -> bool:
+        raise RuntimeError("the guard could not answer")
+
+    with pytest.raises(RuntimeError, match="could not answer"):
+        index_file(
+            conn,
+            file_id=file_id,
+            filename="lecture.pdf",
+            owner_id=owner_id,
+            class_id=class_id,
+            chunks=[_chunk(owner_id, class_id, "the zombie's passage", 2)],
+            publish_guard=guard,
+        )
+
+    assert db_other.execute(
+        "select status, failed_reason from files where file_id = %s::uuid", (file_id,)
+    ).fetchone() == ("failed", "transient_exhausted")

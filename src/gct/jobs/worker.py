@@ -63,9 +63,11 @@ from __future__ import annotations
 
 import logging
 import time
+from collections.abc import Callable
 
 import psycopg
 
+from gct.ingest.index import PublishRefused
 from gct.ingest.parse import ParseError
 from gct.ingest.pipeline import ingest_file
 from gct.jobs.queue import Job, claim, complete, fail, reclaim_expired, release
@@ -156,6 +158,63 @@ def served_backoff(
     return wanted, min(wanted, max(0.0, lease_seconds - elapsed) / 2)
 
 
+def _publish_guard(job: Job) -> Callable[[psycopg.Connection], bool]:
+    """Build the predicate `index_file` asks before publishing: is this job still OURS? (#92)
+
+    THE THIRD INTERLEAVING, and the one neither #24 nor #86 is aimed at (`_bury`'s docstring
+    partitions all three). A worker stalls in ingest, its lease is reaped, a second worker claims,
+    exhausts the budget and burys WITH A LIVE LEASE - so #86's guard passes exactly as designed -
+    and the first worker then publishes `ready` over the reason. `index_file` was the only write to
+    `files` that read no lease; this closes that, and the invariant in
+    `components/ingestion-worker.md` holds for the worker path as of ADR 0030.
+
+    THE CONDITIONS ARE `_settle`'s TWO, VERBATIM, for the reason `_bury`'s `EXISTS` copies them:
+    every write that settles this job must agree about who owns it, and a third phrasing of the
+    ownership question is a third thing to keep in step. `state = 'processing'` AND our
+    `lease_token`; nothing about the clock, which `_bury`'s docstring explains at length.
+
+    `FOR UPDATE` IS THE WHOLE MECHANISM AND NOT AN OPTIMISATION - WITHOUT IT THIS NARROWS THE RACE
+    INSTEAD OF CLOSING IT. This is a check-then-act: the SELECT is one statement and the publish is
+    the next, and under READ COMMITTED the publish gets a fresh snapshot. A plain SELECT can
+    therefore answer "still ours", have the reaper requeue the job and a second worker claim and
+    bury in the gap, and the publish still lands - the same defect, in a window microseconds wide
+    instead of ingest-wide. `FOR UPDATE` takes a row lock held to COMMIT, and the lease can only
+    move through `reclaim_expired`, an UPDATE of that row, which now blocks until this
+    transaction ends. So the answer cannot go stale between being given and being relied on.
+    `_bury` solves the identical problem the other way, by folding its check into the UPDATE's
+    own WHERE - unavailable here, because the write is in `index.py` and giving that statement a
+    `jobs` conjunct is the seam crossing ADR 0030 §3 declined.
+
+    NO DEADLOCK AGAINST `_bury`, and it is worth stating because the two lock the same two rows in
+    OPPOSITE ORDER - this takes `jobs` then `files`, `_bury` writes `files` then `jobs`. A cycle
+    needs one transaction holding both, and `_bury` has none: its `files` write and its `fail()`
+    are separate transactions on purpose (its docstring argues the order from what a crash between
+    them leaves behind), so the `files` lock is released before the `jobs` lock is asked for.
+    Whoever makes those two writes one transaction reintroduces the cycle, and should read this.
+
+    Returns the predicate rather than taking `conn` directly: `index_file` supplies the connection,
+    and it must be THAT one - the check is worthless on any other, since the lock would not be held
+    by the transaction doing the writing (`index_file` step 0).
+    """
+
+    def still_ours(conn: psycopg.Connection) -> bool:
+        return (
+            conn.execute(
+                """
+                select 1 from jobs
+                where job_id = %(job_id)s::uuid
+                  and state = 'processing'
+                  and lease_token = %(lease_token)s::uuid
+                for update
+                """,
+                {"job_id": job.job_id, "lease_token": job.lease_token},
+            ).fetchone()
+            is not None
+        )
+
+    return still_ours
+
+
 def _bury(conn: psycopg.Connection, job: Job, *, reason: str, error: str) -> None:
     """Terminal failure on BOTH axes: `files.status='failed'` + `failed_reason`, then `jobs`.
 
@@ -215,17 +274,17 @@ def _bury(conn: psycopg.Connection, job: Job, *, reason: str, error: str) -> Non
     `processing` write (the only writer that CLEARS it) between it and the publish. Either the
     publisher claimed AFTER the bury - #24's clear removes the reason on the way past - or it was
     already past its claim, and then the burier either LOST its lease (#86, this guard) or still
-    HELD it (#92, open).
+    HELD it (#92, closed by `_publish_guard` above rather than by anything in this function).
 
-    #92 IS THE ONE NEITHER GUARD IS AIMED AT. A slow worker's lease expires, the reaper requeues,
-    a second worker claims and burys with a live lease - this guard passes, correctly - and the
-    first worker then publishes through `index_file`, which reads no lease at all and deliberately
-    does not clear `failed_reason` (`gct/ingest/index.py`, and the comment on the claim's clear
-    below). The winner burys, the zombie publishes, and the reason survives under `ready`.
-    Demonstrated by execution, not argued - and the same script produces the same final row on the
-    commit BEFORE this guard, so it is a residual this function never covered rather than one it
-    introduced. Closing it means making `index_file` a second writer for `failed_reason`, an
-    ADR 0020 seam decision that is not this function's to take.
+    #92 WAS THE ONE NEITHER GUARD IS AIMED AT, AND IT IS NOT CLOSED HERE. A slow worker's lease
+    expires, the reaper requeues, a second worker claims and burys with a live lease - this guard
+    passes, correctly - and the first worker then publishes through `index_file`, which read no
+    lease at all. The winner burys, the zombie publishes, and the reason survived under `ready`.
+    Demonstrated by execution, not argued - and the same script produced the same final row on the
+    commit BEFORE this guard, so it was a residual this function never covered rather than one it
+    introduced. It is now refused at the PUBLISH instead: `_publish_guard` hands `index_file` this
+    same ownership question to ask inside its own transaction (ADR 0030), which is what a bury
+    holding a live lease cannot be asked to do anything about.
 
     THE CLAIM-THEN-BURY HALF RESTS ON ONE `jobs` ROW PER `file_id`, WHICH `enqueue` GUARANTEES AND
     THE SCHEMA DOES NOT. The argument above turns on the winner's claim invalidating *this* worker's
@@ -565,13 +624,15 @@ def process_one(
         # row this run then republishes as `ready`, which is a bury this line has already run
         # past. #86 closed that end instead, with a lease guard on `_bury`'s files write - the
         # move this comment named, and NOT a second writer for `failed_reason` in `index_file`.
-        # `('ready', <a reason>)` needs BOTH guards and is STILL not unreachable: a bury that
-        # legitimately HOLDS its lease, followed by a publish from a worker whose lease expired,
-        # reaches it through `index_file`, which reads no lease - see `_bury`'s docstring for the
-        # interleaving, #92 for the decision, and why closing it crosses an ADR 0020 seam. A
-        # sequence of ticks DOES earn that row through it, so
-        # `test_the_claim_does_not_clear_a_reason_on_a_file_that_is_already_ready` sets it
-        # directly for CONTROL, not because nothing reaches it - see that test's docstring.
+        # `('ready', <a reason>)` needed a THIRD guard, and it is not in this module's writes at
+        # all: a bury that legitimately HOLDS its lease, followed by a publish from a worker whose
+        # lease expired, reached it through `index_file`, which read no lease. `_publish_guard`
+        # closed that by making the publish ask the same ownership question inside its own
+        # transaction (#92, ADR 0030) - see `_bury`'s docstring for how the three partition.
+        # `test_the_claim_does_not_clear_a_reason_on_a_file_that_is_already_ready` still sets its
+        # row directly, and the reason is CONTROL - the subject there is this statement's shape.
+        # Make no unreachability claim about that row on its behalf: two versions of its docstring
+        # have made one and both were demonstrated false. Read it rather than restating it.
         with conn.transaction():
             conn.execute(
                 """
@@ -595,7 +656,32 @@ def process_one(
                 conn=conn,
                 chunk_size=chunk_size,
                 chunk_overlap=chunk_overlap,
+                publish_guard=_publish_guard(job),
             )
+        except PublishRefused:
+            # NOT A FAILURE OF THIS FILE, AND SO NOT A BURY (#92, ADR 0030). The guard refused
+            # because the lease moved while the parse/chunk/embed above was running: the reaper
+            # requeued this job and another worker owns it now. The work is finished and correct
+            # and is thrown away, which is the routine at-least-once outcome ADR 0011 already
+            # accepts - what changed is only that the duplicate run is now DISCARDED at the
+            # publish rather than absorbed by it (`queue.reclaim_expired`, corrected).
+            #
+            # WRITE NOTHING AND SETTLE NOTHING. Both halves matter and for the same reason: this
+            # job is not ours. `_bury` would be refused by its own lease guard, and `complete`
+            # by `_settle`'s - so calling either would only produce a second "lease lost" log
+            # for a fact this branch already knows. The owner settles it.
+            #
+            # `True` because a tick DID happen - the return says "there was work", not "the work
+            # succeeded" (`process_one`'s docstring). Returning False would idle a poller that
+            # has a full queue in front of it.
+            logger.warning(
+                "job %s: lease lost during ingest after %.1fs (lease was %ss) - "
+                "publish refused, nothing written; another worker owns this job",
+                job.job_id,
+                time.perf_counter() - started,
+                lease_seconds,
+            )
+            return True
         except ParseError as exc:
             # TERMINAL: bad input (ADR 0020 §1). Zero retries - the file is exactly as corrupt on
             # the next attempt, and the budget exists for bad luck, not bad bytes. `exc.reason` is

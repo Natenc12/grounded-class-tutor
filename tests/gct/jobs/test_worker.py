@@ -2237,9 +2237,10 @@ def test_a_retry_that_succeeds_leaves_no_failed_reason_on_the_ready_file(
 ):
     """The acceptance criterion of #24: `('ready', <a reason>)` must not be reached THIS way.
 
-    #24's acceptance was written as unreachability outright. It is not - see `_bury`'s docstring
-    for the interleaving that still reaches it, and #92. What this pins is the retry path, which
-    #24 does close.
+    #24's acceptance was written as unreachability outright, and on #24 alone it was not - see
+    `_bury`'s docstring for how the three interleavings partition. The last of them was closed at
+    the PUBLISH rather than in this module (#92, ADR 0030). What this pins is the retry path,
+    which is the one #24 itself closes.
 
     Half-bury a corrupt file, then replace the bytes AT THE SAME `staging_ref` with a parseable
     PDF and let the same job's next attempt run. That input change is the ordinary case, not a
@@ -2286,10 +2287,11 @@ def test_the_claim_does_not_clear_a_reason_on_a_file_that_is_already_ready(
     `('ready', 'unparseable')` is what #24 removes from the SEQUENTIAL path - one attempt after
     another, which is every other test in this file - and #86's lease guard on `_bury` removed
     ONE of the two out-of-order paths that were producing it (the section at the bottom of this
-    file drives that interleaving itself). The other is still open, and a sequence of ticks DOES
-    earn `('ready', <a reason>)` through it: a bury by the worker that legitimately HOLDS the
-    lease, then a publish by one whose lease expired, through `index_file`, which reads no lease.
-    See `_bury`'s docstring, and #92.
+    file drives that interleaving itself). The other - a bury by the worker that legitimately
+    HOLDS the lease, then a publish by one whose lease expired - was closed at the publish
+    instead, by the entitlement predicate `process_one` now hands `index_file` (#92, ADR 0030).
+    A sequence of ticks used to earn `('ready', <a reason>)` through it and no longer does; the
+    section at the bottom of this file drives that one too. See `_bury`'s docstring.
 
     THE ROW IS STILL SET DIRECTLY, AND THE REASON IS CONTROL, NOT UNREACHABILITY. An earlier
     version of this docstring said no sequence of ticks earns it; a later one said none earns it
@@ -2298,7 +2300,7 @@ def test_the_claim_does_not_clear_a_reason_on_a_file_that_is_already_ready(
     transactions (see `_bury`), so a reaper landing in that gap leaves the reason committed and
     the job claimable. The subject here is one statement's SHAPE. Earning the row through a
     concurrency race would pin the same statement while making the test depend on an interleaving
-    that has nothing to do with it, and #92 is where that interleaving is tracked.
+    that has nothing to do with it; that interleaving is driven at the bottom of this file.
     What the test pins is that the clear cannot be lifted out into a second, unguarded
     `update files set failed_reason = null`: that version wipes the reason off a `ready` row,
     which is a row a zombie whose lease expired is entitled to be about to bury, and it widens
@@ -2650,7 +2652,7 @@ def test_a_zombie_whose_lease_expired_writes_nothing_through_bury(
     assert (status, reason) == ("ready", None), (
         "a queryable file is carrying a failure reason - the forbidden end state, reached by "
         "the path this test drives, which #24's claim-time clear cannot see (it is not the only "
-        "such path: #92 is the other)"
+        "such path: the live-leased bury, #92, is the other, and is guarded at the publish)"
     )
     assert state == "done", "the winner settled its own job; the zombie's `fail` was refused"
     assert chunk_count > 0, "`ready` means the full chunk set is committed and queryable"
@@ -2736,3 +2738,173 @@ def test_a_bury_on_a_job_that_is_no_longer_processing_writes_nothing(db, db_othe
         "a bury wrote `failed` over a job that is no longer processing - a token match on a "
         "settled row is not ownership"
     )
+
+
+# --- The PUBLISH is refused on a dead lease (issue #92, ADR 0030) -------------------------------
+#
+# The third interleaving, and the one neither #24's clear nor #86's bury guard is aimed at: the
+# burier holds a LIVE lease (so #86 passes, correctly) and the REAPED worker is the one that
+# publishes. `index_file` was the only write to `files` that read no lease. `_publish_guard` is
+# now what it reads, and these drive it end to end rather than asserting it.
+
+
+def test_a_reaped_worker_publishing_after_a_live_leased_bury_writes_nothing(
+    db, db_other, tmp_path, monkeypatch
+):
+    """#92 end to end, through real ticks: the winner burys, and the zombie is REFUSED.
+
+    Worker A stalls inside ingest. Its lease is backdated, the real reaper requeues the job, and
+    worker B's real tick claims past the budget and burys with a LIVE lease. A's ingest then
+    returns and reaches the publish, which is the write that used to land `('ready', <a reason>)`.
+
+    Both workers run the real `process_one`; the only thing forced is the lease expiry, the same
+    move every other test in this file makes. The stall is `worker.ingest_file` wrapped rather
+    than replaced, so the publish A finally attempts is the real one with the real guard on it.
+
+    Asserted through `db_other` because the subject is what SURVIVED the refusal. Three claims,
+    and the chunk count is not decoration: the publish deletes before it inserts, so a guard that
+    fired too late would leave this file `failed` AND stripped.
+    """
+    conn, owner_id, class_id = db
+    winner = psycopg.connect(db_other.info.dsn)
+    winner.autocommit = True
+    conn.autocommit = True
+    monkeypatch.setattr(worker.time, "sleep", lambda _: None)
+    source = write_pdf(tmp_path / "slower-than-its-lease.pdf", ["the real lecture text"])
+    file_id = enqueue(conn, path=source, owner_id=owner_id, class_id=class_id)
+
+    real_ingest = worker.ingest_file
+    ran = {"winner_buried": False}
+
+    def stall_until_the_lease_is_gone(*args, **kwargs):
+        monkeypatch.setattr(worker, "ingest_file", real_ingest)
+        _backdate_lease(conn, file_id)
+        assert reclaim_expired(winner) == 1
+        assert (
+            process_one(
+                winner,
+                embedder=FakeEmbeddings(),
+                chunk_size=CHUNK_SIZE_WORDS,
+                chunk_overlap=CHUNK_OVERLAP_WORDS,
+                max_attempts=1,
+            )
+            is True
+        )
+        assert _file_row(db_other, file_id) == ("failed", "transient_exhausted"), (
+            "the winner did not bury with a live lease, so this test never reaches the "
+            "interleaving it exists to drive"
+        )
+        ran["winner_buried"] = True
+        return real_ingest(*args, **kwargs)
+
+    try:
+        monkeypatch.setattr(worker, "ingest_file", stall_until_the_lease_is_gone)
+        assert tick(conn, FakeEmbeddings(), max_attempts=99) is True
+        assert ran["winner_buried"], "the stall never ran; the interleaving was not driven"
+
+        status, reason, chunk_count = db_other.execute(
+            """
+            select f.status, f.failed_reason,
+                   (select count(*) from chunks c where c.file_id = f.file_id)
+            from files f where f.file_id = %s::uuid
+            """,
+            (file_id,),
+        ).fetchone()
+        assert (status, reason) == ("failed", "transient_exhausted"), (
+            "a reaped worker republished over the winner's bury - a queryable file is carrying "
+            "a failure reason, which is #92"
+        )
+        assert chunk_count == 0, (
+            "the refused publish committed its chunk set anyway - the guard is not inside "
+            "`index_file`'s transaction"
+        )
+    finally:
+        winner.close()
+
+
+def test_the_publish_guard_reads_ownership_not_the_clock(db, tmp_path):
+    """`_publish_guard` says yes to the holder and no to the reaped - the two answers it has.
+
+    Deliberately NOT routed through a tick: the predicate is the unit, and driving it directly is
+    what separates "the guard is right" from "the worker calls it in the right place", which the
+    test above pins instead.
+
+    THE THIRD CASE IS THE POINT, and it is the one `_bury`'s guard is written to allow: a lease
+    that has merely EXPIRED, with no reaper behind it, is still ownership. Nothing has taken the
+    job away, so the holder may still publish - the same reasoning that makes `_bury` refuse
+    `leased_until > now()` as a condition, and for the same reason (a file stranded by a guard
+    stricter than the ownership it is checking).
+    """
+    conn, owner_id, class_id = db
+    conn.autocommit = True
+    source = write_pdf(tmp_path / "held.pdf", ["a page"])
+    file_id = enqueue(conn, path=source, owner_id=owner_id, class_id=class_id)
+    job = claim(conn, lease_seconds=3600)
+    assert job is not None
+
+    assert worker._publish_guard(job)(conn) is True, "the holder was refused its own publish"
+
+    _backdate_lease(conn, file_id)
+    assert worker._publish_guard(job)(conn) is True, (
+        "an expired lease with no reaper behind it was treated as lost - that is the clock, not "
+        "ownership, and it would strand a file that merely outran its lease"
+    )
+
+    assert reclaim_expired(conn) == 1
+    assert worker._publish_guard(job)(conn) is False, "a reaped worker was cleared to publish"
+
+    other = claim(conn, lease_seconds=3600)
+    assert other is not None and other.lease_token != job.lease_token
+    assert worker._publish_guard(job)(conn) is False, (
+        "the job is `processing` again under a DIFFERENT token and the old holder was cleared "
+        "to publish - the token half of the guard is not being read"
+    )
+    assert worker._publish_guard(other)(conn) is True
+
+
+def test_the_publish_guard_locks_the_job_row_against_a_concurrent_reaper(db, tmp_path):
+    """`FOR UPDATE` is the mechanism, not an optimisation - without it this NARROWS #92 (ADR 0030).
+
+    Guard-then-publish is a check-then-act across two statements, and under READ COMMITTED the
+    publish takes a fresh snapshot. A plain SELECT can therefore answer "still ours", have the
+    reaper requeue the job and a second worker claim and bury in the gap, and the publish still
+    lands - the same defect in a microsecond-wide window instead of an ingest-wide one. The lock
+    is what removes the gap: the lease can only move through `reclaim_expired`, an UPDATE of this
+    row, which cannot proceed while the guard's transaction holds it.
+
+    Asserted by making the reaper PROVE it is blocked rather than by timing anything. A second
+    connection sets `lock_timeout` and runs the real `reclaim_expired`; with the lock held it
+    raises `LockNotAvailable`, and after the transaction ends the identical call succeeds. Drop
+    `for update` from the guard and the first call returns 1 instead of raising - which is this
+    test going red, and is the only test in the suite that can tell the two versions apart.
+    """
+    conn, owner_id, class_id = db
+    conn.autocommit = True
+    source = write_pdf(tmp_path / "locked.pdf", ["a page"])
+    file_id = enqueue(conn, path=source, owner_id=owner_id, class_id=class_id)
+    job = claim(conn, lease_seconds=3600)
+    assert job is not None
+    _backdate_lease(conn, file_id)
+
+    reaper = psycopg.connect(conn.info.dsn)
+    reaper.autocommit = True
+    try:
+        reaper.execute("set lock_timeout = '750ms'")
+        assert reclaim_expired(reaper) == 1, (
+            "the reaper cannot reclaim this job even unobstructed, so the assertion below would "
+            "pass for the wrong reason"
+        )
+        conn.execute(
+            "update jobs set state = 'processing', lease_token = %s::uuid, "
+            "leased_until = now() - interval '1 hour' where file_id = %s::uuid",
+            (job.lease_token, file_id),
+        )
+
+        with conn.transaction():
+            assert worker._publish_guard(job)(conn) is True
+            with pytest.raises(psycopg.errors.LockNotAvailable):
+                reclaim_expired(reaper)
+
+        assert reclaim_expired(reaper) == 1, "the lock outlived the transaction that took it"
+    finally:
+        reaper.close()

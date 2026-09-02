@@ -47,6 +47,7 @@ demand and count what it was asked to do.
 from __future__ import annotations
 
 import io
+import math
 import signal
 import threading
 import time
@@ -63,7 +64,7 @@ from gct.ingest.chunk import CHUNK_OVERLAP_WORDS, CHUNK_SIZE_WORDS
 from gct.ingest.parse import ParseError
 from gct.ingest.pipeline import ingest_file
 from gct.jobs import worker
-from gct.jobs.queue import claim, complete, enqueue, reclaim_expired
+from gct.jobs.queue import Job, claim, complete, enqueue, reclaim_expired
 from gct.jobs.worker import (
     DEFAULT_LEASE_SECONDS,
     backoff_seconds,
@@ -3352,3 +3353,177 @@ def test_a_slow_poison_file_is_still_buried_by_the_attempts_budget(
         "two paid attempts plus the claim that buried it - the heartbeat adds none"
     )
     assert len(embedder.calls) == 2, "the budget must still bound PAID attempts"
+
+
+# --- The heartbeat's own numbers, without the clock (issue #95) ----------------------------
+#
+# The four tests above buy their evidence with real wall-clock time because their subject is a
+# thread racing a lease, and the preamble to this section is about them. These three have no
+# such excuse and take none. Their subjects are the beat INTERVAL, the beat thread's LIFETIME
+# and the CAP's value - three facts the wall-clock tests cannot see, each demonstrated by a
+# one-line mutation that left the whole suite green: at sub-second leases the interval's floor
+# and its fraction beat indistinguishably often, a leaked beat thread changes no outcome those
+# tests assert on, and a cap at TWICE its declared value still releases a 1s lease inside a
+# 2.5s ingest. So `connect` and `renew_lease` are stubbed to keep Postgres out of all three,
+# and the one whose subject is an hour fakes the clock rather than waiting for one.
+
+
+class _NullConnection:
+    """The connection a stubbed beat opens and closes - nothing here reaches Postgres.
+
+    `_LeaseHeartbeat` opens one per beat through `gct.db.connect` and closes it in a `finally`
+    (ADR 0031). The tests below stub `renew_lease` as well, so being closeable is the whole
+    contract this has to meet.
+    """
+
+    def close(self) -> None:
+        pass
+
+
+def _fake_job() -> Job:
+    """A `Job` that was never claimed, for the three tests that never touch a database.
+
+    `_LeaseHeartbeat` reads exactly two of these fields - `job_id` for its thread's name and
+    every log line, `lease_token` for the renewal - and both go to stubs here, so a real claim
+    would buy these tests nothing but Postgres. The DB-backed tests above are where an actual
+    claim IS the subject.
+    """
+    return Job(
+        job_id="00000000-0000-0000-0000-0000000000d1",
+        file_id="00000000-0000-0000-0000-0000000000f1",
+        owner_id="00000000-0000-0000-0000-0000000000a1",
+        class_id="00000000-0000-0000-0000-0000000000c1",
+        attempts=1,
+        staging_ref="/nowhere/this-file-is-never-opened.pdf",
+        lease_token="00000000-0000-0000-0000-0000000000e1",
+    )
+
+
+def test_the_beat_interval_is_the_fraction_of_the_lease_and_the_floor_is_a_floor():
+    """The derived interval at PRODUCTION scale - pure arithmetic, no thread and no database.
+
+    Every other heartbeat test drives a sub-second lease, where the two operators that could
+    stand in `max(lease_seconds * fraction, _MIN_HEARTBEAT_INTERVAL_SECONDS)` are
+    indistinguishable: both beat often enough to hold the lease, so the whole suite is blind to
+    the swap. At the real numbers they differ by four orders of magnitude - 225s against the
+    0.05s floor - and the wrong one beats 4500x more often, each beat opening and closing a
+    connection of its own (the class docstring: one connection per beat). That is what this
+    pins, in a bare `__init__` that costs microseconds.
+
+    IT READS `_interval` DIRECTLY, and the private read is the right call rather than a
+    shortcut around a missing accessor: the interval is not observable from outside - it is
+    consumed by `Event.wait` inside a daemon thread - so the only alternative is to count beats
+    against wall-clock time, which measures the scheduler as much as the arithmetic and is
+    precisely the flaky test this one exists instead of.
+
+    BOTH DIRECTIONS, because a floor pinned only where it does not apply is an unused constant.
+    The second half drives the pathological fractions it exists for - zero, negative, and one
+    small enough to round the beat into a spin - where the derived value is the one that must
+    lose.
+
+    Asserted against the constants rather than literals: ADR 0031 ratified its two numbers
+    without MEASURING either, exactly as ADR 0028 did with its four, so a test written in
+    literals would go red on a tuning change that broke nothing.
+    """
+    job = _fake_job()
+
+    beating = worker._LeaseHeartbeat(job=job, lease_seconds=DEFAULT_LEASE_SECONDS)
+    assert beating._interval == DEFAULT_LEASE_SECONDS * worker.DEFAULT_HEARTBEAT_FRACTION
+    assert beating._interval > worker._MIN_HEARTBEAT_INTERVAL_SECONDS, (
+        "at the real lease the floor must not be the thing setting the beat"
+    )
+
+    for pathological in (0.0, -1.0, 1e-9):
+        floored = worker._LeaseHeartbeat(
+            job=job, lease_seconds=DEFAULT_LEASE_SECONDS, fraction=pathological
+        )
+        assert floored._interval == worker._MIN_HEARTBEAT_INTERVAL_SECONDS, (
+            f"fraction={pathological} must be caught by the floor, not turned into a spin loop"
+        )
+
+
+def test_the_beat_thread_is_gone_by_the_time_the_context_manager_returns(monkeypatch):
+    """`__exit__` STOPS the thread and WAITS for it - the wait is half the promise (ADR 0031).
+
+    Setting `_stop` only asks; the join is what makes the class docstring's "on exit the thread
+    is stopped and joined" true. Without it `process_one` returns from the `with` block with a
+    beat still in flight on a connection of its own, and that beat then lands AFTER the settle
+    verb - a renewal statement about a job this worker has already completed, released or
+    buried, ordered against nothing. It is also what the `beats` property's own contract rests
+    on ("read after `__exit__` has joined"): the tests above read that counter on the line after
+    the block, which is only sound because the thread that increments it is finished.
+
+    The beat is stubbed slow and made to ANNOUNCE itself, so the exit is guaranteed to land
+    mid-beat rather than in whatever gap the scheduler happened to leave - a test that exited
+    between beats would pass with or without the join and prove nothing.
+    """
+    in_a_beat = threading.Event()
+
+    def slow_beat(_conn, **_kwargs) -> bool:
+        in_a_beat.set()
+        time.sleep(0.5)
+        return True
+
+    monkeypatch.setattr(worker, "connect", lambda: _NullConnection())
+    monkeypatch.setattr(worker, "renew_lease", slow_beat)
+
+    with worker._LeaseHeartbeat(
+        job=_fake_job(), lease_seconds=1, fraction=0.1, max_seconds=30.0
+    ) as heartbeat:
+        assert in_a_beat.wait(5.0), "no beat ever started - this proves nothing about exiting"
+
+    assert not heartbeat._thread.is_alive(), (
+        "`__exit__` returned while a beat was still in flight - the worker has moved on to its "
+        "settle verb with a second connection still writing about this job"
+    )
+
+
+def test_the_beats_stop_at_the_declared_cap_and_not_at_a_multiple_of_it(monkeypatch):
+    """The cap is `DEFAULT_HEARTBEAT_MAX_SECONDS` from the first beat - the VALUE, not just that
+    one exists.
+
+    `test_a_hung_worker_is_recovered_once_the_heartbeat_cap_is_reached` proves a cap exists, and
+    that is all it can prove: it passes a cap of its own and outruns it, so a deadline computed
+    at twice the declared value would still release its 1s lease inside a 2.5s ingest. The
+    number ADR 0031 actually argues for is one HOUR, and nothing that waits for real time can
+    ask this question - a suite is not permitted to spend an hour, and shrinking the cap to
+    something waitable is how the value stops being pinned in the first place.
+
+    So `time.monotonic` is faked, and the fake advances only when a beat happens: one whole
+    `DEFAULT_LEASE_SECONDS` per beat, which is the unit the ADR states the cap in ("one hour is
+    four leases"). The beat count then reads back as the number of leases that fit inside the
+    cap, and a deadline at any other multiple of it reads back as a different number. Only the
+    module's own `monotonic` is displaced - `Event.wait` and `Thread.join` time out against the
+    C-level clock, so the loop's real cadence is untouched and the test still finishes in under
+    a second.
+    """
+    step = DEFAULT_LEASE_SECONDS
+    clock = {"now": 0.0}
+
+    def fake_monotonic() -> float:
+        return clock["now"]
+
+    def beat_and_advance(_conn, **_kwargs) -> bool:
+        clock["now"] += step
+        return True
+
+    monkeypatch.setattr(worker.time, "monotonic", fake_monotonic)
+    monkeypatch.setattr(worker, "connect", lambda: _NullConnection())
+    monkeypatch.setattr(worker, "renew_lease", beat_and_advance)
+
+    with worker._LeaseHeartbeat(
+        job=_fake_job(),
+        lease_seconds=1,
+        fraction=0.1,
+        max_seconds=worker.DEFAULT_HEARTBEAT_MAX_SECONDS,
+    ) as heartbeat:
+        # Joined here rather than polled: the fake clock cannot bound this wait, and the real
+        # one is the thing the loop is no longer reading.
+        heartbeat._thread.join(timeout=10.0)
+        stopped_on_its_own = not heartbeat._thread.is_alive()
+
+    assert stopped_on_its_own, "the beat loop never reached its cap - it would beat forever"
+    assert heartbeat.beats == math.ceil(worker.DEFAULT_HEARTBEAT_MAX_SECONDS / step), (
+        "the beats did not stop at the declared cap - a deadline at any other multiple of "
+        "DEFAULT_HEARTBEAT_MAX_SECONDS lets a wedged worker hold its lease that much longer"
+    )

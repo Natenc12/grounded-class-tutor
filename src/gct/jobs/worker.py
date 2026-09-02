@@ -61,8 +61,8 @@ transaction this module no longer contains.
 ONE EXCEPTION, AND IT IS DELIBERATELY NOT ON THAT CONNECTION: `_LeaseHeartbeat` opens its own
 through `gct.db.connect()` for the length of each beat, so a worker briefly holds TWO connections
 while it ingests. It has to - the worker's is inside `ingest_file`'s transaction for that whole
-window, which is where the contract above stops being satisfiable (ADR 0031; the class docstring
-carries why a shared connection fails silently rather than loudly).
+window, which is where the contract above stops being satisfiable (ADR 0031 §2 argues why sharing
+the connection fails, and the class lists the rules that follow).
 """
 
 from __future__ import annotations
@@ -115,19 +115,12 @@ DEFAULT_MAX_ATTEMPTS = 5
 # under, and a caller passing a short lease would otherwise break the rule silently.
 BACKOFF_BASE_SECONDS = 2.0
 BACKOFF_MAX_SECONDS = 60.0
-# The two HEARTBEAT numbers (ADR 0031), and they inherit ADR 0028's honesty about its four:
-# NOTHING HAS MEASURED either. They are chosen safe-if-wrong in the direction that costs least,
-# and the evidence that would move them is the same evidence ADR 0028 §Consequences named for the
-# lease - this module's own duration lines, `done in %.1fs` and the `lease lost after %.1fs`
-# warning. Ratified is not measured; change these when a run says to, not on taste.
+# The two HEARTBEAT numbers. ADR 0031 §5 ratifies both WITHOUT having measured either - the same
+# stance ADR 0028 took on its four - and states per number the safe-if-wrong direction and the
+# evidence that would move it. That argument lives there and is not copied here.
 #
-# How often a LIVE worker pushes its lease forward, as a FRACTION of the lease rather than an
-# absolute interval - so the two numbers cannot drift apart, and a caller that shortens
-# `lease_seconds` shortens the beat with it. At a quarter, three consecutive beats must fail
-# before the lease lapses, so a DB blip mid-ingest is not an expiry. It errs SHORT: too frequent
-# costs one tiny UPDATE per interval, which is nothing against a local Postgres serving one user;
-# too infrequent lets a blip lapse a LIVE worker's lease, which is the whole defect ADR 0031
-# removes.
+# How often a LIVE worker pushes its lease forward. A FRACTION, not an absolute interval, so a
+# caller that shortens `lease_seconds` shortens the beat with it and the two cannot drift apart.
 DEFAULT_HEARTBEAT_FRACTION = 0.25
 # The cap on how long ONE run may keep beating: FOUR LEASES, and it must stay written as four
 # leases. A heartbeat cannot tell WORKING from WEDGED - both are a live process holding a lease -
@@ -149,6 +142,18 @@ _MIN_HEARTBEAT_INTERVAL_SECONDS = 0.05
 # the thread may be inside a beat against a database that has stopped answering, and by then the
 # ingest is already over - a shutdown must not hang on a lease it is about to stop needing.
 _HEARTBEAT_JOIN_SECONDS = 5.0
+
+
+def heartbeat_interval(lease_seconds: float, fraction: float) -> float:
+    """The derived beat interval: `fraction` of the lease, floored (ADR 0031 §5).
+
+    A function rather than an expression because TWO places need the answer and only one of them
+    computes anything: `_LeaseHeartbeat` beats at it, and `run`'s startup line reports it. A line
+    whose entire job is to REPORT a number must not be a second derivation of that number - the two
+    copies agree until someone edits one, and the failure is a startup banner that reads true and
+    describes a beat the worker is not running. One writer, two readers.
+    """
+    return max(lease_seconds * fraction, _MIN_HEARTBEAT_INTERVAL_SECONDS)
 
 
 def backoff_seconds(attempts: int) -> float:
@@ -472,45 +477,30 @@ def _release_on_shutdown(conn: psycopg.Connection, job: Job, exc: BaseException)
 
 
 class _LeaseHeartbeat:
-    """Keeps a LIVE worker's lease fresh while it ingests, on ITS OWN CONNECTION (ADR 0031).
+    """Keeps a LIVE worker's lease fresh while it ingests, on ITS OWN CONNECTION (ADR 0031 §2).
 
     A context manager wrapping the `ingest_file` call and nothing else. On entry a daemon thread
     starts beating `renew_lease` at a fraction of the lease; on exit the thread is stopped and
     joined. It settles nothing, reads nothing back into the ingest, and touches no state the
     pipeline can see.
 
-    ITS OWN CONNECTION, NEVER THE WORKER'S, AND THAT IS THE SINGLE MOST IMPORTANT FACT ABOUT THIS
-    CLASS. The worker's connection is inside `ingest_file`'s transaction for the window this
-    thread is alive, and a statement issued on it from here is the ADR 0025 hazard in its purest
-    form - `renew_lease`'s `conn.transaction()` would degrade to a SAVEPOINT that publishes
-    nothing while returning True, so the lease would silently stop being renewed at the exact
-    moment the mechanism exists to renew it. `require_idle` would refuse the call outright
-    (ADR 0027), which is the loud version of the same answer, but only if the beat happened to
-    land while psycopg had the connection marked INTRANS - a race deciding whether a bug is loud
-    or silent. Neither outcome is survivable, and neither is a thing to be careful about: a
-    separate connection removes the shared object rather than the temptation. It is also what
-    keeps the PM-4 seam intact - this thread never enters `ingest_file`, so that function's
-    signature, body and transaction are all untouched (ADR 0020).
+    FOUR RULES THIS CLASS MUST KEEP, each argued in ADR 0031 §2 and §4 and deliberately not
+    re-argued here - an argument with two writers is an argument that drifts:
+      - ITS OWN CONNECTION, NEVER THE WORKER'S. The worker's is inside `ingest_file`'s transaction
+        for the whole window a beat could land in, where a renewal silently publishes nothing
+        (ADR 0025) or is loudly refused (ADR 0027) depending on a race.
+      - FROM `gct.db.connect()`, never from a DSN reconstructed off another connection.
+      - ONE CONNECTION PER BEAT, opened and closed inside the beat rather than held for the ingest.
+      - A BEAT FAILURE IS LOGGED AND SWALLOWED, and no answer this thread receives settles
+        anything. The doomed write a lost lease must actually stop is refused by ADR 0030's
+        publish guard, inside `index_file`'s own transaction.
 
-    THE CONNECTION COMES FROM `gct.db.connect()`, NOT FROM THE WORKER'S DSN. `conn.info.dsn`
-    redacts the password, so a heartbeat that reconstructed its DSN from the worker's connection
-    would work on every passwordless local box and fail to authenticate on the first
-    password-authenticated deployment - beating never, lapsing every lease, and reintroducing this
-    ADR's defect in exactly the environment no test covers (V2 is Supabase, ADR 0006). Going back
-    to the one connection factory is the fix; there is no redaction to route around.
+    Two facts about this code that no ADR carries:
 
-    ONE CONNECTION PER BEAT, opened and closed inside the beat. A worker holds a second
-    connection only for the length of one tiny UPDATE rather than for the length of an ingest,
-    which matters under a connection-limited V2 (ADR 0006); a beat that reconnects also recovers
-    on its own from a database restart, where a cached handle would be dead for the rest of the
-    ingest.
-
-    A BEAT FAILURE IS LOGGED AND SWALLOWED. Nothing this thread does may kill the worker or the
-    ingest: the work is still correct and still worth publishing, and the fraction is chosen so
-    that several consecutive failures still leave the lease alive. If the lease is genuinely gone
-    the beats stop and NOTHING IS SETTLED here - ADR 0030's publish guard is what refuses the
-    doomed write, from inside `index_file`'s own transaction, which is the only place the answer
-    cannot go stale before it is used.
+    IT NEVER ENTERS `ingest_file`, WHICH IS WHAT KEEPS THE PM-4 SEAM INTACT (ADR 0020). The
+    pipeline's signature, body and transaction are untouched by the heartbeat. An edit that gave a
+    beat anything to do inside the pipeline would break that seam without changing a line under
+    `src/gct/ingest/`, which is exactly the kind of break a reviewer of that directory cannot see.
 
     A DAEMON THREAD, so a beat blocked on an unresponsive database cannot keep a dying process
     alive. That is also why `__exit__` joins with a timeout rather than waiting forever.
@@ -526,7 +516,7 @@ class _LeaseHeartbeat:
     ) -> None:
         self._job = job
         self._lease_seconds = lease_seconds
-        self._interval = max(lease_seconds * fraction, _MIN_HEARTBEAT_INTERVAL_SECONDS)
+        self._interval = heartbeat_interval(lease_seconds, fraction)
         self._max_seconds = max_seconds
         self._stop = threading.Event()
         self._beats = 0
@@ -832,13 +822,11 @@ def process_one(
             )
 
         try:
-            # THE HEARTBEAT WRAPS THE INGEST AND NOTHING ELSE (ADR 0031), and the boundary is a
-            # decision rather than tidiness. Everything else between the claim and the settle verb
-            # is a single fast statement, where an overrun is not a thing that happens - except the
-            # BACKOFF, which is deliberately outside: it is served while holding the lease
-            # precisely so the delay binds every worker, and `served_backoff` bounds it by the
-            # lease for that reason (ADR 0028 §2). Beating through the backoff would let a retry
-            # curve extend its own deadline, which is the one thing that bound exists to stop.
+            # THE HEARTBEAT WRAPS THE INGEST AND NOTHING ELSE (ADR 0031 §3), and where this `with`
+            # ENDS is the load-bearing half of that: the BACKOFF below must stay outside it. Widen
+            # this block to cover the retry path and a retry curve extends its own deadline, which
+            # is the one thing `served_backoff`'s lease bound exists to stop - and ADR 0028 §2
+            # stands unchanged only for as long as this boundary holds.
             with _LeaseHeartbeat(
                 job=job,
                 lease_seconds=lease_seconds,
@@ -1042,7 +1030,7 @@ def run(
         "worker started: poll %.1fs, lease %ss renewed every %.0fs up to %.0fs, budget %s attempts",
         poll_seconds,
         lease_seconds,
-        max(lease_seconds * heartbeat_fraction, _MIN_HEARTBEAT_INTERVAL_SECONDS),
+        heartbeat_interval(lease_seconds, heartbeat_fraction),
         heartbeat_max_seconds,
         max_attempts,
     )

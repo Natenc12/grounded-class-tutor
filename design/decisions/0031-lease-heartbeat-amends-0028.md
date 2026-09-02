@@ -14,6 +14,24 @@
 > being spent by *machinery*, not by either class, which is why removing that spend needs no
 > change to the taxonomy. ADR 0030's publish-entitlement guard is likewise untouched and is
 > **relied on** — see §4.
+>
+> **ADR 0011 is NOT amended either, and that one is a judgement that has to be argued rather than
+> assumed.** ADR 0011 names "the seam that matters" as `enqueue(job)` / `claim()→job`, says to
+> *name it as an interface*, and rests the V2 broker swap on it — so a **third verb** landing in
+> that module owes the question an answer in one direction or the other. The answer is no, for a
+> reason that also explains the three verbs already there. The seam ADR 0011 protects is the one
+> the **write path crosses**: the uploader calls `enqueue` and hands off, and everything after that
+> is the substrate's own side. `renew_lease` is only ever called by the worker, which is *inside*
+> the substrate — as are `complete`, `fail`, `release`, the lease itself, `attempts` and
+> `SKIP LOCKED`, none of which amended ADR 0011 either (ADR 0028 ratified the lease's value without
+> touching it). Nothing an API caller does changes shape; the write path does not change, which is
+> the claim ADR 0011 actually makes.
+>
+> What *does* follow is a **constraint on the V2 substrate**, and it is recorded here so it is
+> findable at swap time rather than discovered during one: whatever replaces the DB-poll worker
+> must let a live consumer **extend its own in-flight lease** — visibility-timeout extension, by
+> whichever name the broker gives it. Absorbing constraints of exactly that shape is what ADR 0011
+> says the boundary is *for*, so this is a note against the swap, not a change to the decision.
 
 ## Context
 

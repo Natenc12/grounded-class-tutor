@@ -3135,9 +3135,15 @@ class _Reaper:
 def test_a_slow_file_without_a_heartbeat_loses_its_lease_and_its_work(db, db_other, tmp_path):
     """THE CONTROL: the pre-#95 behaviour, reproduced by switching the heartbeat off.
 
-    `heartbeat_max_seconds=0.0` makes the beat loop reach its cap before its first beat, so the
-    lease lapses on schedule and this is exactly the code that shipped before ADR 0031. Kept as a
-    test rather than described in one, because the fix below is only meaningful against a
+    `heartbeat_max_seconds=0.0` makes the beat loop reach its cap before its first beat, so no
+    renewal ever reaches the database and the lease lapses on schedule. What that reproduces is the
+    pre-ADR-0031 BEHAVIOUR, not the pre-ADR-0031 code, and the gap is worth naming so the next
+    reader does not trust a claim this arm cannot make: the thread is still started, it still waits
+    one whole beat interval before it notices the cap, and it still logs `lease heartbeat stopped
+    at its 0s cap` - none of which `main` did. Measured at these parameters: `beats == 0`, one
+    0.25s interval, one spurious WARNING. No assertion below can see any of that, which is what
+    makes the arm sound; a test that needed the old code PATH would have to check `main` out.
+    Kept as a test rather than described in one, because the fix below is only meaningful against a
     demonstration that the thing it fixes is real - and because a future edit that quietly stops
     the heartbeat from mattering would leave the fix test green and this one red for the wrong
     reason, which is a signal worth having.

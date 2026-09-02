@@ -468,18 +468,11 @@ def renew_lease(
     identifies the CLAIM, not the beat, so minting a fresh one here would invalidate the very
     worker doing the renewing.
 
-    NO `LookupError`, DELIBERATELY, and this is the one place the shape departs from
-    `complete`/`fail`/`release`. There an unknown `job_id` means a caller believes something about
-    a job that does not exist - a programming error worth raising on. Here the caller is a
-    background beat with exactly ONE correct response to every answer that is not True: stop
-    beating. A vanished row and a re-handed-out lease are the same fact to it, so splitting them
-    would buy a traceback crossing a thread boundary and no decision anyone could make with it.
-
-    False is therefore ROUTINE, not an error - the lease is no longer ours, the at-least-once
-    outcome ADR 0011 already accepts. The caller stops beating and SETTLES NOTHING: ADR 0030's
-    publish guard is what actually refuses the doomed write, and it asks this same ownership
-    question inside `index_file`'s own transaction, where the answer cannot go stale between being
-    given and being relied on.
+    NO `LookupError`, DELIBERATELY - the one place this shape departs from
+    `complete`/`fail`/`release`, which raise on an orphaned `job_id`. EVERY answer that is not
+    "renewed" comes back as False here, an unknown `job_id` included, and False is ROUTINE rather
+    than an error. ADR 0031 §1 argues why; what the caller must DO with it is stop beating and
+    settle nothing, because ADR 0030's publish guard is what refuses the doomed write.
 
     Server clock, for the reason `claim` stamps its lease from one: `reclaim_expired` compares
     `leased_until < now()` on the server, so a beat stamped from a worker machine's clock would

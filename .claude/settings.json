@@ -5,7 +5,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "[ -f \"$HOME/claude-home/cloud/session-start.sh\" ] && bash \"$HOME/claude-home/cloud/session-start.sh\" || true"
+            "command": "bash \"$CLAUDE_PROJECT_DIR/.claude/claude-home-bootstrap.sh\" cloud/session-start.sh"
           }
         ]
       }
@@ -15,7 +15,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "[ -f \"$HOME/claude-home/cloud/sync.sh\" ] && bash \"$HOME/claude-home/cloud/sync.sh\" || true"
+            "command": "bash \"$CLAUDE_PROJECT_DIR/.claude/claude-home-bootstrap.sh\" cloud/sync.sh"
           }
         ]
       }

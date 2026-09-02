@@ -12,6 +12,9 @@
 # Idempotent, and near-instant once the container has been through it.
 
 set -uo pipefail
+# Anchor to the repo root. Several steps below use relative paths; run from anywhere else
+# they write .env into the wrong directory and fail four lines later at migrate.
+cd "$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)" || exit 1
 MARKER="$HOME/.gct-cloud-bootstrapped"
 DB=grounded_class_tutor
 log() { printf '[gct] %s\n' "$*"; }
@@ -45,12 +48,30 @@ su postgres -c "psql -d $DB -c 'CREATE EXTENSION IF NOT EXISTS vector'" >/dev/nu
 
 # ------------------------------------------------------------------------- app config
 # DATABASE_URL is read from .env, which is gitignored and so absent in a fresh clone.
+# No host in the URL, on purpose. Naming localhost makes libpq use TCP, which pg_hba
+# gates behind scram-sha-256; the container runs as root, root has no password, so TCP
+# can never authenticate and migrations die with "no password supplied". An empty host
+# takes the unix socket, where peer auth accepts root.
 if [ ! -f .env ]; then
-  cp .env.example .env
-  sed -i "s|^DATABASE_URL=.*|DATABASE_URL=postgresql://localhost:5432/$DB|" .env
-  if [ -n "${OPENAI_API_KEY:-}" ]; then
-    sed -i "s|^OPENAI_API_KEY=.*|OPENAI_API_KEY=$OPENAI_API_KEY|" .env
-  else
+  cp .env.example .env || { log "ERROR could not create .env"; exit 1; }
+  # python rather than `sed -i`: BSD sed reads -i's argument as a backup suffix, so this
+  # silently left DATABASE_URL on the TCP form whenever it ran on a Mac - the exact
+  # misconfiguration the comment above exists to prevent. python also avoids sed
+  # replacement-syntax corruption from an & or a backslash inside the API key.
+  DB="$DB" python3 -c '
+import os, re, sys
+p = ".env"
+t = open(p).read()
+t = re.sub(r"^DATABASE_URL=.*$", "DATABASE_URL=postgresql:///" + os.environ["DB"], t, flags=re.M)
+key = os.environ.get("OPENAI_API_KEY")
+if key:
+    t, n = re.subn(r"^OPENAI_API_KEY=.*$", lambda m: "OPENAI_API_KEY=" + key, t, flags=re.M)
+    if not n:
+        t += "\nOPENAI_API_KEY=" + key + "\n"
+open(p, "w").write(t)
+' || { log "ERROR could not write .env"; exit 1; }
+
+  if [ -z "${OPENAI_API_KEY:-}" ]; then
     log "WARN OPENAI_API_KEY is not set. Add it to the cloud environment's variables;"
     log "     without it, ingest and ask fail but tests and migrations still run."
   fi

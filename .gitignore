@@ -24,6 +24,7 @@ build/
 .claude/*
 !.claude/skills/
 !.claude/settings.json
+!.claude/claude-home-bootstrap.sh
 .claude/settings.local.json
 
 # --- Dogfood corpus (real course materials — never committed, ADR 0021 / C5) ---

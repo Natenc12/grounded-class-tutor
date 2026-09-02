@@ -33,7 +33,7 @@ the product. Full design lives in `design/` — start with `design/START-HERE.md
 | Path | What |
 |---|---|
 | `src/gct/` | the library — the product |
-| `scripts/` | thin peer callers (`migrate.py`, `smoke_slice0.py`, `ask_smoke.py`) |
+| `scripts/` | thin peer callers (`migrate.py`, `worker.py`, and the per-slice exit smokes) |
 | `tests/gct/` | the test suite |
 | `design/` | current truth: ADRs, component specs, data model |
 | `.claude/skills/roadmap-to-issues/` | the one in-repo skill — projects a roadmap slice into issues |
@@ -45,6 +45,8 @@ uv sync --extra dev                     # deps into .venv — `--extra dev` or y
 uv run python scripts/migrate.py        # apply migrations/*.sql
 uv run python scripts/smoke_slice0.py   # Slice 0 exit test → "PASS — foundation is wired."
 uv run python scripts/ask_smoke.py      # Slice 1 exit gate — SPENDS MONEY (real models, real corpus)
+uv run python scripts/ingest_smoke.py   # Slice 2 exit gate — SPENDS MONEY
+uv run python scripts/worker.py         # the poll worker — a SEPARATE process, never in the API loop (ADR 0011)
 uv run pytest tests/ -q                 # full suite
 uv run pytest -m db -q                  # just the Postgres-backed tests (DB must be up)
 uv run pytest -m "not live" -q          # exactly what CI runs

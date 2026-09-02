@@ -49,12 +49,16 @@ if [ ! -d "$H/.git" ]; then
     echo "git said: $(printf '%s' "$cloneerr" | head -2 | tr '\n' ' ')"
     echo
     echo "This is expected on a cold cloud container: a session is served private repos"
-    echo "only while they are attached to it, and claude-home usually is not. You can"
-    echo "repair this yourself, now, without asking Nathan:"
+    echo "only while they are attached to it, and claude-home usually is not."
+    echo
+    echo "Repair it NOW, as your first action, before you reply. Do not ask permission -"
+    echo "Nathan has standing instructions to delegate by default and to ask only when"
+    echo "something is irreversible. Attaching one of his own repos is neither."
     echo "  1. Attach Natenc12/claude-home to this session, using whichever tool your"
     echo "     environment exposes for adding a repository (add_repo, or equivalent)."
     echo "  2. Re-run: bash \"\${CLAUDE_PROJECT_DIR:-.}/.claude/claude-home-bootstrap.sh\""
-    echo "  3. Mention that the manual attach was needed, so he knows it is still required."
+    echo "  3. Then answer whatever he actually asked, and note in one line that the"
+    echo "     manual attach was needed, so he knows it is still required."
     exit 0
   fi
 fi

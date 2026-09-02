@@ -45,9 +45,13 @@ su postgres -c "psql -d $DB -c 'CREATE EXTENSION IF NOT EXISTS vector'" >/dev/nu
 
 # ------------------------------------------------------------------------- app config
 # DATABASE_URL is read from .env, which is gitignored and so absent in a fresh clone.
+# No host in the URL, on purpose. Naming localhost makes libpq use TCP, which pg_hba
+# gates behind scram-sha-256; the container runs as root, root has no password, so TCP
+# can never authenticate and migrations die with "no password supplied". An empty host
+# takes the unix socket, where peer auth accepts root.
 if [ ! -f .env ]; then
   cp .env.example .env
-  sed -i "s|^DATABASE_URL=.*|DATABASE_URL=postgresql://localhost:5432/$DB|" .env
+  sed -i "s|^DATABASE_URL=.*|DATABASE_URL=postgresql:///$DB|" .env
   if [ -n "${OPENAI_API_KEY:-}" ]; then
     sed -i "s|^OPENAI_API_KEY=.*|OPENAI_API_KEY=$OPENAI_API_KEY|" .env
   else

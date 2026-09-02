@@ -42,7 +42,10 @@ thread the lease is a PARAMETER, so the expiry is the queue's own: `claim` stamp
 compares it against the server clock, and nothing here touches the column. What this script
 supplies is the other side of the race — an embed slow enough to still be running when that lease
 elapses (`_DelayedEmbeddings`). Read the two together: the reclaim, the redelivery and the replace
-are real; the certainty that A is still working when the lease expires is arranged.
+are real; the certainty that A is still working when the lease expires is arranged. SINCE ADR 0031
+the slow embed is no longer sufficient on its own — a live worker renews its own lease — so the
+heartbeat CAP is threaded as a parameter too, on the same argument: see
+`PHASE_THREE_HEARTBEAT_CAP_SECONDS` for what this script sets and why.
 
 `scripts/worker.py` is deliberately NOT imported (ADR 0009: the scripts are peers of the library,
 not of each other) — this file does its own wiring, exactly as that one does.
@@ -101,7 +104,11 @@ from gct.config import load_settings
 from gct.db import connect
 from gct.ingest.chunk import CHUNK_OVERLAP_WORDS, CHUNK_SIZE_WORDS
 from gct.jobs.queue import enqueue
-from gct.jobs.worker import DEFAULT_LEASE_SECONDS, run
+from gct.jobs.worker import (
+    DEFAULT_HEARTBEAT_MAX_SECONDS,
+    DEFAULT_LEASE_SECONDS,
+    run,
+)
 from gct.providers.base import Embeddings
 from gct.providers.openai_provider import OpenAIEmbeddings
 
@@ -141,6 +148,21 @@ DEFAULT_SHORT_LEASE_SECONDS = 1
 # embeds the file twice — once in the run that loses the lease and once in the redelivery — which is
 # a few seconds on a ceremony that already spends longer than that on the corpus.
 PHASE_THREE_EMBED_DELAY_SECONDS = 3.0
+# The heartbeat cap worker A runs under, and WHY phase 3 has to set one at all (ADR 0031).
+# Since the lease is renewed by a live worker, a short `--lease` no longer stages a reclaim on
+# its own: worker A pushes its own `leased_until` forward every beat, so the lease it is
+# holding does not lapse while it works. It lapses when the BEATS stop, and the beats stop at
+# the cap. The shipped cap is four times the DEFAULT lease (`DEFAULT_HEARTBEAT_MAX_SECONDS`,
+# 3600s) and it does NOT track `--lease` — ADR 0031 states it as "four leases, 1 hour at the
+# default lease" and makes it a PARAMETER for callers who need the expiry sooner. This script
+# is such a caller. Left unset, phase 3 would wait an hour for a reclaim that the run is not
+# long enough to see, and report the absence as a failure.
+#
+# UNDER THE INDUCED DELAY, not merely under the lease: the beats must stop while worker A is
+# still embedding, which is what makes the lease lapse under a RUNNING worker — the post-0031
+# shape of the scenario phase 3 has always staged. A cap of zero would disable the heartbeat
+# instead and stage the PRE-0031 scenario, which is not the one that ships.
+PHASE_THREE_HEARTBEAT_CAP_SECONDS = 1.0
 
 # How long a phase may take before the ceremony gives up waiting. Generous by an order of
 # magnitude against the timings above: this is a runaway guard so a wedged worker fails the gate
@@ -617,9 +639,11 @@ class WorkerThread:
         lease_seconds: int,
         chunk_size: int,
         chunk_overlap: int,
+        heartbeat_max_seconds: float = DEFAULT_HEARTBEAT_MAX_SECONDS,
     ) -> None:
         self.name = name
         self.lease_seconds = lease_seconds
+        self.heartbeat_max_seconds = heartbeat_max_seconds
         self.error: BaseException | None = None
         self._embedder = embedder
         self._chunk_size = chunk_size
@@ -647,6 +671,10 @@ class WorkerThread:
                 chunk_size=self._chunk_size,
                 chunk_overlap=self._chunk_overlap,
                 lease_seconds=self.lease_seconds,
+                # Threaded for the same reason `lease_seconds` is: the expiry stays the
+                # QUEUE's, and this script only chooses when it becomes reachable within a
+                # run's lifetime (`PHASE_THREE_HEARTBEAT_CAP_SECONDS`).
+                heartbeat_max_seconds=self.heartbeat_max_seconds,
                 poll_seconds=WORKER_POLL_SECONDS,
             )
         except BaseException as exc:
@@ -688,12 +716,30 @@ def _overrun_remedy(lease_seconds: int) -> str:
     A remedy naming the wrong variable is worse than none — it is a confident instruction to change
     something that cannot help.
 
-    Two things can still produce this fault, and they have different fixes:
+    A THIRD CAUSE ARRIVED WITH THE HEARTBEAT (ADR 0031), and it is the one a reader is now most
+    likely to hit, because it fires with every knob on this script set correctly. A live worker
+    renews its own lease, so the lease alone no longer expires under it: the beats have to stop
+    first. If `PHASE_THREE_HEARTBEAT_CAP_SECONDS` is at or above the induced delay, worker A beats
+    for the whole ingest and nothing ever expires. It is checked FIRST because it is invisible in
+    the two numbers the old message printed — a run with `--lease 1` against a 3s delay looks
+    correctly configured and still cannot reclaim.
+
+    Three things can now produce this fault, and they have different fixes:
+      - the heartbeat cap was raised to or above the induced delay, so the beats outlast the
+        ingest and the lease never lapses;
       - the lease was raised above the induced delay (`--lease 30` does this on purpose — it is the
         documented negative control that proves the phase's verdict is about the run);
       - the delay never reached the worker, i.e. the embedder worker A is holding is not the wrapper
         this phase armed. That is a wiring bug in this script, not a knob.
     """
+    if PHASE_THREE_HEARTBEAT_CAP_SECONDS >= PHASE_THREE_EMBED_DELAY_SECONDS:
+        return (
+            f"the heartbeat cap ({PHASE_THREE_HEARTBEAT_CAP_SECONDS:.1f}s) is at or above the "
+            f"{PHASE_THREE_EMBED_DELAY_SECONDS:.0f}s induced delay, so worker A renewed its own "
+            "lease for the whole ingest and nothing expired (ADR 0031). Lower "
+            "PHASE_THREE_HEARTBEAT_CAP_SECONDS below the delay — --lease alone cannot stage a "
+            "reclaim against a live worker"
+        )
     if lease_seconds >= PHASE_THREE_EMBED_DELAY_SECONDS:
         return (
             f"--lease is {lease_seconds}s and the induced embed delay is only "
@@ -702,9 +748,10 @@ def _overrun_remedy(lease_seconds: int) -> str:
             "ceremony is built around)"
         )
     return (
-        f"--lease ({lease_seconds}s) is already under the {PHASE_THREE_EMBED_DELAY_SECONDS:.0f}s "
-        "induced delay, so the ingest should not have fit inside it: the delay is not reaching the "
-        "worker. Check that worker A was handed the same `_DelayedEmbeddings` this phase arms"
+        f"--lease ({lease_seconds}s) is under the {PHASE_THREE_EMBED_DELAY_SECONDS:.0f}s induced "
+        f"delay and the heartbeat cap ({PHASE_THREE_HEARTBEAT_CAP_SECONDS:.1f}s) is under it too, "
+        "so the ingest should not have fit inside the lease: the delay is not reaching the worker. "
+        "Check that worker A was handed the same `_DelayedEmbeddings` this phase arms"
     )
 
 
@@ -1326,6 +1373,7 @@ def main() -> int:
                 lease_seconds=args.lease,
                 chunk_size=args.chunk_size,
                 chunk_overlap=args.chunk_overlap,
+                heartbeat_max_seconds=PHASE_THREE_HEARTBEAT_CAP_SECONDS,
             )
             # The phases run in order and are written as three statements rather than one dict
             # literal: they SHARE a worker and a queue, so their order is a precondition, not a

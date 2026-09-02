@@ -88,19 +88,6 @@ Deriving removes both, and leaves one edge it cannot see: a test that builds a p
 the fixture and it stays true" rule `db` has. How many carriers there are *today* is a fetched fact,
 not one this file stores: `uv run pytest -m live -q --collect-only`.
 
-## Cloud sessions
-The README's Homebrew setup does not apply in a cloud container: Postgres 16 binaries are
-installed but there is no cluster and nothing is running, and `.env` is gitignored so a fresh
-clone has no `DATABASE_URL`. **Before anything that touches the database, run:**
-```sh
-bash scripts/cloud-bootstrap.sh         # creates the cluster, DB, pgvector, .env, deps, schema
-```
-Minutes on a cold container, instant afterwards. It is deliberately not a hook - most sessions
-never touch the DB, and it would blow a hook's timeout.
-
-`OPENAI_API_KEY` comes from the cloud environment's variables, not from the repo. Without it,
-migrations and non-live tests still run; ingest and ask do not.
-
 ## Conventions / invariants (do not violate)
 - **Hand-rolled RAG** (ADR 0003) — no LangChain/LlamaIndex; we build the pipeline to learn it.
 - **Provider-agnostic** — grounding logic sits *above* the provider interfaces; swapping models never changes product behavior.

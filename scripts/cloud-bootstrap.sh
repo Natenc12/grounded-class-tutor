@@ -19,16 +19,16 @@ MARKER="$HOME/.gct-cloud-bootstrapped"
 DB=grounded_class_tutor
 log() { printf '[gct] %s\n' "$*"; }
 
+# PATH first. These containers ship the Postgres binaries off the default PATH, so
+# checking the marker before this meant pg_isready always failed and every run redid
+# apt-get, uv sync, and migrations.
+command -v pg_isready >/dev/null 2>&1 || export PATH="/usr/lib/postgresql/16/bin:$PATH"
+
 if [ -f "$MARKER" ] && pg_isready -q 2>/dev/null; then
   log "already bootstrapped"; exit 0
 fi
 
 # --------------------------------------------------------------- postgres + pgvector
-if ! command -v pg_isready >/dev/null 2>&1; then
-  log "no postgres binaries on PATH; looking for a cluster install"
-  export PATH="/usr/lib/postgresql/16/bin:$PATH"
-fi
-
 apt-get install -y -qq postgresql-16-pgvector 2>/dev/null || log "WARN pgvector install failed"
 
 # Containers ship the binaries with no cluster. Create one if it isn't there, then start it.
@@ -52,8 +52,11 @@ su postgres -c "psql -d $DB -c 'CREATE EXTENSION IF NOT EXISTS vector'" >/dev/nu
 # gates behind scram-sha-256; the container runs as root, root has no password, so TCP
 # can never authenticate and migrations die with "no password supplied". An empty host
 # takes the unix socket, where peer auth accepts root.
-if [ ! -f .env ]; then
-  cp .env.example .env || { log "ERROR could not create .env"; exit 1; }
+[ -f .env ] || cp .env.example .env || { log "ERROR could not create .env"; exit 1; }
+# Rewrite every run, not only on creation. A .env carried over from an earlier container
+# keeps the localhost TCP form, which root can never authenticate against, and migrations
+# die with "no password supplied" - the failure the comment above documents.
+if true; then
   # python rather than `sed -i`: BSD sed reads -i's argument as a backup suffix, so this
   # silently left DATABASE_URL on the TCP form whenever it ran on a Mac - the exact
   # misconfiguration the comment above exists to prevent. python also avoids sed

@@ -128,11 +128,38 @@ DEFAULT_HEARTBEAT_FRACTION = 0.25
 # wedged worker back to the reaper and back under the ordinary attempts budget (ADR 0031 §4). The
 # safe-if-wrong argument is ADR 0031 §5, and what erring long actually costs a wedged run is that
 # ADR's §Consequences - read those rather than a copy of them here.
-# DERIVED, NOT A SECOND NUMBER THAT HAPPENS TO AGREE. ADR 0031 §5 argues this cap in units of the
-# lease, so a literal 3600 sitting beside a `lease_seconds` someone retunes would leave the ADR's
-# claim true only by coincidence, and the first person to shorten the lease would falsify it
-# silently. Multiplying is what makes the two unable to drift. Effective value: 3600s.
-DEFAULT_HEARTBEAT_MAX_SECONDS = 4 * DEFAULT_LEASE_SECONDS
+# DERIVED PER CALL, NOT A SECOND NUMBER THAT HAPPENS TO AGREE. ADR 0031 §5 argues this cap in
+# units of the lease, so a literal 3600 sitting beside a `lease_seconds` someone retunes would
+# leave the ADR's claim true only by coincidence, and the first person to shorten the lease
+# would falsify it silently.
+#
+# MULTIPLYING BY THE MODULE DEFAULT IS NOT ENOUGH TO DELIVER THAT, which is why the resolution
+# below is a function of the lease ACTUALLY IN USE rather than a module constant. §5's next
+# paragraph makes both numbers parameters, so "shorten the lease" has two readings - edit
+# `DEFAULT_LEASE_SECONDS`, or pass `lease_seconds=` - and a constant computed once at import
+# only covers the first. Under the second the halves came apart silently: the beat INTERVAL
+# tracked the caller's lease (`heartbeat_interval`) while the cap stayed at 3600, so `run`'s own
+# startup line read "lease 60s renewed every 15s up to 3600s" - sixty leases, not four - and a
+# wedged worker under that lease held its job for 3645s where the ADR specifies 285s.
+HEARTBEAT_CAP_LEASES = 4
+# The default lease's cap, kept as a name because callers and tests import it. Effective value:
+# 3600s. It is the resolution below that is load-bearing; this is the value it yields for the
+# default lease.
+DEFAULT_HEARTBEAT_MAX_SECONDS = HEARTBEAT_CAP_LEASES * DEFAULT_LEASE_SECONDS
+
+
+def heartbeat_max_seconds_for(lease_seconds: float) -> float:
+    """The cap for THIS run's lease: `HEARTBEAT_CAP_LEASES` of the lease actually in use.
+
+    A function for the same reason `heartbeat_interval` is one, and the two are now symmetric:
+    both halves of the heartbeat's timing derive from the SAME `lease_seconds`, so a caller
+    that retunes the lease cannot move one and leave the other behind. `None` at the call
+    sites means "resolve from the lease"; an explicit number still overrides, which is what
+    the tests and `scripts/ingest_smoke.py` use to reach the cap inside a run's lifetime.
+    """
+    return HEARTBEAT_CAP_LEASES * lease_seconds
+
+
 # A floor under the DERIVED beat interval, so a pathological `heartbeat_fraction` (zero, or
 # negative) cannot turn the beat loop into a spin. Not a knob: it guards a misconfiguration rather
 # than expressing a policy, and it is small enough that the sub-second leases the tests drive
@@ -609,7 +636,7 @@ def process_one(
     lease_seconds: int = DEFAULT_LEASE_SECONDS,
     max_attempts: int = DEFAULT_MAX_ATTEMPTS,
     heartbeat_fraction: float = DEFAULT_HEARTBEAT_FRACTION,
-    heartbeat_max_seconds: float = DEFAULT_HEARTBEAT_MAX_SECONDS,
+    heartbeat_max_seconds: float | None = None,
 ) -> bool:
     """One tick of work: claim a job, ingest its file, and settle it - done, failed, or requeued.
 
@@ -831,7 +858,11 @@ def process_one(
                 job=job,
                 lease_seconds=lease_seconds,
                 fraction=heartbeat_fraction,
-                max_seconds=heartbeat_max_seconds,
+                max_seconds=(
+                    heartbeat_max_seconds
+                    if heartbeat_max_seconds is not None
+                    else heartbeat_max_seconds_for(lease_seconds)
+                ),
             ):
                 ingest_file(
                     job.staging_ref,
@@ -988,7 +1019,7 @@ def run(
     max_attempts: int = DEFAULT_MAX_ATTEMPTS,
     poll_seconds: float = DEFAULT_POLL_SECONDS,
     heartbeat_fraction: float = DEFAULT_HEARTBEAT_FRACTION,
-    heartbeat_max_seconds: float = DEFAULT_HEARTBEAT_MAX_SECONDS,
+    heartbeat_max_seconds: float | None = None,
 ) -> None:
     """The poll loop: reap, then `process_one`, sleeping `poll_seconds` after each empty tick.
 
@@ -1026,6 +1057,11 @@ def run(
     here would quietly contradict it.
     """
 
+    # Resolved HERE rather than left to `process_one`, so the startup line and the cap the
+    # worker actually runs are one value and not two derivations of it - the same one-writer
+    # argument `heartbeat_interval`'s docstring makes about the interval.
+    if heartbeat_max_seconds is None:
+        heartbeat_max_seconds = heartbeat_max_seconds_for(lease_seconds)
     logger.info(
         "worker started: poll %.1fs, lease %ss renewed every %.0fs up to %.0fs, budget %s attempts",
         poll_seconds,

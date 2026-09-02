@@ -138,7 +138,7 @@ the fraction below is what buys the margin to fail.
 | number | value | constant / parameter | safe-if-wrong direction |
 |---|---|---|---|
 | **beat interval** | ¼ of the lease | `DEFAULT_HEARTBEAT_FRACTION` / `heartbeat_fraction` | errs **short**. A fraction rather than an absolute interval, so a caller that shortens `lease_seconds` shortens the beat with it and the two cannot drift apart. At a quarter, **three consecutive beats must fail** before the lease lapses, so a DB blip mid-ingest is not an expiry. Too frequent costs one tiny `UPDATE` per interval, which is nothing against local Postgres serving one user; too infrequent lets a blip lapse a live worker's lease, which is this ADR's defect returning. |
-| **heartbeat cap** | **four leases** — 1 hour at the default lease | `DEFAULT_HEARTBEAT_MAX_SECONDS`, defined as `4 * DEFAULT_LEASE_SECONDS` / `heartbeat_max_seconds` | errs **long**, and erring long is **not free**. Too short reintroduces the defect for every file slower than the cap: a healthy file buried as `transient_exhausted`, which is a trust cost on a failure mode that has been *measured*. Too long delays recovery from a wedge — and the honest accounting is that on the deployment this ADR is arguing about, that is a real regression, not a cost V1 was going to pay anyway. See below. Four leases is also far longer than any input under the ADR 0029 word ceiling has taken. |
+| **heartbeat cap** | **four leases** — 1 hour at the default lease | `heartbeat_max_seconds_for(lease_seconds)` = `HEARTBEAT_CAP_LEASES * lease_seconds` / `heartbeat_max_seconds` | errs **long**, and erring long is **not free**. Too short reintroduces the defect for every file slower than the cap: a healthy file buried as `transient_exhausted`, which is a trust cost on a failure mode that has been *measured*. Too long delays recovery from a wedge — and the honest accounting is that on the deployment this ADR is arguing about, that is a real regression, not a cost V1 was going to pay anyway. See below. Four leases is also far longer than any input under the ADR 0029 word ceiling has taken. |
 
 **Why the cap's cost cannot be waved away with "V1 has one worker."** The tempting defence — a
 wedged V1 worker *is* the poller, so no reaper is running to collect what the cap gives up
@@ -155,6 +155,20 @@ written. That is the trade. It is not the absence of one.
 the claim this ADR makes, so the constant multiplies rather than restating 3600 — a literal beside
 a retunable `lease_seconds` would leave this row true by coincidence, and the first person to
 shorten the lease would falsify it silently.
+
+**And the multiple is resolved PER CALL, against the lease actually in use** — `heartbeat_max_seconds_for`,
+not a module constant computed once at import. Multiplying by `DEFAULT_LEASE_SECONDS` does not
+deliver the sentence above; it only relocates it. "Shorten the lease" has two readings once the
+next paragraph makes both numbers parameters — edit the default, or pass `lease_seconds=` — and a
+constant covers only the first. Under the second the two halves of this heartbeat's timing came
+apart silently: the beat interval derived from the caller's lease while the cap stayed at 3600, so
+`run`'s own startup line read `lease 60s renewed every 15s up to 3600s` — sixty leases, not four —
+and a wedged worker under that lease held its job for 3645 s where this row specifies 285 s. The
+symmetry with `heartbeat_interval` is the point: both halves now derive from the same
+`lease_seconds`, so neither can be moved without the other. Pinned by
+`test_the_cap_follows_the_lease_ACTUALLY_IN_USE_not_the_module_default`, which asserts the value
+`_LeaseHeartbeat` is CONSTRUCTED with — the seam the defect crossed — because a test that waits out
+a real cap is not one anyone would run.
 
 **Both are parameters, not only constants** — `process_one` and `run` take them and forward them,
 the same discipline `lease_seconds` and `max_attempts` already have, so the tests can drive the

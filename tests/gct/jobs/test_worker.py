@@ -3549,6 +3549,70 @@ def test_the_beat_interval_is_the_fraction_of_the_lease_and_the_floor_is_a_floor
         )
 
 
+def test_the_cap_follows_the_lease_ACTUALLY_IN_USE_not_the_module_default(
+    db, tmp_path, monkeypatch
+):
+    """A caller that shortens the lease shortens the cap with it - ADR 0031 §5's claim, pinned.
+
+    THE WIRING IS THE THING UNDER TEST, not the arithmetic. `heartbeat_max_seconds_for` cannot be
+    pinned meaningfully against itself - a test computing `HEARTBEAT_CAP_LEASES * lease` from the
+    constant would agree with any value the constant took, the same structural limit
+    `test_the_beats_stop_at_the_declared_cap_and_not_at_a_multiple_of_it` runs into. What CAN go
+    wrong, and did, is the WIRING: `process_one` passed a module constant computed once at import
+    against `DEFAULT_LEASE_SECONDS`, so the beat INTERVAL tracked the caller's lease while the cap
+    did not. At `lease_seconds=1` that is a 3600s cap on a 1s lease - 3600 leases, not four - and
+    every existing test stayed green, because each one that reaches the cap supplies
+    `heartbeat_max_seconds` explicitly and so never exercises the default.
+
+    Which is why this asserts on the value `_LeaseHeartbeat` is CONSTRUCTED with rather than on
+    observed beats: the defect is a number handed across a seam, and waiting out a real 3600s cap
+    to catch it is not a test anyone would run. The recorder is the narrowest thing that sees it.
+
+    The explicit override is asserted in the same test because the two are one contract - `None`
+    means "derive from the lease" and a number means "use this" - and `scripts/ingest_smoke.py`
+    depends on the second half to reach the cap inside a run's lifetime.
+    """
+    conn, owner_id, class_id = db
+    conn.autocommit = True
+    enqueue(
+        conn,
+        path=write_pdf(tmp_path / "capped.pdf", ["a page"]),
+        owner_id=owner_id,
+        class_id=class_id,
+    )
+
+    seen: list[float] = []
+    real = worker._LeaseHeartbeat
+
+    class _Recording(real):
+        def __init__(self, *args, max_seconds, **kwargs):
+            seen.append(max_seconds)
+            super().__init__(*args, max_seconds=max_seconds, **kwargs)
+
+    monkeypatch.setattr(worker, "_LeaseHeartbeat", _Recording)
+
+    lease = 3
+    assert tick(conn, SlowEmbeddings(delay=0.0), lease_seconds=lease) is True
+    assert seen == [worker.HEARTBEAT_CAP_LEASES * lease], (
+        f"the cap must be {worker.HEARTBEAT_CAP_LEASES} x the lease IN USE ({lease}s); "
+        f"{worker.DEFAULT_HEARTBEAT_MAX_SECONDS}s would be the module default leaking through"
+    )
+    assert seen != [worker.DEFAULT_HEARTBEAT_MAX_SECONDS], "the pre-fix defect, stated as itself"
+
+    seen.clear()
+    enqueue(
+        conn,
+        path=write_pdf(tmp_path / "explicit.pdf", ["a page"]),
+        owner_id=owner_id,
+        class_id=class_id,
+    )
+    assert (
+        tick(conn, SlowEmbeddings(delay=0.0), lease_seconds=lease, heartbeat_max_seconds=0.5)
+        is True
+    )
+    assert seen == [0.5], "an explicit cap must still win over the derivation"
+
+
 def test_the_beat_thread_is_gone_by_the_time_the_context_manager_returns(monkeypatch):
     """`__exit__` STOPS the thread and WAITS for it - the wait is half the promise (ADR 0031).
 

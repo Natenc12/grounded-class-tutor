@@ -3346,6 +3346,29 @@ def test_a_clamped_backoff_on_an_early_attempt_does_not_announce_the_bury(db, tm
         f"attempt it went on to retry: {line}"
     )
 
+    # THE OTHER DIRECTION, and the arm without which this test does not test the condition at all.
+    # The arm above only forbids the sentence; on its own it is satisfied by a worker that can
+    # NEVER say it. Measured: `retry_left = True` - which deletes the announcement outright - and
+    # `job.attempts <= max_attempts` - a real off-by-one at the boundary - both leave the whole
+    # suite green with only the arm above. A one-sided pin on a condition is not a pin on it.
+    #
+    # The same job, released back to `queued` with `attempts = 1`, re-ticked under a budget of two:
+    # it becomes attempt 2 of 2, the last one that runs any work, and the next claim is the one
+    # that buries it. `delay=0.0` keeps this arm about the BUDGET and not about the clamp - the two
+    # arms must fail for different reasons or they are one test written twice.
+    caplog.clear()
+    with caplog.at_level(logging.WARNING, logger="gct.jobs.worker"):
+        assert tick(conn, SlowEmbeddings(delay=0.0, transient_failures=1), max_attempts=2) is True
+
+    (last,) = [
+        r.getMessage() for r in caplog.records if "transient failure on attempt" in r.getMessage()
+    ]
+    assert "attempt 2/2" in last, f"the premise is the LAST attempt that runs: {last}"
+    assert "no retry left" in last, (
+        f"the budget is spent and the next claim buries this job - a worker that never says so is "
+        f"as wrong as one that says it too early: {last}"
+    )
+
 
 def test_the_heartbeat_does_not_outlive_the_worker_that_started_it(db, db_other, tmp_path):
     """A DEAD worker's lease still lapses - the heartbeat must not protect a corpse.

@@ -539,12 +539,18 @@ class _LeaseHeartbeat:
         job: Job,
         lease_seconds: int,
         fraction: float = DEFAULT_HEARTBEAT_FRACTION,
-        max_seconds: float = DEFAULT_HEARTBEAT_MAX_SECONDS,
+        max_seconds: float | None = None,
     ) -> None:
         self._job = job
         self._lease_seconds = lease_seconds
         self._interval = heartbeat_interval(lease_seconds, fraction)
-        self._max_seconds = max_seconds
+        # `None` resolves from the lease, exactly as `process_one` and `run` do. The class's
+        # own default was the LAST place the module constant could leak in: constructed
+        # directly with `lease_seconds=60` it beat for 3600s - sixty leases, the very defect
+        # the resolution above removes - and nothing in `src/` reached it, so nothing went red.
+        self._max_seconds = (
+            max_seconds if max_seconds is not None else heartbeat_max_seconds_for(lease_seconds)
+        )
         self._stop = threading.Event()
         self._beats = 0
         self._thread = threading.Thread(

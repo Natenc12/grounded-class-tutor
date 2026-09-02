@@ -104,11 +104,7 @@ from gct.config import load_settings
 from gct.db import connect
 from gct.ingest.chunk import CHUNK_OVERLAP_WORDS, CHUNK_SIZE_WORDS
 from gct.jobs.queue import enqueue
-from gct.jobs.worker import (
-    DEFAULT_HEARTBEAT_MAX_SECONDS,
-    DEFAULT_LEASE_SECONDS,
-    run,
-)
+from gct.jobs.worker import DEFAULT_LEASE_SECONDS, run
 from gct.providers.base import Embeddings
 from gct.providers.openai_provider import OpenAIEmbeddings
 
@@ -639,7 +635,7 @@ class WorkerThread:
         lease_seconds: int,
         chunk_size: int,
         chunk_overlap: int,
-        heartbeat_max_seconds: float = DEFAULT_HEARTBEAT_MAX_SECONDS,
+        heartbeat_max_seconds: float | None = None,
     ) -> None:
         self.name = name
         self.lease_seconds = lease_seconds

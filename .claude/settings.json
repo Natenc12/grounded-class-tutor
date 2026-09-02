@@ -5,7 +5,8 @@
         "hooks": [
           {
             "type": "command",
-            "command": "bash \"$CLAUDE_PROJECT_DIR/.claude/claude-home-bootstrap.sh\" cloud/session-start.sh"
+            "command": "bash \"$CLAUDE_PROJECT_DIR/.claude/claude-home-bootstrap.sh\" cloud/session-start.sh",
+            "timeout": 300
           }
         ]
       }
@@ -15,7 +16,8 @@
         "hooks": [
           {
             "type": "command",
-            "command": "bash \"$CLAUDE_PROJECT_DIR/.claude/claude-home-bootstrap.sh\" cloud/sync.sh"
+            "command": "bash \"$CLAUDE_PROJECT_DIR/.claude/claude-home-bootstrap.sh\" cloud/sync.sh",
+            "timeout": 120
           }
         ]
       }

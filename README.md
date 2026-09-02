@@ -11,6 +11,16 @@ product. See [`design/START-HERE.md`](design/START-HERE.md) for the full picture
 **Slice 1 — Tracer bullet: complete** — the grounding loop end-to-end (parse → chunk → embed →
 index → retrieve → ground → cited answer / refusal), driven by a script, proven on real course
 materials. See [`eval/FINDINGS.md`](eval/FINDINGS.md) for what the live runs showed.
+
+**Spike Pass 1 — validation: complete.** Chunking + generation run on the tracer; the verdict, and
+the bars it does not clear, are [ADR 0026](design/decisions/0026-spike-pass-1-verdict.md).
+
+**Slice 2 — Real write path: complete** — upload becomes a real job: queued → processing →
+ready/failed, at-least-once, reaper-safe, with no partially-indexed file ever visible.
+
+**Slice 3 — API adapter: current.** A thin HTTP layer over the core — create a class, upload, poll
+status, ask. No business logic in the adapter.
+
 [The ready frontier](https://github.com/Natenc12/grounded-class-tutor/issues?q=is%3Aopen+label%3Aready)
 tracks what's ready to pick up — the board is the single writer for that, so this file doesn't
 restate it.

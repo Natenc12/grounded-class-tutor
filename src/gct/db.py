@@ -18,8 +18,14 @@ def require_idle(conn: psycopg.Connection, fn: str) -> None:
     connection issues a SAVEPOINT rather than BEGIN - so the write commits NOTHING while the
     function returns successfully. Silent, and invisible to any test that reads back through
     the same connection. This guard converts that silent wrong answer into a loud one at the
-    boundary it protects (ADR 0025, guarded per ADR 0027 - adopted for `queue.py`'s five
-    writers first, then `index_file` via #75; both measurements are in the ADR).
+    boundary it protects (ADR 0025, guarded per ADR 0027 - adopted across `queue.py`'s writers
+    first, then `index_file` via #75; both measurements are in the ADR).
+
+    HOW MANY WRITERS THAT IS IS DELIBERATELY NOT RECORDED HERE. It was five when ADR 0027 measured
+    it, and `queue.py` has gained verbs since, so a count written down here is a copy with a second
+    writer and it goes stale on the next one - which is how the "five" this line used to carry
+    outlived the fact it described. The census is
+    `test_every_writer_refuses_a_connection_already_in_a_transaction`, which enumerates them.
 
     Deliberately NOT caught anywhere: a caller in the wrong transaction state is a programming
     error at wiring, not a runtime condition to handle. The message names the remedy because an

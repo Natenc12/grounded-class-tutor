@@ -182,10 +182,14 @@ same evidence ADR 0028 §Consequences named for the lease itself. Ratified is no
 
 ## Consequences
 
-- `queue.py` gains a fifth writer, so
-  `test_every_writer_refuses_a_connection_already_in_a_transaction` — whose docstring calls itself a
-  census rather than a sample — gains a row. The ADR 0025 precondition is satisfied by
-  construction here, since the beat opens its own idle connection.
+- `queue.py` gains a writer, so `test_every_writer_refuses_a_connection_already_in_a_transaction` —
+  whose docstring calls itself a census rather than a sample — gains a row. **Counted on the basis
+  that test uses, public writer verbs, it is six → seven** (`enqueue`, `claim`, `complete`, `fail`,
+  `release`, `reclaim_expired`, and now `renew_lease`); counted by `require_idle` *call sites* it is
+  four → five, because `complete`/`fail`/`release` share `_settle`. Both numbers are checkable
+  against the file, which is the point of naming the basis: "the Nth writer" is not a fact until it
+  says which N. The ADR 0025 precondition is satisfied by construction here, since the beat opens
+  its own idle connection.
 - **A worker briefly holds TWO connections** while it ingests. Free on local Postgres for one user;
   it is a real number under a connection-limited V2 (ADR 0006), and per-beat rather than per-ingest
   is what keeps it brief.

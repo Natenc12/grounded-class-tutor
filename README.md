@@ -15,8 +15,11 @@ materials. See [`eval/FINDINGS.md`](eval/FINDINGS.md) for what the live runs sho
 **Spike Pass 1 — validation: complete.** Chunking + generation run on the tracer; the verdict, and
 the bars it does not clear, are [ADR 0026](design/decisions/0026-spike-pass-1-verdict.md).
 
-**Slice 2 — Real write path: current.** The proven inline pipeline wrapped in the async worker + job
-queue + status store, plus failure/idempotency.
+**Slice 2 — Real write path: complete** — upload becomes a real job: queued → processing →
+ready/failed, at-least-once, reaper-safe, with no partially-indexed file ever visible.
+
+**Slice 3 — API adapter: current.** A thin HTTP layer over the core — create a class, upload, poll
+status, ask. No business logic in the adapter.
 
 [The ready frontier](https://github.com/Natenc12/grounded-class-tutor/issues?q=is%3Aopen+label%3Aready)
 tracks what's ready to pick up — the board is the single writer for that, so this file doesn't

@@ -151,13 +151,39 @@ is not a general claim), states the bars it does not clear, and records the red 
 bound on Pass 2's chunking axis. Evidence lives in `eval/FINDINGS.md`, which stays the writer of the
 measurements — the ADR reproduces none of them except where the figure is its own decision content.
 
-**Slice 2 — Real write path: CURRENT.** Wrap the *proven* inline pipeline in the async worker + job
-queue + status store (DB-backed `jobs`, in-process poll worker, `enqueue`/`claim`, ADR 0011) plus
+**Slice 2 — Real write path: COMPLETE.** The *proven* inline pipeline wrapped in the async worker +
+job queue + status store (DB-backed `jobs`, poll worker, `enqueue`/`claim`, ADR 0011) plus
 failure/idempotency — retryable/terminal split, all-or-nothing atomic replace, index-write-only
-transaction (ADR 0020, precondition per ADR 0025). Additive, not a rewrite: the PM-4 seam exists so
-this slice *wraps* `ingest_file` rather than reshaping it. **Exit:** upload →
-`queued→processing→ready/failed` is real; at-least-once + reaper safe; no partial index ever visible.
-See `design/roadmap.md` → *Slice 2* and `design/components/ingestion-worker.md`.
+transaction (ADR 0020, precondition per ADR 0025, guarded per 0027). Additive, not a rewrite: the
+PM-4 seam did its job — this slice *wrapped* `ingest_file` rather than reshaping it. Exit met: upload
+→ `queued→processing→ready/failed` is real, at-least-once + reaper safe, no partial index ever
+visible.
+
+The seams it draws, which Slice 3 wraps rather than rewrites:
+- **Enqueue** — `enqueue(conn, path=, owner_id=, class_id=)` creates the `queued` `files` row and its
+  `jobs` row in one transaction. Slice 3 substitutes a stager for the raw path behind it.
+- **Status** — `files.status` is the domain truth an API returns, distinct from `jobs.state`; the
+  terminal reason set is the CHECK constraint's, not a prose list.
+- **Worker topology** — `scripts/worker.py` is a SEPARATE OS process, never an asyncio task inside a
+  web server's loop (ADR 0011, PM-3 addendum).
+
+Refinements to this machinery stay open on the board under `slice-2` and are picked up on their own
+merits; the slice's exit does not wait on them.
+
+**Slice 3 — API adapter: CURRENT.** A thin FastAPI over the core — create a class, upload a file
+(stage + enqueue), read its status including the terminal reason, ask a question. Local file staging
+(ADR 0010). **No business logic:** the adapter validates, calls a library callable, and renders — the
+seam is library-callable vs. adapter (ADR 0009), not one endpoint per module. **Exit:** the full loop
+is drivable over HTTP; the status surface exposes actionable terminal reasons. See
+`design/roadmap.md` → *Slice 3*. There is no `design/components/api.md` yet — the request/response
+shapes, error envelope and status codes have no spec home, which is an open flag on the slice epic.
+
+Two contracts Slice 3 inherits and must not rediscover:
+- **The connection precondition.** Writers refuse a non-IDLE connection (`gct.db.require_idle`, ADR
+  0027). A handler that reads before it writes opens an implicit transaction on the read and the
+  writer raises — a per-request connection has to be built for this, not assumed.
+- **Refusal is a successful outcome.** The five grounder states (ADR 0014–0016) are returned, not
+  raised; rendering a refusal as a client error would be a lie about the student's materials.
 
 **Issue-level state is NOT recorded in this file.** Never write "#N is done" or "#N is next" here — it
 is wrong within the week, and this file is not the writer of that fact. Fetch it instead:

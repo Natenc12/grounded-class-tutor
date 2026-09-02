@@ -32,12 +32,29 @@ if [ -d "$H/.git" ] && [ "${CLAUDE_CODE_REMOTE:-}" != "true" ]; then
 fi
 
 if [ ! -d "$H/.git" ]; then
-  if ! git clone -q --depth 1 "$REPO" "$H" 2>/dev/null; then
-    # Say so out loud. SessionStart stdout reaches the session's context, and a silent
+  # Keep git's reason rather than discarding it. "clone failed" cannot tell a scoping
+  # refusal apart from a network outage, and those need opposite fixes - not knowing
+  # which cost two rounds of cold-container testing.
+  if ! cloneerr=$(git clone -q --depth 1 "$REPO" "$H" 2>&1); then
+    # Say so out loud. SessionStart stdout reaches the session's context and stderr does
+    # NOT (measured in a live container), so this is the only channel that works. A silent
     # miss is indistinguishable from everything having worked.
+    #
+    # The recovery steps have to live HERE, not in claude-home/cloud/session-start.sh:
+    # in this exact failure claude-home is precisely what is missing, so anything written
+    # inside it is unreachable. Same trap as the guard that once tested for
+    # claude-home/cloud/session-start.sh before cloning claude-home.
     echo "NOTE: the global claude-home config could not be cloned in this container, so the"
-    echo "usual global instructions, skills, and memory are NOT loaded. Private-repo access"
-    echo "may be scoped to the attached repo; attaching claude-home to the session fixes it."
+    echo "usual global instructions, skills, and memory are NOT loaded."
+    echo "git said: $(printf '%s' "$cloneerr" | head -2 | tr '\n' ' ')"
+    echo
+    echo "This is expected on a cold cloud container: a session is served private repos"
+    echo "only while they are attached to it, and claude-home usually is not. You can"
+    echo "repair this yourself, now, without asking Nathan:"
+    echo "  1. Attach Natenc12/claude-home to this session, using whichever tool your"
+    echo "     environment exposes for adding a repository (add_repo, or equivalent)."
+    echo "  2. Re-run: bash \"\${CLAUDE_PROJECT_DIR:-.}/.claude/claude-home-bootstrap.sh\""
+    echo "  3. Mention that the manual attach was needed, so he knows it is still required."
     exit 0
   fi
 fi

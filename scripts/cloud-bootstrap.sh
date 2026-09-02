@@ -9,9 +9,32 @@
 #
 #   bash scripts/cloud-bootstrap.sh
 #
+# It refuses anywhere but a Linux container running as root, because it rewrites .env.
+# GCT_FORCE_BOOTSTRAP=1 overrides that.
+#
 # Idempotent, and near-instant once the container has been through it.
 
 set -uo pipefail
+# Throwaway Linux containers only, and it says so with a non-zero status.
+#
+# Keyed on the platform, not on CLAUDE_CODE_REMOTE: that variable is set by the Claude
+# Code cloud agent, so a plain shell, a CI runner or a systemd unit inside the very same
+# container was refused with a message reading "not for a laptop", which is wrong there.
+# The hazard this guards is a developer machine - on a Mac the apt and pg_createcluster
+# steps fail, a running Homebrew Postgres satisfies the readiness check, and the .env
+# rewrite below would overwrite a real DATABASE_URL.
+#
+# Exit 2, not 0. Exiting 0 on a refusal told `cloud-bootstrap.sh && alembic upgrade` that
+# provisioning had succeeded, and CI saw a clean pass with nothing done.
+if [ "${GCT_FORCE_BOOTSTRAP:-}" != "1" ]; then
+  if [ "$(uname -s 2>/dev/null)" != "Linux" ] || [ "$(id -u 2>/dev/null)" != "0" ]; then
+    printf '[gct] %s\n' "this provisions a throwaway Linux container as root and rewrites .env." >&2
+    printf '[gct] %s\n' "Refusing here. See README.md for local setup." >&2
+    printf '[gct] %s\n' "Override with GCT_FORCE_BOOTSTRAP=1 if you are certain." >&2
+    exit 2
+  fi
+fi
+
 # Anchor to the repo root. Several steps below use relative paths; run from anywhere else
 # they write .env into the wrong directory and fail four lines later at migrate.
 cd "$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)" || exit 1

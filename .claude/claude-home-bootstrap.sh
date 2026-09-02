@@ -24,36 +24,46 @@ REPO="https://github.com/Natenc12/claude-home.git"
 claude_home_repo() {
   local u l
   u=$(git -C "$1" remote get-url origin 2>/dev/null) || return 1
-  # Strip trailing .git and / repeatedly and in any order. Doing it once, in a fixed
-  # order, rejected the legitimate ".../claude-home.git/".
+  # Lowercase FIRST, then strip. Stripping before lowercasing left ".GIT" in place,
+  # because the strip globs are case-sensitive - so an all-caps but legitimate origin
+  # was silently refused and the system quietly did nothing.
+  l=$(printf '%s' "$u" | tr 'A-Z' 'a-z')
   while :; do
-    case "$u" in
-      */)    u=${u%/} ;;
-      *.git) u=${u%.git} ;;
+    case "$l" in
+      */)    l=${l%/} ;;
+      *.git) l=${l%.git} ;;
       *)     break ;;
     esac
   done
-  # An allowlist of exact remotes. Matching the path tail (*/Natenc12/claude-home)
-  # never bound the HOST, so https://evil.example.com/Natenc12/claude-home,
-  # https://github.com/attacker/Natenc12/claude-home, file:// and ssh:// variants,
-  # and credentialed URLs all passed and were executed from. All demonstrated.
-  l=$(printf '%s' "$u" | tr 'A-Z' 'a-z')   # GitHub owners are case-insensitive
+  # An allowlist of exact remotes. Matching only the path tail never bound the HOST, so
+  # https://evil.example.com/Natenc12/claude-home and friends were accepted and executed
+  # from - demonstrated. Scp-style host:path remotes carry no :// and no @, so they fell
+  # through the host test entirely. Local paths are the test harness's case and must be
+  # opted into: left on by default, `git remote add origin ../claude-home` was the whole
+  # attack.
   case "$l" in
     https://github.com/natenc12/claude-home|\
     http://github.com/natenc12/claude-home|\
     ssh://git@github.com/natenc12/claude-home|\
     git@github.com:natenc12/claude-home) return 0 ;;
   esac
-  # Everything else is refused: any other host, and every scp-style host:path remote
-  # (with or without a user - "evil.com:x/claude-home" has no :// and no @, so it
-  # previously fell through the host test entirely and was accepted).
-  #
-  # A local path is the test harness's case and must be opted into explicitly. Left
-  # on by default it was the whole attack: `git init && git remote add origin
-  # ../claude-home` next to the checkout was enough to execute code.
+  # Drop an optional userinfo@ and :port from the authority before the compare. A
+  # clone-with-username, and token-bearing remotes such as
+  # https://x-access-token:TOKEN@github.com/..., are how CI and app-style clones write
+  # origin. Refusing them does not fail safe - it silently disables the whole system.
+  case "$l" in
+    *://*@*|*://*:[0-9]*/*)
+      l="${l%%://*}://$(printf '%s' "${l#*://}" | sed 's|^[^/@]*@||; s|^\([^/:]*\):[0-9][0-9]*/|\1/|')"
+      case "$l" in
+        https://github.com/natenc12/claude-home|\
+        http://github.com/natenc12/claude-home|\
+        ssh://github.com/natenc12/claude-home|\
+        ssh://git@github.com/natenc12/claude-home) return 0 ;;
+      esac ;;
+  esac
   [ "${CLAUDE_HOME_ALLOW_LOCAL:-}" = "1" ] || return 1
-  case "$u" in *://*|*:*) return 1 ;; esac
-  [ "${u##*/}" = "claude-home" ]
+  case "$l" in *://*|*:*) return 1 ;; esac
+  [ "${l##*/}" = "claude-home" ]
 }
 H=""
 for c in "${CLAUDE_HOME:-}" "${HOME:-}/claude-home" "/home/user/claude-home" "${PWD:-.}/../claude-home"; do

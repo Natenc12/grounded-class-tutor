@@ -91,6 +91,34 @@ do
   check "accepts: $url" "$([ -e "$TMP/MARKER" ] && echo used || echo skipped)" "used"
 done
 
+echo "== the local-path gate, which nothing else exercises =="
+# Without a case that sets CLAUDE_HOME_ALLOW_LOCAL=1, everything after the gate is
+# unreachable: replacing the scp-guard and the suffix check with `return 0` passed the
+# whole suite. These three rows are the only thing covering that branch.
+plant "$TMP/loc/claude-home" "$TMP/forge/claude-home"
+mkdir -p "$TMP/loc/work"; rm -f "$TMP/MARKER"
+( cd "$TMP/loc/work" && HOME="$TMP/loc/home" CLAUDE_CODE_REMOTE=true CLAUDE_HOME_ENABLE=1 \
+    bash "$BOOT" >/dev/null 2>&1 )
+check "local path refused without the flag" "$([ -e "$TMP/MARKER" ] && echo used || echo refused)" "refused"
+rm -f "$TMP/MARKER"
+( cd "$TMP/loc/work" && HOME="$TMP/loc/home" CLAUDE_CODE_REMOTE=true CLAUDE_HOME_ENABLE=1 \
+    CLAUDE_HOME_ALLOW_LOCAL=1 bash "$BOOT" >/dev/null 2>&1 )
+check "local path allowed with the flag"    "$([ -e "$TMP/MARKER" ] && echo used || echo refused)" "used"
+# The flag must not weaken the host allowlist.
+plant "$TMP/loc/claude-home" "https://evil.example.com/x/claude-home.git"
+rm -f "$TMP/MARKER"
+( cd "$TMP/loc/work" && HOME="$TMP/loc/home" CLAUDE_CODE_REMOTE=true CLAUDE_HOME_ENABLE=1 \
+    CLAUDE_HOME_ALLOW_LOCAL=1 bash "$BOOT" >/dev/null 2>&1 )
+check "hostile host refused even with the flag" "$([ -e "$TMP/MARKER" ] && echo used || echo refused)" "refused"
+
+# An all-caps but legitimate origin must still be accepted: the strip globs are
+# case-sensitive, so stripping before lowercasing left ".GIT" and silently refused it.
+plant "$TMP/uc/claude-home" "HTTPS://GITHUB.COM/NATENC12/CLAUDE-HOME.GIT"
+mkdir -p "$TMP/uc/work"; rm -f "$TMP/MARKER"
+( cd "$TMP/uc/work" && HOME="$TMP/uc/home" CLAUDE_CODE_REMOTE=true CLAUDE_HOME_ENABLE=1 \
+    bash "$BOOT" >/dev/null 2>&1 )
+check "uppercase legitimate origin accepted" "$([ -e "$TMP/MARKER" ] && echo used || echo refused)" "used"
+
 echo "== a contributor sees nothing =="
 mkdir -p "$TMP/c/work"; cd "$TMP/c/work"
 run_quiet() { # run_quiet <label> <env...> -- ; asserts exit 0 and zero bytes

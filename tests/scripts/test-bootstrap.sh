@@ -25,7 +25,11 @@ check(){ if [ "$2" = "$3" ]; then ok "$1"; else bad "$1" "want [$3] got [$2]"; f
 plant() { # plant <dir> <origin-url>
   rm -rf "$1"; mkdir -p "$1/cloud"; git init -q "$1"
   git -C "$1" remote add origin "$2"
-  printf '#!/usr/bin/env bash\necho PWNED > "%s/MARKER"\n' "$TMP" > "$1/cloud/session-start.sh"
+  # Record the directory it ran from: a test that only checks "something ran" cannot
+  # see a change in how the path was resolved.
+  # Record the path AS PASSED, not re-resolved: `pwd -P` inside the payload canonicalises
+  # again and hides whether the caller resolved the symlink itself.
+  printf '#!/usr/bin/env bash\nprintf "%%s\\n" "$(dirname "$(dirname "$0")")" > "%s/MARKER"\n' "$TMP" > "$1/cloud/session-start.sh"
   cp "$1/cloud/session-start.sh" "$1/cloud/sync.sh"
 }
 
@@ -161,6 +165,30 @@ run_quiet "HOME unset"      -u HOME
 out=$(env HOME="$TMP/c/home" CLAUDE_CODE_REMOTE=true bash "$BOOT" cloud/sync.sh 2>&1)
 check "stop-hook path is silent" "${#out}" "0"
 
+echo "== the laptop double-fire guard =="
+# On a machine that is not a cloud container, the user's own ~/.claude/settings.json
+# already wires these hooks; running them from the repo too fires everything twice per
+# event. That guard had no coverage in either suite.
+plant "$TMP/lap/claude-home" "https://github.com/Natenc12/claude-home.git"
+mkdir -p "$TMP/lap/work"; rm -f "$TMP/MARKER"
+( cd "$TMP/lap/work" && HOME="$TMP/lap" env -u CLAUDE_CODE_REMOTE bash "$BOOT" >/dev/null 2>&1 )
+check "laptop does not hand off"  "$([ -e "$TMP/MARKER" ] && echo fired || echo quiet)" "quiet"
+rm -f "$TMP/MARKER"
+( cd "$TMP/lap/work" && HOME="$TMP/lap" CLAUDE_CODE_REMOTE=true bash "$BOOT" >/dev/null 2>&1 )
+check "a container does hand off"  "$([ -e "$TMP/MARKER" ] && echo fired || echo quiet)" "fired"
+
+echo "== a legitimate symlinked checkout is canonicalised =="
+# The one existing symlink row plants a HOSTILE origin, so the matcher refuses it before
+# path resolution matters. Nothing covered -P on a checkout that is actually accepted.
+plant "$TMP/sl/real" "https://github.com/Natenc12/claude-home.git"
+mkdir -p "$TMP/sl/work"; ln -sfn "$TMP/sl/real" "$TMP/sl/claude-home"
+rm -f "$TMP/MARKER"
+( cd "$TMP/sl/work" && HOME="$TMP/sl/home" CLAUDE_CODE_REMOTE=true CLAUDE_HOME_ENABLE=1 bash "$BOOT" >/dev/null 2>&1 )
+# It must resolve to the PHYSICAL directory, not the symlink path - otherwise the
+# directory that was validated and the one that is used can differ.
+check "symlinked checkout resolves physically" \
+  "$(cat "$TMP/MARKER" 2>/dev/null)" "$(cd -P "$TMP/sl/real" && pwd -P)"
+
 echo "== the hook's exit status is never the child's =="
 # exec made this hook return whatever the handed-off script returned, and a Stop hook
 # exiting 2 blocks the stop and loops the session.
@@ -185,8 +213,12 @@ mkdir -p "$TMP/envtest"; printf 'DATABASE_URL=postgresql://sentinel/keepme\n' > 
 BEFORE=$(cat "$TMP/envtest/.env")
 ( cd "$TMP/envtest" && env -u CLAUDE_CODE_REMOTE bash "$SRC/scripts/cloud-bootstrap.sh" >/dev/null 2>&1 )
 check "refusal leaves .env byte-identical" "$(cat "$TMP/envtest/.env")" "$BEFORE"
-( cd "$TMP/envtest" && env -u CLAUDE_CODE_REMOTE bash "$SRC/scripts/cloud-bootstrap.sh" >/dev/null 2>&1 )
-check "refusal exits non-zero" "$([ $? -ne 0 ] && echo nonzero || echo zero)" "nonzero"
+# Assert the GUARD fired, not merely that the script failed. On a Mac without pgvector
+# it exits 1 further down for an unrelated reason, so "non-zero" passed even with the
+# guard deleted - and on a Mac that HAS pgvector the script would reach the .env rewrite.
+GOUT=$( cd "$TMP/envtest" && env -u CLAUDE_CODE_REMOTE bash "$SRC/scripts/cloud-bootstrap.sh" 2>&1 >/dev/null ); GRC=$?
+check "the guard itself refuses"  "$(printf '%s' "$GOUT" | grep -c 'Refusing here')" "1"
+check "refusal exit code is 2"    "$GRC" "2"
 
 # The matcher is duplicated in the private claude-home repo. If that checkout is here,
 # assert the two copies still agree - a divergence means this hook accepts a checkout

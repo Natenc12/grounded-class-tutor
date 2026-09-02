@@ -47,6 +47,7 @@ demand and count what it was asked to do.
 from __future__ import annotations
 
 import io
+import logging
 import math
 import signal
 import threading
@@ -3290,6 +3291,60 @@ def test_a_slow_file_keeps_its_lease_and_reaches_ready_on_the_first_attempt(db, 
         "select count(*) from chunks where file_id = %s::uuid", (file_id,)
     ).fetchone()
     assert chunk_count > 0, "`ready` with no chunks would be a status with nothing behind it"
+
+
+def test_a_clamped_backoff_on_an_early_attempt_does_not_announce_the_bury(db, tmp_path, caplog):
+    """The worker must not say a job is about to be buried while it is retrying it (ADR 0031).
+
+    THE MESSAGE IS THE SUBJECT, and it is worth a test precisely because nothing else here is: the
+    line chose its ending by asking whether `delay` was ZERO, which conflates the two ways a wait
+    can be nothing. "No retry is coming" and "a retry is coming right now, with no room to pause"
+    print the same zero. Before ADR 0031 the second was an edge; this branch makes it the ORDINARY
+    path for the run the ADR exists to support, so the worker announced *"no retry left, the next
+    claim buries it"* on attempt 1 of 5 about a job that was requeued, retried and reached `ready`.
+    A log line that lies about a student's file in the direction of "we gave up" is the trust cost
+    this whole issue is about, one layer down.
+
+    `job.attempts < max_attempts` is what actually decides the bury, so that is what the condition
+    now reads. Behaviour is untouched - only the sentence.
+
+    HOW THE ZERO IS REACHED, without faking a clock: the embed takes 1.5s under a 1s lease, so
+    `served_backoff` (which measures from the CLAIM, ADR 0031 §Consequences) has no lease left to
+    fund a pause and clamps the backoff to zero. `transient_failures=1` then makes that single slow
+    call raise. Both inputs are real; nothing is monkeypatched, which is what keeps this test from
+    passing for the reason its neighbours warn about.
+
+    Asserted as the ABSENCE of the bury sentence rather than the presence of the replacement: the
+    defect is the false claim, and pinning the exact wording of the true one would go red on a
+    rephrase that broke nothing.
+    """
+    conn, owner_id, class_id = db
+    conn.autocommit = True
+    enqueue(
+        conn,
+        path=write_pdf(tmp_path / "slow-then-429.pdf", ["a page that is slow and then fails"]),
+        owner_id=owner_id,
+        class_id=class_id,
+    )
+
+    with caplog.at_level(logging.WARNING, logger="gct.jobs.worker"):
+        assert (
+            tick(
+                conn,
+                SlowEmbeddings(delay=1.5, transient_failures=1),
+                lease_seconds=1,
+            )
+            is True
+        )
+
+    (line,) = [
+        r.getMessage() for r in caplog.records if "transient failure on attempt" in r.getMessage()
+    ]
+    assert "attempt 1/" in line, f"the premise is an EARLY attempt, not the last one: {line}"
+    assert "no retry left" not in line, (
+        f"a clamped backoff is not an exhausted budget - the worker announced the bury on an "
+        f"attempt it went on to retry: {line}"
+    )
 
 
 def test_the_heartbeat_does_not_outlive_the_worker_that_started_it(db, db_other, tmp_path):

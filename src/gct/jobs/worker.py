@@ -970,8 +970,15 @@ def process_one(
             )
             if delay < wanted:
                 # Reported rather than absorbed: a cut backoff means this attempt ate a lease that
-                # was meant to cover it, which is evidence the lease number is wrong - exactly the
-                # measurement ADR 0028 §2 says would move it. Silently clamping would swallow it.
+                # was meant to cover it - the measurement ADR 0028 §2 says would move the lease
+                # number. Silently clamping would swallow it.
+                #
+                # A WEAKER SIGNAL SINCE ADR 0031, and the weakening is that ADR's to state, not
+                # this comment's to re-argue: `served_backoff` measures the remaining lease from
+                # the CLAIM, so on a renewed lease it understates what is left and this can fire
+                # on a run whose lease was never in trouble (ADR 0031 §Consequences, the half
+                # NAMED and left unfixed). Read that bullet before reading this warning as
+                # evidence to shorten the lease.
                 logger.warning(
                     "job %s: backoff cut from %.0fs to %.0fs - the %ss lease could not cover it",
                     job.job_id,

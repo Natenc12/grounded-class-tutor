@@ -441,6 +441,64 @@ def release(conn: psycopg.Connection, *, job_id: str, lease_token: str, error: s
     )
 
 
+def renew_lease(
+    conn: psycopg.Connection, *, job_id: str, lease_token: str, lease_seconds: int
+) -> bool:
+    """Push `leased_until` forward for a lease this caller STILL HOLDS. True if it moved.
+
+    Not a settle verb: the other three put the job DOWN, and this one says "still mine, still
+    working". It is the write behind `worker._LeaseHeartbeat`, and the reason `reclaim_expired`
+    below can read a lapsed lease as "the worker is gone" rather than "the worker might merely be
+    slow" (ADR 0028, the lease's meaning amended per ADR 0031).
+
+    BEHIND `_settle`'s TWO CONDITIONS, VERBATIM - `state = 'processing'` AND `lease_token` -
+    because every write that turns on who owns this job has to ask the ownership question the same
+    way, and a fourth phrasing of it is a fourth thing to keep in step.
+
+    The token half is more load-bearing here than in any settle verb, because this is the only
+    write that hands a lease MORE LIFE. Without it, a worker whose job was reaped and re-handed out
+    would pull the lease back from the run that now holds it - not a stale write landing on a
+    settled row, but a dead claim resurrecting itself on a live one, and then beating indefinitely
+    against a job someone else is ingesting. The state half is what stops a job settled mid-beat
+    (`done`, `failed`, or handed back to `queued`) from being dragged back under a lease.
+
+    `attempts` is untouched: a renewal is not an attempt, `claim` is the only verb that bumps that
+    counter, and a heartbeat that spent the retry budget on staying alive would be the inverse of
+    the defect ADR 0031 removes. `lease_token` is untouched for a different reason - the token
+    identifies the CLAIM, not the beat, so minting a fresh one here would invalidate the very
+    worker doing the renewing.
+
+    NO `LookupError`, DELIBERATELY - the one place this shape departs from
+    `complete`/`fail`/`release`, which raise on an orphaned `job_id`. EVERY answer that is not
+    "renewed" comes back as False here, an unknown `job_id` included, and False is ROUTINE rather
+    than an error. ADR 0031 §1 argues why; what the caller must DO with it is stop beating and
+    settle nothing, because ADR 0030's publish guard is what refuses the doomed write.
+
+    Server clock, for the reason `claim` stamps its lease from one: `reclaim_expired` compares
+    `leased_until < now()` on the server, so a beat stamped from a worker machine's clock would
+    renew into drift instead of out of it.
+
+    PRECONDITION ON `conn` (ADR 0025, guarded per ADR 0027), same as every writer here. The
+    heartbeat satisfies it by construction rather than by care - it opens its OWN connection and
+    never borrows the worker's, which is inside `ingest_file`'s transaction for the whole window a
+    beat could land in (`worker._LeaseHeartbeat`).
+    """
+    require_idle(conn, "renew_lease")
+    with conn.transaction():
+        cursor = conn.execute(
+            """
+            update jobs
+            set leased_until = now() + make_interval(secs => %(lease_seconds)s),
+                updated_at = now()
+            where job_id = %(job_id)s::uuid
+              and state = 'processing'
+              and lease_token = %(lease_token)s::uuid
+            """,
+            {"lease_seconds": lease_seconds, "job_id": job_id, "lease_token": lease_token},
+        )
+    return cursor.rowcount == 1
+
+
 def reclaim_expired(conn: psycopg.Connection) -> int:
     """The reaper: processing rows past leased_until go back to queued. Returns the count.
 
@@ -462,6 +520,13 @@ def reclaim_expired(conn: psycopg.Connection) -> int:
     leaving it would let the reclaimed worker keep settling the job. `attempts` is deliberately
     NOT reset - it is the retry trail #71 compares against its budget. A reclaim that zeroed it
     would hand a poison file a fresh budget after every crash.
+
+    WHAT AN EXPIRED LEASE MEANS NARROWED WITH #95, and this statement is unchanged by it. A live
+    worker now pushes its own `leased_until` forward through `renew_lease` while it works, so a
+    lapsed lease no longer covers "the worker is merely slower than one lease" - it means the
+    worker is gone, or wedged past the heartbeat's cap (ADR 0028, the lease's meaning amended per
+    ADR 0031). The rows this reaps are a strict subset of the rows it reaped before; nothing it
+    used to leave alone is newly at risk.
 
     Reclaiming is NOT killing: a stalled-but-alive worker keeps running and may
     finish after its job is re-handed out. That duplicate run is safe by design

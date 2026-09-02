@@ -4,7 +4,15 @@
 - **Status:** accepted — amends **ADR 0020** (its §1 classification of a DB blip as *transient*,
   and its §1 reference to "the ADR 0011 budget", which named an ADR that holds no budget; §1's
   terminal/bad-input half, §2's all-or-nothing replace and §3's index-write-only boundary all
-  stand unchanged)
+  stand unchanged); §1's **lease row — what the number MEANS, and the table's completeness —
+  amended 2026-09-02 by ADR 0031** (the value stays 15 minutes, but the lease is no longer the
+  outer bound on one attempt: a live worker renews it, so the number is how long a *silent* worker
+  may hold a job before it is presumed dead, and the safe-if-wrong direction narrows with it. The
+  table gains two rows, so "the four numbers" is now six. §1's budget, backoff and poll numbers,
+  §2's lease bound on the backoff — which stands *because* the heartbeat stops at the ingest and
+  does not wrap the backoff — §3, §4 and §5 all stand unchanged; §Consequences' "on V1 a reap means
+  something died" is strengthened rather than revised, since it now holds against a second worker
+  too)
 
 > §§1–3 ratify numbers and rules the code already ran on; **§4 is the amendment**; **§5 is a new
 > decision** — the reaper's cadence, which ADR 0011's addendum located on the poll loop without

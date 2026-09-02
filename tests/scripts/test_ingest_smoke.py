@@ -462,8 +462,9 @@ class ScriptedObserver:
 class StubWorker:
     """A worker that records that it was started and never runs anything."""
 
-    def __init__(self, *args, lease_seconds=1, **kwargs):
+    def __init__(self, *args, lease_seconds=1, heartbeat_max_seconds=None, **kwargs):
         self.lease_seconds = lease_seconds
+        self.heartbeat_max_seconds = heartbeat_max_seconds
         self.error = None
         self.started = False
         self.started_after_samples = None
@@ -1408,16 +1409,65 @@ def test_phase_one_checks_the_no_partial_index_invariant():
 
 def test_the_remedy_tells_a_long_lease_to_come_down():
     """`--lease 30` is the documented negative control, so its remedy has to name the flag."""
-    remedy = smoke._overrun_remedy(30)
+    remedy = smoke._overrun_remedy(30, smoke.PHASE_THREE_HEARTBEAT_CAP_SECONDS)
     assert "Lower --lease" in remedy
     assert "not reaching the worker" not in remedy
+
+
+def test_the_remedy_blames_the_heartbeat_when_the_heartbeat_is_what_held_the_lease():
+    """The branch that exists for the regression this remedy was rewritten after (ADR 0031).
+
+    Phase 3 stages a reclaim by letting the BEATS stop mid-ingest, so the cap - not `--lease` - is
+    the knob that makes the scenario reachable. A cap at or above the induced delay means worker A
+    renewed its own lease for the whole ingest and nothing ever expired, with `--lease` set
+    perfectly correctly. That is what the phase's failure looked like when the heartbeat first
+    landed, and the remedy printed then sent the reader after a wiring bug that was not there.
+
+    THE CAP IS READ OFF THE WORKER, WHICH IS WHY THIS TEST PASSES ONE. Reading
+    `PHASE_THREE_HEARTBEAT_CAP_SECONDS` instead made this branch dead as shipped - 1.0 is never
+    >= the 3s delay - so the remedy could only ever be checked in a state the script cannot
+    produce. The value here is the one the regression actually leaves behind: `run`'s module
+    default, which is what a `WorkerThread` gets when nobody threads a cap to it.
+    """
+    remedy = smoke._overrun_remedy(
+        smoke.DEFAULT_SHORT_LEASE_SECONDS,
+        smoke.heartbeat_max_seconds_for(smoke.DEFAULT_LEASE_SECONDS),
+    )
+    assert "heartbeat cap" in remedy
+    assert "PHASE_THREE_HEARTBEAT_CAP_SECONDS" in remedy
+    assert "not reaching the worker" not in remedy, (
+        "the delay IS reaching the worker - the beats are what held the lease open"
+    )
+    assert "Lower --lease" not in remedy, (
+        "--lease alone cannot stage a reclaim against a live worker"
+    )
+
+
+def test_the_cap_in_use_is_read_off_the_worker_and_not_off_the_module_constant():
+    """`_cap_in_use` is the one writer for "what is worker A actually beating under".
+
+    A `None` on the worker means it took `run`'s default, which ADR 0031 §5 resolves from the
+    lease - so this resolves it the same way rather than keeping a second copy of that rule.
+    """
+
+    class _W:
+        def __init__(self, cap):
+            self.heartbeat_max_seconds = cap
+
+    assert smoke._cap_in_use(_W(1.0), 1) == 1.0
+    assert smoke._cap_in_use(_W(None), 60) == smoke.heartbeat_max_seconds_for(60)
+    assert smoke._cap_in_use(_W(None), 60) != smoke.heartbeat_max_seconds_for(
+        smoke.DEFAULT_LEASE_SECONDS
+    ), "the module default leaking through is the defect this resolver exists to prevent"
 
 
 def test_the_remedy_for_a_lease_already_under_the_delay_names_the_wiring_and_not_a_knob():
     """Below the induced delay there is no knob left: an ingest that still fit inside the lease
     means worker A is not embedding through the wrapper phase 3 armed. Telling the reader to change
     a flag here would be a confident instruction to change something that cannot help."""
-    remedy = smoke._overrun_remedy(smoke.DEFAULT_SHORT_LEASE_SECONDS)
+    remedy = smoke._overrun_remedy(
+        smoke.DEFAULT_SHORT_LEASE_SECONDS, smoke.PHASE_THREE_HEARTBEAT_CAP_SECONDS
+    )
     assert "not reaching the worker" in remedy
     assert "Lower --lease" not in remedy
 

@@ -47,7 +47,11 @@ demand and count what it was asked to do.
 from __future__ import annotations
 
 import io
+import logging
+import math
 import signal
+import threading
+import time
 from pathlib import Path
 
 import psycopg
@@ -61,7 +65,7 @@ from gct.ingest.chunk import CHUNK_OVERLAP_WORDS, CHUNK_SIZE_WORDS
 from gct.ingest.parse import ParseError
 from gct.ingest.pipeline import ingest_file
 from gct.jobs import worker
-from gct.jobs.queue import claim, complete, enqueue, reclaim_expired
+from gct.jobs.queue import Job, claim, complete, enqueue, reclaim_expired
 from gct.jobs.worker import (
     DEFAULT_LEASE_SECONDS,
     backoff_seconds,
@@ -3051,3 +3055,724 @@ def test_the_publish_guard_waits_for_a_contended_row_instead_of_skipping_it(db, 
             )
     finally:
         rival.close()
+
+
+# --- The lease heartbeat (issue #95, ADR 0031) --------------------------------------------
+#
+# These are the only tests in this file that spend REAL wall-clock time, and it is not a
+# shortcut. Everything above forces an expired lease with `_backdate_lease` because expiry
+# there is a precondition, not the subject. Here the subject IS a thread racing a lease
+# against the clock, and there is no timestamp to edit that would exercise it: backdating the
+# lease would test the reaper again, not the beat that is supposed to stop the reaper from
+# having anything to find. So the leases are short, the slowness is bought at the embed call,
+# and the numbers are sized for the WORST-case beat rather than the nominal one.
+#
+# THE MARGIN IS NOT THE SAME SHAPE IN ALL FOUR, and the difference is structural rather than a
+# tuning accident - a single sentence about "a margin of one whole lease" is a claim two of these
+# tests can make and the most important one CANNOT.
+#
+# The control and the hung-worker test turn on a lease being ALLOWED to lapse. Their margin is the
+# gap between that lapse and the end of the ingest, it is bounded by nothing, and it is one whole
+# lease in each.
+#
+# THE FIX TEST HAS NO SUCH FREEDOM. Its margin is the gap between one successful beat and the
+# lapse that beat prevents - `lease - interval` - so at the ¼ fraction it is three-quarters of a
+# lease and can never be more, however large the lease is made. Sizing it therefore means making
+# three-quarters of a lease a wide ABSOLUTE number: a 3s lease, beats every 0.75s, 2.25s of slack.
+# Measured against that: beats land every ~0.285s at a 0.25s interval, because each one opens a
+# fresh connection (18-90ms observed), so jitter would have to be roughly 3x worse than anything
+# seen for a beat to be late enough to matter. The earlier numbers - a 1s lease, 0.25s beats,
+# 0.71s of slack - failed about twice in thirty idle runs, on the one test in this file whose red
+# reads as "the fix is broken".
+
+
+class SlowEmbeddings(FakeEmbeddings):
+    """`FakeEmbeddings` that takes real time inside `embed` - a file that is SLOW, not broken.
+
+    The delay is bought at the embed call for two reasons. It is where a genuinely slow file
+    spends its time, and it sits inside `ingest_file`'s window without any part of that function
+    being touched - the PM-4 seam means `src/gct/ingest/` carries no test hook, so the only way in
+    is through a collaborator it already accepts (ADR 0020).
+
+    Sleeps BEFORE delegating, so an inherited `transient_failures` still raises after the delay -
+    a slow file that also fails is the poison case at the bottom of this section.
+
+    IT SLEEPS THROUGH A REFERENCE CAPTURED AT IMPORT, NOT THROUGH `time.sleep` AT CALL TIME, and
+    that is the difference between this class working and this class quietly not working. A test
+    that wants the WORKER's backoff skipped writes `monkeypatch.setattr(worker.time, "sleep", ...)`
+    - and `worker.time` is not a worker-local alias, it is the stdlib `time` module object itself,
+    so that patch is GLOBAL and takes this delay with it. The file then is not slow, the heartbeat
+    beats zero times, and nothing goes red: the docstrings keep saying "slow" and the test keeps
+    passing for the reason its sibling passes. That is measured, not hypothetical - the poison test
+    at the bottom of this section ran in 0.011s with zero beats, byte-for-byte an existing test
+    plus one keyword argument, and asserted the opposite in prose twice.
+
+    Binding the default at class-definition time captures the real `time.sleep` before any test can
+    reach it, so the property holds for every test rather than for the ones that remembered to
+    arrange it.
+    """
+
+    def __init__(self, delay: float, *, sleep=time.sleep, **kwargs) -> None:
+        super().__init__(**kwargs)
+        self.delay = delay
+        self._sleep = sleep
+
+    def embed(self, texts):
+        self._sleep(self.delay)
+        return super().embed(texts)
+
+
+class _Reaper:
+    """A SECOND process's reaper, polling `reclaim_expired` on its own connection.
+
+    Nothing single-threaded can reclaim a lease the same thread is holding: `run`'s reaper and
+    `process_one` share one thread by design, so on V1's one worker an overrun shows up as a cut
+    backoff and never as a reap (ADR 0028 §Consequences). The defect ADR 0031 removes is only
+    reachable with a reaper running WHILE the ingest does - which is the deployment `claim`'s
+    `SKIP LOCKED` is built for and the one `DEFAULT_LEASE_SECONDS` is chosen for (ADR 0028 §1).
+    This is the smallest honest stand-in for it: a thread, its own connection, and a count of what
+    it took.
+
+    UNSCOPED, exactly like the production reaper - `reclaim_expired` has no `owner_id` filter, so
+    this counts every expired lease in the database and not only this test's. That is why the job
+    tests assert on `jobs.attempts` and `jobs.state` alongside the count rather than on the count
+    alone, and why these tests need a database of their own rather than one shared with a
+    concurrently running suite.
+    """
+
+    def __init__(self, *, interval: float = 0.05) -> None:
+        self.reclaims = 0
+        self._interval = interval
+        self._stop = threading.Event()
+        self._thread = threading.Thread(target=self._reap_until_stopped, daemon=True)
+
+    def __enter__(self) -> _Reaper:
+        self._thread.start()
+        return self
+
+    def __exit__(self, *exc_info: object) -> bool:
+        self._stop.set()
+        self._thread.join(timeout=5)
+        return False
+
+    def _reap_until_stopped(self) -> None:
+        reaper_conn = connect()
+        reaper_conn.autocommit = True
+        try:
+            while not self._stop.wait(self._interval):
+                self.reclaims += reclaim_expired(reaper_conn)
+        finally:
+            reaper_conn.close()
+
+
+# THE CONTROL AND THE FIX RUN AT ONE SET OF NUMBERS, named here instead of typed out at two call
+# sites. "Identical in every parameter except the heartbeat" is the entire argument of that pair,
+# and a hand-copied literal is exactly how such a claim stops being true - one arm gets retuned and
+# the docstring keeps asserting the pairing. Bind it once and the pairing is structural.
+#
+# A 3s lease beats every 0.75s at the default ¼ fraction, leaving 2.25s from a successful beat to
+# the lapse it prevents; a 4s ingest outlasts the lease, which is the precondition BOTH arms need -
+# the control to be reaped, the fix to have something to survive. This section's preamble carries
+# why the fix test's slack is the number that had to be sized and why it cannot exceed
+# `lease - interval`.
+_SLOW_LEASE_SECONDS = 3
+_SLOW_INGEST_SECONDS = 4.0
+
+
+def test_a_slow_file_without_a_heartbeat_loses_its_lease_and_its_work(db, db_other, tmp_path):
+    """THE CONTROL: the pre-#95 behaviour, reproduced by switching the heartbeat off.
+
+    `heartbeat_max_seconds=0.0` makes the beat loop reach its cap before its first beat, so no
+    renewal ever reaches the database and the lease lapses on schedule. What that reproduces is the
+    pre-ADR-0031 BEHAVIOUR, not the pre-ADR-0031 code, and the gap is worth naming so the next
+    reader does not trust a claim this arm cannot make: the thread is still started, it still waits
+    one whole beat interval before it notices the cap, and it still logs `lease heartbeat stopped
+    at its 0s cap` - none of which `main` did. Measured at these parameters: `beats == 0`, one
+    0.25s interval, one spurious WARNING. No assertion below can see any of that, which is what
+    makes the arm sound; a test that needed the old code PATH would have to check `main` out.
+    Kept as a test rather than described in one, because the fix below is only meaningful against a
+    demonstration that the thing it fixes is real - and because a future edit that quietly stops
+    the heartbeat from mattering would leave the fix test green and this one red for the wrong
+    reason, which is a signal worth having.
+
+    What a merely SLOW file cost: the reaper takes the job mid-ingest, `_publish_guard` refuses
+    the publish (ADR 0030), and the parse/chunk/embed that had already finished is thrown away -
+    `chunks == 0` beside `len(embedder.calls) == 1`, which is the work being paid for and
+    discarded in the same breath. The attempt is spent all the same, because `claim` bumps
+    `attempts` and `reclaim_expired` deliberately never resets it. Repeat that and a file that is
+    always slower than its lease is buried as `transient_exhausted` having never once failed.
+    """
+    conn, owner_id, class_id = db
+    conn.autocommit = True
+    embedder = SlowEmbeddings(delay=_SLOW_INGEST_SECONDS)
+    source = write_pdf(tmp_path / "slow.pdf", ["a page that takes a while to embed"])
+    file_id = enqueue(conn, path=source, owner_id=owner_id, class_id=class_id)
+
+    with _Reaper() as reaper:
+        assert (
+            tick(
+                conn,
+                embedder,
+                lease_seconds=_SLOW_LEASE_SECONDS,
+                heartbeat_max_seconds=0.0,
+            )
+            is True
+        )
+
+    assert reaper.reclaims >= 1, "the lease never lapsed - the control is not reproducing #95"
+    status, failed_reason = db_other.execute(
+        "select status, failed_reason from files where file_id = %s::uuid", (file_id,)
+    ).fetchone()
+    assert (status, failed_reason) == ("processing", None), "a refused publish must write nothing"
+
+    state, attempts = db_other.execute(
+        "select state, attempts from jobs where file_id = %s::uuid", (file_id,)
+    ).fetchone()
+    assert (state, attempts) == ("queued", 1), "the reaper requeued the job and kept the attempt"
+
+    (chunk_count,) = db_other.execute(
+        "select count(*) from chunks where file_id = %s::uuid", (file_id,)
+    ).fetchone()
+    assert chunk_count == 0, "the publish was refused, so nothing may be queryable"
+    assert len(embedder.calls) == 1, "the embed was paid for - and then discarded"
+
+
+def test_a_slow_file_keeps_its_lease_and_reaches_ready_on_the_first_attempt(db, db_other, tmp_path):
+    """THE FIX (ADR 0031): the same file, the same lease, the same live reaper - and `ready`.
+
+    Identical to the control above in every parameter except that the heartbeat is allowed to run,
+    so the difference in outcome is attributable to the mechanism and to nothing else - and the two
+    read the SAME constants rather than two copies of the same literals, so that stays true through
+    a retune. The ingest outlasts its lease and the reaper never finds it, because a live worker
+    keeps pushing `leased_until` forward from a thread of its own.
+
+    THE SLACK HERE IS `lease - interval` AND CANNOT BE MADE WIDER THAN THAT. Every other test in
+    this section can buy itself a whole lease of margin; this one is racing a beat against the lapse
+    that beat prevents, so its margin is capped by the beat interval by construction. That is why
+    the pair runs at a 3s lease rather than the 1s it started at: 0.75s beats leave 2.25s of slack
+    where 0.25s beats left 0.71s, and 0.71s was thin enough to go red about twice in thirty idle
+    runs - on the one test whose failure reads as "the fix is broken". The section preamble carries
+    the measurement.
+
+    `attempts == 1` is the assertion the whole issue is about. A file that is merely SLOW must not
+    spend the budget that exists for files that FAIL; before this, each lease overrun cost one, and
+    six cycles buried a perfectly good file as `transient_exhausted`.
+
+    Every assertion goes through `db_other`, and here that is load-bearing twice over. It is the
+    usual ADR 0025 publication check - and it is also the only way to see that the RENEWALS
+    landed: a heartbeat that beat on the worker's own connection would either be refused by
+    `require_idle` or degrade to a savepoint inside `ingest_file`'s transaction (ADR 0025, guarded
+    per ADR 0027), and in both cases the reaper - a genuinely separate connection - would take the
+    job exactly as it does in the control. This test going green is what says the beat reached a
+    connection other than the worker's.
+    """
+    conn, owner_id, class_id = db
+    conn.autocommit = True
+    embedder = SlowEmbeddings(delay=_SLOW_INGEST_SECONDS)
+    source = write_pdf(tmp_path / "slow.pdf", ["a page that takes a while to embed"])
+    file_id = enqueue(conn, path=source, owner_id=owner_id, class_id=class_id)
+
+    with _Reaper() as reaper:
+        assert tick(conn, embedder, lease_seconds=_SLOW_LEASE_SECONDS) is True
+
+    assert reaper.reclaims == 0, "a live worker's lease was reaped while it was still working"
+    status, failed_reason = db_other.execute(
+        "select status, failed_reason from files where file_id = %s::uuid", (file_id,)
+    ).fetchone()
+    assert (status, failed_reason) == ("ready", None)
+
+    state, attempts = db_other.execute(
+        "select state, attempts from jobs where file_id = %s::uuid", (file_id,)
+    ).fetchone()
+    assert state == "done"
+    assert attempts == 1, "a SLOW file must not spend the budget that exists for FAILING files"
+
+    (chunk_count,) = db_other.execute(
+        "select count(*) from chunks where file_id = %s::uuid", (file_id,)
+    ).fetchone()
+    assert chunk_count > 0, "`ready` with no chunks would be a status with nothing behind it"
+
+
+def test_a_clamped_backoff_on_an_early_attempt_does_not_announce_the_bury(db, tmp_path, caplog):
+    """The worker must not say a job is about to be buried while it is retrying it (ADR 0031).
+
+    THE MESSAGE IS THE SUBJECT, and it is worth a test precisely because nothing else here is: the
+    line chose its ending by asking whether `delay` was ZERO, which conflates the two ways a wait
+    can be nothing. "No retry is coming" and "a retry is coming right now, with no room to pause"
+    print the same zero. Before ADR 0031 the second was an edge; this branch makes it the ORDINARY
+    path for the run the ADR exists to support, so the worker announced *"no retry left, the next
+    claim buries it"* on attempt 1 of 5 about a job that was requeued, retried and reached `ready`.
+    A log line that lies about a student's file in the direction of "we gave up" is the trust cost
+    this whole issue is about, one layer down.
+
+    `job.attempts < max_attempts` is what actually decides the bury, so that is what the condition
+    now reads. Behaviour is untouched - only the sentence.
+
+    HOW THE ZERO IS REACHED, without faking a clock: the embed takes 1.5s under a 1s lease, so
+    `served_backoff` (which measures from the CLAIM, ADR 0031 §Consequences) has no lease left to
+    fund a pause and clamps the backoff to zero. `transient_failures=1` then makes that single slow
+    call raise. Both inputs are real; nothing is monkeypatched, which is what keeps this test from
+    passing for the reason its neighbours warn about.
+
+    Asserted as the ABSENCE of the bury sentence rather than the presence of the replacement: the
+    defect is the false claim, and pinning the exact wording of the true one would go red on a
+    rephrase that broke nothing.
+    """
+    conn, owner_id, class_id = db
+    conn.autocommit = True
+    enqueue(
+        conn,
+        path=write_pdf(tmp_path / "slow-then-429.pdf", ["a page that is slow and then fails"]),
+        owner_id=owner_id,
+        class_id=class_id,
+    )
+
+    with caplog.at_level(logging.WARNING, logger="gct.jobs.worker"):
+        assert (
+            tick(
+                conn,
+                SlowEmbeddings(delay=1.5, transient_failures=1),
+                lease_seconds=1,
+            )
+            is True
+        )
+
+    (line,) = [
+        r.getMessage() for r in caplog.records if "transient failure on attempt" in r.getMessage()
+    ]
+    assert "attempt 1/" in line, f"the premise is an EARLY attempt, not the last one: {line}"
+    assert "no retry left" not in line, (
+        f"a clamped backoff is not an exhausted budget - the worker announced the bury on an "
+        f"attempt it went on to retry: {line}"
+    )
+
+    # THE OTHER DIRECTION, and the arm without which this test does not test the condition at all.
+    # The arm above only forbids the sentence; on its own it is satisfied by a worker that can
+    # NEVER say it. Measured: `retry_left = True` - which deletes the announcement outright - and
+    # `job.attempts <= max_attempts` - a real off-by-one at the boundary - both leave the whole
+    # suite green with only the arm above. A one-sided pin on a condition is not a pin on it.
+    #
+    # The same job, released back to `queued` with `attempts = 1`, re-ticked under a budget of two:
+    # it becomes attempt 2 of 2, the last one that runs any work, and the next claim is the one
+    # that buries it. `delay=0.0` keeps this arm about the BUDGET and not about the clamp - the two
+    # arms must fail for different reasons or they are one test written twice.
+    caplog.clear()
+    with caplog.at_level(logging.WARNING, logger="gct.jobs.worker"):
+        assert tick(conn, SlowEmbeddings(delay=0.0, transient_failures=1), max_attempts=2) is True
+
+    (last,) = [
+        r.getMessage() for r in caplog.records if "transient failure on attempt" in r.getMessage()
+    ]
+    assert "attempt 2/2" in last, f"the premise is the LAST attempt that runs: {last}"
+    assert "no retry left" in last, (
+        f"the budget is spent and the next claim buries this job - a worker that never says so is "
+        f"as wrong as one that says it too early: {last}"
+    )
+
+
+def test_the_heartbeat_does_not_outlive_the_worker_that_started_it(db, db_other, tmp_path):
+    """A DEAD worker's lease still lapses - the heartbeat must not protect a corpse.
+
+    The whole safety argument for renewing a lease is that the beats stop when the worker stops.
+    If they outlived it by any mechanism - a thread that is not a daemon, a renewal that pushed
+    the lease further than the next beat, a beat loop that kept running after its context exited -
+    then a crashed worker would hold its job for as long as the process lived, and `reclaim_expired`
+    would have nothing to reap. That is a worse failure than the one ADR 0031 fixes, because it is
+    silent: the job simply never comes back.
+
+    Death is simulated by leaving the context manager, which is what every real death does too -
+    a crash, a Ctrl-C and a SIGTERM all unwind through `process_one`'s `with` block, and a SIGKILL
+    takes the daemon thread with the process. `beats >= 1` first, so this is a heartbeat that was
+    demonstrably working right up to the moment it stopped; a test where it never beat at all would
+    pass for the wrong reason.
+    """
+    conn, owner_id, class_id = db
+    conn.autocommit = True
+    file_id = enqueue(
+        conn,
+        path=write_pdf(tmp_path / "died.pdf", ["one page"]),
+        owner_id=owner_id,
+        class_id=class_id,
+    )
+    job = claim(conn, lease_seconds=1)
+    assert job is not None
+
+    with worker._LeaseHeartbeat(
+        job=job, lease_seconds=1, fraction=0.1, max_seconds=30.0
+    ) as heartbeat:
+        time.sleep(0.5)
+    assert heartbeat.beats >= 1, "the heartbeat never beat - this proves nothing about stopping"
+
+    # The worker is gone. Poll the reaper until the lease lapses, bounded so a heartbeat that
+    # never stopped fails the test instead of hanging it.
+    deadline = time.monotonic() + 10.0
+    reclaimed = 0
+    while not reclaimed and time.monotonic() < deadline:
+        reclaimed = reclaim_expired(conn)
+        if not reclaimed:
+            time.sleep(0.05)
+    assert reclaimed == 1, "a dead worker's lease was still being renewed by something"
+
+    state, attempts, leased_until = db_other.execute(
+        "select state, attempts, leased_until from jobs where file_id = %s::uuid", (file_id,)
+    ).fetchone()
+    assert (state, attempts, leased_until) == ("queued", 1, None), (
+        "the reaper must hand the dead worker's job back claimable, keeping its attempt"
+    )
+
+
+def test_a_hung_worker_is_recovered_once_the_heartbeat_cap_is_reached(db, db_other, tmp_path):
+    """The cap is why a heartbeat is not just a longer lease: WEDGED and WORKING look identical.
+
+    A beat proves the process is alive; it cannot prove the process is making progress. So the
+    beats stop after a bounded total and the lease is allowed to lapse, which returns the job to
+    the reaper and to the ordinary attempts budget - LATER than a run with no heartbeat at all, by
+    cap + lease rather than by one lease, which is the price ADR 0031 §Consequences puts a number
+    on.
+
+    THE CONTRAST IS WITH THE FIX TEST, and it is a contrast in MECHANISM rather than in matched
+    literals: the same shape of file, the same live reaper, an ingest that outlasts its lease - and
+    a cap the ingest outruns. One reaches `ready` on attempt 1; this one is taken away mid-flight
+    and its publish refused. That is the cap doing the deciding, not the lease and not the file.
+
+    IT DOES NOT SHARE THE PAIR'S CONSTANTS, and that is deliberate rather than an oversight. This
+    arm is wound around a cap that has to land between the first beat and the second - one beat,
+    then stop - while the fix test's lease was raised for a margin this test does not need, its own
+    slack being the gap from the lapse to the end of the ingest, which nothing bounds. Two arms
+    racing two different things; `_SLOW_LEASE_SECONDS` belongs to the pair that claims to be
+    identical, and pulling this one into it would silently retune the cap arithmetic.
+    """
+    conn, owner_id, class_id = db
+    conn.autocommit = True
+    embedder = SlowEmbeddings(delay=2.5)
+    source = write_pdf(tmp_path / "wedged.pdf", ["a page that never seems to finish"])
+    file_id = enqueue(conn, path=source, owner_id=owner_id, class_id=class_id)
+
+    with _Reaper() as reaper:
+        assert tick(conn, embedder, lease_seconds=1, heartbeat_max_seconds=0.5) is True
+
+    assert reaper.reclaims >= 1, "the cap did not release the lease - a wedged worker holds forever"
+    status, state, attempts = db_other.execute(
+        """
+        select f.status, j.state, j.attempts
+        from files f join jobs j using (file_id)
+        where f.file_id = %s::uuid
+        """,
+        (file_id,),
+    ).fetchone()
+    assert status != "ready", "a job taken back mid-ingest must not publish over its successor"
+    assert (state, attempts) == ("queued", 1), "the job is claimable again, its attempt kept"
+
+    (chunk_count,) = db_other.execute(
+        "select count(*) from chunks where file_id = %s::uuid", (file_id,)
+    ).fetchone()
+    assert chunk_count == 0, "the publish guard must refuse a run whose cap released its lease"
+
+
+def test_a_slow_poison_file_is_still_buried_by_the_attempts_budget(
+    db, db_other, tmp_path, monkeypatch
+):
+    """The heartbeat must not buy a doomed file an unbounded number of retries.
+
+    The bound the whole design rests on: `claim` bumps `jobs.attempts`, nothing resets it, and the
+    heartbeat touches it not at all - so a file that keeps failing keeps costing attempts however
+    long each one holds its lease (ADR 0028 §1, unchanged by ADR 0031). This is
+    `test_the_budget_runs_out_and_the_file_fails_transient_exhausted` re-run over a file slow
+    enough that the heartbeat is genuinely beating through every PAID attempt, which is the version
+    that could have gone wrong: a renewal that reset the counter, or a beat that stood in for a
+    claim, would show up here as a job that never runs out of budget.
+
+    `time.sleep` is stubbed where the WORKER serves its backoff. It does NOT reach the embed delay,
+    which would remove the thing under test - `worker.time` is the stdlib module object, so the
+    patch below is global, and `SlowEmbeddings` survives it only because it captured `time.sleep`
+    at import (its docstring carries the mechanism and what it cost to find out).
+
+    THE BEATS ARE COUNTED, NOT ASSUMED, and that assertion is the reason this test can claim to be
+    the slow re-run of `test_the_budget_runs_out_and_the_file_fails_transient_exhausted` rather
+    than a second copy of it. Without it the file's slowness is a claim in prose that no assertion
+    depends on, and prose is what silently stopped being true here: every outcome below holds
+    identically at zero beats. `renew_lease` is WRAPPED rather than replaced, so the renewals still
+    reach the database and the count is of real ones.
+    """
+    conn, owner_id, class_id = db
+    conn.autocommit = True
+    beats: list[bool] = []
+    real_renew_lease = worker.renew_lease
+
+    def counting_renew_lease(beat_conn, **kwargs):
+        renewed = real_renew_lease(beat_conn, **kwargs)
+        beats.append(renewed)
+        return renewed
+
+    monkeypatch.setattr(worker, "renew_lease", counting_renew_lease)
+    monkeypatch.setattr(worker.time, "sleep", lambda _seconds: None)
+    embedder = SlowEmbeddings(delay=0.3, transient_failures=99)
+    source = write_pdf(tmp_path / "slow-poison.pdf", ["words the provider never accepts"])
+    file_id = enqueue(conn, path=source, owner_id=owner_id, class_id=class_id)
+
+    beats_per_tick = []
+    for _ in range(3):
+        before = len(beats)
+        assert tick(conn, embedder, max_attempts=2, lease_seconds=1, heartbeat_fraction=0.1) is True
+        beats_per_tick.append(len(beats) - before)
+
+    assert all(count >= 1 for count in beats_per_tick[:2]), (
+        f"the heartbeat did not beat through both PAID attempts (beats per tick: {beats_per_tick})"
+        " - the file is not slow, and this test has become a duplicate of the one it re-runs"
+    )
+    assert all(beats), "a beat was refused - the lease moved while a live worker held it"
+    assert beats_per_tick[2] == 0, (
+        "the third claim buries the job before any ingest, so it must start no heartbeat at all"
+    )
+
+    status, failed_reason = db_other.execute(
+        "select status, failed_reason from files where file_id = %s::uuid", (file_id,)
+    ).fetchone()
+    assert (status, failed_reason) == ("failed", "transient_exhausted")
+
+    state, attempts = db_other.execute(
+        "select state, attempts from jobs where file_id = %s::uuid", (file_id,)
+    ).fetchone()
+    assert state == "failed", "a heartbeat must not keep an exhausted job claimable"
+    assert attempts == 3, (
+        "two paid attempts plus the claim that buried it - the heartbeat adds none"
+    )
+    assert len(embedder.calls) == 2, "the budget must still bound PAID attempts"
+
+
+# --- The heartbeat's own numbers, without the clock (issue #95) ----------------------------
+#
+# The four tests above buy their evidence with real wall-clock time because their subject is a
+# thread racing a lease, and the preamble to this section is about them. These three have no
+# such excuse and take none. Their subjects are the beat INTERVAL, the beat thread's LIFETIME
+# and the CAP's value - three facts the wall-clock tests cannot see, each demonstrated by a
+# one-line mutation that left the whole suite green: at sub-second leases the interval's floor
+# and its fraction beat indistinguishably often, a leaked beat thread changes no outcome those
+# tests assert on, and a cap at TWICE its declared value still releases a 1s lease inside a
+# 2.5s ingest. So `connect` and `renew_lease` are stubbed to keep Postgres out of all three,
+# and the one whose subject is an hour fakes the clock rather than waiting for one.
+
+
+class _NullConnection:
+    """The connection a stubbed beat opens and closes - nothing here reaches Postgres.
+
+    `_LeaseHeartbeat` opens one per beat through `gct.db.connect` and closes it in a `finally`
+    (ADR 0031). The tests below stub `renew_lease` as well, so being closeable is the whole
+    contract this has to meet.
+    """
+
+    def close(self) -> None:
+        pass
+
+
+def _fake_job() -> Job:
+    """A `Job` that was never claimed, for the three tests that never touch a database.
+
+    `_LeaseHeartbeat` reads exactly two of these fields - `job_id` for its thread's name and
+    every log line, `lease_token` for the renewal - and both go to stubs here, so a real claim
+    would buy these tests nothing but Postgres. The DB-backed tests above are where an actual
+    claim IS the subject.
+    """
+    return Job(
+        job_id="00000000-0000-0000-0000-0000000000d1",
+        file_id="00000000-0000-0000-0000-0000000000f1",
+        owner_id="00000000-0000-0000-0000-0000000000a1",
+        class_id="00000000-0000-0000-0000-0000000000c1",
+        attempts=1,
+        staging_ref="/nowhere/this-file-is-never-opened.pdf",
+        lease_token="00000000-0000-0000-0000-0000000000e1",
+    )
+
+
+def test_the_beat_interval_is_the_fraction_of_the_lease_and_the_floor_is_a_floor():
+    """The derived interval at PRODUCTION scale - pure arithmetic, no thread and no database.
+
+    Every other heartbeat test drives a sub-second lease, where the two operators that could
+    stand in `max(lease_seconds * fraction, _MIN_HEARTBEAT_INTERVAL_SECONDS)` are
+    indistinguishable: both beat often enough to hold the lease, so the whole suite is blind to
+    the swap. At the real numbers they differ by four orders of magnitude - 225s against the
+    0.05s floor - and the wrong one beats 4500x more often, each beat opening and closing a
+    connection of its own (the class docstring: one connection per beat). That is what this
+    pins, in a bare `__init__` that costs microseconds.
+
+    IT READS `_interval` DIRECTLY, and the private read is the right call rather than a
+    shortcut around a missing accessor: the interval is not observable from outside - it is
+    consumed by `Event.wait` inside a daemon thread - so the only alternative is to count beats
+    against wall-clock time, which measures the scheduler as much as the arithmetic and is
+    precisely the flaky test this one exists instead of.
+
+    BOTH DIRECTIONS, because a floor pinned only where it does not apply is an unused constant.
+    The second half drives the pathological fractions it exists for - zero, negative, and one
+    small enough to round the beat into a spin - where the derived value is the one that must
+    lose.
+
+    Asserted against the constants rather than literals: ADR 0031 ratified its two numbers
+    without MEASURING either, exactly as ADR 0028 did with its four, so a test written in
+    literals would go red on a tuning change that broke nothing.
+    """
+    job = _fake_job()
+
+    beating = worker._LeaseHeartbeat(job=job, lease_seconds=DEFAULT_LEASE_SECONDS)
+    assert beating._interval == DEFAULT_LEASE_SECONDS * worker.DEFAULT_HEARTBEAT_FRACTION
+    assert beating._interval > worker._MIN_HEARTBEAT_INTERVAL_SECONDS, (
+        "at the real lease the floor must not be the thing setting the beat"
+    )
+
+    for pathological in (0.0, -1.0, 1e-9):
+        floored = worker._LeaseHeartbeat(
+            job=job, lease_seconds=DEFAULT_LEASE_SECONDS, fraction=pathological
+        )
+        assert floored._interval == worker._MIN_HEARTBEAT_INTERVAL_SECONDS, (
+            f"fraction={pathological} must be caught by the floor, not turned into a spin loop"
+        )
+
+
+def test_the_cap_follows_the_lease_ACTUALLY_IN_USE_not_the_module_default(
+    db, tmp_path, monkeypatch
+):
+    """A caller that shortens the lease shortens the cap with it - ADR 0031 §5's claim, pinned.
+
+    THE WIRING IS THE THING UNDER TEST, not the arithmetic. `heartbeat_max_seconds_for` cannot be
+    pinned meaningfully against itself - a test computing `HEARTBEAT_CAP_LEASES * lease` from the
+    constant would agree with any value the constant took, the same structural limit
+    `test_the_beats_stop_at_the_declared_cap_and_not_at_a_multiple_of_it` runs into. What CAN go
+    wrong, and did, is the WIRING: `process_one` passed a module constant computed once at import
+    against `DEFAULT_LEASE_SECONDS`, so the beat INTERVAL tracked the caller's lease while the cap
+    did not. At `lease_seconds=1` that is a 3600s cap on a 1s lease - 3600 leases, not four - and
+    every existing test stayed green, because each one that reaches the cap supplies
+    `heartbeat_max_seconds` explicitly and so never exercises the default.
+
+    Which is why this asserts on the value `_LeaseHeartbeat` is CONSTRUCTED with rather than on
+    observed beats: the defect is a number handed across a seam, and waiting out a real 3600s cap
+    to catch it is not a test anyone would run. The recorder is the narrowest thing that sees it.
+
+    The explicit override is asserted in the same test because the two are one contract - `None`
+    means "derive from the lease" and a number means "use this" - and `scripts/ingest_smoke.py`
+    depends on the second half to reach the cap inside a run's lifetime.
+    """
+    conn, owner_id, class_id = db
+    conn.autocommit = True
+    enqueue(
+        conn,
+        path=write_pdf(tmp_path / "capped.pdf", ["a page"]),
+        owner_id=owner_id,
+        class_id=class_id,
+    )
+
+    seen: list[float] = []
+    real = worker._LeaseHeartbeat
+
+    class _Recording(real):
+        def __init__(self, *args, max_seconds, **kwargs):
+            seen.append(max_seconds)
+            super().__init__(*args, max_seconds=max_seconds, **kwargs)
+
+    monkeypatch.setattr(worker, "_LeaseHeartbeat", _Recording)
+
+    lease = 3
+    assert tick(conn, SlowEmbeddings(delay=0.0), lease_seconds=lease) is True
+    assert seen == [worker.HEARTBEAT_CAP_LEASES * lease], (
+        f"the cap must be {worker.HEARTBEAT_CAP_LEASES} x the lease IN USE ({lease}s); "
+        f"{worker.DEFAULT_HEARTBEAT_MAX_SECONDS}s would be the module default leaking through"
+    )
+    assert seen != [worker.DEFAULT_HEARTBEAT_MAX_SECONDS], "the pre-fix defect, stated as itself"
+
+    seen.clear()
+    enqueue(
+        conn,
+        path=write_pdf(tmp_path / "explicit.pdf", ["a page"]),
+        owner_id=owner_id,
+        class_id=class_id,
+    )
+    assert (
+        tick(conn, SlowEmbeddings(delay=0.0), lease_seconds=lease, heartbeat_max_seconds=0.5)
+        is True
+    )
+    assert seen == [0.5], "an explicit cap must still win over the derivation"
+
+
+def test_the_beat_thread_is_gone_by_the_time_the_context_manager_returns(monkeypatch):
+    """`__exit__` STOPS the thread and WAITS for it - the wait is half the promise (ADR 0031).
+
+    Setting `_stop` only asks; the join is what makes the class docstring's "on exit the thread
+    is stopped and joined" true. Without it `process_one` returns from the `with` block with a
+    beat still in flight on a connection of its own, and that beat then lands AFTER the settle
+    verb - a renewal statement about a job this worker has already completed, released or
+    buried, ordered against nothing. It is also what the `beats` property's own contract rests
+    on ("read after `__exit__` has joined"): the tests above read that counter on the line after
+    the block, which is only sound because the thread that increments it is finished.
+
+    The beat is stubbed slow and made to ANNOUNCE itself, so the exit is guaranteed to land
+    mid-beat rather than in whatever gap the scheduler happened to leave - a test that exited
+    between beats would pass with or without the join and prove nothing.
+    """
+    in_a_beat = threading.Event()
+
+    def slow_beat(_conn, **_kwargs) -> bool:
+        in_a_beat.set()
+        time.sleep(0.5)
+        return True
+
+    monkeypatch.setattr(worker, "connect", lambda: _NullConnection())
+    monkeypatch.setattr(worker, "renew_lease", slow_beat)
+
+    with worker._LeaseHeartbeat(
+        job=_fake_job(), lease_seconds=1, fraction=0.1, max_seconds=30.0
+    ) as heartbeat:
+        assert in_a_beat.wait(5.0), "no beat ever started - this proves nothing about exiting"
+
+    assert not heartbeat._thread.is_alive(), (
+        "`__exit__` returned while a beat was still in flight - the worker has moved on to its "
+        "settle verb with a second connection still writing about this job"
+    )
+
+
+def test_the_beats_stop_at_the_declared_cap_and_not_at_a_multiple_of_it(monkeypatch):
+    """The cap is `DEFAULT_HEARTBEAT_MAX_SECONDS` from the first beat - the VALUE, not just that
+    one exists.
+
+    `test_a_hung_worker_is_recovered_once_the_heartbeat_cap_is_reached` proves a cap exists, and
+    that is all it can prove: it passes a cap of its own and outruns it, so a deadline computed
+    at twice the declared value would still release its 1s lease inside a 2.5s ingest. The
+    number ADR 0031 actually argues for is one HOUR, and nothing that waits for real time can
+    ask this question - a suite is not permitted to spend an hour, and shrinking the cap to
+    something waitable is how the value stops being pinned in the first place.
+
+    So `time.monotonic` is faked, and the fake advances only when a beat happens: one whole
+    `DEFAULT_LEASE_SECONDS` per beat, which is the unit the ADR states the cap in ("one hour is
+    four leases"). The beat count then reads back as the number of leases that fit inside the
+    cap, and a deadline at any other multiple of it reads back as a different number. Only the
+    module's own `monotonic` is displaced - `Event.wait` and `Thread.join` time out against the
+    C-level clock, so the loop's real cadence is untouched and the test still finishes in under
+    a second.
+    """
+    step = DEFAULT_LEASE_SECONDS
+    clock = {"now": 0.0}
+
+    def fake_monotonic() -> float:
+        return clock["now"]
+
+    def beat_and_advance(_conn, **_kwargs) -> bool:
+        clock["now"] += step
+        return True
+
+    monkeypatch.setattr(worker.time, "monotonic", fake_monotonic)
+    monkeypatch.setattr(worker, "connect", lambda: _NullConnection())
+    monkeypatch.setattr(worker, "renew_lease", beat_and_advance)
+
+    with worker._LeaseHeartbeat(
+        job=_fake_job(),
+        lease_seconds=1,
+        fraction=0.1,
+        max_seconds=worker.DEFAULT_HEARTBEAT_MAX_SECONDS,
+    ) as heartbeat:
+        # Joined here rather than polled: the fake clock cannot bound this wait, and the real
+        # one is the thing the loop is no longer reading.
+        heartbeat._thread.join(timeout=10.0)
+        stopped_on_its_own = not heartbeat._thread.is_alive()
+
+    assert stopped_on_its_own, "the beat loop never reached its cap - it would beat forever"
+    assert heartbeat.beats == math.ceil(worker.DEFAULT_HEARTBEAT_MAX_SECONDS / step), (
+        "the beats did not stop at the declared cap - a deadline at any other multiple of "
+        "DEFAULT_HEARTBEAT_MAX_SECONDS lets a wedged worker hold its lease that much longer"
+    )

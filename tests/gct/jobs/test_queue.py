@@ -19,7 +19,16 @@ from pathlib import Path
 import psycopg
 import pytest
 
-from gct.jobs.queue import Job, claim, complete, enqueue, fail, reclaim_expired, release
+from gct.jobs.queue import (
+    Job,
+    claim,
+    complete,
+    enqueue,
+    fail,
+    reclaim_expired,
+    release,
+    renew_lease,
+)
 
 
 def _lecture(tmp_path: Path) -> Path:
@@ -66,6 +75,12 @@ def test_every_writer_refuses_a_connection_already_in_a_transaction(db, db_other
         (
             "release",
             lambda: release(conn, job_id=job.job_id, lease_token=job.lease_token, error="x"),
+        ),
+        (
+            "renew_lease",
+            lambda: renew_lease(
+                conn, job_id=job.job_id, lease_token=job.lease_token, lease_seconds=60
+            ),
         ),
         ("reclaim_expired", lambda: reclaim_expired(conn)),
     ]:
@@ -890,3 +905,113 @@ def test_release_refuses_a_job_another_worker_now_holds(db, db_other, tmp_path):
         release(conn, job_id=holder.job_id, lease_token=holder.lease_token, error="transient: 429")
         is True
     ), "the token guard refused the worker that actually holds the lease"
+
+
+def test_renew_lease_moves_the_holders_lease_and_nothing_else(db, db_other, tmp_path):
+    """The verb behind the heartbeat: a live holder buys more lease (ADR 0031).
+
+    Claimed with a SHORT lease and renewed with a longer one, so the assertion is that
+    `leased_until` moved FORWARD rather than merely that it is non-null - a no-op UPDATE would
+    satisfy the weaker version. Read through `db_other`, because the point of the call is that
+    another connection - `reclaim_expired`, running in some other process - can see the renewal;
+    a renewal only this connection could see is exactly the ADR 0025 failure that changes nothing
+    while returning True.
+
+    The sibling columns are the other half. A renewal that also bumped `attempts` would spend the
+    retry budget on staying alive, which is the inverse of the defect ADR 0031 removes; one that
+    minted a fresh `lease_token` would invalidate the very worker doing the renewing, and its next
+    beat - and its `complete` - would be refused by the guard it just walked past.
+    """
+    conn, owner_id, class_id = db
+    conn.autocommit = True
+    file_id = enqueue(conn, path=_lecture(tmp_path), owner_id=owner_id, class_id=class_id)
+    job = claim(conn, lease_seconds=1)
+    assert job is not None
+
+    before = db_other.execute(
+        "select leased_until from jobs where job_id = %s::uuid", (job.job_id,)
+    ).fetchone()[0]
+
+    assert (
+        renew_lease(conn, job_id=job.job_id, lease_token=job.lease_token, lease_seconds=3600)
+        is True
+    )
+
+    leased_until, attempts, lease_token, state = db_other.execute(
+        "select leased_until, attempts, lease_token::text, state from jobs where job_id = %s::uuid",
+        (job.job_id,),
+    ).fetchone()
+    assert leased_until > before, "the renewal is not visible to the connection that reaps"
+    assert attempts == 1, "a renewal must not spend an attempt - `claim` is the only bumper"
+    assert lease_token == job.lease_token, "a renewal must not mint a token its own worker lacks"
+    assert state == "processing", "a renewal must not move the job off the state it guards on"
+    assert (
+        db_other.execute(
+            "select status from files where file_id = %s::uuid", (file_id,)
+        ).fetchone()[0]
+        == "queued"
+    ), "queue.py may not touch `files` - the worker owns every status after `queued`"
+
+
+def test_renew_lease_refuses_a_lease_that_is_no_longer_ours(db, db_other, tmp_path):
+    """Three ways a beat can be too late, one answer to all three: False, and nothing written.
+
+    The three are the whole reachable space of "not ours", and they are here together because a
+    guard that caught two of them would look identical in every column the first two touch:
+      - the job was RE-HANDED OUT - `_stall_and_rehand`'s zombie, the likeliest shape and the
+        expensive one. The state half alone cannot see it: after the reclaim and the re-claim the
+        row reads `processing` again, so only the token says the holder changed. Without it a
+        stalled worker would push the lease of the run that now owns the job further out on every
+        beat, indefinitely - a dead claim renewing itself onto a live one.
+      - the job was SETTLED under us - `complete` here, and the state half is what refuses it. A
+        heartbeat racing its own worker's settle verb must not drag a terminal row back under a
+        lease that `reclaim_expired` would then find nothing wrong with.
+      - the job DOES NOT EXIST. This is the one place the shape departs from `complete`/`fail`/
+        `release`, which raise `LookupError` on an orphan `job_id` as a programming error. A beat
+        has one correct response to every answer but True - stop beating - so a vanished row and a
+        re-handed-out lease are the same fact to it, and raising it across a thread boundary would
+        buy a traceback nobody can act on. Pinned, because "returns False" and "raises" are both
+        defensible and only one of them is what the heartbeat is written against.
+    """
+    conn, owner_id, class_id = db
+    conn.autocommit = True
+    file_id = enqueue(conn, path=_lecture(tmp_path), owner_id=owner_id, class_id=class_id)
+
+    stalled, holder = _stall_and_rehand(conn, file_id)
+    held_until = db_other.execute(
+        "select leased_until from jobs where job_id = %s::uuid", (holder.job_id,)
+    ).fetchone()[0]
+
+    assert (
+        renew_lease(
+            conn, job_id=stalled.job_id, lease_token=stalled.lease_token, lease_seconds=3600
+        )
+        is False
+    ), "a reclaimed worker renewed a lease the current holder owns"
+    leased_until, token = db_other.execute(
+        "select leased_until, lease_token::text from jobs where job_id = %s::uuid",
+        (holder.job_id,),
+    ).fetchone()
+    assert leased_until == held_until, "a refused renewal still moved the holder's lease"
+    assert token == holder.lease_token, "a refused renewal still touched the holder's token"
+
+    # Settled under us: the row is terminal, and the state half is the only guard that sees it.
+    assert complete(conn, job_id=holder.job_id, lease_token=holder.lease_token) is True
+    assert (
+        renew_lease(conn, job_id=holder.job_id, lease_token=holder.lease_token, lease_seconds=3600)
+        is False
+    ), "a beat that outran its own worker's `complete` re-leased a finished job"
+    assert (
+        db_other.execute(
+            "select state from jobs where job_id = %s::uuid", (holder.job_id,)
+        ).fetchone()[0]
+        == "done"
+    )
+
+    # No such job. False, NOT LookupError - the departure from the settle verbs.
+    assert (
+        renew_lease(
+            conn, job_id=str(uuid.uuid4()), lease_token=str(uuid.uuid4()), lease_seconds=3600
+        )
+        is False
+    ), "a beat on a vanished job must be a routine `stop beating`, not an exception in a thread"

@@ -25,8 +25,15 @@ spike within the fixed contract, not here.
   `file(status=queued)`, and **enqueues** a job `{ file_id, owner_id, class_id }` across the ADR 0011
   `enqueue`/`claim` boundary. Returns fast; the worker runs async.
 - **In — job queue (ADR 0011):** the worker **claims** a job (at-least-once; a lease/reaper reclaims a
-  job stuck in `processing` past timeout). Processing is **idempotent** (ADR 0020), so redelivery and
-  reclaim are safe with zero dedup logic.
+  job stuck in `processing` past timeout — a **silent** worker's, since a live one renews its own
+  lease while it works, ADR 0028, the lease's meaning amended per ADR 0031). *One lease past the
+  claim* is therefore no longer the recovery timeout for every stall: a worker that is alive but
+  making no progress goes silent only when its heartbeat hits the cap, so its job comes back one
+  lease after its LAST beat rather than at 900 s — the figure, its derivation and the trade are
+  ADR 0031 §5 and §Consequences, which own it. A worker that DIED is unchanged: an unwind hands
+  the job back at once, a `SIGKILL` stops the beats with the process and the lease lapses on
+  schedule. Processing is
+  **idempotent** (ADR 0020), so redelivery and reclaim are safe with zero dedup logic.
 - **Down — file staging (ADR 0010):** reads the staged bytes to parse.
 - **Down — model provider layer:** calls `Embeddings.embed(texts) → vectors` (+ `model_id`, `dim`)
   (ADR 0013). The active embedder's `model_id` is **stamped onto every chunk** (`embedding_model_id`,
@@ -140,6 +147,7 @@ Slow/external work runs with **no transaction open**; the transaction is a short
 | **Input past the configured word ceiling** | terminal | → `failed(reason=too_long)` immediately, **skip retry**; refused BEFORE the embed call, so nothing is bought and nothing is written. Counted in words, not bytes/pages/chunks (ADR 0020, terminal set extended per ADR 0029) |
 | **Embedding provider 429 / timeout / transient 5xx** | transient | retry w/ backoff up to budget → else `failed(reason=transient_exhausted)`. DB untouched until success (ADR 0020 §1, budget numbers per ADR 0028) |
 | **DB connection error mid-job** | infra | propagates uncaught — the worker crashes. Nothing classifies psycopg errors, and a handler wide enough to catch a blip absorbs every programming error with it, putting a wrong `failed_reason` in front of a student. The run committed nothing, the lease expires, the reaper requeues, and the `attempts` budget bounds the loop (ADR 0020 §1, DB-blip class amended per ADR 0028) |
+| **Ingest slower than its lease** | normal | **not a failure** — the worker renews its own lease from a separate thread on a separate connection while it works, so a slow file reaches `ready` on attempt 1 and the reaper never sees it. Before this it was reaped mid-flight, its publish refused, its work discarded and one `attempts` spent per overrun — a file always slower than its lease was buried as `transient_exhausted` having never failed (ADR 0028, the lease's meaning amended per ADR 0031). The beats stop at a bounded cap, so a **wedged** worker still returns to the reaper and to the `attempts` budget — later than before, and by an amount ADR 0031 §Consequences states and derives. Not restated here: it is one number with one writer, and a copy in this table would drift the first time the cap or the lease is retuned |
 | **Worker crash mid-`processing`** | infra | committed nothing (tx not reached); job → `queued`, **zero cleanup** (ADR 0011/0020). Which writer requeues it turns on whether the stack unwound: any death that raises — Ctrl-C, the SIGTERM `scripts/worker.py` routes onto the same unwind, an unclassified exception — is handed back by the worker's own shutdown release and is claimable **at once**; `SIGKILL`/OOM/power loss run no handler, so those wait out the lease and the reaper collects them (ADR 0028 §Consequences, shutdown-release bullet) |
 | **Duplicate job delivery** (at-least-once) | infra | safe **for the chunk set** — idempotent replace re-does the same delete-then-insert; no dedup needed (ADR 0020). A redelivered run is now **discarded rather than absorbed**: the publish asks the worker's lease predicate first and is refused if the job moved on, so a reaped worker cannot republish `ready` over a live-leased bury's reason (#92, ADR 0030; the invariant below, and `reclaim_expired`'s corrected docstring) |
 | **Re-index of an already-`ready` file** | normal | old full set stays queryable until COMMIT, then swapped atomically — never flickers empty/partial |

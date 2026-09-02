@@ -8,7 +8,7 @@ dependencies = [
     "pgvector>=0.3",
     "openai>=1.40",
     "python-dotenv>=1.0",
-    "pypdf>=6.14.2",
+    "pypdf>=6.16.1",
     "python-pptx>=1.0.2",
 ]
 

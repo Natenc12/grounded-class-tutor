@@ -1,0 +1,24 @@
+{
+  "hooks": {
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "[ -f \"$HOME/claude-home/cloud/session-start.sh\" ] && bash \"$HOME/claude-home/cloud/session-start.sh\" || true"
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "[ -f \"$HOME/claude-home/cloud/sync.sh\" ] && bash \"$HOME/claude-home/cloud/sync.sh\" || true"
+          }
+        ]
+      }
+    ]
+  }
+}

@@ -226,13 +226,17 @@ check "refusal exit code is 2"    "$GRC" "2"
 # contributor running this suite sees nothing about it.
 CH="${CLAUDE_HOME:-$TMP/nope}"
 [ -d "$CH" ] || CH="/Users/${SUDO_USER:-${USER:-nobody}}/claude-home"
+echo "== the matcher copy in claude-home agrees =="
 if [ -f "$CH/cloud/session-start.sh" ]; then
-  echo "== the matcher copy in claude-home agrees =="
   logic() { sed -n "/^$2() {/,/^}/p" "$1" | grep -v '^[[:space:]]*#' | grep -v '^[[:space:]]*$' \
     | sed 's/[[:space:]]*#.*$//;s/^[[:space:]]*//;s/[[:space:]]*$//' | sed "s/$2/M/"; }
   check "matcher matches claude-home's copy" \
     "$(logic "$BOOT" claude_home_repo | cksum)" \
     "$(logic "$CH/cloud/session-start.sh" is_claude_home | cksum)"
+else
+  # Say so out loud. Vanishing silently made the total drop from 44 to 43 with no
+  # explanation, and a check that can disappear unannounced is not coverage.
+  ok "matcher drift check skipped (no claude-home checkout here)"
 fi
 
 printf '\n%d passed, %d failed\n' "$PASS" "$FAIL"

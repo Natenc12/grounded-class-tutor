@@ -48,6 +48,8 @@ from __future__ import annotations
 
 import io
 import signal
+import threading
+import time
 from pathlib import Path
 
 import psycopg
@@ -3051,3 +3053,302 @@ def test_the_publish_guard_waits_for_a_contended_row_instead_of_skipping_it(db, 
             )
     finally:
         rival.close()
+
+
+# --- The lease heartbeat (issue #95, ADR 0031) --------------------------------------------
+#
+# These are the only tests in this file that spend REAL wall-clock time, and it is not a
+# shortcut. Everything above forces an expired lease with `_backdate_lease` because expiry
+# there is a precondition, not the subject. Here the subject IS a thread racing a lease
+# against the clock, and there is no timestamp to edit that would exercise it: backdating the
+# lease would test the reaper again, not the beat that is supposed to stop the reaper from
+# having anything to find. So the leases are sub-second, the slowness is bought at the embed
+# call, and the numbers below leave a margin of at least one whole lease on either side of
+# every deadline the assertions turn on.
+
+
+class SlowEmbeddings(FakeEmbeddings):
+    """`FakeEmbeddings` that takes real time inside `embed` - a file that is SLOW, not broken.
+
+    The delay is bought at the embed call for two reasons. It is where a genuinely slow file
+    spends its time, and it sits inside `ingest_file`'s window without any part of that function
+    being touched - the PM-4 seam means `src/gct/ingest/` carries no test hook, so the only way in
+    is through a collaborator it already accepts (ADR 0020).
+
+    Sleeps BEFORE delegating, so an inherited `transient_failures` still raises after the delay -
+    a slow file that also fails is the poison case at the bottom of this section.
+    """
+
+    def __init__(self, delay: float, **kwargs) -> None:
+        super().__init__(**kwargs)
+        self.delay = delay
+
+    def embed(self, texts):
+        time.sleep(self.delay)
+        return super().embed(texts)
+
+
+class _Reaper:
+    """A SECOND process's reaper, polling `reclaim_expired` on its own connection.
+
+    Nothing single-threaded can reclaim a lease the same thread is holding: `run`'s reaper and
+    `process_one` share one thread by design, so on V1's one worker an overrun shows up as a cut
+    backoff and never as a reap (ADR 0028 §Consequences). The defect ADR 0031 removes is only
+    reachable with a reaper running WHILE the ingest does - which is the deployment `claim`'s
+    `SKIP LOCKED` is built for and the one `DEFAULT_LEASE_SECONDS` is chosen for (ADR 0028 §1).
+    This is the smallest honest stand-in for it: a thread, its own connection, and a count of what
+    it took.
+
+    UNSCOPED, exactly like the production reaper - `reclaim_expired` has no `owner_id` filter, so
+    this counts every expired lease in the database and not only this test's. That is why the job
+    tests assert on `jobs.attempts` and `jobs.state` alongside the count rather than on the count
+    alone, and why these tests need a database of their own rather than one shared with a
+    concurrently running suite.
+    """
+
+    def __init__(self, *, interval: float = 0.05) -> None:
+        self.reclaims = 0
+        self._interval = interval
+        self._stop = threading.Event()
+        self._thread = threading.Thread(target=self._reap_until_stopped, daemon=True)
+
+    def __enter__(self) -> _Reaper:
+        self._thread.start()
+        return self
+
+    def __exit__(self, *exc_info: object) -> bool:
+        self._stop.set()
+        self._thread.join(timeout=5)
+        return False
+
+    def _reap_until_stopped(self) -> None:
+        reaper_conn = connect()
+        reaper_conn.autocommit = True
+        try:
+            while not self._stop.wait(self._interval):
+                self.reclaims += reclaim_expired(reaper_conn)
+        finally:
+            reaper_conn.close()
+
+
+def test_a_slow_file_without_a_heartbeat_loses_its_lease_and_its_work(db, db_other, tmp_path):
+    """THE CONTROL: the pre-#95 behaviour, reproduced by switching the heartbeat off.
+
+    `heartbeat_max_seconds=0.0` makes the beat loop reach its cap before its first beat, so the
+    lease lapses on schedule and this is exactly the code that shipped before ADR 0031. Kept as a
+    test rather than described in one, because the fix below is only meaningful against a
+    demonstration that the thing it fixes is real - and because a future edit that quietly stops
+    the heartbeat from mattering would leave the fix test green and this one red for the wrong
+    reason, which is a signal worth having.
+
+    What a merely SLOW file cost: the reaper takes the job mid-ingest, `_publish_guard` refuses
+    the publish (ADR 0030), and the parse/chunk/embed that had already finished is thrown away -
+    `chunks == 0` beside `len(embedder.calls) == 1`, which is the work being paid for and
+    discarded in the same breath. The attempt is spent all the same, because `claim` bumps
+    `attempts` and `reclaim_expired` deliberately never resets it. Repeat that and a file that is
+    always slower than its lease is buried as `transient_exhausted` having never once failed.
+    """
+    conn, owner_id, class_id = db
+    conn.autocommit = True
+    embedder = SlowEmbeddings(delay=2.0)
+    source = write_pdf(tmp_path / "slow.pdf", ["a page that takes a while to embed"])
+    file_id = enqueue(conn, path=source, owner_id=owner_id, class_id=class_id)
+
+    with _Reaper() as reaper:
+        assert tick(conn, embedder, lease_seconds=1, heartbeat_max_seconds=0.0) is True
+
+    assert reaper.reclaims >= 1, "the lease never lapsed - the control is not reproducing #95"
+    status, failed_reason = db_other.execute(
+        "select status, failed_reason from files where file_id = %s::uuid", (file_id,)
+    ).fetchone()
+    assert (status, failed_reason) == ("processing", None), "a refused publish must write nothing"
+
+    state, attempts = db_other.execute(
+        "select state, attempts from jobs where file_id = %s::uuid", (file_id,)
+    ).fetchone()
+    assert (state, attempts) == ("queued", 1), "the reaper requeued the job and kept the attempt"
+
+    (chunk_count,) = db_other.execute(
+        "select count(*) from chunks where file_id = %s::uuid", (file_id,)
+    ).fetchone()
+    assert chunk_count == 0, "the publish was refused, so nothing may be queryable"
+    assert len(embedder.calls) == 1, "the embed was paid for - and then discarded"
+
+
+def test_a_slow_file_keeps_its_lease_and_reaches_ready_on_the_first_attempt(db, db_other, tmp_path):
+    """THE FIX (ADR 0031): the same file, the same lease, the same live reaper - and `ready`.
+
+    Identical to the control above in every parameter except that the heartbeat is allowed to run,
+    so the difference in outcome is attributable to the mechanism and to nothing else. The ingest
+    outlasts its lease by 2x and the reaper never finds it, because a live worker keeps pushing
+    `leased_until` forward from a thread of its own.
+
+    `attempts == 1` is the assertion the whole issue is about. A file that is merely SLOW must not
+    spend the budget that exists for files that FAIL; before this, each lease overrun cost one, and
+    six cycles buried a perfectly good file as `transient_exhausted`.
+
+    Every assertion goes through `db_other`, and here that is load-bearing twice over. It is the
+    usual ADR 0025 publication check - and it is also the only way to see that the RENEWALS
+    landed: a heartbeat that beat on the worker's own connection would either be refused by
+    `require_idle` or degrade to a savepoint inside `ingest_file`'s transaction (ADR 0025, guarded
+    per ADR 0027), and in both cases the reaper - a genuinely separate connection - would take the
+    job exactly as it does in the control. This test going green is what says the beat reached a
+    connection other than the worker's.
+    """
+    conn, owner_id, class_id = db
+    conn.autocommit = True
+    embedder = SlowEmbeddings(delay=2.0)
+    source = write_pdf(tmp_path / "slow.pdf", ["a page that takes a while to embed"])
+    file_id = enqueue(conn, path=source, owner_id=owner_id, class_id=class_id)
+
+    with _Reaper() as reaper:
+        assert tick(conn, embedder, lease_seconds=1) is True
+
+    assert reaper.reclaims == 0, "a live worker's lease was reaped while it was still working"
+    status, failed_reason = db_other.execute(
+        "select status, failed_reason from files where file_id = %s::uuid", (file_id,)
+    ).fetchone()
+    assert (status, failed_reason) == ("ready", None)
+
+    state, attempts = db_other.execute(
+        "select state, attempts from jobs where file_id = %s::uuid", (file_id,)
+    ).fetchone()
+    assert state == "done"
+    assert attempts == 1, "a SLOW file must not spend the budget that exists for FAILING files"
+
+    (chunk_count,) = db_other.execute(
+        "select count(*) from chunks where file_id = %s::uuid", (file_id,)
+    ).fetchone()
+    assert chunk_count > 0, "`ready` with no chunks would be a status with nothing behind it"
+
+
+def test_the_heartbeat_does_not_outlive_the_worker_that_started_it(db, db_other, tmp_path):
+    """A DEAD worker's lease still lapses - the heartbeat must not protect a corpse.
+
+    The whole safety argument for renewing a lease is that the beats stop when the worker stops.
+    If they outlived it by any mechanism - a thread that is not a daemon, a renewal that pushed
+    the lease further than the next beat, a beat loop that kept running after its context exited -
+    then a crashed worker would hold its job for as long as the process lived, and `reclaim_expired`
+    would have nothing to reap. That is a worse failure than the one ADR 0031 fixes, because it is
+    silent: the job simply never comes back.
+
+    Death is simulated by leaving the context manager, which is what every real death does too -
+    a crash, a Ctrl-C and a SIGTERM all unwind through `process_one`'s `with` block, and a SIGKILL
+    takes the daemon thread with the process. `beats >= 1` first, so this is a heartbeat that was
+    demonstrably working right up to the moment it stopped; a test where it never beat at all would
+    pass for the wrong reason.
+    """
+    conn, owner_id, class_id = db
+    conn.autocommit = True
+    file_id = enqueue(
+        conn,
+        path=write_pdf(tmp_path / "died.pdf", ["one page"]),
+        owner_id=owner_id,
+        class_id=class_id,
+    )
+    job = claim(conn, lease_seconds=1)
+    assert job is not None
+
+    with worker._LeaseHeartbeat(
+        job=job, lease_seconds=1, fraction=0.1, max_seconds=30.0
+    ) as heartbeat:
+        time.sleep(0.5)
+    assert heartbeat.beats >= 1, "the heartbeat never beat - this proves nothing about stopping"
+
+    # The worker is gone. Poll the reaper until the lease lapses, bounded so a heartbeat that
+    # never stopped fails the test instead of hanging it.
+    deadline = time.monotonic() + 10.0
+    reclaimed = 0
+    while not reclaimed and time.monotonic() < deadline:
+        reclaimed = reclaim_expired(conn)
+        if not reclaimed:
+            time.sleep(0.05)
+    assert reclaimed == 1, "a dead worker's lease was still being renewed by something"
+
+    state, attempts, leased_until = db_other.execute(
+        "select state, attempts, leased_until from jobs where file_id = %s::uuid", (file_id,)
+    ).fetchone()
+    assert (state, attempts, leased_until) == ("queued", 1, None), (
+        "the reaper must hand the dead worker's job back claimable, keeping its attempt"
+    )
+
+
+def test_a_hung_worker_is_recovered_once_the_heartbeat_cap_is_reached(db, db_other, tmp_path):
+    """The cap is why a heartbeat is not just a longer lease: WEDGED and WORKING look identical.
+
+    A beat proves the process is alive; it cannot prove the process is making progress. So the
+    beats stop after a bounded total and the lease is allowed to lapse, which returns the job to
+    the reaper and to the ordinary attempts budget - the same bound a run with no heartbeat at all
+    has always had (ADR 0031).
+
+    The contrast with the test above it is the entire content of this one: SAME lease, SAME
+    slowness, SAME live reaper, and the only change is a cap the ingest outruns. One reaches
+    `ready` on attempt 1; this one is taken away mid-flight and its publish refused. That is the
+    cap doing the deciding, not the lease and not the file.
+    """
+    conn, owner_id, class_id = db
+    conn.autocommit = True
+    embedder = SlowEmbeddings(delay=2.5)
+    source = write_pdf(tmp_path / "wedged.pdf", ["a page that never seems to finish"])
+    file_id = enqueue(conn, path=source, owner_id=owner_id, class_id=class_id)
+
+    with _Reaper() as reaper:
+        assert tick(conn, embedder, lease_seconds=1, heartbeat_max_seconds=0.5) is True
+
+    assert reaper.reclaims >= 1, "the cap did not release the lease - a wedged worker holds forever"
+    status, state, attempts = db_other.execute(
+        """
+        select f.status, j.state, j.attempts
+        from files f join jobs j using (file_id)
+        where f.file_id = %s::uuid
+        """,
+        (file_id,),
+    ).fetchone()
+    assert status != "ready", "a job taken back mid-ingest must not publish over its successor"
+    assert (state, attempts) == ("queued", 1), "the job is claimable again, its attempt kept"
+
+    (chunk_count,) = db_other.execute(
+        "select count(*) from chunks where file_id = %s::uuid", (file_id,)
+    ).fetchone()
+    assert chunk_count == 0, "the publish guard must refuse a run whose cap released its lease"
+
+
+def test_a_slow_poison_file_is_still_buried_by_the_attempts_budget(
+    db, db_other, tmp_path, monkeypatch
+):
+    """The heartbeat must not buy a doomed file an unbounded number of retries.
+
+    The bound the whole design rests on: `claim` bumps `jobs.attempts`, nothing resets it, and the
+    heartbeat touches it not at all - so a file that keeps failing keeps costing attempts however
+    long each one holds its lease (ADR 0028 §1, unchanged by ADR 0031). This is
+    `test_the_budget_runs_out_and_the_file_fails_transient_exhausted` re-run over a file slow
+    enough that the heartbeat is genuinely beating through every attempt, which is the version
+    that could have gone wrong: a renewal that reset the counter, or a beat that stood in for a
+    claim, would show up here as a job that never runs out of budget.
+
+    `time.sleep` is stubbed where the WORKER serves its backoff, and only there. The embed delay
+    is real - stubbing it would remove the thing under test.
+    """
+    conn, owner_id, class_id = db
+    conn.autocommit = True
+    monkeypatch.setattr(worker.time, "sleep", lambda _seconds: None)
+    embedder = SlowEmbeddings(delay=0.3, transient_failures=99)
+    source = write_pdf(tmp_path / "slow-poison.pdf", ["words the provider never accepts"])
+    file_id = enqueue(conn, path=source, owner_id=owner_id, class_id=class_id)
+
+    for _ in range(3):
+        assert tick(conn, embedder, max_attempts=2, lease_seconds=1, heartbeat_fraction=0.1) is True
+
+    status, failed_reason = db_other.execute(
+        "select status, failed_reason from files where file_id = %s::uuid", (file_id,)
+    ).fetchone()
+    assert (status, failed_reason) == ("failed", "transient_exhausted")
+
+    state, attempts = db_other.execute(
+        "select state, attempts from jobs where file_id = %s::uuid", (file_id,)
+    ).fetchone()
+    assert state == "failed", "a heartbeat must not keep an exhausted job claimable"
+    assert attempts == 3, (
+        "two paid attempts plus the claim that buried it - the heartbeat adds none"
+    )
+    assert len(embedder.calls) == 2, "the budget must still bound PAID attempts"

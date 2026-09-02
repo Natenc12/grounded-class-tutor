@@ -206,15 +206,26 @@ same evidence ADR 0028 §Consequences named for the lease itself. Ratified is no
   non-zero reap means a process died, resting on the single-threaded loop; that conclusion now
   holds against a second worker too, because a live run renews its own lease. A reaped job is one
   whose worker stopped beating — dead, or wedged past the cap.
-- **A known interaction, named rather than fixed.** `served_backoff` bounds the backoff by
-  `lease_seconds - elapsed` measured from the *claim*, so for a run whose lease has been renewed it
-  now **understates** the lease actually remaining, and clamps the backoff further than it needs
-  to. Behaviour is unchanged — neither of its two inputs is touched by the heartbeat, so the
-  trigger set is identical to `main`'s — but the "backoff cut" WARNING that ADR 0028 §Consequences
-  names as the evidence that would shorten the lease becomes a **less reliable** signal, because a
-  slow file can now legitimately reach `elapsed > lease_seconds` and still hold a live lease.
-  Teaching `served_backoff` about the renewal is a second decision and is deliberately not taken
-  here; whoever reads that warning as lease evidence should read this bullet first.
+- **A known interaction with `served_backoff`, in TWO halves — one fixed here, one named and left.**
+  The common cause: `served_backoff` bounds the backoff by `lease_seconds - elapsed` measured from
+  the *claim*, so for a run whose lease has been renewed it now **understates** the lease actually
+  remaining and clamps the backoff further than it needs to. Its behaviour is unchanged — neither of
+  its two inputs is touched by the heartbeat, so the trigger set is identical to `main`'s — but a
+  slow file can now legitimately reach `elapsed > lease_seconds` while holding a live lease, so the
+  clamp fires on the ordinary path instead of at an edge. What that promotes:
+  - **FIXED HERE, because it made the worker state the opposite of what happens.** The
+    `transient failure on attempt N/M` line chose its ending by asking whether `delay` was zero,
+    and a clamped delay is zero too — so on exactly the run this ADR exists to support (a slow file
+    that then hits a 429) the worker logged *"no retry left, the next claim buries it"* about a job
+    that was requeued, retried and reached `ready`, its lease alive and renewed throughout. The
+    condition now reads `job.attempts` against `max_attempts`, which is what actually decides the
+    bury; behaviour is untouched, only the message and the test it turns on. A clamped-to-zero wait
+    on a retry that IS coming now says so.
+  - **NAMED, NOT FIXED.** The "backoff cut" WARNING that ADR 0028 §Consequences names as the
+    evidence that would shorten the lease becomes a **less reliable** signal, for the same reason:
+    it can now fire on a run whose lease was never in trouble. Teaching `served_backoff` about the
+    renewal is a second decision and is deliberately not taken here; whoever reads that warning as
+    lease evidence should read this bullet first.
 - What would move the two numbers: the **interval**, a `heartbeat failed to renew` warning
   appearing in clusters rather than singly — that is the margin being spent. The **cap**, a
   `heartbeat stopped at its cap` warning on a file that was healthy, which says the cap is shorter

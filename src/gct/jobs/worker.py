@@ -923,16 +923,30 @@ def process_one(
                 lease_seconds=lease_seconds,
                 elapsed=elapsed,
             )
-            # The two outcomes say OPPOSITE things and must not share a message. A delay means a
-            # retry is coming; a zero delay on the last permitted attempt means the next claim will
-            # bury the job, and "retrying in 0s" told an operator the reverse of what happens.
+            # The outcomes say OPPOSITE things and must not share a message - and WHICH ONE THIS IS
+            # COMES FROM THE BUDGET, NEVER FROM `delay`. A zero delay has two causes and only one of
+            # them is "this was the last attempt": `served_backoff` also clamps a perfectly ordinary
+            # retry's wait to zero when the lease has no room left for it. Inferring the bury from
+            # `delay == 0` therefore announced "no retry left, the next claim buries it" over runs
+            # that went on to be requeued, retried and published `ready` - an edge case before
+            # ADR 0031 and a ROUTINE one after it, because a renewed lease makes `elapsed >
+            # lease_seconds` an everyday fact about a slow file rather than a symptom.
+            # `job.attempts` and `max_attempts` are the actual deciders (the budget check above uses
+            # exactly this comparison); ask them, and let `delay` say only how long the wait is.
+            retry_left = job.attempts < max_attempts
+            if not retry_left:
+                outcome = "no retry left, the next claim buries it"
+            elif delay:
+                outcome = f"retrying in {delay:.0f}s"
+            else:
+                outcome = "retrying with no backoff - the lease left no room for one"
             logger.warning(
                 "job %s: transient failure on attempt %s/%s after %.1fs - %s - %s",
                 job.job_id,
                 job.attempts,
                 max_attempts,
                 elapsed,
-                f"retrying in {delay:.0f}s" if delay else "no retry left, the next claim buries it",
+                outcome,
                 exc,
             )
             if delay < wanted:

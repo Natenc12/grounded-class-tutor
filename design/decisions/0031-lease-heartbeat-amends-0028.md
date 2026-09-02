@@ -229,11 +229,15 @@ same evidence ADR 0028 §Consequences named for the lease itself. Ratified is no
   is amended where it described the reaper as collecting a job "stuck in `processing` past
   timeout" — that description is now about a *silent* worker.
 - **WEDGE RECOVERY GETS SLOWER, AND HERE IS BY HOW MUCH.** This is the cost §5 accepts, stated as a
-  number so it can be argued with. Before: a wedged (not crashed) worker's job was reclaimable one
-  lease after the claim — **900 s**, since the wedged run renewed nothing. After: the beats run for
-  the cap and the lease then lapses one lease later, so the job is reclaimable up to **cap + lease =
-  4500 s** after the claim, per attempt. Across the ADR 0028 §1 budget of five attempts a
-  *reliably*-wedging file therefore moves from ~75 minutes to ~**6 h 15 m** before it is buried as
+  number so it can be argued with. Before: a wedged (not crashed) worker's job was reclaimable
+  one lease after the claim — **900 s**, since the wedged run renewed nothing. After: the beats
+  stop at the cap and the lease lapses one lease after the LAST beat — which is not the same
+  instant as the cap. `_beat_until_stopped` waits one interval, THEN tests the deadline, THEN
+  beats, so the last beat lands one interval BEFORE the cap and the job is reclaimable up to
+  **cap − interval + lease = 4275 s** after the claim, per attempt. (The looser `cap + lease` is
+  wrong by exactly one beat interval, and wrong in the safe direction — it overstates the wait.)
+  Across the ADR 0028 §1 budget of five attempts a *reliably*-wedging file therefore moves from
+  ~75 minutes to ~**5 h 56 m** before it is buried as
   `transient_exhausted`. Nothing about a CRASH changes: a death that unwinds is handed back at once
   by the shutdown release, and a `SIGKILL` stops the beats with the process, so the lease lapses on
   its own schedule exactly as before. This bullet is the one to revisit if a wedge is ever actually

@@ -103,7 +103,10 @@ stands unchanged **because** the heartbeat stops at this boundary, not by coinci
 A beat proves the process is **alive**; it cannot prove the process is making **progress**. Wedged
 and working are indistinguishable from the outside, so the beats stop after a bounded total and
 the lease is allowed to lapse on schedule. That returns a wedged worker to the reaper and to the
-ordinary attempts budget — the same bound a run with no heartbeat at all has always had. The cap
+ordinary attempts budget, which is the bound a run with no heartbeat at all has always had — but
+it returns there **later**, and by a stated amount rather than an unbounded one. That delay is the
+price of this decision and it is quantified in §Consequences; it is not "the same bound", and
+§5's *errs long* rests on it being paid on a failure mode nobody has yet observed. The cap
 is why this is a heartbeat and not simply a longer lease.
 
 Two things the heartbeat explicitly does **not** do. It never settles a job: when a beat finds the
@@ -117,7 +120,23 @@ the fraction below is what buys the margin to fail.
 | number | value | constant / parameter | safe-if-wrong direction |
 |---|---|---|---|
 | **beat interval** | ¼ of the lease | `DEFAULT_HEARTBEAT_FRACTION` / `heartbeat_fraction` | errs **short**. A fraction rather than an absolute interval, so a caller that shortens `lease_seconds` shortens the beat with it and the two cannot drift apart. At a quarter, **three consecutive beats must fail** before the lease lapses, so a DB blip mid-ingest is not an expiry. Too frequent costs one tiny `UPDATE` per interval, which is nothing against local Postgres serving one user; too infrequent lets a blip lapse a live worker's lease, which is this ADR's defect returning. |
-| **heartbeat cap** | 1 hour | `DEFAULT_HEARTBEAT_MAX_SECONDS` / `heartbeat_max_seconds` | errs **long**. Too short reintroduces the defect for every file slower than the cap — the expensive direction. Too long only delays recovery from a wedge that V1 cannot recover from anyway: one worker means the wedged process **is** the poller, so no reaper is running to collect what the cap gives up (ADR 0011). One hour is four leases, and far longer than any input under the ADR 0029 word ceiling has taken. |
+| **heartbeat cap** | **four leases** — 1 hour at the default lease | `DEFAULT_HEARTBEAT_MAX_SECONDS`, defined as `4 * DEFAULT_LEASE_SECONDS` / `heartbeat_max_seconds` | errs **long**, and erring long is **not free**. Too short reintroduces the defect for every file slower than the cap: a healthy file buried as `transient_exhausted`, which is a trust cost on a failure mode that has been *measured*. Too long delays recovery from a wedge — and the honest accounting is that on the deployment this ADR is arguing about, that is a real regression, not a cost V1 was going to pay anyway. See below. Four leases is also far longer than any input under the ADR 0029 word ceiling has taken. |
+
+**Why the cap's cost cannot be waved away with "V1 has one worker."** The tempting defence — a
+wedged V1 worker *is* the poller, so no reaper is running to collect what the cap gives up
+(ADR 0011) — is defending the cap on the **single-worker** shape while this ADR's Context argues
+the defect it fixes is *only reachable with a second reaper*, and ADR 0028 §1 chose the lease **for**
+that multi-worker deployment. A justification that holds on one shape and a defect that exists on
+the other are not a matched pair. On the shape that motivates this fix, the cap **is** a regression
+in wedge recovery, by the amount §Consequences states. It is accepted anyway, and on stated terms:
+the cost lands on a wedge — a live process making no progress — which nothing has ever observed
+here, while the benefit lands on slowness, which was measured on `main` before this ADR was
+written. That is the trade. It is not the absence of one.
+
+**The cap is written as a multiple of the lease, not as an independent number.** "Four leases" is
+the claim this ADR makes, so the constant multiplies rather than restating 3600 — a literal beside
+a retunable `lease_seconds` would leave this row true by coincidence, and the first person to
+shorten the lease would falsify it silently.
 
 **Both are parameters, not only constants** — `process_one` and `run` take them and forward them,
 the same discipline `lease_seconds` and `max_attempts` already have, so the tests can drive the
@@ -173,6 +192,16 @@ same evidence ADR 0028 §Consequences named for the lease itself. Ratified is no
 - `ingestion-worker.md` §Failure modes gains an **ingest slower than its lease** row, and §Position
   is amended where it described the reaper as collecting a job "stuck in `processing` past
   timeout" — that description is now about a *silent* worker.
+- **WEDGE RECOVERY GETS SLOWER, AND HERE IS BY HOW MUCH.** This is the cost §5 accepts, stated as a
+  number so it can be argued with. Before: a wedged (not crashed) worker's job was reclaimable one
+  lease after the claim — **900 s**, since the wedged run renewed nothing. After: the beats run for
+  the cap and the lease then lapses one lease later, so the job is reclaimable up to **cap + lease =
+  4500 s** after the claim, per attempt. Across the ADR 0028 §1 budget of five attempts a
+  *reliably*-wedging file therefore moves from ~75 minutes to ~**6 h 15 m** before it is buried as
+  `transient_exhausted`. Nothing about a CRASH changes: a death that unwinds is handed back at once
+  by the shutdown release, and a `SIGKILL` stops the beats with the process, so the lease lapses on
+  its own schedule exactly as before. This bullet is the one to revisit if a wedge is ever actually
+  observed; the cap is a parameter for that reason.
 - The reaper's WARNING line gets *stronger*, not weaker. ADR 0028 §Consequences argued that on V1 a
   non-zero reap means a process died, resting on the single-threaded loop; that conclusion now
   holds against a second worker too, because a live run renews its own lease. A reaped job is one

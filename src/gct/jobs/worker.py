@@ -129,16 +129,17 @@ BACKOFF_MAX_SECONDS = 60.0
 # too infrequent lets a blip lapse a LIVE worker's lease, which is the whole defect ADR 0031
 # removes.
 DEFAULT_HEARTBEAT_FRACTION = 0.25
-# The cap on how long ONE run may keep beating. A heartbeat cannot tell WORKING from WEDGED -
-# both are a live process holding a lease - so the beats stop here and the lease is allowed to
-# lapse on schedule, which hands a wedged worker back to the reaper and back under the ordinary
-# attempts budget. That bound is why the heartbeat does not simply replace the lease.
-# It errs LONG. Too short reintroduces ADR 0031's defect for every file slower than the cap, which
-# is the expensive direction; too long only delays recovery from a wedge that V1 cannot recover
-# from anyway - one worker means the wedged process IS the poller, so no reaper is running to
-# collect what the cap gives up (ADR 0011). One hour is four leases, and far longer than any input
-# under the ADR 0029 word ceiling has taken to ingest.
-DEFAULT_HEARTBEAT_MAX_SECONDS = 60.0 * 60.0
+# The cap on how long ONE run may keep beating: FOUR LEASES, and it must stay written as four
+# leases. A heartbeat cannot tell WORKING from WEDGED - both are a live process holding a lease -
+# so the beats stop here and the lease is allowed to lapse on schedule, which is what hands a
+# wedged worker back to the reaper and back under the ordinary attempts budget (ADR 0031 §4). The
+# safe-if-wrong argument is ADR 0031 §5, and what erring long actually costs a wedged run is that
+# ADR's §Consequences - read those rather than a copy of them here.
+# DERIVED, NOT A SECOND NUMBER THAT HAPPENS TO AGREE. ADR 0031 §5 argues this cap in units of the
+# lease, so a literal 3600 sitting beside a `lease_seconds` someone retunes would leave the ADR's
+# claim true only by coincidence, and the first person to shorten the lease would falsify it
+# silently. Multiplying is what makes the two unable to drift. Effective value: 3600s.
+DEFAULT_HEARTBEAT_MAX_SECONDS = 4 * DEFAULT_LEASE_SECONDS
 # A floor under the DERIVED beat interval, so a pathological `heartbeat_fraction` (zero, or
 # negative) cannot turn the beat loop into a spin. Not a knob: it guards a misconfiguration rather
 # than expressing a policy, and it is small enough that the sub-second leases the tests drive

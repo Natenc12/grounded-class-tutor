@@ -148,11 +148,12 @@ PHASE_THREE_EMBED_DELAY_SECONDS = 3.0
 # Since the lease is renewed by a live worker, a short `--lease` no longer stages a reclaim on
 # its own: worker A pushes its own `leased_until` forward every beat, so the lease it is
 # holding does not lapse while it works. It lapses when the BEATS stop, and the beats stop at
-# the cap. The shipped cap is four times the DEFAULT lease (`DEFAULT_HEARTBEAT_MAX_SECONDS`,
-# 3600s) and it does NOT track `--lease` — ADR 0031 states it as "four leases, 1 hour at the
-# default lease" and makes it a PARAMETER for callers who need the expiry sooner. This script
-# is such a caller. Left unset, phase 3 would wait an hour for a reclaim that the run is not
-# long enough to see, and report the absence as a failure.
+# the cap — which ADR 0031 §5 makes a PARAMETER for callers who need the expiry sooner. This
+# script is such a caller, and DERIVING the cap is not enough to make it one: left unset, the
+# cap resolves to four times `--lease`, which at the default `--lease 1` is 4s — still longer
+# than the 3s induced delay, so the ingest finishes inside the beats and no reclaim happens.
+# Measured, not assumed: with the derivation and no explicit cap, phase 3 fails with
+# `attempts=1` and zero reaps, exactly as it did when the cap was a flat 3600s.
 #
 # UNDER THE INDUCED DELAY, not merely under the lease: the beats must stop while worker A is
 # still embedding, which is what makes the lease lapse under a RUNNING worker — the post-0031

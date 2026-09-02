@@ -30,8 +30,9 @@ spike within the fixed contract, not here.
   claim* is therefore no longer the recovery timeout for every stall: a worker that is alive but
   making no progress goes silent only when its heartbeat hits the cap, so its job comes back one
   lease after its LAST beat rather than at 900 s — the figure, its derivation and the trade are
-  ADR 0031 §5 and §Consequences, which own it. A worker that DIED is unchanged: an unwind hands the job back at
-  once, a `SIGKILL` stops the beats with the process and the lease lapses on schedule. Processing is
+  ADR 0031 §5 and §Consequences, which own it. A worker that DIED is unchanged: an unwind hands
+  the job back at once, a `SIGKILL` stops the beats with the process and the lease lapses on
+  schedule. Processing is
   **idempotent** (ADR 0020), so redelivery and reclaim are safe with zero dedup logic.
 - **Down — file staging (ADR 0010):** reads the staged bytes to parse.
 - **Down — model provider layer:** calls `Embeddings.embed(texts) → vectors` (+ `model_id`, `dim`)

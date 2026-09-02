@@ -236,6 +236,13 @@ same evidence ADR 0028 §Consequences named for the lease itself. Ratified is no
   beats, so the last beat lands one interval BEFORE the cap and the job is reclaimable up to
   **cap − interval + lease = 4275 s** after the claim, per attempt. (The looser `cap + lease` is
   wrong by exactly one beat interval, and wrong in the safe direction — it overstates the wait.)
+  That subtraction is exact because the cap is a whole number of intervals — four leases against a
+  quarter-lease beat is sixteen of them — which holds **by construction** while both numbers derive
+  from `lease_seconds`, and stops holding the moment `heartbeat_fraction` is retuned on its own. In
+  general the last beat lands at `interval × (⌈cap ÷ interval⌉ − 1)`; at `fraction = 0.30` the true
+  bound is 4410 s where the subtraction gives 4230 s. It errs SHORT, which is the unsafe direction
+  for this row — it understates how long a wedged job is held — so anyone retuning the fraction
+  should recompute rather than reuse the subtraction.
   Across the ADR 0028 §1 budget of five attempts a *reliably*-wedging file therefore moves from
   ~75 minutes to ~**5 h 56 m** before it is buried as
   `transient_exhausted`. Nothing about a CRASH changes: a death that unwinds is handed back at once

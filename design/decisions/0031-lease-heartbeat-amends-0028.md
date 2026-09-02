@@ -23,9 +23,9 @@
 > the **write path crosses**: the uploader calls `enqueue` and hands off, and everything after that
 > is the substrate's own side. `renew_lease` is only ever called by the worker, which is *inside*
 > the substrate — as are `complete`, `fail`, `release`, the lease itself, `attempts` and
-> `SKIP LOCKED`, none of which amended ADR 0011 either (ADR 0028 ratified the lease's value without
-> touching it). Nothing an API caller does changes shape; the write path does not change, which is
-> the claim ADR 0011 actually makes.
+> `SKIP LOCKED`, none of which touched ADR 0011's status line either (ADR 0028 ratified the lease's
+> value without doing so). Nothing an API caller does changes shape; the write path does not change,
+> which is the claim ADR 0011 actually makes.
 >
 > What *does* follow is a **constraint on the V2 substrate**, and it is recorded here so it is
 > findable at swap time rather than discovered during one: whatever replaces the DB-poll worker

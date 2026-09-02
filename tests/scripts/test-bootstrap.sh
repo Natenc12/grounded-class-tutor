@@ -119,6 +119,33 @@ mkdir -p "$TMP/uc/work"; rm -f "$TMP/MARKER"
     bash "$BOOT" >/dev/null 2>&1 )
 check "uppercase legitimate origin accepted" "$([ -e "$TMP/MARKER" ] && echo used || echo refused)" "used"
 
+echo "== origins that only pass through the userinfo/port rewrite =="
+# Every other ACCEPT row above is caught by the outer allowlist before the rewrite ever
+# runs, so the rewrite branch had no positive coverage at all: deleting it wholesale
+# still passed the suite, while silently refusing the CI, token and clone-with-username
+# origins it exists to support.
+k=0
+for url in \
+  "https://natenc12@github.com/Natenc12/claude-home.git" \
+  "https://x-access-token:TOKEN@github.com/Natenc12/claude-home.git" \
+  "https://oauth2:tok@github.com/Natenc12/claude-home" \
+  "ssh://git@github.com:22/Natenc12/claude-home.git" \
+  "https://github.com:443/Natenc12/claude-home.git"
+do
+  k=$((k+1)); W="$TMP/rw$k/work"; mkdir -p "$W"
+  plant "$TMP/rw$k/claude-home" "$url"
+  rm -f "$TMP/MARKER"
+  ( cd "$W" && HOME="$TMP/rw$k/home" CLAUDE_CODE_REMOTE=true CLAUDE_HOME_ENABLE=1 bash "$BOOT" >/dev/null 2>&1 )
+  check "accepts via rewrite: $url" "$([ -e "$TMP/MARKER" ] && echo used || echo refused)" "used"
+done
+
+# And the rewrite must not turn a hostile authority into an allowlisted one. git would
+# genuinely connect to evil.com for this URL, so accepting it would be the real bug.
+plant "$TMP/rwx/claude-home" "https://github.com@evil.com/Natenc12/claude-home.git"
+mkdir -p "$TMP/rwx/work"; rm -f "$TMP/MARKER"
+( cd "$TMP/rwx/work" && HOME="$TMP/rwx/home" CLAUDE_CODE_REMOTE=true CLAUDE_HOME_ENABLE=1 bash "$BOOT" >/dev/null 2>&1 )
+check "rewrite does not launder host@evil" "$([ -e "$TMP/MARKER" ] && echo used || echo refused)" "refused"
+
 echo "== a contributor sees nothing =="
 mkdir -p "$TMP/c/work"; cd "$TMP/c/work"
 run_quiet() { # run_quiet <label> <env...> -- ; asserts exit 0 and zero bytes

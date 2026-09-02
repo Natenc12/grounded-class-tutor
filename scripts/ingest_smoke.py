@@ -104,7 +104,7 @@ from gct.config import load_settings
 from gct.db import connect
 from gct.ingest.chunk import CHUNK_OVERLAP_WORDS, CHUNK_SIZE_WORDS
 from gct.jobs.queue import enqueue
-from gct.jobs.worker import DEFAULT_LEASE_SECONDS, run
+from gct.jobs.worker import DEFAULT_LEASE_SECONDS, heartbeat_max_seconds_for, run
 from gct.providers.base import Embeddings
 from gct.providers.openai_provider import OpenAIEmbeddings
 
@@ -701,7 +701,25 @@ class ReaperLog(logging.Handler):
 # --- phases -------------------------------------------------------------------------------------
 
 
-def _overrun_remedy(lease_seconds: int) -> str:
+def _cap_in_use(worker: WorkerThread, lease_seconds: int) -> float:
+    """The cap worker A is ACTUALLY beating under - read off the worker, never off a constant.
+
+    `_overrun_remedy` used to read `PHASE_THREE_HEARTBEAT_CAP_SECONDS` directly, which made its
+    heartbeat branch dead as shipped (1.0 is never >= the 3s delay) and, worse, meant that if the
+    phase-3 wiring ever regressed the remedy would fall through to "the delay is not reaching the
+    worker" - a confident instruction to go looking for a bug that is not there, which that
+    function's own docstring calls worse than no remedy at all. Reading the worker is what makes
+    the diagnosis about the run rather than about what the file says the run should be.
+
+    `None` means the worker took `run`'s default, which resolves from the lease (ADR 0031 §5), so
+    that is what this resolves too - one derivation, not a second copy of it.
+    """
+    if worker.heartbeat_max_seconds is not None:
+        return float(worker.heartbeat_max_seconds)
+    return heartbeat_max_seconds_for(lease_seconds)
+
+
+def _overrun_remedy(lease_seconds: int, heartbeat_max_seconds: float) -> str:
     """What to change when phase 3's ingest finished inside its lease.
 
     THE ARGUMENT HERE CHANGED WHEN THE DELAY DID (2026-09-01), and the old one is gone rather than
@@ -728,9 +746,9 @@ def _overrun_remedy(lease_seconds: int) -> str:
       - the delay never reached the worker, i.e. the embedder worker A is holding is not the wrapper
         this phase armed. That is a wiring bug in this script, not a knob.
     """
-    if PHASE_THREE_HEARTBEAT_CAP_SECONDS >= PHASE_THREE_EMBED_DELAY_SECONDS:
+    if heartbeat_max_seconds >= PHASE_THREE_EMBED_DELAY_SECONDS:
         return (
-            f"the heartbeat cap ({PHASE_THREE_HEARTBEAT_CAP_SECONDS:.1f}s) is at or above the "
+            f"the heartbeat cap ({heartbeat_max_seconds:.1f}s) is at or above the "
             f"{PHASE_THREE_EMBED_DELAY_SECONDS:.0f}s induced delay, so worker A renewed its own "
             "lease for the whole ingest and nothing expired (ADR 0031). Lower "
             "PHASE_THREE_HEARTBEAT_CAP_SECONDS below the delay — --lease alone cannot stage a "
@@ -745,7 +763,7 @@ def _overrun_remedy(lease_seconds: int) -> str:
         )
     return (
         f"--lease ({lease_seconds}s) is under the {PHASE_THREE_EMBED_DELAY_SECONDS:.0f}s induced "
-        f"delay and the heartbeat cap ({PHASE_THREE_HEARTBEAT_CAP_SECONDS:.1f}s) is under it too, "
+        f"delay and the heartbeat cap ({heartbeat_max_seconds:.1f}s) is under it too, "
         "so the ingest should not have fit inside the lease: the delay is not reaching the worker. "
         "Check that worker A was handed the same `_DelayedEmbeddings` this phase arms"
     )
@@ -1119,7 +1137,8 @@ def _reaper_body(
     if not reaped:
         faults.append(
             f"no reclaim happened ({evidence}) — the ingest finished inside the {lease_seconds}s "
-            f"lease, so nothing expired. {_overrun_remedy(lease_seconds)}"
+            f"lease, so nothing expired. "
+            f"{_overrun_remedy(lease_seconds, _cap_in_use(worker, lease_seconds))}"
         )
     if final.file_status != "ready":
         faults.append(f"ended {final.file_status!r}, not 'ready'")

@@ -74,10 +74,22 @@ jobs:
             echo "::error::OPENAI_API_KEY is not set as a repository secret. This job does not skip; add the secret."
             exit 1
           fi
-          if printf '%s' "$OPENAI_API_KEY" | grep -q '[[:space:]]'; then
-            echo "::error::OPENAI_API_KEY contains whitespace (usually a trailing newline from the paste). Re-save the secret with the line break removed."
-            exit 1
-          fi
+          # An OpenAI key is `sk-` plus letters, digits, `_` and `-`. Anything else (a newline,
+          # a non-breaking space, a zero-width character from a paste) reaches the provider as an
+          # illegal header value. Report the POSITION and CLASS of each bad character, never the
+          # character itself, so the diagnosis is in the log and the key is not.
+          python3 - <<'PY'
+          import os, sys
+          v = os.environ["OPENAI_API_KEY"]
+          bad = [(i, "control" if ord(c) < 33 else "non-ascii" if ord(c) > 126 else "punct")
+                 for i, c in enumerate(v) if not (c.isascii() and (c.isalnum() or c in "_-"))]
+          if bad or not v.startswith("sk-"):
+              print(f"::error::OPENAI_API_KEY is malformed: length {len(v)}, starts with sk-: "
+                    f"{v.startswith('sk-')}, bad characters (position, class): {bad[:8]}. "
+                    "Re-save the secret from a clean copy of the key (no quotes, no line break).")
+              sys.exit(1)
+          print(f"key well-formed: length {len(v)}")
+          PY
 
       - name: Install uv
         uses: astral-sh/setup-uv@d4b2f3b6ecc6e67c4457f6d3e41ec42d3d0fcb86 # v5.4.2

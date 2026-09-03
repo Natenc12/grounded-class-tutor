@@ -65,10 +65,17 @@ jobs:
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
 
-      - name: Refuse to run without the key
+      # Refuse, don't convert: a key with a stray newline (a paste that included the line
+      # break) reaches the provider as an illegal header value and fails as "Connection error",
+      # three stack frames away from the cause. Name the cause and the fix here instead.
+      - name: Refuse to run without a well-formed key
         run: |
           if [ -z "$OPENAI_API_KEY" ]; then
             echo "::error::OPENAI_API_KEY is not set as a repository secret. This job does not skip; add the secret."
+            exit 1
+          fi
+          if printf '%s' "$OPENAI_API_KEY" | grep -q '[[:space:]]'; then
+            echo "::error::OPENAI_API_KEY contains whitespace (usually a trailing newline from the paste). Re-save the secret with the line break removed."
             exit 1
           fi
 

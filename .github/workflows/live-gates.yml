@@ -1,9 +1,15 @@
 # The paid exit gates, run in CI so that nobody has to remember them.
 #
-# The three slice smokes CLAUDE.md names (`smoke_slice0.py`, `ask_smoke.py`, `ingest_smoke.py`)
-# spend money, so ci.yml excludes them and a green PR says nothing about them. PR #114 turned the
-# Slice 2 gate red with every other check green, and it was caught by a hand-run 35 minutes after
-# the PR opened. A gate that only runs when a person remembers it is not a gate.
+# The slice smokes CLAUDE.md names spend money, so ci.yml excludes them and a green PR says
+# nothing about them. PR #114 turned the Slice 2 gate red with every other check green, and it
+# was caught by a hand-run 35 minutes after the PR opened. A gate that only runs when a person
+# remembers it is not a gate.
+#
+# Two of the three run here. `smoke_slice0.py` needs no corpus. `ingest_smoke.py` checks the write
+# path and is content-agnostic, so it runs on a corpus `scripts/ci_corpus.py` generates on the
+# runner. `ask_smoke.py` does NOT run here: its questions are anchored to Nate's real course
+# materials by file and page, and those are gitignored. That gate stays local — /ship's acceptance
+# lane and /land run it — and CLAUDE.md says so.
 #
 # When it runs — never on a bare pull_request, so a fork cannot spend the key:
 #   - a PR carrying the `live-gate` label (/land applies it to each PR it is about to merge);
@@ -34,13 +40,13 @@ concurrency:
 
 jobs:
   gates:
-    name: paid exit gates ×3 (slice0, ask, ingest)
+    name: paid exit gates ×3 (slice0, ingest)
     # On a pull_request event, run only when the label is present. Other events always run.
     if: github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'live-gate')
     runs-on: ubuntu-latest
     permissions:
       contents: read
-    # Three gates × three runs; the ingest gate alone takes a few minutes. Anything near the
+    # Two gates × three runs; the ingest gate alone takes a few minutes. Anything near the
     # ceiling is a hang, not work.
     timeout-minutes: 45
     env:
@@ -116,18 +122,15 @@ jobs:
             echo "::endgroup::"
           done
 
-      - name: Slice 1 exit gate ×3
-        run: |
-          for i in 1 2 3; do
-            echo "::group::ask_smoke run $i"
-            uv run python scripts/ask_smoke.py
-            echo "::endgroup::"
-          done
+      # The real corpus is gitignored (course materials). The write path does not care what the
+      # documents say, so generate a small one here; see scripts/ci_corpus.py.
+      - name: Generate the CI corpus
+        run: uv run python scripts/ci_corpus.py "$RUNNER_TEMP/ci-corpus"
 
       - name: Slice 2 exit gate ×3
         run: |
           for i in 1 2 3; do
             echo "::group::ingest_smoke run $i"
-            uv run python scripts/ingest_smoke.py
+            uv run python scripts/ingest_smoke.py --corpus-dir "$RUNNER_TEMP/ci-corpus"
             echo "::endgroup::"
           done

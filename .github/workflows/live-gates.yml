@@ -1,0 +1,136 @@
+# The paid exit gates, run in CI so that nobody has to remember them.
+#
+# The slice smokes CLAUDE.md names spend money, so ci.yml excludes them and a green PR says
+# nothing about them. PR #114 turned the Slice 2 gate red with every other check green, and it
+# was caught by a hand-run 35 minutes after the PR opened. A gate that only runs when a person
+# remembers it is not a gate.
+#
+# Two of the three run here. `smoke_slice0.py` needs no corpus. `ingest_smoke.py` checks the write
+# path and is content-agnostic, so it runs on a corpus `scripts/ci_corpus.py` generates on the
+# runner. `ask_smoke.py` does NOT run here: its questions are anchored to Nate's real course
+# materials by file and page, and those are gitignored. That gate stays local — /ship's acceptance
+# lane and /land run it — and CLAUDE.md says so.
+#
+# When it runs — never on a bare pull_request, so a fork cannot spend the key:
+#   - a PR carrying the `live-gate` label (/land applies it to each PR it is about to merge);
+#   - the merge queue, if one is ever enabled on `main`;
+#   - every push to `main`, as a canary: a red here means main itself is red, and the run that
+#     merged it is the one to look at;
+#   - by hand, from the Actions tab.
+#
+# Each gate runs THREE times. The ingest gate once false-failed on a healthy tree — its observer
+# sampled a job between two writes that commit in separate transactions on purpose — and a single
+# run cannot tell that flake from a regression. Three identical passes can.
+#
+# OPENAI_API_KEY is a repository secret. The job fails loudly when it is absent rather than
+# skipping: a skip that reads as green is exactly the failure mode this workflow exists to remove.
+name: live-gates
+
+on:
+  pull_request:
+    types: [labeled, synchronize, reopened]
+  merge_group:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: live-gates-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  gates:
+    name: paid exit gates ×3 (slice0, ingest)
+    # On a pull_request event, run only when the label is present. Other events always run.
+    if: github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'live-gate')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    # Two gates × three runs; the ingest gate alone takes a few minutes. Anything near the
+    # ceiling is a hang, not work.
+    timeout-minutes: 45
+    env:
+      UV_PYTHON: "3.10"
+      UV_LOCKED: "1"
+      DATABASE_URL: postgresql://postgres:postgres@localhost:5432/grounded_class_tutor
+      OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+    services:
+      postgres:
+        image: pgvector/pgvector:0.8.5-pg17
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: grounded_class_tutor
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U postgres -d grounded_class_tutor -h localhost"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 15
+          --health-start-period 10s
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+
+      # Refuse, don't convert: a key with a stray newline (a paste that included the line
+      # break) reaches the provider as an illegal header value and fails as "Connection error",
+      # three stack frames away from the cause. Name the cause and the fix here instead.
+      - name: Refuse to run without a well-formed key
+        run: |
+          if [ -z "$OPENAI_API_KEY" ]; then
+            echo "::error::OPENAI_API_KEY is not set as a repository secret. This job does not skip; add the secret."
+            exit 1
+          fi
+          # An OpenAI key is `sk-` plus letters, digits, `_` and `-`. Anything else (a newline,
+          # a non-breaking space, a zero-width character from a paste) reaches the provider as an
+          # illegal header value. Report the POSITION and CLASS of each bad character, never the
+          # character itself, so the diagnosis is in the log and the key is not.
+          python3 - <<'PY'
+          import os, sys
+          v = os.environ["OPENAI_API_KEY"]
+          bad = [(i, "control" if ord(c) < 33 else "non-ascii" if ord(c) > 126 else "punct")
+                 for i, c in enumerate(v) if not (c.isascii() and (c.isalnum() or c in "_-"))]
+          if bad or not v.startswith("sk-"):
+              print(f"::error::OPENAI_API_KEY is malformed: length {len(v)}, starts with sk-: "
+                    f"{v.startswith('sk-')}, bad characters (position, class): {bad[:8]}. "
+                    "Re-save the secret from a clean copy of the key (no quotes, no line break).")
+              sys.exit(1)
+          print(f"key well-formed: length {len(v)}")
+          PY
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@d4b2f3b6ecc6e67c4457f6d3e41ec42d3d0fcb86 # v5.4.2
+        with:
+          enable-cache: true
+
+      - name: Install Python 3.10
+        run: uv python install 3.10
+
+      - name: Sync dependencies
+        run: uv sync --extra dev
+
+      - name: Apply migrations
+        run: uv run python scripts/migrate.py
+
+      # Each gate is its own step so a red names the gate in the check summary. The loop is
+      # explicit rather than a matrix so the three runs share one database and one boot, the way
+      # the hand-run ceremony does.
+      - name: Slice 0 exit gate ×3
+        run: |
+          for i in 1 2 3; do
+            echo "::group::smoke_slice0 run $i"
+            uv run python scripts/smoke_slice0.py
+            echo "::endgroup::"
+          done
+
+      # The real corpus is gitignored (course materials). The write path does not care what the
+      # documents say, so generate a small one here; see scripts/ci_corpus.py.
+      - name: Generate the CI corpus
+        run: uv run python scripts/ci_corpus.py "$RUNNER_TEMP/ci-corpus"
+
+      - name: Slice 2 exit gate ×3
+        run: |
+          for i in 1 2 3; do
+            echo "::group::ingest_smoke run $i"
+            uv run python scripts/ingest_smoke.py --corpus-dir "$RUNNER_TEMP/ci-corpus"
+            echo "::endgroup::"
+          done

@@ -61,6 +61,12 @@ Secrets (`OPENAI_API_KEY`, `DATABASE_URL`) live in `.env` (gitignored).
 against a pgvector Postgres 17 service container (#18, extended by #32). Green proves lint, formatting
 (#34), that `migrations/*.sql` applies cleanly, and every `db`-marked test — both DB paths, on fake
 embedders.
+**The paid exit gates have their own workflow, `live-gates.yml`.** It runs the three slice smokes
+three times each, with `OPENAI_API_KEY` from the repository secrets, on: a PR carrying the
+`live-gate` label (`/land` applies it before merging), the merge queue if one is ever enabled, every
+push to `main` as a canary, or by hand. Never on a bare pull request, so a fork cannot spend the key.
+It fails rather than skips when the secret is absent. A green `CI` check still says nothing about
+the gates; look for the `live-gates` check, or the label, before reading a PR as gate-clean.
 The `db` fixture skips locally when Postgres is down but **hard-fails in CI**, so DB tests can't
 silently skip their way to green. Locally that judgement is still yours: `pytest -m db` reporting
 **skips means Postgres is down, not that the DB path passed.**

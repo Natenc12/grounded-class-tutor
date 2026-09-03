@@ -1,0 +1,114 @@
+# The paid exit gates, run in CI so that nobody has to remember them.
+#
+# The three slice smokes CLAUDE.md names (`smoke_slice0.py`, `ask_smoke.py`, `ingest_smoke.py`)
+# spend money, so ci.yml excludes them and a green PR says nothing about them. PR #114 turned the
+# Slice 2 gate red with every other check green, and it was caught by a hand-run 35 minutes after
+# the PR opened. A gate that only runs when a person remembers it is not a gate.
+#
+# When it runs — never on a bare pull_request, so a fork cannot spend the key:
+#   - a PR carrying the `live-gate` label (/land applies it to each PR it is about to merge);
+#   - the merge queue, if one is ever enabled on `main`;
+#   - every push to `main`, as a canary: a red here means main itself is red, and the run that
+#     merged it is the one to look at;
+#   - by hand, from the Actions tab.
+#
+# Each gate runs THREE times. The ingest gate once false-failed on a healthy tree — its observer
+# sampled a job between two writes that commit in separate transactions on purpose — and a single
+# run cannot tell that flake from a regression. Three identical passes can.
+#
+# OPENAI_API_KEY is a repository secret. The job fails loudly when it is absent rather than
+# skipping: a skip that reads as green is exactly the failure mode this workflow exists to remove.
+name: live-gates
+
+on:
+  pull_request:
+    types: [labeled, synchronize, reopened]
+  merge_group:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: live-gates-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  gates:
+    name: paid exit gates ×3 (slice0, ask, ingest)
+    # On a pull_request event, run only when the label is present. Other events always run.
+    if: github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'live-gate')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    # Three gates × three runs; the ingest gate alone takes a few minutes. Anything near the
+    # ceiling is a hang, not work.
+    timeout-minutes: 45
+    env:
+      UV_PYTHON: "3.10"
+      UV_LOCKED: "1"
+      DATABASE_URL: postgresql://postgres:postgres@localhost:5432/grounded_class_tutor
+      OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+    services:
+      postgres:
+        image: pgvector/pgvector:0.8.5-pg17
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: grounded_class_tutor
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U postgres -d grounded_class_tutor -h localhost"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 15
+          --health-start-period 10s
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+
+      - name: Refuse to run without the key
+        run: |
+          if [ -z "$OPENAI_API_KEY" ]; then
+            echo "::error::OPENAI_API_KEY is not set as a repository secret. This job does not skip; add the secret."
+            exit 1
+          fi
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@d4b2f3b6ecc6e67c4457f6d3e41ec42d3d0fcb86 # v5.4.2
+        with:
+          enable-cache: true
+
+      - name: Install Python 3.10
+        run: uv python install 3.10
+
+      - name: Sync dependencies
+        run: uv sync --extra dev
+
+      - name: Apply migrations
+        run: uv run python scripts/migrate.py
+
+      # Each gate is its own step so a red names the gate in the check summary. The loop is
+      # explicit rather than a matrix so the three runs share one database and one boot, the way
+      # the hand-run ceremony does.
+      - name: Slice 0 exit gate ×3
+        run: |
+          for i in 1 2 3; do
+            echo "::group::smoke_slice0 run $i"
+            uv run python scripts/smoke_slice0.py
+            echo "::endgroup::"
+          done
+
+      - name: Slice 1 exit gate ×3
+        run: |
+          for i in 1 2 3; do
+            echo "::group::ask_smoke run $i"
+            uv run python scripts/ask_smoke.py
+            echo "::endgroup::"
+          done
+
+      - name: Slice 2 exit gate ×3
+        run: |
+          for i in 1 2 3; do
+            echo "::group::ingest_smoke run $i"
+            uv run python scripts/ingest_smoke.py
+            echo "::endgroup::"
+          done

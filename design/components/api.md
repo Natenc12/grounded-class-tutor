@@ -106,9 +106,11 @@ Every non-2xx response body is exactly:
 - `message` — for a human; names the remedy where one exists.
 - Routes raise **`ApiError(status_code, kind, message, detail=None)`**; the status is the raiser's
   choice. **Which status a given failure maps to is each route issue's decision**, not this spec's.
-- `kind`/`message` is the vocabulary `GrounderError` already uses (`grounder.md` §Interface). The
-  envelope is **not** how a Grounder `ERROR` state is rendered: that is a returned outcome (ADR
-  0016) inside a success body, and #108 owns its rendering. A refusal is never an envelope.
+- `kind`/`message` is the vocabulary `GrounderError` already uses (`grounder.md` §Interface),
+  which is why `POST /ask` forwards a Grounder `ERROR`'s own `kind` into this envelope rather than
+  minting a second one — see that route's section for the `kind` → status split and the one
+  message it substitutes. **A refusal is never an envelope:** the four *grounding* states are 200
+  bodies (ADR 0016), and only the fifth, transport-level `ERROR`, leaves this way.
 
 ### The skeleton's own route
 ```
@@ -186,11 +188,52 @@ and status sets read off the CHECK constraints (`migrations/0001_init.sql`,
 `0003_failed_reason_too_long.sql`), `too_long`'s bound off `gct.config.MAX_INGEST_WORDS`
 (ADR 0029), and the file types the `unsupported` advice names off `parse_file`'s own dispatch.
 
-### `POST /ask` — **#108** *(stub)*
-Router mounted at `/ask`. Calls `gct.ask.ask(conn, question, owner_id, class_id, embedder=,
-generator=)` with the singletons above. The five-state → status map, the serialisation of
-`AskResult` (including whether `retrieved` is carried), and the broad catch at this boundary:
-**to be written by #108.**
+### `POST /ask` — **#108**
+Router mounted at `/ask`; models and both status maps live beside it in
+`src/gct/api/routers/ask.py`, which owns every sentence this section does not restate.
+
+`POST /ask` takes JSON `{class_id, question}`. It parses `class_id` ONCE at the top for the same
+reason `POST /files` does — `retrieve` binds it raw into a `::uuid` cast, so a spelling Python
+accepts and Postgres refuses would abort a request that named a real class (#121 reports the
+identical shape in `enqueue`) — then checks ownership with `class_exists` BEFORE `ask(conn,
+question, owner_id, class_id, embedder=, generator=)`, using the singletons above.
+
+**All four grounding states are 200.** `GROUNDED`, `PARTIAL`, `REFUSAL` and `INTEGRITY_FLAGGED`
+render as `{state, answer_prose, citations, coverage, integrity}` — the HTTP face of ADR 0016's
+*error ≠ refusal*, and the same rule `GET /files/{file_id}` follows for a `failed` row. A refusal
+is a true answer about the student's materials; a 4xx would say the request was wrong when it was
+fine. **`ERROR` is the exception and splits by `error.kind`:** `provider_transient` → `503` (the
+one kind where retrying can work, and the Grounder has already spent its budget),
+`embedding_mismatch` → `500` (ADR 0018 — the class needs re-indexing by an operator),
+`provider_terminal` → `500`. An unrecognised kind defaults to `500`, and the map is pinned to the
+`ERROR_KIND_*` constants of both producing modules by a test, so the default is a safety net and
+never the guard. ERROR leaves as the shared `ErrorEnvelope` rather than a 200 body, because
+`errors.py` makes every non-2xx the adapter produces that shape; `ask()` still *returns* it, and
+choosing the HTTP rendering is the route's decision, not the ADR's.
+
+**The error `message` is the library's, except where the library did not write it.** `kind` is
+always the library's token, adopted verbatim. `provider_terminal`'s message is built from a raw
+provider exception (`grounder/answer.py`), so the route substitutes its own sentence rather than
+forwarding vendor text — the same thing `errors._unhandled` refuses to do — and an unknown kind is
+substituted for the same reason. Refusals are `400` (`bad_class_id`), `404` (`class_not_found`),
+`422` (blank, missing, or over-long `question`, through the shared validation envelope).
+
+**404, never 403**, and byte-identical for a foreign class and a nonexistent one — `class_exists`
+returns one `False` for both by construction (F12). The check is not a formality: a missing class
+falling through to `ask()` retrieves nothing, which `answer()` renders as *"no course material was
+retrieved for this question"* — a statement about a corpus that never existed.
+
+**Not on the wire, by decision.** No `retrieved`: it exists for the eval runner's recall@k
+(ADR 0023, `AskResult`'s docstring), while the HTTP client renders citations, and shipping it
+would make the top-k an observable part of this contract. No `k` request field: `DEFAULT_K` has
+one home and no product meaning for a caller. No conversation id or history — single-shot
+(ADR 0009). No `error` field on a success body, since ERROR is never a 2xx.
+
+**The broad catch this route needs is the app's, not its own.** `ask()` converts two exception
+types and propagates everything else, so raw psycopg and terminal provider errors do reach this
+boundary; `errors._unhandled` renders them as a 500 `internal` with the text going to the log. A
+route-local `except Exception` would be a second writer for that rendering, so there is none, and
+a test asserts both the behaviour and its absence from the source.
 
 ## Open / deferred (out of this spec)
 - Connection pooling — V2, with the Supabase move (ADR 0006).

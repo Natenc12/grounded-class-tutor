@@ -6,9 +6,13 @@ an uncaught exception all render through the same four handlers below. Which STA
 failure maps to is deliberately NOT decided here - that belongs to each route issue (#107, #108,
 #110), or this module gets rewritten three times. `ApiError` carries the status its raiser chose.
 
-One thing the envelope is not: the Grounder's ERROR state. That is a RETURNED outcome
-(ADR 0016; "failure states are returned, not raised"), rendered inside a success body by #108.
-A refusal is the product working, and this module never sees one.
+One thing the envelope is not: a Grounder REFUSAL. A refusal is the product working - the
+corpus was searched and did not cover the question - so `POST /ask` renders all four GROUNDING
+states as 200 bodies and this module never sees one. The fifth state, transport-level ERROR, does
+leave through this envelope: `routers/ask.py` picks the status per `error.kind` and adopts that
+kind as the envelope's. No contradiction with ADR 0016's "failure states are returned, not
+raised" - the ADR governs how `ask()` RETURNS the state, and the HTTP rendering is the route's
+own decision, made there.
 """
 
 from __future__ import annotations

@@ -76,9 +76,11 @@ def enqueue(
     `queued` file row the worker later claims - which is exactly what #69's
     caller-supplied `file_id` exists to support.
 
-    `staging_ref` is the file's ABSOLUTE PATH (decided 2026-08-03). Slice 2 has
-    no stager; ADR 0010's staging directory is Slice 3, which substitutes it with
-    no schema or signature change.
+    `staging_ref` is the file's ABSOLUTE PATH (decided 2026-08-03; confirmed when the stager
+    arrived, #105). `gct.staging.stage` returns exactly the string a caller then passes here
+    as `path`, so `enqueue` and `worker.process_one` (which opens `job.staging_ref` as a path)
+    were both unchanged by Slice 3. It stops being a local path only at ADR 0010's V2 move to
+    Object Storage, which is a V2 change.
 
     `path` yields TWO different column values: `filename` is the basename, because it is
     denormalized onto every chunk as the citation label (data-model.md §`chunks`) and a
@@ -93,10 +95,13 @@ def enqueue(
     is non-strict, so a path to nothing enqueues cleanly and #71 fails it at parse - which is
     the designed route: ADR 0020 makes an unopenable file a TERMINAL failure carrying an
     actionable reason the student sees, and a reason on the file row is worth more to them
-    than an exception thrown back at a caller with no UI. Checking here would also expire:
-    at Slice 3 `staging_ref` becomes a stager handle, not a path anything can stat, so the
-    guard would go from useless to wrong. Recorded because "considered and routed to the
-    parse-terminal path" and "nobody looked" are indistinguishable from the code alone.
+    than an exception thrown back at a caller with no UI. Checking here would also be a
+    second writer for a fact the stager owns: `stage` returns only after the bytes are
+    flushed, fsynced and renamed into place (#105), so a path it produced exists by
+    construction, and the one case where a stat could disagree with it is ADR 0010's V2
+    Object Storage, where `staging_ref` stops being a local path and the guard would go from
+    useless to wrong. Recorded because "considered and routed to the parse-terminal path" and
+    "nobody looked" are indistinguishable from the code alone.
 
     PRECONDITION ON `conn` (ADR 0025): it MUST NOT already be inside a transaction, or the
     block below degrades to a SAVEPOINT and this function returns having published nothing.

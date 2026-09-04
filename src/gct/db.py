@@ -24,8 +24,9 @@ def require_idle(conn: psycopg.Connection, fn: str) -> None:
     HOW MANY WRITERS THAT IS IS DELIBERATELY NOT RECORDED HERE. It was five when ADR 0027 measured
     it, and `queue.py` has gained verbs since, so a count written down here is a copy with a second
     writer and it goes stale on the next one - which is how the "five" this line used to carry
-    outlived the fact it described. The census is
-    `test_every_writer_refuses_a_connection_already_in_a_transaction`, which enumerates them.
+    outlived the fact it described. There is no single census: `queue.py`'s verbs are enumerated
+    by `test_every_writer_refuses_a_connection_already_in_a_transaction`, and each writer outside
+    that module (`index_file`, `create_class`) carries its own refuse test beside it.
 
     Deliberately NOT caught anywhere: a caller in the wrong transaction state is a programming
     error at wiring, not a runtime condition to handle. The message names the remedy because an

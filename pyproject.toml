@@ -15,6 +15,11 @@ dependencies = [
     # SEPARATE process, so this is the API's server and nothing else's).
     "fastapi>=0.115",
     "uvicorn>=0.30",
+    # Multipart form parsing, required by `POST /files` (issue #110). Not optional and not a dev
+    # dep: FastAPI raises at ROUTE REGISTRATION - i.e. at import of `gct.api.app` - for any
+    # `UploadFile`/`Form` parameter when this is absent, so without it the whole adapter fails to
+    # start rather than failing on the first upload.
+    "python-multipart>=0.0.9",
 ]
 
 [project.optional-dependencies]

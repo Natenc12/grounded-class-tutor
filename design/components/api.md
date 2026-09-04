@@ -82,8 +82,9 @@ that passes neither gets the OpenAI providers (ADR 0005/0007 defaults).
 ### Startup requirements (`gct.api.app.create_app`)
 - **`OPENAI_API_KEY` must be set** when a real provider is to be built. Checked in the lifespan,
   **before** any client is constructed; a missing key refuses startup with a message naming the
-  remedy. `load_settings()` defaults the key to `""` and the OpenAI client accepts that, so without
-  this check a missing key is silent until the first paid call.
+  remedy. `load_settings()` defaults the key to `""`; whether the OpenAI client refuses that at
+  construction or only on the first paid call has varied by SDK version, and the startup check
+  makes the refusal ours - naming `.env` - either way.
 - With **both** providers injected, no key is required — the requirement belongs to constructing
   the real provider, so the bypass is by construction rather than by flag. This is how the api test
   suite runs in CI against an empty key.

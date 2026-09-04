@@ -22,9 +22,11 @@ from gct.providers.base import Embeddings, Generation
 def require_openai_key() -> None:
     """Refuse to start without `OPENAI_API_KEY`.
 
-    `load_settings()` defaults the key to `""`, and the OpenAI client accepts an empty key at
-    construction - so without this, a missing key is silent until the first PAID call, which is
-    the first student's first question. Fail at startup instead, naming the remedy.
+    `load_settings()` defaults the key to `""`. Whether the OpenAI client then refuses at
+    construction or only on the first PAID call - the first student's first question - has
+    varied by SDK version (the one pinned today refuses; earlier ones accepted an empty key).
+    Neither is the failure this process should have: refuse at startup, in our words, naming
+    the remedy in the repo's terms.
     """
     if not load_settings().openai_api_key:
         raise RuntimeError(

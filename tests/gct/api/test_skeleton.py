@@ -253,8 +253,9 @@ def test_injecting_one_provider_still_requires_the_key_and_builds_the_other(monk
     calls it. No `live_*` fixture, so this is not a paid test."""
     from gct.providers.openai_provider import OpenAIGeneration
 
-    # Arm A: the real generator would be built with an empty key, which the SDK ACCEPTS - so
-    # the refusal has to be ours, naming the variable, not the SDK's error on the first call.
+    # Arm A: the refusal has to be OURS, naming the variable and the remedy - not whatever the
+    # SDK does with an empty key (the pinned one raises its own error at construction; earlier
+    # ones accepted it and failed on the first paid call). `match` is what tells them apart.
     monkeypatch.setenv("OPENAI_API_KEY", "")
     with pytest.raises(RuntimeError, match="OPENAI_API_KEY"):
         with TestClient(create_app(embedder=object())):

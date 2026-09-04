@@ -31,7 +31,9 @@ def _rows(db_other, owner_id: str, name: str) -> list[tuple[str, str]]:
 def test_create_class_publishes_a_row_and_returns_its_id_as_str(db, db_other):
     """One call, one row visible to a second connection, and the id comes back as `str`."""
     conn, owner_id, _ = db
-    conn.autocommit = True  # the wiring every writer's precondition names (ADR 0025/0027)
+    conn.autocommit = (
+        True  # the wiring every writer's precondition names (ADR 0025, guarded per ADR 0027)
+    )
 
     class_id = create_class(conn, owner_id=owner_id, name="Philosophy of Religion")
 

@@ -27,8 +27,8 @@ def create_class(conn: psycopg.Connection, *, owner_id: str, name: str) -> str:
     next call takes rather than one the caller has to convert.
 
     `class_id` is DB-generated (`gen_random_uuid()` default) and RETURNed - one round trip, and
-    no client-side uuid to be handed a colliding value. `_resolve_class` minted its own because it
-    needed the id before the insert for a log line; nothing here does.
+    no client-side uuid to be handed a colliding value. `_resolve_class` minted its own client-side
+    with no reason recorded for doing so; the library lets the DB mint, as `enqueue` does.
 
     A BLANK NAME IS REFUSED, not stored and not trimmed. The schema's `name text not null` accepts
     `''` and `'   '` - `not null` is not `not blank` - and a class with an invisible name is

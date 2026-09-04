@@ -83,7 +83,8 @@ def test_an_upload_publishes_a_queued_file_and_its_job_and_stages_the_bytes(api,
     rows = _files_rows(db_other, api.owner_id)
     assert len(rows) == 1, "the upload published exactly one files row"
     file_id, class_id, filename, status, staging_ref = rows[0]
-    staged = Path(staging_ref)
+    stored = Path(staging_ref)
+    staged = stored.resolve()
     # PROVEN BEFORE THE `try`, because the `finally` below hands `rmtree` a directory named by a
     # DATABASE ROW. `stage` writes `<STAGING_DIR>/<uuid4 hex>/<filename>`, so the slot is always a
     # direct child of the staging root, and checking that here is what keeps this teardown from
@@ -91,10 +92,19 @@ def test_an_upload_publishes_a_queued_file_and_its_job_and_stages_the_bytes(api,
     # mutation pass that made `staging_ref` a bare filename: `.parent` was the repository, and
     # `ignore_errors=True` took source, tests and all without a word. Containment asserted inside
     # the `try` does not help, because the `finally` runs whether or not it passed.
-    # `Path(STAGING_DIR).resolve()` is idempotent today (`gct.config` resolves it at import) and
-    # `enqueue` stores `str(Path(path).resolve())`, so the two sides compare equal; the call stays
-    # so this comparison is correct on its own terms rather than by borrowing config's habit.
-    assert staged.is_absolute(), staging_ref
+    #
+    # The containment is checked on the RESOLVED path, and the `rmtree` below is handed that same
+    # value, so the thing proved and the thing deleted are one object. Checking the stored spelling
+    # was not enough: `pathlib` never collapses `..`, so `Path(f"{STAGING_DIR}/../victim/x")` is
+    # absolute AND answers `STAGING_DIR` for `.parent.parent` - lexically, without ever asking the
+    # filesystem. A falsifier wrote exactly that row and this teardown deleted a whole tree one
+    # level ABOVE the staging root. `enqueue` stores `str(Path(path).resolve())` today, so no real
+    # row reaches here unresolved - but this guard exists precisely because a wrong path DID once
+    # reach that row, so what the writer currently does is not a property it may lean on.
+    # Absoluteness is asserted on the STORED spelling, because `resolve()` manufactures it out of
+    # the cwd and would make that arm vacuous. Both sides of the containment are resolved, so a
+    # symlinked root (`/tmp` -> `/private/tmp` on macOS) collapses the same way on each.
+    assert stored.is_absolute(), staging_ref
     assert staged.parent.parent == Path(STAGING_DIR).resolve(), staging_ref
     try:
         assert (file_id, class_id, filename, status) == (

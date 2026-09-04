@@ -16,6 +16,7 @@ from __future__ import annotations
 from typing import Any
 
 from fastapi import FastAPI, Request
+from fastapi.encoders import jsonable_encoder
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 from starlette.exceptions import HTTPException as StarletteHTTPException
@@ -65,7 +66,14 @@ async def _http_exception(request: Request, exc: StarletteHTTPException) -> JSON
 async def _validation(request: Request, exc: RequestValidationError) -> JSONResponse:
     # 422 is FastAPI's status for this and stays; only the body changes. `detail` carries the
     # per-field list pydantic produced, which is the actionable part.
-    return envelope(422, KIND_VALIDATION, "request validation failed", exc.errors())
+    # `jsonable_encoder` is load-bearing, not tidiness: when a `@field_validator` raises,
+    # pydantic puts the EXCEPTION OBJECT in the entry's `ctx`, and a bare `exc.errors()` then
+    # fails JSON serialisation inside this handler - so the 422 envelope collapses into a bare
+    # 500 `internal` and the validation message the client needed is gone. FastAPI's own default
+    # 422 handler runs the list through the same encoder for the same reason.
+    return envelope(
+        422, KIND_VALIDATION, "request validation failed", jsonable_encoder(exc.errors())
+    )
 
 
 async def _unhandled(request: Request, exc: Exception) -> JSONResponse:

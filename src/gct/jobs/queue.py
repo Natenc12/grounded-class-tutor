@@ -104,14 +104,24 @@ def enqueue(
     useless to wrong. Recorded because "considered and routed to the parse-terminal path" and
     "nobody looked" are indistinguishable from the code alone.
 
-    `class_id` IS PARSED AND THE CANONICAL SPELLING IS BOUND (#121), the lenient shape every
-    library entry point on a boundary takes. `get_file_status` (`gct/files.py`) is the writer of
-    WHY - which spellings `uuid.UUID` accepts that Postgres's `::uuid` cast does not, and why
-    validating the raw string and then binding THAT is not the same thing - and this is a cite,
-    not a second copy of that argument. Lenient here, strict inside the pipeline: `index_file`
-    refuses a non-canonical id outright, because its id is read back out of the database and is
-    canonical by construction, whereas everything that calls `enqueue` (a script, the Slice 3
-    upload route, the exit smoke) hands it a string a person typed.
+    `class_id` IS PARSED AND THE CANONICAL SPELLING IS BOUND (#121), the lenient shape the
+    id-taking readers on a boundary take - `class_exists` (`gct/classes.py`) and
+    `get_file_status` (`gct/files.py`). NOT a description of the whole library: `retrieve` and
+    `index_file` still bind a caller-supplied `class_id` raw. That was measured on this branch and
+    is out of #121's scope; the follow-up is drafted on this PR rather than numbered here, since a
+    number written before the issue exists is a pointer that cannot resolve.
+
+    `get_file_status` is the writer of WHY - which spellings `uuid.UUID` accepts that Postgres's
+    `::uuid` cast does not, and why validating the raw string and then binding THAT is not the
+    same thing - and this is a cite, not a second copy of that argument.
+
+    Lenient here, strict one layer up in the pipeline, and the asymmetry is about WHERE THE ID
+    COMES FROM rather than about writers being stricter than readers. `ingest_file`
+    (`gct/ingest/pipeline.py`) refuses a non-canonical `file_id` outright because the worker reads
+    that id back out of the database, where it is canonical by construction, so any other spelling
+    is an upstream bug. Everything that calls `enqueue` - a script, the Slice 3 upload route, the
+    exit smoke - hands it a string a person typed. Note the guard `ingest_file` holds covers
+    `file_id` ONLY; nothing on that path checks `class_id`.
 
     What is NOT inherited from those siblings is their REASON, and copying their sentence would
     make this docstring wrong. Theirs is a poisoned connection: they are readers with no

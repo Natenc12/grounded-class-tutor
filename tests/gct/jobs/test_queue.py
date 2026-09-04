@@ -280,11 +280,19 @@ def test_every_uuid_spelling_python_accepts_publishes_one_canonical_row(
     naming a Postgres type. The route (#110) worked around it by parsing once at the top, which
     protected exactly one caller; the next one - a script, the Slice 3 exit smoke - hit it again.
 
-    PARAMETRIZED, not looped, and all four rather than only the broken one. Parametrizing gives
-    each spelling its OWN `db` fixture, hence its own `owner_id`, which is what makes "exactly one
-    row" a real assertion instead of a running count. All four because the fix has to normalise
-    every form the parser admits: a narrower one - special-casing the `urn:` prefix, say - would
-    pass a urn-only test and still mangle the braced form.
+    PARAMETRIZED, not looped. Parametrizing gives each spelling its OWN `db` fixture, hence its
+    own `owner_id`, which is what makes "exactly one row" a real assertion instead of a running
+    count.
+
+    WHAT EACH CASE ACTUALLY BUYS, measured rather than assumed, because a maintainer trimming this
+    test will trim it on whatever this docstring says. Only `urn` is sensitive to the fix under
+    review: revert `enqueue` to binding raw and that case alone goes red. Postgres normalises the
+    braced and bare-32-hex spellings ITSELF, so any fix that leaves them raw still publishes a
+    canonical row - a urn-only special case passes all four, which was measured and is why the
+    earlier claim that it "would still mangle the braced form" is not the reason to keep them.
+    They pin the OTHER decision: that `enqueue` is LENIENT. Swap in `ingest_file`-style strict
+    rejection of any non-canonical spelling and braced, hex32 and urn all go red together. Two
+    different guards, one parametrization.
 
     Read back through `db_other`, a SECOND connection: `db`'s own connection sees its uncommitted
     work, so the canonical value would read back correctly whether or not it was ever published.

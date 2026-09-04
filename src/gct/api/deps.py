@@ -38,10 +38,10 @@ def get_conn() -> Iterator[psycopg.Connection]:
     silence. Sync (`def`, not `async def`) on purpose: `connect()` blocks, and FastAPI runs a
     sync dependency in its threadpool instead of on the event loop.
 
-    Tests do NOT override this dependency. The trap the ticket names: injecting the `db` fixture
-    hands the handler a NON-autocommit connection, so the test fails `require_idle` while
-    production works. The api suite's fixtures use this function as shipped and scope teardown by
-    owner instead (`tests/gct/api/conftest.py`).
+    The suite's FIXTURES never override this dependency: injecting the `db` fixture would hand the
+    handler a NON-autocommit connection, so a read-then-write test fails `require_idle` while
+    production works - `tests/gct/api/conftest.py` scopes teardown by owner instead. Two tests do
+    substitute it (grep `dependency_overrides`), for a NEGATIVE arm only; every positive arm ships.
     """
     conn = connect()
     conn.autocommit = True

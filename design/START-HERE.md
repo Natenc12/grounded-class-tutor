@@ -124,9 +124,9 @@ You do **not** need all of these before contributing. Start at the top; go as de
 3. **`architecture.md`** — *(implementers)* the system's shape, how the pieces fit, and the "citation
    spine." **This is the current source of truth for the stack.**
 4. **`data-model.md`** — *(implementers)* the exact database tables (`classes · files · chunks · jobs`).
-5. **`components/`** — *(whoever owns that piece)* deep build specs for the three make-or-break parts:
+5. **`components/`** — *(whoever owns that piece)* deep build specs for the make-or-break parts:
    **grounder.md** (the trust core) → **retriever.md** (the read path) → **ingestion-worker.md** (the
-   write path).
+   write path) → **api.md** (the thin HTTP adapter over all three).
 6. **`roadmap.md`** — *(everyone, before starting)* the build sequence, slice by slice.
 7. **`HANDOFF.md`** — the dense, complete build manifest. It's written in shorthand for an AI assistant —
    **paste it (or a slice of it) into Claude when you're implementing** and it'll have the full picture.

@@ -123,6 +123,34 @@ def test_get_conn_is_autocommit_pgvector_registered_and_closed_after_the_request
     assert conn.closed
 
 
+def test_the_request_connection_is_closed_when_the_handler_raises(api, monkeypatch):
+    """The `finally` in `get_conn`, pinned in the one direction that needs it. The happy path
+    closes the connection with or without a `finally`; a handler that RAISES is what leaks one
+    connection per request without it, and the API then walks to `max_connections` in silence.
+
+    Spies on `deps.connect` - `get_conn` resolves that name at call time - to catch the very
+    connection the request built, and reads its state after the 500 has come back. Nothing
+    reaches `db`'s or `db_other`'s connection; the spy wraps the app's own."""
+    built: list[psycopg.Connection] = []
+    real_connect = deps.connect
+
+    def spying_connect() -> psycopg.Connection:
+        conn = real_connect()
+        built.append(conn)
+        return conn
+
+    monkeypatch.setattr(deps, "connect", spying_connect)
+
+    @api.app.get("/_test/raise-after-connect")
+    def _route(conn: Conn) -> None:
+        raise RuntimeError("the handler failed after the connection was built")
+
+    resp = api.client.get("/_test/raise-after-connect")
+    assert resp.status_code == 500
+    assert len(built) == 1
+    assert built[0].closed
+
+
 # --- The owner ---------------------------------------------------------------------------------
 
 

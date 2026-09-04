@@ -171,6 +171,13 @@ def test_the_request_connection_is_closed_when_the_handler_raises(api, monkeypat
 # --- The owner ---------------------------------------------------------------------------------
 
 
+def test_the_v1_owner_is_the_dogfood_corpus_owner():
+    # The owner the dogfood corpus is ingested under in the real database: a silent change would
+    # make the API answer from an EMPTY class while every other test stays green (D10 in the
+    # ship ledger). A pin on the one writer, not a second writer of the value.
+    assert V1_OWNER_ID == "nate-dogfood"
+
+
 def test_owner_id_has_one_source(offline_app, monkeypatch):
     """The dependency returns the config constant, and a route sees it without reading the
     request. Overriding it per test is the api fixtures' job; unoverridden, it is V1's one user.

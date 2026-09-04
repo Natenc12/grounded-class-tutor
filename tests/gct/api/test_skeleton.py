@@ -154,17 +154,26 @@ def test_the_request_connection_is_closed_when_the_handler_raises(api, monkeypat
 # --- The owner ---------------------------------------------------------------------------------
 
 
-def test_owner_id_has_one_source(offline_app):
+def test_owner_id_has_one_source(offline_app, monkeypatch):
     """The dependency returns the config constant, and a route sees it without reading the
-    request. Overriding it per test is the api fixtures' job; unoverridden, it is V1's one user."""
-    assert owner_id() == V1_OWNER_ID
+    request. Overriding it per test is the api fixtures' job; unoverridden, it is V1's one user.
+
+    Pinned by MOVING the constant, not only by comparing to it: `owner_id() == V1_OWNER_ID` is
+    green for a copy of the literal pasted into the function, which is the second writer this
+    dependency exists to prevent. Patched on `deps`, where `owner_id` resolves the name at call
+    time; the dependency and the route must both follow."""
 
     @offline_app.get("/_test/owner")
     def _route(owner: OwnerId) -> dict[str, str]:
         return {"owner_id": owner}
 
     with TestClient(offline_app) as client:
+        assert owner_id() == V1_OWNER_ID
         assert client.get("/_test/owner").json() == {"owner_id": V1_OWNER_ID}
+
+        monkeypatch.setattr(deps, "V1_OWNER_ID", "someone-else")
+        assert owner_id() == "someone-else"
+        assert client.get("/_test/owner").json() == {"owner_id": "someone-else"}
 
 
 # --- Providers and startup ---------------------------------------------------------------------

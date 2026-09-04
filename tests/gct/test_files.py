@@ -16,6 +16,7 @@ extended per ADR 0029).
 
 from __future__ import annotations
 
+import dataclasses
 import re
 import uuid
 from pathlib import Path
@@ -173,4 +174,35 @@ def test_a_malformed_file_id_is_refused_before_any_statement(db, tmp_path):
     assert get_file_status(conn, file_id=file_id, owner_id=owner_id) == FileStatus(
         status="queued", failed_reason=None, filename="lecture-3.pdf"
     )
+    conn.rollback()
+
+
+def test_every_spelling_pythons_parser_accepts_reaches_postgres_in_a_form_it_accepts(db, tmp_path):
+    """The arm the malformed-string test cannot supply: an id Python ACCEPTS but Postgres's
+    `::uuid` cast does NOT (`urn:uuid:<id>`). Validating and then binding the raw string would pass
+    the check and still abort the open transaction; binding the canonical form must not. Each
+    spelling returns the same row as the canonical id, on the NON-autocommit connection, and the
+    transaction is still INTRANS and still answering afterwards - the braces and bare-hex forms
+    ride along so the pin covers every spelling the parser admits, not just the one that bites.
+    """
+    file_id, owner_id = _enqueued(db, tmp_path)
+    conn = db[0]
+    conn.autocommit = False
+    conn.execute("select 1").fetchone()
+    assert conn.info.transaction_status == psycopg.pq.TransactionStatus.INTRANS
+    expected = FileStatus(status="queued", failed_reason=None, filename="lecture-3.pdf")
+    assert get_file_status(conn, file_id=file_id, owner_id=owner_id) == expected
+
+    # Postgres itself refuses the urn spelling - measured through a savepoint so the refusal
+    # cannot poison this test's own transaction. This is what makes the pin below non-trivial.
+    with pytest.raises(psycopg.errors.InvalidTextRepresentation):
+        with conn.transaction():
+            conn.execute("select %s::uuid", (f"urn:uuid:{file_id}",)).fetchone()
+
+    for spelling in (f"urn:uuid:{file_id}", "{" + file_id + "}", file_id.replace("-", "")):
+        assert get_file_status(conn, file_id=spelling, owner_id=owner_id) == expected, spelling
+        assert conn.info.transaction_status == psycopg.pq.TransactionStatus.INTRANS, spelling
+
+    # Still a live transaction, not INERROR: a following statement succeeds.
+    assert conn.execute("select 1").fetchone() == (1,)
     conn.rollback()

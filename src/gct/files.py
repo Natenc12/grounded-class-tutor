@@ -60,12 +60,20 @@ def get_file_status(conn: psycopg.Connection, *, file_id: str, owner_id: str) ->
     same sense that a refusal is a successful grounder outcome (ADR 0014-0016), and callers
     check it rather than catch it.
 
-    `file_id` IS VALIDATED AS A UUID BEFORE ANY STATEMENT. Letting Postgres reject the cast would
-    raise a psycopg `DataError` the adapter has no business catching, and - worse - on a
-    non-autocommit connection the failed statement aborts the implicit transaction, so every later
-    statement on that connection fails with `InFailedSqlTransaction`. A malformed id is a caller
-    error, so it is refused with a message naming the remedy and the connection is left as it
-    was found. A well-formed id that matches nothing is the `None` case above, not this one.
+    `file_id` IS VALIDATED AS A UUID BEFORE ANY STATEMENT, AND THE CANONICAL FORM IS WHAT GETS
+    BOUND. Letting Postgres reject the cast would raise a psycopg `DataError` the adapter has no
+    business catching, and - worse - on a non-autocommit connection the failed statement aborts the
+    implicit transaction, so every later statement on that connection fails with
+    `InFailedSqlTransaction`. A malformed id is a caller error, so it is refused with a message
+    naming the remedy and the connection is left as it was found. A well-formed id that matches
+    nothing is the `None` case above, not this one.
+
+    Binding `str(uuid.UUID(file_id))` rather than the raw string is load-bearing, not tidiness:
+    Python's parser accepts forms Postgres's `::uuid` cast does not (`urn:uuid:<id>` is refused
+    with `InvalidTextRepresentation`), so validating the raw string and then binding it would pass
+    the check and still hit the exact abort the check exists to prevent. Every id the parser
+    accepts - hyphenated, braced, bare 32-hex, urn - reaches the database as the one spelling it
+    accepts too.
 
     This is a READER and deliberately does not call `require_idle`: a SELECT inside a
     transaction is correct. But a SELECT is also enough to OPEN psycopg's implicit transaction on a
@@ -74,7 +82,7 @@ def get_file_status(conn: psycopg.Connection, *, file_id: str, owner_id: str) ->
     caller's wiring - autocommit at the request-scoped connection, which is the API's contract.
     """
     try:
-        uuid.UUID(file_id)
+        canonical = str(uuid.UUID(file_id))
     except ValueError as exc:
         raise ValueError(
             f"get_file_status() requires a uuid file_id; got {file_id!r}. An id that is not a "
@@ -89,7 +97,7 @@ def get_file_status(conn: psycopg.Connection, *, file_id: str, owner_id: str) ->
         where file_id = %(file_id)s::uuid
           and owner_id = %(owner_id)s
         """,
-        {"file_id": file_id, "owner_id": owner_id},
+        {"file_id": canonical, "owner_id": owner_id},
     ).fetchone()
     if row is None:
         return None

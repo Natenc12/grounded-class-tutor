@@ -196,3 +196,25 @@ def live_openai_embedder():
     if not load_settings().openai_api_key:
         pytest.skip("no OPENAI_API_KEY in the environment/.env — live tests need real secrets")
     return OpenAIEmbeddings()
+
+
+@pytest.fixture
+def foreign_class(db_other):
+    """A class row owned by SOMEONE ELSE, with its own teardown.
+
+    `db`'s teardown deletes by owner and this row is not that owner's, so it is cleaned up here —
+    children first (FK order), because a test may well have queued a file against it, which is
+    precisely the cross-owner write `class_exists` exists to prevent.
+    """
+    other_owner = f"test-other-owner-{uuid.uuid4()}"
+    (class_id,) = db_other.execute(
+        "insert into classes (owner_id, name) values (%s, %s) returning class_id",
+        (other_owner, "someone else's class"),
+    ).fetchone()
+    try:
+        yield other_owner, str(class_id)
+    finally:
+        db_other.execute("delete from jobs where class_id = %s::uuid", (str(class_id),))
+        db_other.execute("delete from chunks where class_id = %s::uuid", (str(class_id),))
+        db_other.execute("delete from files where class_id = %s::uuid", (str(class_id),))
+        db_other.execute("delete from classes where class_id = %s::uuid", (str(class_id),))

@@ -121,28 +121,6 @@ def test_create_class_refuses_a_connection_already_in_a_transaction(db, db_other
     assert _rows(db_other, owner_id, "accepted") == [(owner_id, "accepted")]
 
 
-@pytest.fixture
-def foreign_class(db_other):
-    """A class row owned by SOMEONE ELSE, with its own teardown.
-
-    `db`'s teardown deletes by owner and this row is not that owner's, so it is cleaned up here —
-    children first (FK order), because a test may well have queued a file against it, which is
-    precisely the cross-owner write `class_exists` exists to prevent.
-    """
-    other_owner = f"test-other-owner-{uuid.uuid4()}"
-    (class_id,) = db_other.execute(
-        "insert into classes (owner_id, name) values (%s, %s) returning class_id",
-        (other_owner, "someone else's class"),
-    ).fetchone()
-    try:
-        yield other_owner, str(class_id)
-    finally:
-        db_other.execute("delete from jobs where class_id = %s::uuid", (str(class_id),))
-        db_other.execute("delete from chunks where class_id = %s::uuid", (str(class_id),))
-        db_other.execute("delete from files where class_id = %s::uuid", (str(class_id),))
-        db_other.execute("delete from classes where class_id = %s::uuid", (str(class_id),))
-
-
 def test_class_exists_is_true_for_the_owner_and_false_for_everyone_else(db, foreign_class):
     """Both arms on ONE class_id, so the difference is the owner and nothing else. A reader that
     ignored `owner_id` — the failure this function exists to rule out — passes the first

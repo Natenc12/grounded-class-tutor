@@ -43,7 +43,8 @@ get_conn() -> Iterator[psycopg.Connection]      # a FastAPI yield-dependency; sp
 ```
 Every request gets **its own connection**, built by **`gct.db.connect()`** (so the pgvector type is
 registered — `ask()` requires it), with **`autocommit = True`**, **closed in a `finally`** when the
-request ends. Never overridden, never pooled, never shared across requests in V1.
+request ends. Never pooled, never shared across requests in V1, and never overridden by a
+FIXTURE — a test may substitute it to drive a negative arm, never for a positive one (Invariants).
 
 Why autocommit is the contract and not a preference: every library writer refuses a connection
 already inside a transaction (`gct.db.require_idle`; ADR 0025, guarded per ADR 0027), and psycopg
@@ -138,10 +139,10 @@ reached Postgres, and closed — not merely that the process is up.
 ## Testing contract (`tests/gct/api/conftest.py`)
 The TestClient fixture **does not inject the `db` fixture into `get_conn`** — `db` is not
 autocommit, so that test fails `require_idle` while production works. The app builds its own
-connection per request as shipped; the test overrides only `owner_id` with `db`'s unique per-test
-owner, so every row a handler writes lands under an owner `db`'s teardown already deletes. Read-back
-of anything WRITTEN goes through `db_other` (CLAUDE.md). Providers are stubs; no api test takes a
-`live_*` fixture or constructs a real client.
+connection per request as shipped; the FIXTURE overrides only `owner_id`, with `db`'s unique
+per-test owner, so every row a handler writes lands under an owner `db`'s teardown already
+deletes. Read-back of anything WRITTEN goes through `db_other` (CLAUDE.md). Providers are
+stubs; no api test takes a `live_*` fixture or constructs a real client.
 
 ---
 

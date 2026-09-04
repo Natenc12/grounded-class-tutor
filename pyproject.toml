@@ -53,7 +53,7 @@ line-length = 100
 # noise diffs otherwise), UP keeps us on 3.10 idiom, and B is the bug-shaped one — B905 in
 # particular forces `zip(..., strict=)`, and a silently-truncating zip over chunks/vectors is
 # exactly the kind of thing that would corrupt an index without ever raising.
-select = ["E", "F", "I", "B", "UP"]
+select = ["E", "F", "I", "B", "UP", "W"]
 
 [tool.pytest.ini_options]
 # --strict-markers: applying an unregistered mark is an ERROR, not a silently-ignored no-op. It

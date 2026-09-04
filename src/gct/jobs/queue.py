@@ -21,6 +21,7 @@ call one writer of the rule.
 
 from __future__ import annotations
 
+import uuid
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -103,11 +104,39 @@ def enqueue(
     useless to wrong. Recorded because "considered and routed to the parse-terminal path" and
     "nobody looked" are indistinguishable from the code alone.
 
+    `class_id` IS PARSED AND THE CANONICAL SPELLING IS BOUND (#121), the lenient shape every
+    library entry point on a boundary takes. `get_file_status` (`gct/files.py`) is the writer of
+    WHY - which spellings `uuid.UUID` accepts that Postgres's `::uuid` cast does not, and why
+    validating the raw string and then binding THAT is not the same thing - and this is a cite,
+    not a second copy of that argument. Lenient here, strict inside the pipeline: `index_file`
+    refuses a non-canonical id outright, because its id is read back out of the database and is
+    canonical by construction, whereas everything that calls `enqueue` (a script, the Slice 3
+    upload route, the exit smoke) hands it a string a person typed.
+
+    What is NOT inherited from those siblings is their REASON, and copying their sentence would
+    make this docstring wrong. Theirs is a poisoned connection: they are readers with no
+    transaction of their own, so a failed cast aborts the caller's implicit transaction and takes
+    every later statement with it. This one has a transaction - the block below - and `require_idle`
+    makes an IDLE connection the only kind that reaches it, so psycopg rolls that transaction back
+    and leaves the connection IDLE. Measured on #121: the caller's next statement succeeds. The
+    cost of letting the cast fail is narrower and later - one rejected write, surfacing as a
+    psycopg `DataError` that names a Postgres type rather than anything a caller can act on, and
+    for the upload route, after `stage` has already written the bytes.
+
     PRECONDITION ON `conn` (ADR 0025): it MUST NOT already be inside a transaction, or the
     block below degrades to a SAVEPOINT and this function returns having published nothing.
     Same precondition, same reason, as `index_file` - see its docstring.
     """
     require_idle(conn, "enqueue")
+    try:
+        canonical_class_id = str(uuid.UUID(class_id))
+    except ValueError as exc:
+        raise ValueError(
+            f"enqueue() requires a uuid class_id; got {class_id!r}. Pass the id `create_class` "
+            "returned for the class this file belongs to - an id that is not a uuid cannot name "
+            "any class, so nothing would be queued and the caller's staged bytes would be "
+            "orphaned."
+        ) from exc
     source = Path(path)
 
     with conn.transaction():
@@ -124,7 +153,7 @@ def enqueue(
             """,
             {
                 "owner_id": owner_id,
-                "class_id": class_id,
+                "class_id": canonical_class_id,
                 "filename": source.name,
                 "staging_ref": str(source.resolve()),
             },
@@ -148,7 +177,7 @@ def enqueue(
             insert into jobs (file_id, owner_id, class_id)
             values (%(file_id)s::uuid, %(owner_id)s, %(class_id)s::uuid)
             """,
-            {"file_id": file_id, "owner_id": owner_id, "class_id": class_id},
+            {"file_id": file_id, "owner_id": owner_id, "class_id": canonical_class_id},
         )
 
     return file_id

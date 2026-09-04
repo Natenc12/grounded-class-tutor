@@ -17,7 +17,13 @@ import uuid
 import psycopg
 import pytest
 
-from gct.classes import CLASS_NAME_REASONS, ClassNameError, class_exists, create_class
+from gct.classes import (
+    CLASS_NAME_REASONS,
+    ClassNameError,
+    class_exists,
+    create_class,
+    validate_name,
+)
 from gct.jobs.queue import enqueue
 
 
@@ -327,3 +333,84 @@ def test_class_name_error_is_a_value_error_for_existing_callers(db):
 
     assert isinstance(caught.value, ClassNameError)
     assert caught.value.reason in CLASS_NAME_REASONS
+
+
+def test_class_name_error_refuses_a_reason_outside_the_closed_set():
+    """`CLASS_NAME_REASONS` is documented as CLOSED, and the assert in `__init__` is what closes
+    it — so a reason nobody declared must not be constructible.
+
+    Pinned on the TOKEN, not merely on "something raised": a mutant that widens the check to
+    `reason is not None` constructs this happily, and one that raises for every reason would pass
+    a bare `pytest.raises`. Both directions, therefore — the nonsense token is refused AND names
+    itself in the message, and every declared reason still constructs.
+
+    A known bound, recorded rather than fixed here: this guard is an `assert`, so `python -O`
+    strips it. That is `StagingError`'s shape, copied deliberately, and `index_file`'s empty-chunk
+    guard is the counter-example that uses `raise` because it must hold under `-O`. Which of the
+    two a reason-token guard should be is not this ticket's question.
+    """
+    with pytest.raises(AssertionError) as caught:
+        ClassNameError("nonsense-token", "detail", remedy="remedy")
+    assert "nonsense-token" in str(caught.value), (
+        "the refusal does not name the token it rejected, so it would pass against a wider check"
+    )
+
+    for reason in CLASS_NAME_REASONS:
+        assert ClassNameError(reason, "detail", remedy="remedy").reason == reason
+
+
+def test_a_refusal_message_carries_both_the_detail_and_the_remedy():
+    """`remedy` exists to appear in what a caller READS, so `str(exc)` must carry it.
+
+    A caller that only logs the exception still has to learn the fix — the refuse-don't-convert
+    rule at boundaries, which `StagingError` states and this class inherits. Nothing else asserted
+    that: the router suite pins that this prose never reaches a CLIENT, which is the opposite
+    direction and is satisfied by prose that says nothing at all.
+
+    Pinned on the real raises as well as a synthetic one, because the synthetic construction alone
+    would pass even if `validate_name` stopped passing a remedy through.
+    """
+    synthetic = ClassNameError("blank", "the detail", remedy="the remedy")
+    assert str(synthetic) == "the detail - the remedy"
+    assert synthetic.detail == "the detail" and synthetic.remedy == "the remedy"
+
+    for name in ("", "   ", *UNSTORABLE.values()):
+        with pytest.raises(ClassNameError) as caught:
+            validate_name(name)
+        exc = caught.value
+        assert exc.detail and exc.remedy, f"{name!r} was refused with half an error"
+        assert exc.detail in str(exc), f"{name!r}: the detail is missing from the message"
+        assert exc.remedy in str(exc), f"{name!r}: the remedy is missing from the message"
+        assert str(exc) != exc.detail, f"{name!r}: the message is the detail alone"
+
+
+def test_the_connection_guard_runs_before_the_name_guard(db, db_other):
+    """WHICH ERROR A DOUBLY-INVALID CALL GETS — a contract, not an accident, and one this code
+    was on the wrong side of until the repair round.
+
+    `gct.db.require_idle` states the rule ("Called first by every writer") and `index_file` spells
+    out the argument beside its own two guards. `create_class` had them the other way round, so a
+    caller with a broken connection AND a blank name was told about the name — and could fix names
+    all day while every write silently published nothing (ADR 0025). Consistency between writers
+    is the point: a caller must not have to remember which one checks what first.
+
+    Both directions, on ONE connection, so the difference is the guard order and nothing else:
+    non-idle + blank is the connection's error; idle + blank is the name's; non-idle + valid is
+    still the connection's. Reversing the two lines flips the first assertion.
+    """
+    conn, owner_id, _ = db
+    conn.execute("select 1").fetchone()  # the accidental transaction — a read, not a write
+    assert conn.info.transaction_status == psycopg.pq.TransactionStatus.INTRANS
+
+    with pytest.raises(RuntimeError, match=r"create_class\(\) requires a connection"):
+        create_class(conn, owner_id=owner_id, name="")
+    with pytest.raises(RuntimeError):
+        create_class(conn, owner_id=owner_id, name="valid but the connection is not")
+
+    conn.rollback()
+    assert conn.info.transaction_status == psycopg.pq.TransactionStatus.IDLE
+    with pytest.raises(ClassNameError) as caught:
+        create_class(conn, owner_id=owner_id, name="")
+    assert caught.value.reason == "blank"
+
+    assert _row_count(db_other, owner_id) == 1, "a refused create wrote a row (db seeds one class)"

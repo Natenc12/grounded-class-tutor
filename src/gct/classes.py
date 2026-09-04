@@ -128,12 +128,13 @@ def create_class(conn: psycopg.Connection, *, owner_id: str, name: str) -> str:
     with no reason recorded for doing so; the library lets the DB mint, as `enqueue` does.
 
     AN UNUSABLE NAME IS REFUSED, not stored and not trimmed - `validate_name` above holds the
-    whole rule and its argument. Refusing at the library boundary means no adapter has to
-    remember it, and refusing rather than trimming means the caller's value is stored VERBATIM
-    when it is accepted: a name with surrounding whitespace is not silently rewritten into a
-    different name, which is the kind of quiet conversion this codebase does not do at
-    boundaries. The check runs BEFORE any statement, so a rejected call leaves the connection
-    exactly as it found it.
+    whole rule and its argument. It runs AFTER `require_idle`, so a call that is invalid in both
+    ways reports the connection first; see the comment on that line. Refusing at the library
+    boundary means no adapter has to remember it, and refusing rather than trimming means the
+    caller's value is stored VERBATIM when it is accepted: a name with surrounding whitespace is
+    not silently rewritten into a different name, which is the kind of quiet conversion this
+    codebase does not do at boundaries. Both guards run BEFORE any statement, so a rejected call
+    leaves the connection exactly as it found it.
 
     RAISES `ClassNameError`, NEVER A BARE `ValueError`, and that distinction is the fix for a
     shipped defect (issue #107's fix round): `UnicodeEncodeError` IS a `ValueError`, so a caller
@@ -148,8 +149,13 @@ def create_class(conn: psycopg.Connection, *, owner_id: str, name: str) -> str:
     `require_idle` (ADR 0027), whose message names the remedy. Commits before returning, same
     contract as `enqueue`.
     """
-    validate_name(name)
+    # Connection guard FIRST, then the payload guard. Not a taste call and not this function's
+    # own idea: `gct.db.require_idle` states the rule ("Called first by every writer") and
+    # `index_file` carries the argument for it, which is not restated here. Both fire before the
+    # transaction opens, so a refused call writes nothing either way - what the order decides is
+    # WHICH error a doubly-invalid call gets, and it must be the same answer every writer gives.
     require_idle(conn, "create_class")
+    validate_name(name)
 
     with conn.transaction():
         row = conn.execute(

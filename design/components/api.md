@@ -44,7 +44,7 @@ get_conn() -> Iterator[psycopg.Connection]      # a FastAPI yield-dependency; sp
 Every request gets **its own connection**, built by **`gct.db.connect()`** (so the pgvector type is
 registered — `ask()` requires it), with **`autocommit = True`**, **closed in a `finally`** when the
 request ends. Never pooled, never shared across requests in V1, and never overridden by a
-FIXTURE — a test may substitute it to drive a negative arm, never for a positive one (Invariants).
+FIXTURE — a test may substitute it to drive a negative arm, never for a positive one.
 
 Why autocommit is the contract and not a preference: every library writer refuses a connection
 already inside a transaction (`gct.db.require_idle`; ADR 0025, guarded per ADR 0027), and psycopg
@@ -127,8 +127,9 @@ reached Postgres, and closed — not merely that the process is up.
 | Request fails validation | 422 `validation` envelope, field list in `detail` | `errors.install` |
 
 ## Invariants
-- One connection per request, autocommit, closed on exit. No test FIXTURE overrides `get_conn`;
-  a test may substitute it only to drive a negative arm, never for a positive one.
+- One connection per request, autocommit, closed on exit, and no test FIXTURE overrides it —
+  *The connection contract* above owns that rule and its one exception; this line does not
+  restate them.
 - One source for the owner; no route reads an owner from the request. Every scoped query filters
   `owner_id AND class_id`.
 - Providers are per-app singletons built at startup; never per request.

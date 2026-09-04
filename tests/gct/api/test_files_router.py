@@ -96,7 +96,7 @@ def test_an_upload_publishes_a_queued_file_and_its_job_and_stages_the_bytes(api,
     #
     # The containment is checked on the RESOLVED path, and the `rmtree` below is handed that same
     # value, so the thing proved and the thing deleted are one object. Checking the stored spelling
-    # was not enough: `pathlib` never collapses `..`, so `Path(f"{STAGING_DIR}/../victim/x")` is
+    # was not enough: `pathlib` never collapses `..`, so `Path(f"{STAGING_DIR}/../victim.pdf")` is
     # absolute AND answers `STAGING_DIR` for `.parent.parent` - lexically, without ever asking the
     # filesystem. A falsifier wrote exactly that row and this teardown deleted a whole tree one
     # level ABOVE the staging root. `enqueue` stores `str(Path(path).resolve())` today, so no real
@@ -424,7 +424,7 @@ def _accepted_suffixes(func) -> set[str]:
 
     UNBOUNDED IN LENGTH, and a length cap here gets it wrong in BOTH directions. This filter
     started as `{1,5}` while the sentence it is compared against is scraped with an unbounded
-    `\(\.[a-z0-9]+\)`. Two filters of different widths comparing their outputs are not one
+    `\\(\\.[a-z0-9]+\\)`. Two filters of different widths comparing their outputs are not one
     guard but two: a nine-character suffix added to the parser ALONE passed silently - measured,
     `.markdown` on the dispatch and not in the sentence was green - which is precisely the drift
     this exists to catch; and the same suffix added correctly to BOTH sides went red, because

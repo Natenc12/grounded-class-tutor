@@ -25,6 +25,7 @@ writer of this precondition, and a route that builds its own connection breaks t
 
 from __future__ import annotations
 
+import uuid
 from pathlib import Path
 from typing import Annotated
 
@@ -41,9 +42,12 @@ from gct.staging import StagingError, stage
 
 router = APIRouter(prefix="/files", tags=["files"])
 
-# The HTTP status each request-time staging refusal renders as (`gct.staging.STAGING_REASONS` is
-# the closed set; a reason missing from this map is a KeyError, not a silent default, so widening
-# that set cannot quietly ship as a 500).
+# The HTTP status each request-time staging refusal renders as. `gct.staging.STAGING_REASONS` is
+# the closed set this must cover, and a reason missing from it raises `KeyError` INSIDE the
+# handler - which `errors._unhandled` renders as `{"error":{"kind":"internal"}}`, i.e. a bad
+# request shipped as a server fault. The map cannot guard itself against that, so the guard is a
+# test: `test_every_staging_reason_has_a_status` compares `set(_STAGING_STATUS)` against
+# `set(STAGING_REASONS)`, and fails the moment the library widens the set without a status here.
 #   `bad_filename` -> 400, not 422: 422 is FastAPI's own request-validation status and its body
 #   already carries pydantic's per-field list under `detail` (`errors._validation`). Two different
 #   bodies behind one status is what makes a client parse by trial.
@@ -89,9 +93,18 @@ def upload_file(
         are one `False` from `class_exists`, so this route cannot leak cross-owner existence even
         by accident (F12). Nothing has been staged at this point: this check is first precisely
         so a refusal is free.
-      - `class_id` is not a uuid -> 400. `class_exists` raises `ValueError` for this and its
-        message is developer-facing (it explains a connection-abort concern a client cannot act
-        on), so the sentence below is the route's own.
+      - `class_id` is not a uuid -> 400, and the sentence is the route's own: `class_exists`
+        does raise `ValueError` here, but its message explains a connection-abort concern a
+        client cannot act on.
+
+    THE ROUTE PARSES `class_id` ONCE, AT THE TOP, AND PASSES THE CANONICAL SPELLING TO BOTH
+    LIBRARY CALLS. That is not tidiness, it is the fix for an orphan. `uuid.UUID` accepts
+    spellings Postgres's `::uuid` cast rejects - `urn:uuid:<id>` is the demonstrated one - and
+    `class_exists` binds `str(uuid.UUID(class_id))`, so it answers True for them. `enqueue`
+    binds `class_id` RAW into `%(class_id)s::uuid`. Handing the caller's spelling to both would
+    therefore pass the ownership check and then abort the INSERT, after `stage` had already
+    written the bytes: a 500, a staged file no `files` row points at, and nothing to poll. One
+    parse at the boundary is what keeps the two calls talking about the same id.
       - the filename is unusable -> 400 `bad_filename`; the upload exceeds the byte cap -> 413
         `too_large`. Both come from `stage`, both are REQUEST-time (no `files` row exists, so
         there is nothing for a `failed_reason` to hang on - `gct.staging`'s module docstring), and
@@ -114,14 +127,14 @@ def upload_file(
     refuse `None` itself, so a pre-check here would be a second writer for that judgement.
     """
     try:
-        owned = class_exists(conn, class_id=class_id, owner_id=owner)
+        class_uuid = str(uuid.UUID(class_id))
     except ValueError as exc:
         raise ApiError(
             400,
             "bad_class_id",
             "class_id must be a uuid. Use the id returned when the class was created.",
         ) from exc
-    if not owned:
+    if not class_exists(conn, class_id=class_uuid, owner_id=owner):
         raise ApiError(
             404,
             "class_not_found",
@@ -140,7 +153,10 @@ def upload_file(
         # promised shape.
         raise ApiError(_STAGING_STATUS[exc.reason], exc.reason, str(exc)) from exc
 
-    file_id = enqueue(conn, path=staged, owner_id=owner, class_id=class_id)
+    # `class_uuid`, never the raw form: `enqueue` binds `class_id` straight into a `::uuid` cast,
+    # and this is the call that would abort - with the bytes already on disk - on a spelling
+    # Python accepted and Postgres will not.
+    file_id = enqueue(conn, path=staged, owner_id=owner, class_id=class_uuid)
     return UploadAccepted(file_id=file_id, filename=Path(staged).name)
 
 

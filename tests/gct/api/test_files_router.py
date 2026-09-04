@@ -169,6 +169,40 @@ def test_a_non_uuid_class_id_is_400_in_the_routes_own_words(api, db_other, monke
     assert _files_rows(db_other, api.owner_id) == []
 
 
+@pytest.mark.parametrize("spelling", ["plain", "braced", "hex32", "urn"])
+def test_every_uuid_spelling_python_accepts_publishes_one_canonical_row(
+    api, db_other, monkeypatch, tmp_path, spelling
+):
+    """The route parses `class_id` ONCE and hands the canonical form to both library calls.
+
+    `uuid.UUID` accepts four spellings of the same id; Postgres's `::uuid` cast accepts three of
+    them. `class_exists` normalises before it binds, so it answers True for all four - and
+    `enqueue` binds `class_id` RAW into a cast, so the fourth (`urn:uuid:...`) used to reach it
+    unchanged and abort the INSERT *after* `stage` had written the bytes: a 500, an orphaned
+    staged file, and no id to poll. Every spelling must land on ONE row shape, which is what the
+    canonical read-back asserts - not that Postgres renders uuids canonically (it always does),
+    but that there is a row for it to render at all.
+    """
+    root = _repoint_stage(monkeypatch, tmp_path)
+    canonical = uuid.UUID(api.class_id)
+    written = {
+        "plain": str(canonical),
+        "braced": f"{{{canonical}}}",
+        "hex32": canonical.hex,
+        "urn": canonical.urn,
+    }[spelling]
+    assert uuid.UUID(written) == canonical, "the spelling under test names a different class"
+
+    response = _upload(api, written)
+
+    assert response.status_code == 202, response.text
+    rows = _files_rows(db_other, api.owner_id)
+    assert len(rows) == 1, f"the {spelling} spelling published no files row"
+    file_id, class_id, _, status, _ = rows[0]
+    assert (file_id, class_id, status) == (response.json()["file_id"], str(canonical), "queued")
+    assert len(_staged_files(root)) == 1, "the row is published but the bytes are not staged"
+
+
 def test_a_bad_filename_is_400_bad_filename_and_leaves_nothing_behind(
     api, db_other, monkeypatch, tmp_path
 ):

@@ -15,7 +15,7 @@ from pydantic import BaseModel, field_validator
 from gct.api import deps
 from gct.api.app import create_app, require_openai_key
 from gct.api.deps import Conn, Embedder, Generator, OwnerId, get_conn, owner_id
-from gct.api.errors import KIND_HTTP, KIND_INTERNAL, KIND_VALIDATION, ApiError
+from gct.api.errors import ApiError
 from gct.api.schemas import ErrorEnvelope
 from gct.config import V1_OWNER_ID
 from gct.jobs.queue import enqueue
@@ -100,7 +100,7 @@ def test_the_same_handler_on_a_plain_connection_is_refused_and_publishes_nothing
         "/_test/enqueue", params={"class_id": api.class_id, "path": str(lecture)}
     )
     assert resp.status_code == 500
-    assert resp.json()["error"]["kind"] == KIND_INTERNAL
+    assert resp.json()["error"]["kind"] == "internal"
     count = db_other.execute(
         "select count(*) from files where owner_id = %s", (api.owner_id,)
     ).fetchone()[0]
@@ -260,7 +260,11 @@ def _assert_envelope(resp, status: int, kind: str) -> dict:
 def test_every_failure_wears_the_envelope(offline_app):
     """Four sources of failure, one body shape: a route's own `ApiError` (status of its
     choosing), the framework's 404/405, request validation (422, field list in `detail`), and
-    an uncaught exception (500, exception text NOT echoed)."""
+    an uncaught exception (500, exception text NOT echoed).
+
+    The kinds are asserted as the STRING LITERALS `api.md` documents, never through the
+    `KIND_*` names: a client switches on the wire token, and a suite that compares through the
+    constants stays green when the three literals are rotated."""
 
     @offline_app.get("/_test/api-error")
     def _api_error() -> None:
@@ -278,15 +282,15 @@ def test_every_failure_wears_the_envelope(offline_app):
         err = _assert_envelope(client.get("/_test/api-error"), 418, "teapot")
         assert err == {"kind": "teapot", "message": "short and stout", "detail": {"handle": 1}}
 
-        _assert_envelope(client.get("/_test/no-such-path"), 404, KIND_HTTP)
-        _assert_envelope(client.post("/health"), 405, KIND_HTTP)
+        _assert_envelope(client.get("/_test/no-such-path"), 404, "http")
+        _assert_envelope(client.post("/health"), 405, "http")
 
         err = _assert_envelope(
-            client.post("/_test/validated", params={"n": "x"}), 422, KIND_VALIDATION
+            client.post("/_test/validated", params={"n": "x"}), 422, "validation"
         )
         assert err["detail"][0]["loc"] == ["query", "n"]
 
-        err = _assert_envelope(client.get("/_test/boom"), 500, KIND_INTERNAL)
+        err = _assert_envelope(client.get("/_test/boom"), 500, "internal")
         assert "SECRET" not in err["message"]
         assert err["detail"] is None
 
@@ -321,7 +325,7 @@ def test_a_raising_field_validator_still_renders_the_422_envelope(offline_app):
 
     with TestClient(offline_app, raise_server_exceptions=False) as client:
         err = _assert_envelope(
-            client.post("/_test/validated-body", json={"name": "   "}), 422, KIND_VALIDATION
+            client.post("/_test/validated-body", json={"name": "   "}), 422, "validation"
         )
         assert err["detail"][0]["loc"] == ["body", "name"]
         assert "name must not be blank" in err["detail"][0]["msg"]

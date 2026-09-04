@@ -4,15 +4,28 @@ The thinnest route in the slice, and deliberately so: validate, call ONE library
 (ADR 0009). What a class *is* lives in `gct.classes`; this module owns the wire shape and which
 status each refusal wears, and nothing else.
 
-WHAT THIS ROUTE DOES NOT VALIDATE, AND WHY THAT IS THE DECISION. The only rule about a name -
-blank is refused, an accepted one is stored VERBATIM - is `create_class`'s, so `NewClass` carries
-no `min_length` and no validator. `min_length=1` would reject `''` and ACCEPT `'   '`: a second
-writer for HALF the rule, and the half nobody trips over, with the two halves landing on
-different statuses (pydantic's 422 against this route's 400). Two bodies behind one condition is
-what makes a client parse by trial - the same reasoning `files.py`'s `_STAGING_STATUS` gives for
-keeping `bad_filename` off 422. A validator restating `not name.strip()` would be worse still:
-that is the business rule itself, copied into the adapter ADR 0009 forbids it in. So the blank
-refusal arrives here as a `ValueError` from the library and is re-rendered below.
+WHAT THIS ROUTE DOES NOT VALIDATE, AND WHY THAT IS THE DECISION. Every rule about what a name
+may BE - blank is refused, unstorable is refused, an accepted one is stored VERBATIM - is
+`gct.classes.validate_name`'s, so `NewClass` carries no `min_length` and no validator.
+`min_length=1` would reject `''` and ACCEPT `'   '`: a second writer for HALF the rule, and the
+half nobody trips over, with the two halves landing on different statuses (pydantic's 422 against
+this route's 400). Two bodies behind one condition is what makes a client parse by trial - the
+same reasoning `files.py`'s `_STAGING_STATUS` gives for keeping `bad_filename` off 422. A
+validator restating `not name.strip()` would be worse still: that is the business rule itself,
+copied into the adapter ADR 0009 forbids it in. So a refused name arrives here as one typed
+exception carrying a `reason`, and this module renders it.
+
+THIS ROUTE ONCE CAUGHT A BARE `ValueError` AND CALLED IT "blank". It shipped two wrong answers
+(issue #107's fix round): `UnicodeEncodeError` is a `ValueError` subclass, so a name containing an
+unpaired surrogate - reachable over the wire as the pure-ASCII body `{"name": "Bio \ud800 101"}`,
+since JSON escapes decode to one - was answered "name must not be blank", and the only remedy that
+sentence named could not fix the request. A NUL byte (`{"name": "\u0000"}`) raised
+`psycopg.DataError`, which is not a `ValueError` at all, missed the catch and rendered a caller's
+bad request as a 500. Catching an exception class BROADER than the rule it stands for is the
+defect, and it is not fixed by catching two more classes here: the adapter would then be catching
+psycopg's exceptions to make a decision about what a class name is, which is the library's
+question. So the library refuses both before psycopg sees them and hands over a token
+(`CLASS_NAME_REASONS`), and `_NAME_REFUSAL` below is the only place a token becomes a sentence.
 
 There is NO length cap on a name, in this module or anywhere behind it. `classes.name` is `text`
 (`migrations/0001_init.sql`; data-model.md calls it "display"), so a cap invented here would be a
@@ -34,9 +47,39 @@ from pydantic import BaseModel, ConfigDict
 
 from gct.api.deps import Conn, OwnerId
 from gct.api.errors import ApiError
-from gct.classes import create_class
+from gct.classes import ClassNameError, create_class
 
 router = APIRouter(prefix="/classes", tags=["classes"])
+
+# What a refused name becomes on the wire: `reason` token -> (`kind`, the sentence a client reads).
+# `gct.classes.CLASS_NAME_REASONS` is the closed set this must cover, and a reason missing from it
+# raises `KeyError` INSIDE the handler - which `errors._unhandled` renders as
+# `{"error":{"kind":"internal"}}`, i.e. a bad request shipped as a server fault, which is exactly
+# the defect this map was added to fix. The map cannot guard itself against that, so the guard is
+# a test: `test_every_class_name_reason_has_a_rendering` compares the two key sets.
+#
+# The sentences are the ROUTE's, not `str(exc)` - the opposite of what `files.py` does with
+# `StagingError`, and the difference is not style. `StagingError`'s messages were written for a
+# student ("name the file (for example lecture-3.pdf) and upload it again"); `ClassNameError`'s
+# name a Python function, `classes.name` and the schema's NOT NULL, because its first audience is
+# a library caller. Rendering is the half a library leaves to its adapter (`files.py`'s
+# `_FAILED_MESSAGE` is the same split), so the token crosses the seam and the prose does not.
+#
+# Every reason is 400, not 422, for the reason the module docstring gives: 422 is FastAPI's own
+# request-validation status and its body carries pydantic's per-field list under `detail`.
+_NAME_REFUSAL = {
+    "blank": (
+        "blank_name",
+        "name must not be blank. Send the class name as you want it displayed - it is "
+        "stored exactly as you type it.",
+    ),
+    "unstorable": (
+        "unstorable_name",
+        "name contains a character that cannot be stored - either a null byte or an unpaired "
+        "surrogate, which almost always means the text was decoded with the wrong encoding "
+        "somewhere upstream. Send the name as UTF-8 text with those characters removed.",
+    ),
+}
 
 
 class NewClass(BaseModel):
@@ -93,19 +136,23 @@ def create(conn: Conn, owner: OwnerId, body: NewClass) -> ClassCreated:
     becomes correct the day a class-read surface exists, and belongs to that issue.
 
     Refusals:
-      - a blank name (`''`, `'   '`) -> **400** `blank_name`. The rule is `create_class`'s and
-        the refusal reaches here as its `ValueError`; the SENTENCE is this route's own, for the
-        same reason `bad_class_id` is in `files.py`: the library's message explains a schema's
-        NOT NULL and names a Python function, which is true and useful to a developer and
-        unactionable to a client. 400, not 422 - 422 is FastAPI's own request-validation status
-        and its body already carries pydantic's per-field list under `detail`.
+      - a name `validate_name` refuses -> **400**, with the `kind` and sentence `_NAME_REFUSAL`
+        gives that reason: `blank_name` for `''`/`'   '`, `unstorable_name` for a NUL byte or an
+        unpaired surrogate. The RULE is the library's, the SENTENCE is this route's - see
+        `_NAME_REFUSAL` for why this route substitutes where `files.py` adopts.
       - a missing or non-string `name`, or any extra field -> the framework's 422, untouched
-        (`errors._validation`). Those are shape failures, which pydantic owns; blankness is a
-        rule about the value, which the library owns. Two owners, two statuses, no overlap.
+        (`errors._validation`). Those are shape failures, which pydantic owns; what a name may BE
+        is a rule about the value, which the library owns. Two owners, two statuses, no overlap.
 
-    NOTHING ELSE IS CAUGHT. A database that is unreachable, or a `require_idle` violation, is a
-    500 `internal` - a client cannot act on either, and swallowing them into a 4xx would report
-    the caller's request as the problem. The `require_idle` precondition itself (ADR 0025,
+    NOTHING ELSE IS CAUGHT, and the catch is `ClassNameError` rather than `ValueError` on
+    purpose. A database that is unreachable, or a `require_idle` violation, is a 500 `internal` -
+    a client cannot act on either, and swallowing them into a 4xx would report the caller's
+    request as the problem. The broad catch that used to be here was not merely imprecise: it
+    silently annexed `UnicodeEncodeError`, a `ValueError` subclass, and answered it with a
+    sentence about blankness. A catch this narrow cannot do that again, because the only thing
+    that raises `ClassNameError` is the validator whose reasons `_NAME_REFUSAL` enumerates.
+
+    The `require_idle` precondition itself (ADR 0025,
     guarded per ADR 0027) is satisfied by construction here: this handler reads nothing before it
     writes, and `gct.api.deps.get_conn` yields an autocommit connection anyway - that dependency
     is the one writer of the contract, and a route that builds its own connection breaks it.
@@ -114,11 +161,7 @@ def create(conn: Conn, owner: OwnerId, body: NewClass) -> ClassCreated:
     """
     try:
         class_id = create_class(conn, owner_id=owner, name=body.name)
-    except ValueError as exc:
-        raise ApiError(
-            400,
-            "blank_name",
-            "name must not be blank. Send the class name as you want it displayed - it is "
-            "stored exactly as you type it.",
-        ) from exc
+    except ClassNameError as exc:
+        kind, message = _NAME_REFUSAL[exc.reason]
+        raise ApiError(400, kind, message) from exc
     return ClassCreated(class_id=class_id, name=body.name)

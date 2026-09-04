@@ -164,14 +164,33 @@ this returns, unlike `POST /files`, and `class_id` is immediately usable as that
 field. No `Location` header — it could only point at a class-read surface no issue in this slice
 creates.
 
-The name rule has **one writer, and it is the library**. `create_class` refuses `''` *and*
-whitespace-only and stores an accepted name verbatim, so the request model carries no
-`min_length` and no validator: the blank refusal arrives as its `ValueError` and is re-rendered
-**400 `blank_name`** in the route's own words (the library's sentence names a Python function and
-the schema's NOT NULL). `min_length=1` was rejected as a second writer for *half* that rule, with
-the halves landing on different statuses. Shape failures — a missing or non-string `name`, an
-extra field — stay the framework's `422`; blankness is a rule about the value, shape is pydantic's
-job, and the two sets do not overlap. Nothing else is caught: an unreachable database is a `500`.
+The name rule has **one writer, and it is the library**. `gct.classes.validate_name` decides what
+a name may be — refusing blank (`''`, whitespace-only) and *unstorable* (a NUL byte, an unpaired
+surrogate), storing an accepted one verbatim — so the request model carries no `min_length` and no
+validator. `min_length=1` was rejected as a second writer for *half* the blank rule, with the
+halves landing on different statuses. Shape failures — a missing or non-string `name`, an extra
+field — stay the framework's `422`; what a name may BE is a rule about the value, shape is
+pydantic's job, and the two sets do not overlap. Nothing else is caught: an unreachable database
+is a `500`.
+
+A refusal crosses the seam as **`ClassNameError` carrying a `reason`** from the closed set
+`CLASS_NAME_REASONS`, the shape `gct.staging.StagingError` already uses. The route's
+`_NAME_REFUSAL` map turns each reason into a `kind` and a sentence — `400 blank_name`,
+`400 unstorable_name` — and a test compares the two key sets, so a reason added to the library
+without a rendering fails loudly instead of raising `KeyError` inside the handler. The route
+substitutes prose here rather than adopting `str(exc)` as `POST /files` does with `StagingError`,
+because `ClassNameError`'s messages are written for a library caller (they name a Python function
+and the schema's NOT NULL) while `StagingError`'s were already written for a student.
+
+> **This replaced a shipped defect, and the shape is the lesson.** The handler first caught
+> `ValueError` to mean "blank". That is broader than the rule and narrower than the failure
+> surface: `UnicodeEncodeError` is a `ValueError` subclass, so `{"name": "Bio \ud800 101"}` — a
+> pure-ASCII body, since JSON escapes decode to a lone surrogate — was answered *"name must not be
+> blank"*, naming the one remedy that could not fix it; and `psycopg.DataError` is not a
+> `ValueError` at all, so `{"name": "\u0000"}` became a `500`. Catching two more exception classes
+> in the route was rejected as the fix: it would put psycopg's exceptions, and the question of
+> what a class name is, in the adapter. The library refuses both before psycopg sees them, which
+> also fixes every non-API caller.
 
 **There is no length cap on a name**, here or behind it. `classes.name` is `text` and no
 component owns a bound, so a cap in the adapter would refuse names `create_class` keeps accepting

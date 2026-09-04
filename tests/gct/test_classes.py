@@ -17,7 +17,7 @@ import uuid
 import psycopg
 import pytest
 
-from gct.classes import class_exists, create_class
+from gct.classes import CLASS_NAME_REASONS, ClassNameError, class_exists, create_class
 from gct.jobs.queue import enqueue
 
 
@@ -193,3 +193,137 @@ def test_the_foreign_key_alone_admits_the_cross_owner_write(db, db_other, foreig
     ).fetchone()
     assert published == (owner_id, other_class_id), "the FK let a cross-owner write through"
     assert class_exists(conn, class_id=other_class_id, owner_id=owner_id) is False
+
+
+# --- Names PostgreSQL cannot store (issue #107's fix round) -----------------------------------
+
+# The two inputs that used to escape `create_class` as raw psycopg failures. Both are reachable
+# from any HTTP client over a PURE ASCII body, because JSON's `\uXXXX` escapes decode to them:
+# `{"name": "Bio \ud800 101"}` and `{"name": "Bio \x00 101"}`.
+UNSTORABLE = {
+    "unpaired surrogate": "Bio \ud800 101",
+    "nul byte": "Bio \x00 101",
+}
+
+
+def _row_count(db_other, owner_id: str) -> int:
+    """How many class rows this owner has, as a DIFFERENT connection sees them.
+
+    `_rows` cannot be used for an unstorable name, and the reason is the defect itself: binding
+    such a name into a SELECT raises the very `UnicodeEncodeError`/`DataError` the INSERT does.
+    A name Postgres cannot store is a name you cannot even ask about, so "nothing was written" has
+    to be counted rather than looked up.
+    """
+    return db_other.execute(
+        "select count(*) from classes where owner_id = %s", (owner_id,)
+    ).fetchone()[0]
+
+
+def _is_unstorable(name: str) -> bool:
+    """The two conditions a `text` column cannot hold, spelled out independently of the code
+    under test — used only to assert that the refused sets really are disjoint."""
+    if "\x00" in name:
+        return True
+    try:
+        name.encode("utf-8")
+    except UnicodeEncodeError:
+        return True
+    return False
+
+
+@pytest.mark.parametrize("label", sorted(UNSTORABLE))
+def test_create_class_refuses_a_name_postgres_cannot_store(db, db_other, label):
+    """The defect, fixed at the writer — and the psycopg failure it now stands in front of.
+
+    THE SECOND HALF IS THE POINT. Asserting only that `create_class` refuses these would pass
+    against a validator that invented a rule; the raw insert through `db_other` proves the rule
+    stands in front of a REAL failure, and names which one. Before this fix those two exceptions
+    were what a caller got: `UnicodeEncodeError` (a `ValueError` SUBCLASS, so an `except
+    ValueError` written to mean "blank" annexed it and answered a surrogate with a sentence about
+    blankness) and `psycopg.DataError` (not a `ValueError` at all, so the same catch missed it
+    and the caller's bad request became a 500).
+    """
+    conn, owner_id, _ = db
+    conn.autocommit = True
+    name = UNSTORABLE[label]
+    before = _row_count(db_other, owner_id)
+
+    with pytest.raises(ClassNameError) as caught:
+        create_class(conn, owner_id=owner_id, name=name)
+
+    assert caught.value.reason == "unstorable", "an unstorable name wore the blank reason"
+    assert caught.value.remedy, "a refusal that names no remedy is half an error"
+    assert _row_count(db_other, owner_id) == before, "a refused name was stored"
+
+    # The refusal is not invented: psycopg/Postgres genuinely cannot take this value. This is the
+    # arm that fails if someone "simplifies" validate_name into a rule about characters it
+    # dislikes rather than characters the database cannot hold.
+    with pytest.raises((psycopg.DataError, UnicodeEncodeError)):
+        db_other.execute("insert into classes (owner_id, name) values (%s, %s)", (owner_id, name))
+
+
+def test_create_class_stores_the_unusual_names_postgres_can_hold(db, db_other):
+    """THE OTHER DIRECTION, and the one that stops the fix from becoming "refuse anything odd".
+
+    A `text` column forbids exactly one code point (NUL) and one encoding failure (an unpaired
+    surrogate). Emoji and other astral characters, combining marks, other C0 controls and
+    surrounding whitespace are all storable, so `validate_name` must keep taking them — verbatim.
+    A validator that refused these would pass every refusal test in this file and quietly break
+    real class names.
+    """
+    conn, owner_id, _ = db
+    conn.autocommit = True
+    storable = [
+        "Bio 101 \N{DNA DOUBLE HELIX}",
+        "Mathe\N{COMBINING ACUTE ACCENT}matiques \x01 101",
+        "  padded  ",
+    ]
+
+    for name in storable:
+        create_class(conn, owner_id=owner_id, name=name)
+        assert _rows(db_other, owner_id, name) == [(owner_id, name)], f"{name!r} was not stored"
+
+
+def test_the_name_rules_do_not_shadow_each_other(db, db_other):
+    """Which reason each input gets — the assertion that catches one check swallowing another.
+
+    The two refused sets are DISJOINT by construction (a NUL and a surrogate are not whitespace,
+    so neither is ever blank; a whitespace-only string always encodes), which is why the order of
+    the checks inside `validate_name` is not load-bearing — unlike an `except` ladder over
+    overlapping exception classes, where it would be. That is a claim about the code, so it is
+    asserted rather than left in a comment: every input is pinned to the reason it must get AND
+    to the reason it must not, and the disjointness itself is checked independently.
+    """
+    conn, owner_id, _ = db
+    conn.autocommit = True
+    expected = {"": "blank", "   ": "blank", "\t\n": "blank"}
+    expected.update({name: "unstorable" for name in UNSTORABLE.values()})
+    before = _row_count(db_other, owner_id)
+
+    for name, reason in expected.items():
+        with pytest.raises(ClassNameError) as caught:
+            create_class(conn, owner_id=owner_id, name=name)
+        assert caught.value.reason == reason, f"{name!r} was refused as {caught.value.reason!r}"
+        assert caught.value.reason != ("unstorable" if reason == "blank" else "blank")
+
+    assert _row_count(db_other, owner_id) == before, "a refused name was stored"
+
+    # No refused input satisfies BOTH rules, so neither check can be shadowing the other.
+    for name in expected:
+        assert not name.strip() or _is_unstorable(name), f"{name!r} is refused by no rule"
+        assert name.strip() or not _is_unstorable(name), f"{name!r} satisfies both rules"
+
+
+def test_class_name_error_is_a_value_error_for_existing_callers(db):
+    """The subclassing is backward compatibility and it is load-bearing: `create_class` shipped
+    the blank refusal as a bare `ValueError` in #106, and the test above still catches it that
+    way. Both directions — it IS a `ValueError`, and it carries the `reason` a bare one cannot,
+    which is the whole reason an adapter no longer has to guess what a `ValueError` meant."""
+    conn, owner_id, _ = db
+    conn.autocommit = True
+
+    with pytest.raises(ValueError) as caught:
+        create_class(conn, owner_id=owner_id, name="")
+
+    assert isinstance(caught.value, ClassNameError)
+    assert caught.value.reason in CLASS_NAME_REASONS

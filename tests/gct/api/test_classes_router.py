@@ -13,12 +13,15 @@ trims — which is the behaviour `create_class` explicitly does not have.
 
 from __future__ import annotations
 
+import inspect
 import uuid
 from functools import partial
 
 import pytest
 
+from gct.api.routers import classes as classes_router
 from gct.api.routers import files as files_router
+from gct.classes import CLASS_NAME_REASONS
 from gct.staging import stage
 
 CREATED_NAME = "Philosophy of Religion"
@@ -203,3 +206,134 @@ def test_the_returned_class_id_is_one_post_files_accepts(api, db_other, monkeypa
         (upload.json()["file_id"],),
     ).fetchall()
     assert filed == [(class_id, "queued")], "the created class did not accept an upload"
+
+
+# --- Names PostgreSQL cannot store (issue #107's fix round) -----------------------------------
+
+# THE BODIES ARE RAW BYTES, and that is the point of the whole section. `client.post(json=...)`
+# CANNOT send these: httpx encodes the body as UTF-8 and a lone surrogate has no UTF-8 encoding,
+# so the helper raises before a request exists. A real client does not have that problem, because
+# JSON carries these as `\uXXXX` ESCAPES — the bytes below are pure ASCII, and `json.loads` turns
+# them back into a lone surrogate and a NUL. Testing through `json=` would therefore have proved
+# the defect unreachable when it is reachable from curl.
+UNSTORABLE_BODIES = {
+    "unpaired surrogate": rb'{"name": "Bio \ud800 101"}',
+    "nul byte": rb'{"name": "Bio \u0000 101"}',
+}
+CONTROL_BODY = rb'{"name": "Bio 101"}'
+
+
+def _post_raw(api, body: bytes):
+    return api.client.post("/classes", content=body, headers={"content-type": "application/json"})
+
+
+@pytest.mark.parametrize("label", sorted(UNSTORABLE_BODIES))
+def test_a_name_postgres_cannot_store_is_400_unstorable_name_and_publishes_nothing(
+    api, db_other, label
+):
+    """The two shipped defects, over the wire, both directions.
+
+    Before the fix the surrogate body came back **400 `blank_name`** — a name that is plainly not
+    blank, answered with the one remedy that could not fix it — and the NUL body came back **500
+    `internal`**, a caller's bad request reported as a server fault. Both had the same cause: the
+    handler caught `ValueError` to mean "blank", which is BROADER than the rule (it annexes
+    `UnicodeEncodeError`) and NARROWER than the failure surface (it misses `psycopg.DataError`).
+
+    The control arm is what makes this a pin rather than a coincidence: the same body with the bad
+    character removed is a 201 and publishes a row, so the refusal cannot be passing because the
+    route refuses everything. `db_other` counts rows, because a name Postgres cannot store is one
+    you cannot bind into a SELECT either.
+    """
+    before = len(_class_rows(db_other, api.owner_id))
+
+    refused = _post_raw(api, UNSTORABLE_BODIES[label])
+    accepted = _post_raw(api, CONTROL_BODY)
+
+    assert refused.status_code == 400, refused.text
+    error = refused.json()["error"]
+    assert error["kind"] == "unstorable_name"
+    assert error["kind"] != "blank_name", "a name that is not blank was answered as blank"
+    assert "blank" not in error["message"], "the remedy names a fix that cannot fix this request"
+    assert "UTF-8" in error["message"], "the refusal does not say what to send instead"
+    assert error["detail"] is None
+    for leak in ("psycopg", "DataError", "validate_name", "codec"):
+        assert leak not in error["message"], f"the library's own {leak!r} reached a client"
+
+    assert accepted.status_code == 201, accepted.text
+    assert len(_class_rows(db_other, api.owner_id)) == before + 1, (
+        "the refused name published a row, or the control published none"
+    )
+
+
+def test_a_blank_name_and_an_unstorable_one_get_different_answers(api, db_other):
+    """The distinction the fix exists to make, asserted as a difference rather than twice.
+
+    Both are 400 and both publish nothing, so a test that only checked status and row count would
+    pass against the broken route. What changed is that they no longer share a `kind` or a
+    sentence — which is the difference between telling a client something true and something
+    false. Reordering or merging the two rendering entries flips this.
+    """
+    before = len(_class_rows(db_other, api.owner_id))
+
+    blank = _post_raw(api, rb'{"name": "   "}')
+    unstorable = _post_raw(api, UNSTORABLE_BODIES["nul byte"])
+
+    assert blank.status_code == unstorable.status_code == 400
+    assert blank.json()["error"]["kind"] == "blank_name"
+    assert unstorable.json()["error"]["kind"] == "unstorable_name"
+    assert blank.json()["error"]["kind"] != unstorable.json()["error"]["kind"]
+    assert blank.json()["error"]["message"] != unstorable.json()["error"]["message"]
+    assert len(_class_rows(db_other, api.owner_id)) == before, "a refused name published a row"
+
+
+def test_a_name_with_an_astral_character_is_created_over_http(api, db_other):
+    """The direction that stops `unstorable_name` from becoming "anything unusual".
+
+    An emoji is four bytes of perfectly storable UTF-8 and reaches the route the same way the
+    surrogate does — as a `\\uXXXX` escape, a SURROGATE PAIR this time. A validator that refused
+    surrogates without checking whether they PAIR would refuse this too, pass every test above,
+    and break real class names. Read back through `db_other`, verbatim.
+    """
+    # The SURROGATE PAIR for U+1F9EC, which is exactly how a JSON client sends an astral
+    # character - the same escape mechanism as the lone `\ud800` above, correctly paired.
+    body = rb'{"name": "Bio 101 \ud83e\uddec"}'
+
+    response = _post_raw(api, body)
+
+    assert response.status_code == 201, response.text
+    expected = "Bio 101 \N{DNA DOUBLE HELIX}"
+    assert response.json()["name"] == expected
+    stored = db_other.execute(
+        "select name from classes where class_id = %s::uuid", (response.json()["class_id"],)
+    ).fetchall()
+    assert stored == [(expected,)]
+
+
+def test_every_class_name_reason_has_a_rendering(api):
+    """`CLASS_NAME_REASONS` is a closed set and `_NAME_REFUSAL` must cover it exactly.
+
+    A reason the library adds without a sentence here would raise `KeyError` INSIDE the handler
+    and ship as a 500 for what is a bad request — which is defect R2 all over again, in a new
+    place. The map cannot guard itself, so this is the guard (the same one
+    `test_every_staging_reason_has_a_status` provides for `files.py`).
+    """
+    assert set(classes_router._NAME_REFUSAL) == set(CLASS_NAME_REASONS)
+    kinds = [kind for kind, _ in classes_router._NAME_REFUSAL.values()]
+    assert len(set(kinds)) == len(kinds), "two reasons render as one kind, so a client cannot tell"
+    for _, message in classes_router._NAME_REFUSAL.values():
+        assert message.strip() and message[-1] == ".", "a rendering that is not a sentence"
+
+
+def test_the_handler_does_not_catch_value_error_broadly(api):
+    """WHY THE CATCH IS `ClassNameError`, pinned as source rather than as behaviour.
+
+    Every behavioural arm above passes equally against `except (ValueError, DataError)` placed in
+    the right order — the shape this fix considered and rejected. What that shape cannot survive
+    is the NEXT `ValueError` from anywhere inside the call, which would again be rendered as a
+    statement about the name. There is no input that demonstrates a bug that has not been written
+    yet, so the pin is on the code: the handler catches the one class the validator raises.
+    """
+    source = inspect.getsource(classes_router.create)
+    assert "except ClassNameError" in source
+    assert "except ValueError" not in source, "the broad catch that shipped R1 is back"
+    assert "DataError" not in source, "the adapter is catching psycopg's exceptions again"

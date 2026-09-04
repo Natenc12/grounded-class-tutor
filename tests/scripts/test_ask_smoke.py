@@ -679,8 +679,31 @@ class TestOnlyFilter:
         assert args.only is None
         assert args.verbose is False
         # `--owner` defaults to the ONE owner constant (#104): restated as a literal in the
-        # smoke, the API and the smoke would serve two different corpora.
+        # smoke, the API and the smoke would serve two different corpora. This arm pins the
+        # VALUE; `test_default_owner_follows_the_constant_when_it_moves` pins the binding.
         assert args.owner == V1_OWNER_ID
+
+    def test_default_owner_follows_the_constant_when_it_moves(self, monkeypatch):
+        """`DEFAULT_OWNER = V1_OWNER_ID`, pinned by MOVING the constant, not only by comparing to
+        it: `args.owner == V1_OWNER_ID` is green for `DEFAULT_OWNER = "nate-dogfood"` too, which
+        is exactly the second writer the import exists to prevent (the same shape as
+        `tests/gct/api/test_skeleton.py::test_owner_id_has_one_source`).
+
+        The script binds `DEFAULT_OWNER` at import time, so patching the constant after the
+        shared module loaded would move nothing. A SECOND instance of the script is loaded from
+        the same spec while the constant is patched; the shared `ask_smoke` above is never
+        touched (it is not in `sys.modules`, so `importlib.reload` could not act on it anyway),
+        and monkeypatch undoes the constant on exit."""
+        monkeypatch.setattr("gct.config.V1_OWNER_ID", "moved-elsewhere")
+        monkeypatch.setattr("sys.argv", ["ask_smoke.py"])
+
+        moved = importlib.util.module_from_spec(_spec)
+        _spec.loader.exec_module(moved)
+
+        assert moved.DEFAULT_OWNER == "moved-elsewhere"
+        assert moved._parse_args().owner == "moved-elsewhere"
+        # The shared instance keeps the real binding; the move reached only the fresh load.
+        assert ask_smoke.DEFAULT_OWNER == V1_OWNER_ID
 
     def test_flags_parse(self, monkeypatch):
         monkeypatch.setattr("sys.argv", ["ask_smoke.py", "--only", "q005,q009", "--verbose"])

@@ -207,9 +207,11 @@ def test_every_cited_label_reaches_the_client_in_the_models_order(api, db_other)
     The model cites `[S2]` before `[S1]`, and the response carries them in ORDINAL order: the
     Grounder sorts and deduplicates before this route ever sees the list (`_resolve`, "the
     citation list reads in the same order as the context we built"), and the route renders that
-    list as given. Pinning it here is what would catch a route that started re-ordering on its
-    own - the citation list is the answer's provenance, and its order is not the adapter's to
-    choose.
+    list as given. What this pins is that the ORDER THE CLIENT SEES is ordinal order - a route
+    that reversed or re-sorted it would go red. It deliberately does not pin WHO sorts: a route
+    that sorted for itself, over a `_resolve` that had stopped sorting, would satisfy this test
+    too. That is not the adapter's decision to take, but it is the Grounder's test to make, and
+    duplicating it here would be a second writer for `_resolve`'s contract.
     """
     chunk_ids = _seed(db_other, api, texts=["Motion requires a mover.", "Contingency."])
     _providers(

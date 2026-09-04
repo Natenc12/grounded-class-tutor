@@ -117,9 +117,17 @@ _ERROR_MESSAGE_OVERRIDE = {
 # but its message is not, for the same reason `provider_terminal`'s is not: nobody has read the
 # text of a message that does not exist yet, so it cannot be vouched for as client-facing.
 # Reaching this at all means `test_every_error_kind_has_a_status` should have gone red first.
-# Named for this module, configured by nothing here: a library-style logger inherits whatever
-# handlers the process running the app installed (uvicorn's, in production), which is the same
-# route `errors._unhandled`'s traceback takes to the server log.
+# Named for this module and configured by nothing here, which is what a library does: whether the
+# record is formatted, and where it lands, belongs to the process running the app.
+#
+# WHAT THAT ACTUALLY MEANS UNDER STOCK UVICORN, because the obvious guess is wrong and was
+# checked: uvicorn configures its OWN loggers and leaves the root logger with no handlers, so
+# this record does NOT ride uvicorn's handler the way `errors._unhandled`'s traceback does. It
+# reaches stderr through `logging.lastResort`, Python's fallback - unformatted, with no level or
+# timestamp beside uvicorn's own lines. It escapes the process, which is what the client-facing
+# sentence promises, and it escapes ONLY because it is a WARNING: `lastResort` starts at WARNING,
+# so the same call at INFO would write nowhere and say nothing about it. Do not lower the level
+# here without giving the app a handler first.
 logger = logging.getLogger(__name__)
 
 _UNKNOWN_ERROR_MESSAGE = (
@@ -331,8 +339,8 @@ def ask_question(
         )
         if message is not result.error.message:
             # SUBSTITUTED, so the library's own sentence is going nowhere else. `ApiError` is a
-            # HANDLED exception - `errors._api_error` renders it and returns - so unlike the
-            # uncaught path there is no re-raise for uvicorn to log, and without this line the
+            # HANDLED exception - `errors._api_error` renders it and returns - so nothing
+            # re-raises afterwards the way an uncaught exception does, and without this line the
             # two sentences above would tell an operator to read a log nothing was written to.
             # The identity test, not `!=`, is what keeps this exact: the two forwarding kinds
             # pass `result.error.message` through unchanged and log nothing, and a substitution

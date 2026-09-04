@@ -50,6 +50,22 @@ def test_health_reads_through_the_request_connection(api):
     assert resp.json() == {"status": "ok"}
 
 
+def test_health_is_a_database_round_trip_not_a_constant(api):
+    """The docstring's claim, pinned: a green `/health` means a connection REACHED Postgres.
+    Hand the route a CLOSED connection and the probe must fail into the 500 envelope; a
+    `/health` that returns the constant without touching `conn` stays 200 and proves nothing.
+    The override is the negative direction only - the same allowance the plain-connection test
+    below takes; the positive direction runs on `get_conn` as shipped."""
+    assert api.client.get("/health").status_code == 200
+
+    closed = deps.connect()
+    closed.close()
+    api.app.dependency_overrides[get_conn] = lambda: closed
+    resp = api.client.get("/health")
+    assert resp.status_code == 500
+    assert resp.json()["error"]["kind"] == "internal"
+
+
 def test_a_handler_that_reads_then_writes_publishes_the_write(api, db_other, tmp_path):
     """The day-one failure, not failing. Asserted through `db_other` - a connection neither the
     handler nor the test's `db` fixture held - because that is the only reading that proves the

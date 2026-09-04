@@ -152,9 +152,36 @@ stubs; no api test takes a `live_*` fixture or constructs a real client.
 > Each section below is filled by the issue named. Request/response models live beside the router
 > (`src/gct/api/routers/<name>.py`), never in `schemas.py`. Status mappings are that issue's decision.
 
-### `POST /classes` — **#107** *(stub)*
-Router mounted at `/classes`. Calls #106's `create_class(conn, *, owner_id, name)`. Request/response
-models and the failure → status map: **to be written by #107.**
+### `POST /classes` — **#107**
+Router mounted at `/classes`; models and status map live beside it in
+`src/gct/api/routers/classes.py`, which owns every sentence this section does not restate.
+
+Takes JSON `{name}` and nothing else — `NewClass` **forbids extra fields**, so an `owner_id` sent
+in the body is a 422 naming the field rather than a value silently dropped while the row is filed
+under V1's hardcoded owner (F12; ADR 0004). The handler calls `create_class(conn, *, owner_id,
+name)` once and renders. **201 Created** `{class_id, name}`: the row exists and is committed when
+this returns, unlike `POST /files`, and `class_id` is immediately usable as that route's form
+field. No `Location` header — it could only point at a class-read surface no issue in this slice
+creates.
+
+The name rule has **one writer, and it is the library**. `create_class` refuses `''` *and*
+whitespace-only and stores an accepted name verbatim, so the request model carries no
+`min_length` and no validator: the blank refusal arrives as its `ValueError` and is re-rendered
+**400 `blank_name`** in the route's own words (the library's sentence names a Python function and
+the schema's NOT NULL). `min_length=1` was rejected as a second writer for *half* that rule, with
+the halves landing on different statuses. Shape failures — a missing or non-string `name`, an
+extra field — stay the framework's `422`; blankness is a rule about the value, shape is pydantic's
+job, and the two sets do not overlap. Nothing else is caught: an unreachable database is a `500`.
+
+**There is no length cap on a name**, here or behind it. `classes.name` is `text` and no
+component owns a bound, so a cap in the adapter would refuse names `create_class` keeps accepting
+— unlike `too_long` for files, which the route can refuse honestly because ADR 0029 and
+`gct.config.MAX_INGEST_WORDS` own the number. It belongs to the first surface that has a display
+problem (Slice 4's class list), beside a constant.
+
+The verbatim-storage contract the echoed `name` leans on is pinned from this side rather than
+trusted: a name with surrounding whitespace is created, and the row is read back on a second
+connection with its padding intact.
 
 ### `POST /files`, `GET /files/{file_id}` — **#110**
 Router mounted at `/files`; models and status map live beside it in

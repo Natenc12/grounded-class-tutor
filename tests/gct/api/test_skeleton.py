@@ -257,6 +257,15 @@ def _assert_envelope(resp, status: int, kind: str) -> dict:
     return body["error"]
 
 
+def test_api_error_carries_its_message_as_the_exception_text():
+    """`str()` of an `ApiError` is its message: what a server log shows if it ever escapes the
+    handler, which is only true if `Exception.__init__` was handed the message and not
+    nothing."""
+    err = ApiError(418, "k", "msg")
+    assert str(err) == "msg"
+    assert (err.status_code, err.kind, err.message, err.detail) == (418, "k", "msg", None)
+
+
 def test_every_failure_wears_the_envelope(offline_app):
     """Four sources of failure, one body shape: a route's own `ApiError` (status of its
     choosing), the framework's 404/405, request validation (422, field list in `detail`), and

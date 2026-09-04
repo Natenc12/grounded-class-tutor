@@ -147,7 +147,7 @@ stubs; no api test takes a `live_*` fixture or constructs a real client.
 
 ---
 
-## Routes — STUBS, owned by their issues
+## Routes — owned by their issues
 
 > Each section below is filled by the issue named. Request/response models live beside the router
 > (`src/gct/api/routers/<name>.py`), never in `schemas.py`. Status mappings are that issue's decision.
@@ -156,11 +156,35 @@ stubs; no api test takes a `live_*` fixture or constructs a real client.
 Router mounted at `/classes`. Calls #106's `create_class(conn, *, owner_id, name)`. Request/response
 models and the failure → status map: **to be written by #107.**
 
-### `POST /files`, `GET /files/{file_id}` — **#110** *(stub)*
-Router mounted at `/files`. Upload → #105's `stage(...)` → `enqueue(conn, path=, owner_id=,
-class_id=)`; status → #106's `get_file_status`. The six terminal reasons come from the CHECK
-constraint (`migrations/0001_init.sql`, `0003_failed_reason_too_long.sql`). Models, the 202 shape,
-the 404-never-403 rule and its tests: **to be written by #110.**
+### `POST /files`, `GET /files/{file_id}` — **#110**
+Router mounted at `/files`; models and status map live beside it in
+`src/gct/api/routers/files.py`, which owns every sentence this section does not restate.
+
+`POST /files` takes multipart `file` + form `class_id`. It parses `class_id` ONCE at the top —
+Python's uuid parser accepts spellings Postgres's `::uuid` cast refuses — then checks ownership
+with `class_exists` BEFORE `stage(...)`, so a refusal leaves nothing on disk, and finishes with
+`enqueue(conn, path=, owner_id=, class_id=)`. **202 Accepted** `{file_id, filename}`: accepted,
+not created, because nothing has been parsed or indexed yet and `file_id` is what the student
+polls. Refusals are `400` (`bad_class_id`, `bad_filename`), `413` (`too_large`), `404`
+(`class_not_found`).
+
+`GET /files/{file_id}` renders `get_file_status` as **200** `{filename, status, failed_reason,
+message}` for every status *including* `failed` — no `file_id`, since the caller supplied it.
+`message` is the route's rendering of the stored pair: one sentence naming what happened and what
+to do next, which is the slice's Exit criterion. A file that could not be
+read is a true answer about the student's materials, not a broken request. `400 bad_file_id`,
+`404 file_not_found`.
+
+**404, never 403, on both routes.** Another owner's file and an unknown one are the same response
+byte for byte, so ids cannot be probed by watching which error comes back; `get_file_status`
+returns `None` for both by construction. The class check is the route's own work rather than the
+database's: `files.class_id`'s foreign key carries no owner predicate, so without it an upload
+naming a stranger's class would be accepted and filed there.
+
+Every fact the router copies is pinned to its source by a test rather than trusted — the reason
+and status sets read off the CHECK constraints (`migrations/0001_init.sql`,
+`0003_failed_reason_too_long.sql`), `too_long`'s bound off `gct.config.MAX_INGEST_WORDS`
+(ADR 0029), and the file types the `unsupported` advice names off `parse_file`'s own dispatch.
 
 ### `POST /ask` — **#108** *(stub)*
 Router mounted at `/ask`. Calls `gct.ask.ask(conn, question, owner_id, class_id, embedder=,

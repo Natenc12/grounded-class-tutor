@@ -17,7 +17,8 @@ import uuid
 import psycopg
 import pytest
 
-from gct.classes import create_class
+from gct.classes import class_exists, create_class
+from gct.jobs.queue import enqueue
 
 
 def _rows(db_other, owner_id: str, name: str) -> list[tuple[str, str]]:
@@ -118,3 +119,99 @@ def test_create_class_refuses_a_connection_already_in_a_transaction(db, db_other
     assert conn.info.transaction_status == psycopg.pq.TransactionStatus.IDLE
     create_class(conn, owner_id=owner_id, name="accepted")
     assert _rows(db_other, owner_id, "accepted") == [(owner_id, "accepted")]
+
+
+@pytest.fixture
+def foreign_class(db_other):
+    """A class row owned by SOMEONE ELSE, with its own teardown.
+
+    `db`'s teardown deletes by owner and this row is not that owner's, so it is cleaned up here —
+    children first (FK order), because a test may well have queued a file against it, which is
+    precisely the cross-owner write `class_exists` exists to prevent.
+    """
+    other_owner = f"test-other-owner-{uuid.uuid4()}"
+    (class_id,) = db_other.execute(
+        "insert into classes (owner_id, name) values (%s, %s) returning class_id",
+        (other_owner, "someone else's class"),
+    ).fetchone()
+    try:
+        yield other_owner, str(class_id)
+    finally:
+        db_other.execute("delete from jobs where class_id = %s::uuid", (str(class_id),))
+        db_other.execute("delete from chunks where class_id = %s::uuid", (str(class_id),))
+        db_other.execute("delete from files where class_id = %s::uuid", (str(class_id),))
+        db_other.execute("delete from classes where class_id = %s::uuid", (str(class_id),))
+
+
+def test_class_exists_is_true_for_the_owner_and_false_for_everyone_else(db, foreign_class):
+    """Both arms on ONE class_id, so the difference is the owner and nothing else. A reader that
+    ignored `owner_id` — the failure this function exists to rule out — passes the first
+    assertion and fails the second."""
+    conn, owner_id, class_id = db
+    other_owner, other_class_id = foreign_class
+
+    assert class_exists(conn, class_id=class_id, owner_id=owner_id) is True
+    assert class_exists(conn, class_id=other_class_id, owner_id=other_owner) is True
+
+    assert class_exists(conn, class_id=other_class_id, owner_id=owner_id) is False
+    assert class_exists(conn, class_id=class_id, owner_id=other_owner) is False
+
+
+def test_class_exists_is_false_for_an_id_that_names_nothing(db):
+    """The other case behind the same `False`: a well-formed uuid with no row. Indistinguishable
+    from the cross-owner case above by construction, which is what makes 404-for-both free."""
+    conn, owner_id, _ = db
+    assert class_exists(conn, class_id=str(uuid.uuid4()), owner_id=owner_id) is False
+
+
+def test_class_exists_refuses_a_non_uuid_before_touching_the_connection(db):
+    """A malformed id is refused at the boundary, and the connection is left as it was found —
+    still IDLE, so the writer that follows in the same handler is not poisoned by a failed cast.
+    """
+    conn, owner_id, _ = db
+    conn.rollback()
+    assert conn.info.transaction_status == psycopg.pq.TransactionStatus.IDLE
+
+    with pytest.raises(ValueError, match=r"class_exists\(\) requires a uuid class_id"):
+        class_exists(conn, class_id="not-a-uuid", owner_id=owner_id)
+
+    assert conn.info.transaction_status == psycopg.pq.TransactionStatus.IDLE
+
+
+def test_class_exists_binds_the_canonical_form_of_every_spelling_it_accepts(db):
+    """`urn:uuid:` is the load-bearing case: `uuid.UUID` accepts it, Postgres's `::uuid` cast does
+    NOT, so binding the raw string would pass the boundary check and still raise from the
+    database. Every spelling of the seeded class_id must come back True."""
+    conn, owner_id, class_id = db
+    bare = uuid.UUID(class_id)
+    for spelling in (
+        class_id,
+        class_id.upper(),
+        bare.hex,
+        f"urn:uuid:{class_id}",
+        f"{{{class_id}}}",
+    ):
+        assert class_exists(conn, class_id=spelling, owner_id=owner_id) is True, spelling
+
+
+def test_the_foreign_key_alone_admits_the_cross_owner_write(db, db_other, foreign_class, tmp_path):
+    """WHY `class_exists` IS NOT REPLACEABLE BY CATCHING AN IntegrityError.
+
+    `files.class_id` references `classes(class_id)` with no owner predicate, so enqueuing against
+    ANOTHER owner's class satisfies the constraint and publishes: the row lands with this owner's
+    `owner_id` and the victim's `class_id`. Demonstrated here rather than argued, because it is
+    the entire reason the route checks ownership itself (F6/F12).
+    """
+    conn, owner_id, _ = db
+    _, other_class_id = foreign_class
+    conn.autocommit = True
+    path = tmp_path / "lecture-3.pdf"
+    path.write_bytes(b"%PDF-1.4\n")
+
+    file_id = enqueue(conn, path=path, owner_id=owner_id, class_id=other_class_id)
+
+    published = db_other.execute(
+        "select owner_id, class_id::text from files where file_id = %s::uuid", (file_id,)
+    ).fetchone()
+    assert published == (owner_id, other_class_id), "the FK let a cross-owner write through"
+    assert class_exists(conn, class_id=other_class_id, owner_id=owner_id) is False

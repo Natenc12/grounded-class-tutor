@@ -206,3 +206,18 @@ def test_every_spelling_pythons_parser_accepts_reaches_postgres_in_a_form_it_acc
     # Still a live transaction, not INERROR: a following statement succeeds.
     assert conn.execute("select 1").fetchone() == (1,)
     conn.rollback()
+
+
+def test_file_status_refuses_attribute_assignment(db, tmp_path):
+    """`FileStatus` is a PUBLIC CONTRACT and immutable: assigning any field raises
+    `FrozenInstanceError`, and the fields read back unchanged afterwards (the arm that proves the
+    refusal refused, rather than raised after mutating).
+    """
+    file_id, owner_id = _enqueued(db, tmp_path)
+    got = get_file_status(db[0], file_id=file_id, owner_id=owner_id)
+    assert got == FileStatus(status="queued", failed_reason=None, filename="lecture-3.pdf")
+
+    for field, value in (("status", "ready"), ("failed_reason", "empty"), ("filename", "x.pdf")):
+        with pytest.raises(dataclasses.FrozenInstanceError):
+            setattr(got, field, value)
+    assert (got.status, got.failed_reason, got.filename) == ("queued", None, "lecture-3.pdf")

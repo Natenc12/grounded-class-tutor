@@ -82,6 +82,18 @@ def test_an_upload_publishes_a_queued_file_and_its_job_and_stages_the_bytes(api,
     assert len(rows) == 1, "the upload published exactly one files row"
     file_id, class_id, filename, status, staging_ref = rows[0]
     staged = Path(staging_ref)
+    # PROVEN BEFORE THE `try`, because the `finally` below hands `rmtree` a directory named by a
+    # DATABASE ROW. `stage` writes `<STAGING_DIR>/<uuid4 hex>/<filename>`, so the slot is always a
+    # direct child of the staging root, and checking that here is what keeps this teardown from
+    # being one bad row away from deleting the checkout - which is exactly what it did during a
+    # mutation pass that made `staging_ref` a bare filename: `.parent` was the repository, and
+    # `ignore_errors=True` took source, tests and all without a word. Containment asserted inside
+    # the `try` does not help, because the `finally` runs whether or not it passed.
+    # `Path(STAGING_DIR).resolve()` is idempotent today (`gct.config` resolves it at import) and
+    # `enqueue` stores `str(Path(path).resolve())`, so the two sides compare equal; the call stays
+    # so this comparison is correct on its own terms rather than by borrowing config's habit.
+    assert staged.is_absolute(), staging_ref
+    assert staged.parent.parent == Path(STAGING_DIR).resolve(), staging_ref
     try:
         assert (file_id, class_id, filename, status) == (
             body["file_id"],
@@ -89,7 +101,6 @@ def test_an_upload_publishes_a_queued_file_and_its_job_and_stages_the_bytes(api,
             "lecture-3.pdf",
             "queued",
         )
-        assert staged.is_absolute() and staged.is_relative_to(STAGING_DIR)
         assert staged.read_bytes() == PDF_BYTES, "the staged file is not the uploaded bytes"
 
         job = db_other.execute(

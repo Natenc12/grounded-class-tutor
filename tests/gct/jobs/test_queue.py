@@ -363,6 +363,56 @@ def test_enqueue_refuses_a_class_id_that_is_not_a_uuid_and_leaves_the_connection
     ), "a refused enqueue published a files row"
 
 
+# WHAT `uuid.UUID` RAISES DEPENDS ON WHAT IT WAS HANDED, and the three cases are not
+# interchangeable — which is the whole reason the guard catches three types rather than one.
+# The comment on each is the parser's own failure mode, recorded so a future reader can tell
+# a deliberate set from a copied one.
+_NOT_EVEN_A_STRING = {
+    "none": None,  # TypeError: no hex/bytes/fields/int argument was given
+    "int": 12345,  # AttributeError: int has no `.replace`
+    "list": ["not", "an", "id"],  # AttributeError: list has no `.replace`
+    "already_parsed": uuid.UUID("6f1e1b4a-0f0e-4a3e-9a7d-2f0a1b2c3d4e"),  # AttributeError
+}
+
+
+@pytest.mark.parametrize("kind", sorted(_NOT_EVEN_A_STRING))
+def test_enqueue_refuses_a_class_id_that_is_not_even_a_string(db, db_other, tmp_path, kind):
+    """A non-`str` `class_id` gets the SAME remedy-naming refusal a malformed string gets (#121).
+
+    `uuid.UUID` reports a bad argument three different ways: a malformed string is a `ValueError`,
+    `None` is a `TypeError`, and anything without `.replace` — an `int`, a `list`, an already-parsed
+    `uuid.UUID` — is an `AttributeError` raised from inside the parser. A guard that caught only
+    `ValueError` therefore refused *some* bad ids with a remedy and let the rest escape carrying
+    `uuid.UUID`'s own message, which names the parser's internals and nothing a caller can act on.
+    `ingest_file` (`gct/ingest/pipeline.py`) already catches all three; this is the same set, and
+    the test exists so the set cannot be quietly narrowed back.
+
+    `already_parsed` is the case that will actually happen: a caller holding the `uuid.UUID` it
+    just built passes it instead of `str(...)`, and before this it got
+    `'UUID' object has no attribute 'replace'`.
+
+    Nothing shipped can reach any of these today — the upload route's `class_id` is a FastAPI Form
+    field, hence always a `str` — so this pins a boundary contract, not a live path.
+    """
+    conn, owner_id, _ = db
+    source = _lecture(tmp_path)
+
+    with pytest.raises(ValueError, match=r"enqueue\(\) requires a uuid class_id") as caught:
+        enqueue(conn, path=source, owner_id=owner_id, class_id=_NOT_EVEN_A_STRING[kind])
+
+    assert "create_class" in str(caught.value), "the refusal does not name what to pass instead"
+    # The connection is untouched because the raise happens before `conn.transaction()` opens.
+    assert conn.info.transaction_status == psycopg.pq.TransactionStatus.IDLE
+    assert conn.execute("select 1").fetchone() == (1,), "the refusal cost the caller its connection"
+    conn.rollback()
+    assert (
+        db_other.execute("select count(*) from files where owner_id = %s", (owner_id,)).fetchone()[
+            0
+        ]
+        == 0
+    ), "a refused enqueue published a files row"
+
+
 def test_claim_returns_the_oldest_queued_job(db, db_other, tmp_path):
     """FIFO by `created_at`: the job that has waited longest wins — and the other is untouched.
 

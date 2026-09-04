@@ -115,6 +115,16 @@ def enqueue(
     `::uuid` cast does not, and why validating the raw string and then binding THAT is not the
     same thing - and this is a cite, not a second copy of that argument.
 
+    HOW LENIENT THIS ACTUALLY IS, said out loud because "the four spellings" under-states it and
+    the guard test enumerates exactly four. `uuid.UUID` is not a spelling whitelist: it strips
+    `urn:` and `uuid:` prefixes, strips surrounding braces, and removes hyphens WHEREVER they fall.
+    So an id with a misplaced or extra hyphen - which Postgres's own cast refuses - now resolves to
+    a real class here (measured on #121: six such forms accepted). That is the leniency this
+    function chose, not an accident of it, and it does not widen who can reach what: the ownership
+    check the upload route runs first (`class_exists`) parses with the same `uuid.UUID` and has
+    always accepted these forms. The change is that the two calls now AGREE about an id instead of
+    one saying yes and the other aborting, which was the whole defect.
+
     Lenient here, strict one layer up in the pipeline, and the asymmetry is about WHERE THE ID
     COMES FROM rather than about writers being stricter than readers. `ingest_file`
     (`gct/ingest/pipeline.py`) refuses a non-canonical `file_id` outright because the worker reads
@@ -140,7 +150,18 @@ def enqueue(
     require_idle(conn, "enqueue")
     try:
         canonical_class_id = str(uuid.UUID(class_id))
-    except ValueError as exc:
+    except (ValueError, AttributeError, TypeError) as exc:
+        # THREE exception types, not just `ValueError`, and the set is copied from `ingest_file`'s
+        # guard (`gct/ingest/pipeline.py`) rather than invented: `uuid.UUID` reports a bad argument
+        # in three different ways depending on what it was handed. A malformed STRING is the
+        # `ValueError`; `None` is a `TypeError` ("one of the hex, bytes, ... arguments must be
+        # given"); an `int`, a `list`, or an already-parsed `uuid.UUID` instance is an
+        # `AttributeError` from the `.replace` call inside the parser. Catching only `ValueError`
+        # let the last two escape as the parser's own message, which names `uuid.UUID`'s internals
+        # and no remedy - the opposite of what this guard exists to do. Nothing shipped can reach
+        # them today (the upload route's `class_id` is a Form field, so always a `str`), which is
+        # what makes this a trap rather than a bug: it waits for the first caller that passes the
+        # `uuid.UUID` it already has.
         raise ValueError(
             f"enqueue() requires a uuid class_id; got {class_id!r}. Pass the id `create_class` "
             "returned for the class this file belongs to - an id that is not a uuid cannot name "

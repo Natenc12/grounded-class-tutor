@@ -17,6 +17,7 @@ wiring (the default `gct.config.STAGING_DIR`) is pinned rather than assumed.
 
 from __future__ import annotations
 
+import inspect
 import re
 import shutil
 import uuid
@@ -27,6 +28,7 @@ import pytest
 
 from gct.api.routers import files as files_router
 from gct.config import MAX_INGEST_WORDS, STAGING_DIR
+from gct.ingest import parse
 from gct.staging import stage
 
 PDF_BYTES = b"%PDF-1.4\nnot a real pdf, and this route does not care\n"
@@ -389,6 +391,30 @@ def test_every_terminal_reason_renders_actionably_and_is_a_200(
         seen.add(body["message"])
 
     assert len(seen) == len(reasons), "two reasons render the same advice, so one is not specific"
+
+
+def test_the_unsupported_advice_names_exactly_the_types_the_parser_accepts():
+    """The one copied fact in this router that had no guard, given the guard the others have.
+
+    `_FAILED_MESSAGE["unsupported"]` names the file types a student should convert to, and its
+    source is `parse_file`'s dispatch on the suffix - prose, so it cannot be derived, exactly
+    like the six reasons and the four statuses read off `pg_constraint` above. Those are pinned
+    by reading their source AT TEST TIME; this sentence was not, so adding a third parser would
+    have left students still being told to convert to PDF.
+
+    `assert dispatch` is load-bearing, not a formality: a source scrape that silently matches
+    nothing compares two empty sets and passes forever, which is worse than having no test.
+    """
+    dispatch = set(re.findall(r'suffix == "(\.[a-z0-9]+)"', inspect.getsource(parse.parse_file)))
+    named = set(re.findall(r"\((\.[a-z0-9]+)\)", files_router._FAILED_MESSAGE["unsupported"]))
+
+    assert dispatch, (
+        "the dispatch scrape matched nothing - `parse_file`'s shape moved, and this guard was "
+        "one step from passing vacuously"
+    )
+    assert dispatch == named, (
+        f"the router offers {sorted(named)} but the parser accepts {sorted(dispatch)}"
+    )
 
 
 def test_the_too_long_advice_names_the_bound_it_was_refused_by():

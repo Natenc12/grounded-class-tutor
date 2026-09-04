@@ -32,6 +32,8 @@ build/
 data/dogfood/**
 !data/dogfood/**/
 !data/dogfood/**/manifest.md
+# Staged uploads (ADR 0010, `gct.staging`) — bytes a student sent; never committed.
+data/staging/
 
 # --- Review / decision artifacts ---
 # Lavish interactive briefs (.lavish/pr-<N>-review.html etc). Generated, single-session,

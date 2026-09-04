@@ -62,7 +62,7 @@ import psycopg
 from openai import OpenAIError
 
 from gct.ask import AskResult, ask
-from gct.config import load_settings
+from gct.config import V1_OWNER_ID, load_settings
 from gct.db import connect
 from gct.eval.questions import EXPECTATION_ANSWER, EXPECTATION_REFUSE, EvalQuestion, load_questions
 from gct.eval.scoring import (
@@ -85,7 +85,9 @@ from gct.providers.base import Embeddings
 from gct.providers.openai_provider import OpenAIEmbeddings, OpenAIGeneration
 from gct.retriever.retrieve import DEFAULT_K, RetrievedChunk
 
-DEFAULT_OWNER = "nate-dogfood"
+# The V1 owner the API serves (ADR 0004; issue #104) - imported, not restated, so the smoke
+# and the API cannot drift onto two corpora.
+DEFAULT_OWNER = V1_OWNER_ID
 DEFAULT_CORPUS_DIR = "data/dogfood/religion"
 DEFAULT_QUESTIONS = "eval/questions.jsonl"
 DEFAULT_SUITE = "smoke"

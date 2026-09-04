@@ -67,6 +67,18 @@ MAX_STAGE_BYTES = 100 * 1024 * 1024
 # after any later `chdir`.
 STAGING_DIR = Path(os.environ.get("GCT_STAGING_DIR", "data/staging")).resolve()
 
+# --- The V1 owner (ADR 0004) ----------------------------------------------------------------
+# V1 is ONE hardcoded user with no auth (ADR 0004; ADR 0002's tenancy clause as amended by it).
+# Every row the API writes and every scoped query it runs carries this owner_id, so V3 turns
+# enforcement (auth + RLS) on over the same column instead of reshaping the schema.
+#
+# ONE source, on purpose: `gct.api.deps.owner_id` reads it and `scripts/ask_smoke.py` defaults
+# `--owner` to it, so the API answers over the SAME corpus the smoke ingested. A second literal
+# anywhere would be a second writer of this value, and the day they differ the API silently
+# answers from an empty class. Not an environment variable: nothing in V1 has a second user to
+# select, and a knob with one legal value is a place for the two copies to start (issue #104).
+V1_OWNER_ID = "nate-dogfood"
+
 
 @dataclass(frozen=True)
 class Settings:

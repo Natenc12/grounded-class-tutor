@@ -47,6 +47,7 @@ uv run python scripts/smoke_slice0.py   # Slice 0 exit test → "PASS — founda
 uv run python scripts/ask_smoke.py      # Slice 1 exit gate — SPENDS MONEY (real models, real corpus)
 uv run python scripts/ingest_smoke.py   # Slice 2 exit gate — SPENDS MONEY
 uv run python scripts/worker.py         # the poll worker — a SEPARATE process, never in the API loop (ADR 0011)
+uv run uvicorn gct.api.app:app          # the Slice 3 API — its own process; refuses to start without OPENAI_API_KEY
 uv run pytest tests/ -q                 # full suite
 uv run pytest -m db -q                  # just the Postgres-backed tests (DB must be up)
 uv run pytest -m "not live" -q          # exactly what CI runs

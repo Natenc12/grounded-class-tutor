@@ -137,6 +137,8 @@ def test_negative_max_bytes_is_refused_before_any_read(tmp_path):
         "  ",
         "lec\x00ture.pdf",
         "x" * 256,
+        "\udcff.pdf",  # a lone surrogate - unencodable, would be a UnicodeEncodeError otherwise
+        None,  # starlette's UploadFile.filename is `str | None`
     ],
 )
 def test_bad_filenames_are_refused_and_nothing_is_written(tmp_path, bad):

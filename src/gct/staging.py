@@ -84,8 +84,16 @@ def validate_filename(filename: str) -> str:
     they uploaded - not a slug, not a stripped or lower-cased copy. Hence REJECT, never
     normalize: a normalized name would be a citation label the student never typed.
 
-    Rejected, with the remedy each error names:
-      - empty or whitespace-only (`""`, `"  "`) - there is nothing to cite;
+    Rejected, with the remedy each error names - and ONLY as `StagingError`, whatever the
+    input: a router maps that one class to a bad request, so any other exception out of here
+    (an `AttributeError` on `None`, a `UnicodeEncodeError` on a lone surrogate) would render a
+    bad request as a 500. `starlette.UploadFile.filename` is typed `str | None`, so `None` is
+    a real input, not a type error:
+      - not a `str` at all (`None`), empty or whitespace-only (`""`, `"  "`, `"\t"`) - there is
+        nothing to cite;
+      - not encodable as UTF-8 (a lone surrogate such as `"\udcff.pdf"`, which is how a
+        non-UTF-8 name reaches Python through `surrogateescape`) - the filesystem could not
+        store the name, and neither could a `text` column;
       - a path separator (`/`, `\\`) or NUL anywhere - `../evil.pdf`, `sub/dir.pdf`, and
         `a\\x00b.pdf` are all traversal or truncation attempts, and a basename never needs
         either; the remedy is to send the basename alone;
@@ -96,12 +104,20 @@ def validate_filename(filename: str) -> str:
     (`..hidden.pdf` is a legal name), unicode, and an extension `parse_file` will refuse -
     content type is the parser's call, terminally (`unsupported`), not this validator's.
     """
-    if filename.strip() == "":
+    if not isinstance(filename, str) or filename.strip() == "":
         raise StagingError(
             "bad_filename",
             "the upload has no filename",
             remedy="name the file (for example lecture-3.pdf) and upload it again",
         )
+    try:
+        encoded = filename.encode("utf-8")
+    except UnicodeEncodeError:
+        raise StagingError(
+            "bad_filename",
+            f"filename {filename!r} is not valid UTF-8",
+            remedy="rename the file using ordinary characters and upload it again",
+        ) from None
     if any(ch in filename for ch in _FORBIDDEN):
         raise StagingError(
             "bad_filename",
@@ -114,10 +130,10 @@ def validate_filename(filename: str) -> str:
             f"filename {filename!r} is a directory reference, not a file name",
             remedy="name the file (for example lecture-3.pdf) and upload it again",
         )
-    if len(filename.encode("utf-8")) > _MAX_FILENAME_BYTES:
+    if len(encoded) > _MAX_FILENAME_BYTES:
         raise StagingError(
             "bad_filename",
-            f"filename is {len(filename.encode('utf-8'))} bytes; the cap is {_MAX_FILENAME_BYTES}",
+            f"filename is {len(encoded)} bytes; the cap is {_MAX_FILENAME_BYTES}",
             remedy=f"shorten the filename to {_MAX_FILENAME_BYTES} bytes or fewer",
         )
     return filename

@@ -11,8 +11,9 @@
 > `design/roadmap.md` → Slice 3; `design/architecture.md` (thin adapter, no business logic).
 >
 > **Scope of this revision (issue #104):** only what the skeleton settles — the composition root.
-> The route sections at the bottom are **stubs** for #107, #108 and #110 to fill; nothing here
-> decides route-level behaviour.
+> Only the `POST /classes` section at the bottom is still a **stub**, for #107 to fill; the
+> composition root above decides no route-level behaviour, and the filled route sections each
+> name the issue that owns theirs.
 
 ## Responsibility
 Translate HTTP ⇄ core calls. A handler **validates, calls one library callable, and renders** —
@@ -189,8 +190,9 @@ and status sets read off the CHECK constraints (`migrations/0001_init.sql`,
 (ADR 0029), and the file types the `unsupported` advice names off `parse_file`'s own dispatch.
 
 ### `POST /ask` — **#108**
-Router mounted at `/ask`; models and both status maps live beside it in
-`src/gct/api/routers/ask.py`, which owns every sentence this section does not restate.
+Router mounted at `/ask`; the models, the status map and the message-substitution map live
+beside it in `src/gct/api/routers/ask.py`, which owns every sentence this section does not
+restate.
 
 `POST /ask` takes JSON `{class_id, question}`. It parses `class_id` ONCE at the top for the same
 reason `POST /files` does — `retrieve` binds it raw into a `::uuid` cast, so a spelling Python
@@ -215,8 +217,13 @@ choosing the HTTP rendering is the route's decision, not the ADR's.
 always the library's token, adopted verbatim. `provider_terminal`'s message is built from a raw
 provider exception (`grounder/answer.py`), so the route substitutes its own sentence rather than
 forwarding vendor text — the same thing `errors._unhandled` refuses to do — and an unknown kind is
-substituted for the same reason. Refusals are `400` (`bad_class_id`), `404` (`class_not_found`),
-`422` (blank, missing, or over-long `question`, through the shared validation envelope).
+substituted for the same reason. **A substituted sentence is written to the server log**, at the
+site that substitutes it and only there: `ApiError` is handled, so nothing re-raises for uvicorn
+to log the way an uncaught exception does, and the route's own sentence tells the operator to
+look in that log. The two forwarding kinds are not logged — the client was already told.
+**Rejected requests** - never a refusal, which is a 200 - are
+`400` (`bad_class_id`), `404` (`class_not_found`), `422` (blank, missing, or over-long
+`question`, through the shared validation envelope).
 
 **404, never 403**, and byte-identical for a foreign class and a nonexistent one — `class_exists`
 returns one `False` for both by construction (F12). The check is not a formality: a missing class

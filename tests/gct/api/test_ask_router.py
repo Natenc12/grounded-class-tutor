@@ -28,6 +28,7 @@ path. What is read back on `db_other` is the seed, before the request that depen
 
 from __future__ import annotations
 
+import logging
 import uuid
 
 import pytest
@@ -191,6 +192,42 @@ def test_a_grounded_answer_is_200_with_citations_resolved_to_the_seeded_chunks(a
     ]
     assert body["coverage"] == {"complete": True, "gaps": []}
     assert body["integrity"] == {"ok": True, "reasons": []}
+
+
+def test_every_cited_label_reaches_the_client_in_the_models_order(api, db_other):
+    """MORE THAN ONE citation, because one citation cannot tell a renderer from a truncator.
+
+    The grounded test above asserts a single `[S1]` resolves to the right chunk, which is the
+    citation spine. It is satisfied, though, by a route that renders only the FIRST citation and
+    drops the rest - a mutation pass demonstrated exactly that, and every test stayed green. A
+    student reading a two-source answer would see one source and have no way to know a second was
+    cited. So this test cites two labels and pins both, in the order the model used: the answer's
+    provenance is the whole list or it is not provenance.
+
+    The model cites `[S2]` before `[S1]`, and the response carries them in ORDINAL order: the
+    Grounder sorts and deduplicates before this route ever sees the list (`_resolve`, "the
+    citation list reads in the same order as the context we built"), and the route renders that
+    list as given. Pinning it here is what would catch a route that started re-ordering on its
+    own - the citation list is the answer's provenance, and its order is not the adapter's to
+    choose.
+    """
+    chunk_ids = _seed(db_other, api, texts=["Motion requires a mover.", "Contingency."])
+    _providers(
+        api,
+        ScriptedGeneration(
+            "Contingent things need a necessary being [S2], as moved things need a mover [S1].\n"
+            "COVERAGE: complete"
+        ),
+    )
+
+    response = _ask(api)
+
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["state"] == "GROUNDED"
+    assert [c["label"] for c in body["citations"]] == ["S1", "S2"]
+    assert [c["chunk_id"] for c in body["citations"]] == [chunk_ids[0], chunk_ids[1]]
+    assert [c["page_or_slide"] for c in body["citations"]] == [1, 2]
 
 
 def test_a_partial_answer_is_200_and_carries_the_gaps_the_model_declared(api, db_other):
@@ -575,6 +612,22 @@ def test_the_question_bound_refuses_one_character_over_and_admits_the_bound_itse
     assert at.status_code == 200, at.text
 
 
+def test_the_question_cap_is_the_size_of_a_question_and_not_of_a_document(api):
+    """The bound's VALUE, which the boundary test above structurally cannot pin.
+
+    That test builds both its inputs from `MAX_QUESTION_CHARS`, so the constant appears on both
+    sides of every comparison and moving it moves the test with it - a mutation pass raised the
+    cap a hundredfold and nothing went red. What the constant is FOR is a range, not a number
+    (see its comment): far past any question a student types, far short of a document that would
+    crowd the retrieved sources out of the context window. So the range is what is asserted, and
+    a later tuning move inside it stays green while abandoning the decision does not.
+
+    Deliberately not `assert MAX_QUESTION_CHARS == 2000`: that is a copy of the value with a
+    second writer, and it would go red on every deliberate change as loudly as on a mistake.
+    """
+    assert 500 <= ask_router.MAX_QUESTION_CHARS <= 10_000
+
+
 def test_a_question_reaches_the_model_verbatim(api, db_other):
     """Refuse, do not convert. A blank question is rejected outright (above) and an accepted one
     is passed through UNTRIMMED - the same choice `create_class` makes about a class name. What
@@ -658,3 +711,44 @@ def test_the_route_does_not_catch_broadly_itself(api):
     source = inspect.getsource(ask_router.ask_question)
     assert "except Exception" not in source
     assert "except BaseException" not in source
+
+
+def test_a_withheld_provider_message_is_written_to_the_server_log(api, db_other, caplog):
+    """The 500 tells the operator the details are in the server log; this is that log line.
+
+    `ApiError` is HANDLED - `errors._api_error` renders it and returns - so nothing re-raises for
+    uvicorn to log, unlike the uncaught path `errors._unhandled` covers. Without the warning at
+    the substitution site the two route-owned sentences would name a place nothing was written
+    to, and the only record of why a student's question failed would be destroyed at the raise.
+    """
+    _seed(db_other, api, texts=["Motion requires a mover."])
+    secret = "AuthenticationError: 401 - invalid api key sk-proj-abc"
+    _providers(api, ScriptedGeneration(RuntimeError(secret)))
+
+    with caplog.at_level(logging.WARNING, logger="gct.api.routers.ask"):
+        response = _ask(api)
+
+    assert response.status_code == 500
+    assert secret not in response.text, "the provider's own words reached the client"
+    assert any(secret in record.getMessage() for record in caplog.records), (
+        "the withheld sentence was not written anywhere - the 500's advice is a dead end"
+    )
+
+
+def test_a_forwarded_provider_message_is_not_logged_twice(api, db_other, caplog):
+    """The other arm, and the reason the log line is conditional rather than unconditional.
+
+    `provider_transient` forwards the library's sentence to the client verbatim, so it is already
+    where the operator and the student can both read it. Logging it again would put a WARNING in
+    the server log for an ordinary rate-limit the client was told about and can retry, and a log
+    that warns on the routine case is one nobody reads on the case that matters. Pinned because
+    the test above passes just as well against a route that logs unconditionally.
+    """
+    _seed(db_other, api, texts=["Motion requires a mover."])
+    _providers(api, ScriptedGeneration(TransientGenerationError("429 rate limited")))
+
+    with caplog.at_level(logging.WARNING, logger="gct.api.routers.ask"):
+        response = _ask(api)
+
+    assert response.status_code == 503
+    assert [r for r in caplog.records if r.name == "gct.api.routers.ask"] == []

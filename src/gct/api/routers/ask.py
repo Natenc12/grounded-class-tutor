@@ -35,6 +35,7 @@ autocommit connection `gct.api.deps.get_conn` yields is still the wiring this sh
 
 from __future__ import annotations
 
+import logging
 import uuid
 
 from fastapi import APIRouter
@@ -100,8 +101,10 @@ _UNKNOWN_ERROR_STATUS = 500
 # `except` around `generate()`) - by construction the one kind whose text nobody here has read.
 # OpenAI's own 401 body quotes back the key prefix it rejected. Forwarding it would do precisely
 # what `errors._unhandled` refuses to do, in its own words: ship "psycopg's DSN-bearing messages
-# and provider errors to the browser". The library's sentence is not lost, it is on the result the
-# server holds - which is where a provider's own error text belongs.
+# and provider errors to the browser". The library's sentence is not lost: it is WRITTEN TO THE
+# SERVER LOG at the substitution site below, which is where a provider's own error text belongs
+# and the only place the sentences here promise the operator will find it. Withholding it from
+# the client and never recording it anywhere would make that promise false.
 _ERROR_MESSAGE_OVERRIDE = {
     ERROR_KIND_PROVIDER_TERMINAL: "We could not generate an answer: the service behind it "
     "refused the request outright. That is a configuration problem on this server, not "
@@ -114,6 +117,11 @@ _ERROR_MESSAGE_OVERRIDE = {
 # but its message is not, for the same reason `provider_terminal`'s is not: nobody has read the
 # text of a message that does not exist yet, so it cannot be vouched for as client-facing.
 # Reaching this at all means `test_every_error_kind_has_a_status` should have gone red first.
+# Named for this module, configured by nothing here: a library-style logger inherits whatever
+# handlers the process running the app installed (uvicorn's, in production), which is the same
+# route `errors._unhandled`'s traceback takes to the server log.
+logger = logging.getLogger(__name__)
+
 _UNKNOWN_ERROR_MESSAGE = (
     "We could not generate an answer, and this version of the API has no advice for the reason "
     "it was given. Nothing is wrong with your materials. The details are in the server log."
@@ -321,6 +329,21 @@ def ask_question(
             if kind in _ERROR_STATUS
             else _UNKNOWN_ERROR_MESSAGE
         )
+        if message is not result.error.message:
+            # SUBSTITUTED, so the library's own sentence is going nowhere else. `ApiError` is a
+            # HANDLED exception - `errors._api_error` renders it and returns - so unlike the
+            # uncaught path there is no re-raise for uvicorn to log, and without this line the
+            # two sentences above would tell an operator to read a log nothing was written to.
+            # The identity test, not `!=`, is what keeps this exact: the two forwarding kinds
+            # pass `result.error.message` through unchanged and log nothing, and a substitution
+            # that happened to be equal to it would still be a substitution.
+            logger.warning(
+                "POST /ask returned %s for a %s error; the message withheld from the client "
+                "was: %s",
+                _ERROR_STATUS.get(kind, _UNKNOWN_ERROR_STATUS),
+                kind,
+                result.error.message,
+            )
         # `detail` stays null: the envelope documents it as optional STRUCTURE, and putting the
         # human sentence there would hand the first client to parse it prose where the schema
         # promised shape (`files.py` makes the same call, for the same reason).

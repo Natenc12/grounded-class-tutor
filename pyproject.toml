@@ -10,6 +10,11 @@ dependencies = [
     "python-dotenv>=1.0",
     "pypdf>=6.16.1",
     "python-pptx>=1.0.2",
+    # The Slice 3 adapter (issue #104). Runtime deps, not dev: `gct.api` imports FastAPI and
+    # `uvicorn gct.api.app:app` is how the adapter is served (ADR 0011 PM-3: the worker is a
+    # SEPARATE process, so this is the API's server and nothing else's).
+    "fastapi>=0.115",
+    "uvicorn>=0.30",
 ]
 
 [project.optional-dependencies]
@@ -20,6 +25,10 @@ dev = [
     # `uv lock --upgrade` from reddening that gate with no repo change.
     "ruff~=0.15.20",
     "reportlab>=5.0.0",
+    # `fastapi.testclient` is a thin wrapper over starlette's, which needs an HTTP client library
+    # to drive the ASGI app. `httpx2`, not `httpx`: the starlette the lock resolves prefers it
+    # and emits a deprecation warning on every import under `httpx` (issue #104).
+    "httpx2>=2.0",
 ]
 
 [build-system]

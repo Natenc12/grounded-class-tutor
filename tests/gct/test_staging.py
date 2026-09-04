@@ -137,6 +137,10 @@ def test_negative_max_bytes_is_refused_before_any_read(tmp_path):
         "  ",
         "lec\x00ture.pdf",
         "x" * 256,
+        "\t",
+        "\n",
+        " \t ",
+        "\u00e9" * 128,  # 128 characters but 256 UTF-8 bytes: the cap is measured in bytes
         "\udcff.pdf",  # a lone surrogate - unencodable, would be a UnicodeEncodeError otherwise
         None,  # starlette's UploadFile.filename is `str | None`
     ],
@@ -159,6 +163,8 @@ def test_bad_filenames_are_refused_and_nothing_is_written(tmp_path, bad):
         "..hidden.pdf",
         " padded .pdf",
         "x" * 255,
+        "\u00e9" * 127 + "x",  # exactly 255 UTF-8 bytes
+        "\u00e9" * 125 + ".pdf",  # 254 bytes, 129 characters
         "notes.txt",  # content type is parse_file's terminal call, not the stager's
     ],
 )
@@ -211,9 +217,13 @@ def test_durability_order_is_fsync_file_then_rename_then_fsync_dir(tmp_path, mon
     events: list[str] = []
     real_fsync, real_replace = os.fsync, os.replace
 
+    dir_inodes: list[int] = []
+
     def fsync(fd):
-        mode = os.fstat(fd).st_mode
-        events.append("fsync:dir" if stat.S_ISDIR(mode) else "fsync:file")
+        st = os.fstat(fd)
+        if stat.S_ISDIR(st.st_mode):
+            dir_inodes.append(st.st_ino)
+        events.append("fsync:dir" if stat.S_ISDIR(st.st_mode) else "fsync:file")
         real_fsync(fd)
 
     def replace(src, dst):
@@ -222,8 +232,11 @@ def test_durability_order_is_fsync_file_then_rename_then_fsync_dir(tmp_path, mon
 
     monkeypatch.setattr(os, "fsync", fsync)
     monkeypatch.setattr(os, "replace", replace)
-    stage(_RecordingReader(b"q" * 10), filename="lecture.pdf", staging_dir=tmp_path)
+    ref = stage(_RecordingReader(b"q" * 10), filename="lecture.pdf", staging_dir=tmp_path)
     assert events == ["fsync:file", "rename", "fsync:dir"]
+    # WHICH directory: the slot the rename happened in, not the staging root above it.
+    assert dir_inodes == [Path(ref).parent.stat().st_ino]
+    assert dir_inodes != [tmp_path.stat().st_ino]
 
 
 def test_no_part_file_remains_after_success(tmp_path):
@@ -252,3 +265,66 @@ def test_staged_ref_round_trips_through_enqueue_as_files_staging_ref(db, db_othe
     assert staging_ref == ref
     assert filename == "lecture.pdf"
     assert Path(staging_ref).read_bytes() == payload
+
+
+# --- pins the mutation round asked for (gaps 3, 12, 37, 38, 55; config 4 + 32) -----------------
+
+
+def test_a_relative_staging_dir_still_yields_an_absolute_ref_that_survives_chdir(
+    tmp_path, monkeypatch
+):
+    """`enqueue` stores the ref as `files.staging_ref`, and the worker opens it from whatever
+    cwd it happens to have - so the ref must be absolute even when the caller's dir is not."""
+    monkeypatch.chdir(tmp_path)
+    ref = stage(_RecordingReader(b"rel"), filename="lecture.pdf", staging_dir="uploads")
+    assert Path(ref).is_absolute()
+    assert Path(ref).parent.parent == (tmp_path / "uploads").resolve()
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.mkdir()
+    monkeypatch.chdir(elsewhere)
+    assert Path(ref).read_bytes() == b"rel"
+
+
+def test_staging_error_refuses_a_reason_outside_the_closed_set():
+    from gct.staging import STAGING_REASONS
+
+    with pytest.raises(AssertionError):
+        StagingError("nope", "d", remedy="r")
+    for reason in STAGING_REASONS:
+        exc = StagingError(reason, "d", remedy="r")
+        assert (exc.reason, exc.remedy, str(exc)) == (reason, "r", "d - r")
+
+
+def test_a_forced_uuid_collision_raises_rather_than_overwriting(tmp_path, monkeypatch):
+    """ "Two refs for two uploads" has to hold even when the uuid does not: the second upload
+    must fail loudly, and the first upload's bytes must be exactly what they were."""
+    import uuid
+
+    fixed = uuid.uuid4()
+    monkeypatch.setattr("gct.staging.uuid.uuid4", lambda: fixed)
+    ref = stage(_RecordingReader(b"first"), filename="lecture.pdf", staging_dir=tmp_path)
+    with pytest.raises(FileExistsError):
+        stage(_RecordingReader(b"second"), filename="lecture.pdf", staging_dir=tmp_path)
+    assert Path(ref).read_bytes() == b"first"
+    assert [p.name for p in Path(ref).parent.iterdir()] == ["lecture.pdf"]
+
+
+def test_the_final_name_does_not_exist_until_the_stream_is_complete(tmp_path):
+    """The invariant the worker relies on: a path that exists under the final name is
+    complete. Observed from INSIDE the stream, by a reader that looks at the slot on its
+    second read."""
+    seen: list[list[str]] = []
+
+    class _PeekingReader(_RecordingReader):
+        def read(self, n: int) -> bytes:
+            if len(self.requested) == 1:
+                slots = [p for p in tmp_path.iterdir() if p.is_dir()]
+                assert len(slots) == 1
+                seen.append(sorted(p.name for p in slots[0].iterdir()))
+            return super().read(n)
+
+    ref = stage(
+        _PeekingReader(b"p" * (CHUNK_BYTES + 1)), filename="lecture.pdf", staging_dir=tmp_path
+    )
+    assert seen == [[".part"]]  # mid-stream: only the temp name, never the final one
+    assert sorted(p.name for p in Path(ref).parent.iterdir()) == ["lecture.pdf"]

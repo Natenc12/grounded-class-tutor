@@ -17,6 +17,7 @@ wiring (the default `gct.config.STAGING_DIR`) is pinned rather than assumed.
 
 from __future__ import annotations
 
+import ast
 import inspect
 import re
 import shutil
@@ -403,6 +404,33 @@ def test_every_terminal_reason_renders_actionably_and_is_a_200(
     assert len(seen) == len(reasons), "two reasons render the same advice, so one is not specific"
 
 
+def _accepted_suffixes(func) -> set[str]:
+    """Every file-extension literal in `func`'s source, read off its AST rather than its text.
+
+    A regex only ever sees the comparison form it was written against. This scrape started as
+    `suffix == "(\\.[a-z0-9]+)"` over the source text, and a falsifier added a third parser the
+    way anyone actually would - `elif suffix in (".docx", ".odt"):` - which left it returning
+    `{.pdf, .pptx}` while the student was still told to convert to PDF or PowerPoint. That is
+    precisely the widening the caller exists to catch, so the form-dependence was the defect.
+    The AST sees a string constant wherever it sits: `==`, `in (...)`, a `match` case, a dict
+    key, a set, either side of the comparison.
+
+    The shape filter - a dot, then one to five lowercase alphanumerics - is the WHOLE filter.
+    Nothing is excluded, not even the docstring: every suffix-shaped literal inside a dispatch
+    function is either a type it routes or a claim about the types it routes, and both belong in
+    this answer. An exclusion list would reintroduce the same blindness one level down, because
+    it would drop a real suffix without saying so. Today this returns `{.pdf, .pptx}`, which is
+    the dispatch and nothing else.
+    """
+    return {
+        node.value
+        for node in ast.walk(ast.parse(inspect.getsource(func)))
+        if isinstance(node, ast.Constant)
+        and isinstance(node.value, str)
+        and re.fullmatch(r"\.[a-z0-9]{1,5}", node.value)
+    }
+
+
 def test_the_unsupported_advice_names_exactly_the_types_the_parser_accepts():
     """The one copied fact in this router that had no guard, given the guard the others have.
 
@@ -412,15 +440,17 @@ def test_the_unsupported_advice_names_exactly_the_types_the_parser_accepts():
     by reading their source AT TEST TIME; this sentence was not, so adding a third parser would
     have left students still being told to convert to PDF.
 
-    `assert dispatch` is load-bearing, not a formality: a source scrape that silently matches
-    nothing compares two empty sets and passes forever, which is worse than having no test.
+    `assert dispatch` is load-bearing, not a formality: a scrape that silently matches nothing
+    compares two empty sets and passes forever, which is worse than having no test. It is what
+    catches a dispatch gutted of every suffix literal, which `_accepted_suffixes` cannot tell
+    apart from a parser that accepts nothing.
     """
-    dispatch = set(re.findall(r'suffix == "(\.[a-z0-9]+)"', inspect.getsource(parse.parse_file)))
+    dispatch = _accepted_suffixes(parse.parse_file)
     named = set(re.findall(r"\((\.[a-z0-9]+)\)", files_router._FAILED_MESSAGE["unsupported"]))
 
     assert dispatch, (
-        "the dispatch scrape matched nothing - `parse_file`'s shape moved, and this guard was "
-        "one step from passing vacuously"
+        "the suffix scrape matched nothing - `parse_file` names no file type at all, and this "
+        "guard was one step from passing vacuously"
     )
     assert dispatch == named, (
         f"the router offers {sorted(named)} but the parser accepts {sorted(dispatch)}"

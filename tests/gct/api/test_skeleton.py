@@ -209,6 +209,31 @@ def test_startup_refuses_a_missing_openai_key(monkeypatch):
             pass
 
 
+def test_injecting_one_provider_still_requires_the_key_and_builds_the_other(monkeypatch):
+    """Inject exactly ONE provider. The key requirement belongs to constructing the REAL
+    provider, so it must still fire for the half that was not injected (arm A); and with a key
+    present, that half must actually get built (arm B - the lifespan's import is behind a second
+    guard of the same shape). Both guards read `is None or ... is None`; the all-or-nothing tests
+    above are green with either `or` turned into `and`, and only a single-injection case is not.
+
+    `sk-dummy` never reaches OpenAI: constructing the client sends nothing, and nothing here
+    calls it. No `live_*` fixture, so this is not a paid test."""
+    from gct.providers.openai_provider import OpenAIGeneration
+
+    # Arm A: the real generator would be built with an empty key, which the SDK ACCEPTS - so
+    # the refusal has to be ours, naming the variable, not the SDK's error on the first call.
+    monkeypatch.setenv("OPENAI_API_KEY", "")
+    with pytest.raises(RuntimeError, match="OPENAI_API_KEY"):
+        with TestClient(create_app(embedder=object())):
+            pass
+
+    # Arm B: with a key, startup succeeds and the missing half is the real provider.
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-dummy")
+    app = create_app(embedder=object())
+    with TestClient(app):
+        assert isinstance(app.state.generator, OpenAIGeneration)
+
+
 # --- The error envelope ------------------------------------------------------------------------
 
 

@@ -415,19 +415,30 @@ def _accepted_suffixes(func) -> set[str]:
     The AST sees a string constant wherever it sits: `==`, `in (...)`, a `match` case, a dict
     key, a set, either side of the comparison.
 
-    The shape filter - a dot, then one to five lowercase alphanumerics - is the WHOLE filter.
-    Nothing is excluded, not even the docstring: every suffix-shaped literal inside a dispatch
-    function is either a type it routes or a claim about the types it routes, and both belong in
-    this answer. An exclusion list would reintroduce the same blindness one level down, because
-    it would drop a real suffix without saying so. Today this returns `{.pdf, .pptx}`, which is
+    The shape filter - a dot, then lowercase alphanumerics - is the WHOLE filter. Nothing is
+    excluded, not even the docstring: every suffix-shaped literal inside a dispatch function is
+    either a type it routes or a claim about the types it routes, and both belong in this
+    answer. An exclusion list would reintroduce the same blindness one level down, because it
+    would drop a real suffix without saying so. Today this returns `{.pdf, .pptx}`, which is
     the dispatch and nothing else.
+
+    UNBOUNDED IN LENGTH, and a length cap here gets it wrong in BOTH directions. This filter
+    started as `{1,5}` while the sentence it is compared against is scraped with an unbounded
+    `\(\.[a-z0-9]+\)`. Two filters of different widths comparing their outputs are not one
+    guard but two: a nine-character suffix added to the parser ALONE passed silently - measured,
+    `.markdown` on the dispatch and not in the sentence was green - which is precisely the drift
+    this exists to catch; and the same suffix added correctly to BOTH sides went red, because
+    only one side could see it. A guard that admits the wrong edit and blocks the right one is
+    worse than the regex it replaced. The bound bought nothing either: `parse_file` holds no
+    dot-shaped literal but the two it dispatches on, so both spellings return `{.pdf, .pptx}`
+    on today's source.
     """
     return {
         node.value
         for node in ast.walk(ast.parse(inspect.getsource(func)))
         if isinstance(node, ast.Constant)
         and isinstance(node.value, str)
-        and re.fullmatch(r"\.[a-z0-9]{1,5}", node.value)
+        and re.fullmatch(r"\.[a-z0-9]+", node.value)
     }
 
 

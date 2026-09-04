@@ -126,7 +126,8 @@ reached Postgres, and closed — not merely that the process is up.
 | Request fails validation | 422 `validation` envelope, field list in `detail` | `errors.install` |
 
 ## Invariants
-- One connection per request, autocommit, closed on exit. `get_conn` is never overridden by a test.
+- One connection per request, autocommit, closed on exit. No test FIXTURE overrides `get_conn`;
+  a test may substitute it only to drive a negative arm, never for a positive one.
 - One source for the owner; no route reads an owner from the request. Every scoped query filters
   `owner_id AND class_id`.
 - Providers are per-app singletons built at startup; never per request.

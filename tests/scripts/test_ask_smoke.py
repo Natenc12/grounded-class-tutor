@@ -31,7 +31,7 @@ import psycopg
 import pytest
 from reportlab.pdfgen import canvas
 
-from gct.config import EMBEDDING_DIM, Settings
+from gct.config import EMBEDDING_DIM, V1_OWNER_ID, Settings
 from gct.eval.questions import EvalQuestion, ExpectedSource
 from gct.ingest.chunk import CHUNK_OVERLAP_WORDS, CHUNK_SIZE_WORDS
 from gct.ingest.pipeline import ingest_file
@@ -678,6 +678,9 @@ class TestOnlyFilter:
 
         assert args.only is None
         assert args.verbose is False
+        # `--owner` defaults to the ONE owner constant (#104): restated as a literal in the
+        # smoke, the API and the smoke would serve two different corpora.
+        assert args.owner == V1_OWNER_ID
 
     def test_flags_parse(self, monkeypatch):
         monkeypatch.setattr("sys.argv", ["ask_smoke.py", "--only", "q005,q009", "--verbose"])

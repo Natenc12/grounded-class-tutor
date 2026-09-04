@@ -8,6 +8,7 @@ from pathlib import Path
 
 import psycopg
 import pytest
+from fastapi import FastAPI
 from fastapi.testclient import TestClient
 from pydantic import BaseModel, field_validator
 
@@ -177,6 +178,15 @@ def test_owner_id_has_one_source(offline_app, monkeypatch):
 
 
 # --- Providers and startup ---------------------------------------------------------------------
+
+
+def test_the_module_level_app_is_the_asgi_application():
+    """`uvicorn gct.api.app:app` serves the NAME `app`: it must be the application the factory
+    built, not the factory itself - `app = create_app` (no call) imports cleanly and serves
+    nothing."""
+    from gct.api import app as app_module
+
+    assert isinstance(app_module.app, FastAPI)
 
 
 def test_injected_providers_are_the_app_singletons_and_need_no_key(monkeypatch):

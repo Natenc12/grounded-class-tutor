@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import os
 from dataclasses import dataclass
+from pathlib import Path
 
 from dotenv import load_dotenv
 
@@ -40,6 +41,31 @@ DEFAULT_GENERATION_MODEL = "gpt-4o-mini"
 # take `max_words` defaulted to this, so a caller may lower it without a second constant
 # existing anywhere.
 MAX_INGEST_WORDS = 250_000
+
+# --- File staging (ADR 0010) ----------------------------------------------------------------
+# Where an upload's bytes land before the worker opens them (`gct.staging.stage`), and the most
+# bytes ONE upload may put there. Both are one-knob defaults in the shape of `MAX_INGEST_WORDS`:
+# `stage` takes `max_bytes` / `staging_dir` defaulted to these, so a caller may lower or redirect
+# without a second constant existing anywhere. The API skeleton (#104) and the files router
+# (#110) MUST read them from here - this module is the only settings layer, and a second one (a
+# pydantic Settings, an env read inside a router) would be two writers for one fact.
+#
+# `MAX_STAGE_BYTES` is PROVISIONAL: the NUMBER is a placeholder no ADR owns yet, and a later ADR
+# sets it. ADR 0029's ceiling is counted in words over `parse_file`'s output, so it cannot
+# protect the disk - the bytes are already there when it fires. What the placeholder must admit
+# is N6's shape, a <=50-page deck with images: the dogfood corpus's fattest deck is 7.11 MB for
+# 8 slides (ADR 0029 §1), so ~45 MB at 50, and 100 MiB is that with ~2x headroom. Exceeding it
+# is refused at REQUEST time as `StagingError("too_large")` - never a `files.failed_reason`,
+# because no `files` row exists yet to carry one (see `gct.staging`).
+MAX_STAGE_BYTES = 100 * 1024 * 1024
+
+# Only the WRITER needs this: the worker never looks it up, it opens the absolute path
+# `enqueue` stored as `files.staging_ref`. Env-overridable (`GCT_STAGING_DIR`) so a deployment
+# can point uploads at a different disk without a code change; the default sits beside the
+# dogfood corpus and is gitignored like it (`data/staging/`). Resolved at import so a relative
+# value is pinned to the cwd of the process that read it - `staging_ref` must stay openable
+# after any later `chdir`.
+STAGING_DIR = Path(os.environ.get("GCT_STAGING_DIR", "data/staging")).resolve()
 
 # --- The V1 owner (ADR 0004) ----------------------------------------------------------------
 # V1 is ONE hardcoded user with no auth (ADR 0004; ADR 0002's tenancy clause as amended by it).

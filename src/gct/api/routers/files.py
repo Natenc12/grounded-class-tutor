@@ -1,8 +1,13 @@
-"""`POST /files` - the upload surface (issue #110).
+"""`POST /files` + `GET /files/{file_id}` - the upload and status surface (issue #110).
 
 A multipart upload becomes a queued file in three steps and no more: check the class belongs to
 the caller, stage the bytes durably, enqueue the job. Every one of those is a library callable
 (ADR 0009) - this module validates, calls, and renders, and holds no ingest logic of its own.
+
+Rendering is the half the library deliberately leaves to this module. `get_file_status` passes
+`files.failed_reason` through UNTRANSLATED, because what a student should DO about a failure is a
+product decision and not a database one; `_FAILED_MESSAGE` below is where that decision lives,
+and it is the only place in the repo that turns a reason token into a sentence.
 
 THE ORDER OF THE THREE IS A DECISION, not the order they happened to be written in. The ownership
 check runs FIRST because it is the only refusal that can be decided before anything durable
@@ -29,6 +34,8 @@ from pydantic import BaseModel
 from gct.api.deps import Conn, OwnerId
 from gct.api.errors import ApiError
 from gct.classes import class_exists
+from gct.config import MAX_INGEST_WORDS
+from gct.files import get_file_status
 from gct.jobs.queue import enqueue
 from gct.staging import StagingError, stage
 
@@ -135,3 +142,128 @@ def upload_file(
 
     file_id = enqueue(conn, path=staged, owner_id=owner, class_id=class_id)
     return UploadAccepted(file_id=file_id, filename=Path(staged).name)
+
+
+# WHAT THE STUDENT READS, one sentence per state. Both maps are keyed by a value the DATABASE
+# constrains - `files.status` and `files.failed_reason` each have a CHECK - and neither can be
+# derived, because prose is not derivable: what to DO about `protected` is a product judgement.
+# So the guard against drift is a test, not a clever import: `test_files_router.py` reads both
+# member sets off `pg_constraint` at test time and asserts these maps cover them exactly, which
+# fails the moment a migration widens either set without a sentence to go with it.
+#
+# Deliberately NOT sourced from `gct.ingest.parse.TERMINAL_REASONS`: that tuple is FIVE values
+# and omits `transient_exhausted`, which the worker mints itself (ADR 0020 §1's transient half),
+# so a map built from it would be missing exactly the reason a student is least able to diagnose.
+_STATUS_MESSAGE = {
+    "queued": "This file is in line to be processed. Nothing is needed from you - check back "
+    "in a moment.",
+    "processing": "This file is being read and indexed right now. Check back in a moment.",
+    "ready": "This file is ready. You can ask questions about it now.",
+}
+
+_FAILED_MESSAGE = {
+    "unparseable": "We could not read any text out of this file - it may be a scan, a photo of "
+    "a page, or a damaged export. Upload a version whose text you can select and copy (run a "
+    "scan through OCR first), then try again.",
+    "protected": "This file is password-protected, so it could not be opened. Save or export an "
+    "unprotected copy and upload that instead.",
+    # The supported set is `parse_file`'s dispatch on the suffix (`gct/ingest/parse.py`), which
+    # is its writer; if a parser is added there, this sentence is the copy that has to follow.
+    "unsupported": "This kind of file cannot be read. Upload the material as a PDF (.pdf) or a "
+    "PowerPoint deck (.pptx) and try again.",
+    "empty": "This file opened, but there is no text in it - it may be blank, or every page may "
+    "be an image. Check the file, then upload a version with text you can select.",
+    # The number comes from the config constant the ingest ceiling is set by (ADR 0029), not
+    # from a literal typed here: a student told "too long" without the bound cannot act on it,
+    # and a bound restated by hand is wrong the day it moves.
+    "too_long": f"This file is longer than the {MAX_INGEST_WORDS:,}-word limit for a single "
+    "upload. Split it up - one lecture, or a few chapters, per file - and upload the parts.",
+    "transient_exhausted": "Processing kept failing for reasons on our side and we have stopped "
+    "retrying. Upload the file again; if it keeps failing the service is having trouble, and "
+    "there is nothing wrong with your file.",
+}
+
+# The render for a `failed` row whose reason this module has no sentence for - a widened CHECK
+# constraint, or the NULL the constraint still admits. It is NOT a swallowed error: `status` and
+# `failed_reason` are returned beside it unchanged, so the raw token is never hidden. Raising
+# instead would turn a legitimate, correctly-recorded outcome into a 500 that tells the student
+# nothing at all, which is a worse answer than a general one.
+_UNKNOWN_FAILURE = (
+    "This file could not be processed. Upload it again, or try a different export of the same "
+    "material; if it keeps failing, the file itself may not be usable."
+)
+
+
+class FileStatusResponse(BaseModel):
+    """What `GET /files/{file_id}` tells the student about one uploaded file.
+
+    `status` and `failed_reason` are the stored values, passed through untouched - the machine
+    -readable pair a client switches on, and the two columns the worker actually writes.
+    `message` is this route's rendering of them: one sentence naming what happened and what to
+    do next, which is the slice's Exit criterion ("the status surface exposes actionable
+    terminal reasons") and the reason `failed_reason` alone is not a sufficient answer.
+
+    NO `file_id` FIELD. The caller supplied it in the URL, so echoing it adds nothing a client
+    does not have - and echoing it honestly would mean canonicalising the spelling
+    (`get_file_status` accepts `urn:uuid:...` and bare 32-hex), i.e. parsing the uuid a second
+    time here purely to avoid returning an id that differs from the one `POST /files` handed
+    back. A field that has to be defended that hard is a field the response is better without.
+    """
+
+    filename: str
+    status: str
+    failed_reason: str | None
+    message: str
+
+
+@router.get("/{file_id}")
+def file_status(conn: Conn, owner: OwnerId, file_id: str) -> FileStatusResponse:
+    """The processing status of one file: `queued · processing · ready · failed`, plus advice.
+
+    THE POLLING HALF OF `POST /files`. `files.status` is the domain truth (ADR 0011) - distinct
+    from `jobs.state`, which is the queue's own execution axis and never appears on this
+    surface: a student has no use for `attempts` or a lease deadline.
+
+    A FILE THAT DOES NOT EXIST AND ANOTHER OWNER'S FILE BOTH RETURN 404, NEVER 403. That is not
+    a policy this handler applies - `get_file_status` returns one `None` for both cases by
+    construction, so this route renders one status for both without ever learning which it had
+    (F12: never leak cross-owner existence). A 403 would confirm the id is real to a caller who
+    is not allowed to know that.
+
+    A `file_id` that is not a uuid is 400, not 404. It names no file - not one that is hidden,
+    one that cannot exist - so the actionable answer is "that is not an id", and there is
+    nothing to leak because no owner has a non-uuid id. The validation itself belongs to
+    `get_file_status`, which refuses at its own boundary; this route catches that `ValueError`
+    and substitutes a client-facing sentence, because the library's message explains a
+    connection-abort concern that is true and useful to a developer and meaningless to a client.
+
+    A refusal is not an error here, and neither is a failed file: a `failed` row is a 200 with
+    the reason and its remedy. The non-2xx statuses are for requests this route cannot answer,
+    not for answers the student dislikes - the same rule the grounder's five states follow
+    (ADR 0014-0016).
+    """
+    try:
+        result = get_file_status(conn, file_id=file_id, owner_id=owner)
+    except ValueError as exc:
+        raise ApiError(
+            400,
+            "bad_file_id",
+            "file_id must be a uuid. Use the file_id returned when the file was uploaded.",
+        ) from exc
+    if result is None:
+        raise ApiError(
+            404,
+            "file_not_found",
+            "No such file. Check the file id returned when the file was uploaded.",
+        )
+
+    if result.status == "failed":
+        message = _FAILED_MESSAGE.get(result.failed_reason, _UNKNOWN_FAILURE)
+    else:
+        message = _STATUS_MESSAGE[result.status]
+    return FileStatusResponse(
+        filename=result.filename,
+        status=result.status,
+        failed_reason=result.failed_reason,
+        message=message,
+    )

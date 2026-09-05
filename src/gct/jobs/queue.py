@@ -173,7 +173,7 @@ def enqueue(
 
     with conn.transaction():
         # 1. The files row. `queued` is the status the student polls until the worker moves
-        #    it (#71 owns every later transition). `file_id` is DB-generated and RETURNed
+        #    it (the worker owns every later transition). `file_id` is DB-generated and RETURNed
         #    rather than re-queried: a `select ... where filename = ...` is neither unique
         #    (the same file may be enqueued twice) nor scoped (it can cross owners, breaking
         #    F12), and this is one round trip instead of two.
@@ -585,8 +585,8 @@ def reclaim_expired(conn: psycopg.Connection) -> int:
     `lease_token` IS cleared, unlike `attempts`, and the two are opposites on purpose: the
     token is the current holder's proof and this statement is the act of taking it away, so
     leaving it would let the reclaimed worker keep settling the job. `attempts` is deliberately
-    NOT reset - it is the retry trail #71 compares against its budget. A reclaim that zeroed it
-    would hand a poison file a fresh budget after every crash.
+    NOT reset - it is the retry trail the worker compares against its budget. A reclaim that
+    zeroed it would hand a poison file a fresh budget after every crash.
 
     WHAT AN EXPIRED LEASE MEANS NARROWED WITH #95, and this statement is unchanged by it. A live
     worker now pushes its own `leased_until` forward through `renew_lease` while it works, so a

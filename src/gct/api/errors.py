@@ -18,6 +18,7 @@ own decision, made there.
 from __future__ import annotations
 
 import json
+import math
 from typing import Any
 
 from fastapi import FastAPI, Request
@@ -52,25 +53,57 @@ class ApiError(Exception):
         self.detail = detail
 
 
-class _EscapedJSONResponse(JSONResponse):
-    """Starlette's JSONResponse, but escaping non-ASCII instead of emitting it raw.
+def _json_safe(value: Any) -> Any:
+    """Replace every non-finite float with its repr, recursively.
 
-    Starlette renders with `ensure_ascii=False`, so `.encode("utf-8")` is the last step and it
-    RAISES on a lone surrogate. A surrogate is reachable from an ordinary request: JSON carries
-    it as a `\\uXXXX` escape, so the bytes on the wire are plain ASCII, pydantic decodes it into
-    a `str`, and the rejected value is echoed back in the 422's `detail`. Rendering then dies
-    INSIDE the handler, and the client gets a 500 `internal` for a request that was merely
-    malformed - the actionable per-field list gone, and the blame moved from the request to the
-    server. `jsonable_encoder` in `_validation` does not reach this: it fixes a non-serialisable
-    `ctx`, and a surrogate survives it as a perfectly good `str`.
+    `NaN`, `Infinity` and `-Infinity` are not JSON, and `allow_nan=False` - starlette's own
+    setting, kept here - makes `json.dumps` RAISE on one rather than emit it. A client puts one
+    in the body without trying: `json.dumps(float("nan"))` emits a bare `NaN` by default, and
+    FastAPI's parser accepts it. Pydantic then rejects the field and echoes the offending value
+    into the 422's `detail`, which is how a float nobody in this codebase produced reaches the
+    render. Stringified rather than dropped so the client can still see what was rejected.
+    """
+    if isinstance(value, float) and not math.isfinite(value):
+        return repr(value)
+    if isinstance(value, dict):
+        return {key: _json_safe(item) for key, item in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_json_safe(item) for item in value]
+    return value
 
-    Escaping is applied to EVERY envelope rather than to the 422 alone, because any handler that
-    echoes caller-supplied text has the same last step.
+
+class _SafeJSONResponse(JSONResponse):
+    """Starlette's JSONResponse, hardened against the two ways rendering an envelope can RAISE.
+
+    Both hazards are the same shape and both were measured, not argued: the offending value comes
+    from the CLIENT, pydantic echoes it into the 422's `detail`, and `render` is the last step. It
+    dies INSIDE the exception handler, so the envelope collapses to a 500 `internal` - the server
+    blaming itself for a request that was merely malformed, with the per-field list the client
+    needed gone. Neither input is exotic; each is an ordinary client's mistake.
+
+    - **A lone surrogate.** Starlette renders with `ensure_ascii=False`, so `.encode("utf-8")`
+      raises on one. JSON carries a surrogate as a `\\uXXXX` escape, so the bytes on the wire are
+      plain ASCII and nothing rejects them before pydantic holds a `str`. Fixed by escaping.
+      `jsonable_encoder` in `_validation` does not reach it: that fixes a non-serialisable `ctx`,
+      and a surrogate survives it as a perfectly good `str`.
+    - **A non-finite float.** `allow_nan=False` raises on `NaN`/`Infinity`. Fixed by `_json_safe`.
+      This one is NOT new here - starlette 1.6.0 already passes `allow_nan=False`, so it 500s the
+      same way on the plain `JSONResponse` this class replaces.
+
+    `allow_nan`, `indent` and `separators` are starlette 1.6.0's own values, restated because
+    overriding `render` means restating all of them; `ensure_ascii` is the only deliberate change.
+
+    Applied to EVERY envelope rather than to the 422 alone, because any handler that echoes
+    caller-supplied text reaches the same last step.
     """
 
     def render(self, content: Any) -> bytes:
         return json.dumps(
-            content, ensure_ascii=True, allow_nan=False, indent=None, separators=(",", ":")
+            _json_safe(content),
+            ensure_ascii=True,
+            allow_nan=False,
+            indent=None,
+            separators=(",", ":"),
         ).encode("utf-8")
 
 
@@ -78,7 +111,7 @@ def envelope(status_code: int, kind: str, message: str, detail: Any | None = Non
     """Render one envelope. Built through the pydantic model so the wire shape and the
     documented shape cannot drift apart."""
     body = ErrorEnvelope(error=ErrorBody(kind=kind, message=message, detail=detail))
-    return _EscapedJSONResponse(status_code=status_code, content=body.model_dump())
+    return _SafeJSONResponse(status_code=status_code, content=body.model_dump())
 
 
 async def _api_error(request: Request, exc: ApiError) -> JSONResponse:

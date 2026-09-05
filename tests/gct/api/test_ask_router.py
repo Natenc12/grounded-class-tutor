@@ -611,7 +611,7 @@ def test_a_lone_surrogate_in_the_question_is_a_422_and_not_a_500(api):
     before pydantic has a `str`. Sent as RAW BYTES for that reason: `json=` cannot encode a lone
     surrogate, so the natural spelling of this test would raise in httpx and "prove" the defect
     unreachable. Pinned here and not only in the errors module because this route is one of the
-    two ways to reach it. `envelope` escapes; see `gct.api.errors._EscapedJSONResponse`."""
+    two ways to reach it. `envelope` escapes; see `gct.api.errors._SafeJSONResponse`."""
     _providers(api)
 
     body = f'{{"class_id": "{api.class_id}", "question": "a\\ud800b"}}'.encode("ascii")
@@ -689,6 +689,28 @@ def test_a_question_reaches_the_model_verbatim(api, db_other):
 
 
 # --- what the response deliberately does NOT carry ---------------------------------------------
+
+
+@pytest.mark.parametrize("literal", ["NaN", "Infinity", "-Infinity"])
+def test_a_non_finite_number_in_the_body_is_a_422_and_not_a_500(api, literal):
+    """The surrogate's sibling: a value the CLIENT sent that `render` cannot serialise.
+
+    `json.dumps(float("nan"))` emits a bare `NaN` by DEFAULT, and FastAPI's parser accepts it, so
+    an ordinary Python client puts one on the wire without trying. Pydantic rejects the field and
+    echoes the float into `detail`; `allow_nan=False` - starlette's own setting - then raises
+    inside `errors._validation` and the envelope collapses to a 500. Unlike the surrogate this is
+    NOT a regression introduced by escaping: it 500s identically on a plain `JSONResponse`.
+    `_json_safe` stringifies it, so the client is told which field it was. Raw bytes because
+    `json=` would emit the same literal only by accident of `json.dumps`'s default."""
+    _providers(api)
+
+    body = f'{{"class_id": "{api.class_id}", "question": {literal}}}'.encode("ascii")
+    response = api.client.post("/ask", content=body, headers={"content-type": "application/json"})
+
+    assert response.status_code == 422, response.text
+    error = response.json()["error"]
+    assert error["kind"] == "validation"
+    assert any("question" in str(entry) for entry in error["detail"])
 
 
 def test_the_top_k_is_the_routes_own_and_the_retrieved_set_stays_off_the_wire(api, db_other):

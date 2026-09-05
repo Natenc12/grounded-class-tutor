@@ -73,9 +73,10 @@ def enqueue(
 ) -> str:
     """Create the `files` row (queued) and its `jobs` row in ONE transaction; return file_id.
 
-    With no API adapter in Slice 2, this is the only thing that can create the
-    `queued` file row the worker later claims - which is exactly what #69's
-    caller-supplied `file_id` exists to support.
+    This is the ONLY thing that creates the `queued` file row the worker later claims:
+    `POST /files` reaches it rather than inserting a row of its own, so there is one writer
+    of that row however the upload arrived - which is exactly what #69's caller-supplied
+    `file_id` exists to support.
 
     `staging_ref` is the file's ABSOLUTE PATH (decided 2026-08-03; confirmed when the stager
     arrived, #105). `gct.staging.stage` returns exactly the string a caller then passes here
@@ -173,7 +174,7 @@ def enqueue(
 
     with conn.transaction():
         # 1. The files row. `queued` is the status the student polls until the worker moves
-        #    it (#71 owns every later transition). `file_id` is DB-generated and RETURNed
+        #    it (the worker owns every later transition). `file_id` is DB-generated and RETURNed
         #    rather than re-queried: a `select ... where filename = ...` is neither unique
         #    (the same file may be enqueued twice) nor scoped (it can cross owners, breaking
         #    F12), and this is one round trip instead of two.
@@ -239,11 +240,12 @@ def claim(conn: psycopg.Connection, *, lease_seconds: int) -> Job | None:
     outcomes, not errors - the worker hits them most ticks.
 
     The returned `attempts` COUNTS THIS CLAIM (the post-bump value): it answers
-    "which attempt is this?", which is what #71 compares against its retry budget.
+    "which attempt is this?", which is what the worker compares against its retry budget.
 
-    `lease_seconds` is a parameter rather than a constant on purpose: no lease
-    duration, backoff curve, or poll interval exists anywhere in the design corpus
-    yet, and #71 owns picking them (epic #73, gap 1, resolved 2026-08-03).
+    `lease_seconds` is a parameter rather than a constant on purpose: the queue does not own
+    the retry policy. The numbers live with the worker that serves them (ADR 0028 §1, the
+    lease's meaning amended per ADR 0031), which is also why `process_one` - not this module -
+    is where the backoff-under-lease relationship is enforced.
 
     PRECONDITION ON `conn` (ADR 0025), same as `enqueue` and every writer here: it MUST
     NOT already be inside a transaction. The commit promised above is CONDITIONAL on it -
@@ -432,7 +434,7 @@ def fail(conn: psycopg.Connection, *, job_id: str, lease_token: str, error: str)
     """Terminal failure: state='failed' + last_error.
 
     `last_error` is free text - distinct from `files.failed_reason`, which is a
-    closed CHECK set of five values that only #71 writes.
+    closed CHECK set the migrations own (`gct/files.py` points at them) and only `_bury` writes.
 
     Commits before returning, same contract as `claim`. `attempts` is untouched:
     the trail of how many tries this job burned is exactly what a human reading a
@@ -584,8 +586,8 @@ def reclaim_expired(conn: psycopg.Connection) -> int:
     `lease_token` IS cleared, unlike `attempts`, and the two are opposites on purpose: the
     token is the current holder's proof and this statement is the act of taking it away, so
     leaving it would let the reclaimed worker keep settling the job. `attempts` is deliberately
-    NOT reset - it is the retry trail #71 compares against its budget. A reclaim that zeroed it
-    would hand a poison file a fresh budget after every crash.
+    NOT reset - it is the retry trail the worker compares against its budget. A reclaim that
+    zeroed it would hand a poison file a fresh budget after every crash.
 
     WHAT AN EXPIRED LEASE MEANS NARROWED WITH #95, and this statement is unchanged by it. A live
     worker now pushes its own `leased_until` forward through `renew_lease` while it works, so a

@@ -35,7 +35,8 @@ survives the worker process; a loop counter does not. The failure that most need
 one where the worker DIES mid-job - a crash, an OOM, a `kill` - and no in-process handler ever
 runs. Those attempts still have to count, or a poison file is re-handed out forever by the reaper
 (`claim`: "a poison file then retries forever, its budget never spent"; `reclaim_expired`:
-"`attempts` is deliberately NOT reset - it is the retry trail #71 compares against its budget").
+"`attempts` is deliberately NOT reset - it is the retry trail the worker compares against its
+budget").
 One durable counter bounds transient failures and crash loops with one rule.
 
 WHY THE CHECK IS HERE AND NOT INSIDE `claim`. An over-budget job still has to be CLAIMED to be

@@ -329,7 +329,7 @@ def test_every_failure_wears_the_envelope(offline_app):
 
 
 class _BlankRefusingBody(BaseModel):
-    """A request model with the validator shape the route issues will write: a `@field_validator`
+    """A request model with the validator shape `AskRequest` (`ask.py`) uses: a `@field_validator`
     that RAISES. Module-level, not local to its test, and that is load-bearing: this file runs
     under `from __future__ import annotations`, and FastAPI resolves a route's string annotations
     against the module's globals - a class local to the test function is invisible there, and
@@ -350,7 +350,7 @@ def test_a_raising_field_validator_still_renders_the_422_envelope(offline_app):
     """A `@field_validator` that raises puts the exception OBJECT into pydantic's error `ctx`.
     Passed to the response un-encoded, that list is not JSON-serialisable, the handler itself
     raises, and the client gets a bare 500 `internal` instead of the 422 it was promised. The
-    envelope must survive the validator the route issues will actually write."""
+    envelope must survive the validator `AskRequest` actually has (`_reject_blank`, `ask.py`)."""
 
     @offline_app.post("/_test/validated-body")
     def _route(body: _BlankRefusingBody) -> dict[str, str]:

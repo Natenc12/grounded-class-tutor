@@ -40,9 +40,9 @@ from gct.providers.base import Message
 
 
 class StubEmbeddings:
-    """An `Embeddings` that never talks to anyone. Not called by anything this ticket ships -
-    `/ask` is #108's - but `create_app` needs a value, and a real client is the one thing a test
-    here must never construct."""
+    """An `Embeddings` that never talks to anyone. `create_app` needs a value whether or not the
+    test under it ever embeds, and a real client is the one thing a test here must never
+    construct: it would spend money and make this suite depend on a network."""
 
     model_id = "stub-embed"
     dim = EMBEDDING_DIM

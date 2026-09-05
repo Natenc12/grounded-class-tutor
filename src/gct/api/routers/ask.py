@@ -294,18 +294,19 @@ def ask_question(
     not exist" and "belongs to someone else" by construction, so rendering it as 404 cannot leak
     cross-owner existence (F12) - the same 404, byte for byte, as `/files` returns.
 
-    `class_id` IS PARSED ONCE, AT THE TOP, AND THE CANONICAL SPELLING GOES DOWNSTREAM. Same fix as
-    `upload_file`, for the same live defect one layer down: `retrieve` binds `class_id` RAW into
-    `%(class_id)s::uuid` (both of its queries), and `uuid.UUID` accepts spellings that cast
-    rejects - `urn:uuid:<id>` is the demonstrated one. Handing the caller's spelling to both
-    calls would pass `class_exists`, which canonicalises before it binds, and then abort inside
-    `retrieve` with a raw `InvalidTextRepresentation` - a 500 for a request that was entirely
-    valid. `enqueue` had this exact shape and #121 fixed it AT THE WRITER, which is the better
-    place; `retrieve` was not in that ticket's scope and still binds raw, so this parse is what
-    stands between a caller's spelling and that cast.
+    THE ROUTE PARSES `class_id` ONCE, AT THE TOP, and that parse is what RAISES the 400 below -
+    it runs before any library call, so the client reads the route's own sentence rather than
+    `class_exists`'s, which explains a connection concern a client cannot act on. Passing the
+    canonical spelling on from there costs nothing and keeps both calls talking about one id.
 
-    A non-uuid `class_id` is 400 in the route's own words. `class_exists` does raise `ValueError`
-    for it, but its message explains a connection-abort concern a client cannot act on.
+    It is no longer load-bearing for CORRECTNESS, and it was: until #126 `retrieve` bound
+    `class_id` raw into `%(class_id)s::uuid` in both of its queries while `class_exists`
+    normalised first, so a `urn:uuid:<id>` - which `uuid.UUID` accepts and the cast refuses -
+    cleared the ownership check and then aborted inside `retrieve`: a 500 for a request that
+    named a real class and asked a valid question. `retrieve` now canonicalises at its own
+    boundary like every other library entry point, so that 500 is closed at the reader rather
+    than worked around in this one caller. The parse STAYS anyway, for the 400 above: deleting it
+    would hand the client `class_exists`'s message instead.
 
     ERROR IS THE ONE STATE THAT LEAVES AS AN EXCEPTION, and that does not contradict ADR 0016's
     "failure states are RETURNED, not raised". `ask()` returns it, as the ADR requires; this line
@@ -337,7 +338,9 @@ def ask_question(
             "No such class. Check the class id, or create the class before asking about it.",
         )
 
-    # `class_uuid`, never `body.class_id`: `retrieve` binds it straight into a `::uuid` cast.
+    # `class_uuid`, never `body.class_id`: one id, one spelling, from the ownership check through
+    # to retrieval. `retrieve` canonicalises its own `class_id` since #126, so this is consistency
+    # between the two calls, not the thing standing between a spelling and a `::uuid` cast.
     result = ask(
         conn, body.question, owner, class_uuid, embedder=embedder, generator=generator
     ).result

@@ -875,8 +875,9 @@ def test_a_raising_guard_propagates_and_publishes_nothing(db, db_other):
 
 # --- The id boundary (#126) -----------------------------------------------------------------
 #
-# `index_file` bound three `%(...)s::uuid` casts from caller-supplied ids: `file_id` (twice) and
-# `class_id` (the argument, and again per chunk in the executemany). The guards it now runs are
+# `index_file` bound FIVE `%(...)s::uuid` binds from caller-supplied ids across three statements:
+# `file_id` in the `files` upsert, the chunk delete and the chunk insert, and `class_id` in the
+# upsert and again on every chunk in that insert. The guards it now runs are
 # two DIFFERENT decisions, so they get two sets of tests: `class_id` is LENIENT (canonicalise) and
 # `file_id` is STRICT (refuse anything non-canonical), by the criterion `enqueue`'s docstring
 # states - where the id comes from, not reader vs writer.
@@ -1026,7 +1027,6 @@ def test_index_file_refuses_a_non_canonical_file_id_and_publishes_nothing(db, db
         "braced": f"{{{canonical}}}",
         "hex32": canonical.hex,
         "urn": canonical.urn,
-        "upper": str(canonical).upper(),
         "already_parsed": canonical,
     }[spelling]
 

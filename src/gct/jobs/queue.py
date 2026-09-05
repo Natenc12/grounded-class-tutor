@@ -104,12 +104,11 @@ def enqueue(
     useless to wrong. Recorded because "considered and routed to the parse-terminal path" and
     "nobody looked" are indistinguishable from the code alone.
 
-    `class_id` IS PARSED AND THE CANONICAL SPELLING IS BOUND (#121), the lenient shape the
-    id-taking readers on a boundary take - `class_exists` (`gct/classes.py`) and
-    `get_file_status` (`gct/files.py`). NOT a description of the whole library: `retrieve` and
-    `index_file` still bind a caller-supplied `class_id` raw. That was measured on this branch and
-    is out of #121's scope; the follow-up is drafted on this PR rather than numbered here, since a
-    number written before the issue exists is a pointer that cannot resolve.
+    `class_id` IS PARSED AND THE CANONICAL SPELLING IS BOUND (#121), and this is now the shape
+    EVERY id-taking boundary in the library takes: `class_exists`, `get_file_status`, `retrieve`,
+    `index_file` and `ingest_file` all canonicalise a caller-supplied `class_id` (#126 closed the
+    four that still bound raw). `gct.ids` is the shared parse they call; this function keeps its
+    own copy of it, and that module's docstring is the writer of why.
 
     `get_file_status` is the writer of WHY - which spellings `uuid.UUID` accepts that Postgres's
     `::uuid` cast does not, and why validating the raw string and then binding THAT is not the
@@ -130,8 +129,9 @@ def enqueue(
     (`gct/ingest/pipeline.py`) refuses a non-canonical `file_id` outright because the worker reads
     that id back out of the database, where it is canonical by construction, so any other spelling
     is an upstream bug. Everything that calls `enqueue` - a script, the Slice 3 upload route, the
-    exit smoke - hands it a string a person typed. Note the guard `ingest_file` holds covers
-    `file_id` ONLY; nothing on that path checks `class_id`.
+    exit smoke - hands it a string a person typed. `ingest_file` applies BOTH rules on one call,
+    which is the clearest statement of the criterion available: strict on `file_id`, lenient on
+    `class_id`, the second added by #126 before the embedding run rather than after it.
 
     What is NOT inherited from those siblings is their REASON, and copying their sentence would
     make this docstring wrong. Theirs is a poisoned connection: they are readers with no

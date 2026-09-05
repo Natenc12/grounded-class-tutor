@@ -117,7 +117,9 @@ def index_file(
     # fire before the transaction opens so a refused call writes nothing at all.
     require_idle(conn, "index_file")
 
-    # ID GUARDS (#126). Three `%(...)s::uuid` casts below took the caller's spelling raw, and
+    # ID GUARDS (#126). FIVE `%(...)s::uuid` binds across the three statements below took the
+    # caller's spelling raw - `file_id` in the `files` upsert, the chunk delete and the chunk
+    # insert, `class_id` in the upsert and again on every chunk in that insert - and
     # `uuid.UUID` accepts spellings the cast refuses (`urn:uuid:<id>`), so a caller that had
     # already checked the id with Python still failed inside Postgres - naming a Postgres type
     # and no remedy. They run BEFORE `conn.transaction()`, so a refused call is indistinguishable

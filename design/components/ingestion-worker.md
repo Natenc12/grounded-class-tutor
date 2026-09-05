@@ -136,10 +136,10 @@ Slow/external work runs with **no transaction open**; the transaction is a short
    **with** the chunks it publishes.
    The **files row is written first, and that order is FK-forced** — `chunks.file_id` references
    `files(file_id)`, so the row must exist before the chunk insert. `index_file` upserts it
-   (`INSERT ... ON CONFLICT (file_id) DO UPDATE`) because it cannot assume a prior row and does not
-   ask which caller drove it. Driven inline (Slice 1's `ingest_file`) nothing created one, so the
-   upsert lands on INSERT; under the worker `enqueue` already created it as `queued`, so the same
-   statement lands on UPDATE. One statement serves both — wrap, not rewrite (PM-4 seam).
+   (`INSERT ... ON CONFLICT (file_id) DO UPDATE`) because it cannot assume a prior row. The
+   discriminator is whether one already exists, NOT which caller ran — both drive the same
+   `ingest_file`. With no prior row the upsert lands on INSERT; where `enqueue` already created one
+   as `queued` it lands on UPDATE. One statement serves both — wrap, not rewrite (PM-4 seam).
 
 ## Failure modes
 | mode | class | V1 behavior |

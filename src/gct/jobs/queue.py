@@ -239,11 +239,12 @@ def claim(conn: psycopg.Connection, *, lease_seconds: int) -> Job | None:
     outcomes, not errors - the worker hits them most ticks.
 
     The returned `attempts` COUNTS THIS CLAIM (the post-bump value): it answers
-    "which attempt is this?", which is what #71 compares against its retry budget.
+    "which attempt is this?", which is what the worker compares against its retry budget.
 
-    `lease_seconds` is a parameter rather than a constant on purpose: no lease
-    duration, backoff curve, or poll interval exists anywhere in the design corpus
-    yet, and #71 owns picking them (epic #73, gap 1, resolved 2026-08-03).
+    `lease_seconds` is a parameter rather than a constant on purpose: the queue does not own
+    the retry policy. The numbers live with the worker that serves them (ADR 0028 §1, the
+    lease's meaning amended per ADR 0031), which is also why `process_one` - not this module -
+    is where the backoff-under-lease relationship is enforced.
 
     PRECONDITION ON `conn` (ADR 0025), same as `enqueue` and every writer here: it MUST
     NOT already be inside a transaction. The commit promised above is CONDITIONAL on it -

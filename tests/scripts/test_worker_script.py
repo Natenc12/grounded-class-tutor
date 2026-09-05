@@ -559,8 +559,9 @@ def test_the_flag_set_is_closed_on_the_parser_that_actually_parses(monkeypatch, 
 def test_the_real_script_entry_point_follows_a_retune(tmp_path):
     """The `if __name__ == "__main__":` line, which every OTHER test in this file skips.
 
-    They all import the module under a different name and call `main([])`, so the two lines that
-    run when an operator types `python scripts/worker.py` are never executed. The gap is not
+    They all import the module under a different name and drive `main` IN-PROCESS - some with
+    `[]`, some with flags - so the two lines that run when an operator types
+    `python scripts/worker.py` are never executed by any of them. The gap is not
     theoretical: planting `main(sys.argv[1:] or ["--lease", "900"])` in that block leaves the
     whole suite green while the real flagless command ignores a retuned library.
 
@@ -645,26 +646,40 @@ w.run = _fake_run
     assert "613" in helped.stdout and "900" not in helped.stdout
 
 
-def test_a_heartbeat_cap_under_one_poll_interval_is_accepted_on_purpose(
+def test_the_two_short_cap_shapes_validate_declares_legal_are_accepted(
     monkeypatch, restore_sigterm
 ):
-    """`_validate` calls this combination deliberately legal; nothing else holds it open.
+    """`_validate` names two combinations as deliberately legal; nothing else holds them open.
 
-    It is the only configuration that can force a lease to lapse INSIDE a run, which is what a
-    reclaim has to be staged from - `ingest_smoke` runs a 1.0s cap under the default 2.0s poll
-    for exactly that reason (`PHASE_THREE_HEARTBEAT_CAP_SECONDS`). Without this test a later
-    tightening of the validator can refuse the combination with the whole suite still green,
-    quietly removing the reason `--heartbeat-max` was added at all.
+    THE ONE WITH A CALLER is a cap at or under a very short LEASE, which is what forces the
+    heartbeat to stop renewing while a run is still going - the only way to stage a reclaim.
+    `ingest_smoke` pairs a 1.0s cap with a 1s lease for exactly that
+    (`PHASE_THREE_HEARTBEAT_CAP_SECONDS`, `DEFAULT_SHORT_LEASE_SECONDS`), and it is the shape
+    `--heartbeat-max` was added for.
 
-    Asserted as an ACCEPTANCE - the value reaching `run` - rather than as "no SystemExit": a
+    THE ONE WITHOUT A CALLER is a cap under one poll interval, and it is pinned anyway because
+    `_validate`'s docstring declares it legal: a rule refusing it would be invented rather than
+    derived, since the poll governs how long an EMPTY tick sleeps and has no bearing on how long
+    one job may keep renewing. An earlier draft of this test justified it by claiming
+    `ingest_smoke` needed it - it does not, its poll is 0.05s and its cap is twenty times that.
+    Measured before it was written down this time.
+
+    Asserted as ACCEPTANCES - the values reaching `run` - rather than as "no SystemExit": a
     parser that swallowed the flag would also not raise.
     """
     seen = _spy_on_run(monkeypatch)
+    worker_script.main(["--heartbeat-max", "1.0", "--lease", "1"])
+    assert seen["heartbeat_max_seconds"] == 1.0
+    assert seen["lease_seconds"] == 1
+    assert seen["heartbeat_max_seconds"] <= seen["lease_seconds"], (
+        "the first half is only meaningful while the cap it passes is AT OR UNDER the lease - "
+        "that is the shape that stops the heartbeat inside a run"
+    )
 
+    seen = _spy_on_run(monkeypatch)
     worker_script.main(["--heartbeat-max", "1.0"])
-
     assert seen["poll_seconds"] == worker_lib.DEFAULT_POLL_SECONDS, (
-        "this test is only meaningful while the cap it passes is UNDER the default poll"
+        "the second half is only meaningful while the cap it passes is UNDER the default poll"
     )
     assert seen["heartbeat_max_seconds"] == 1.0
     assert seen["heartbeat_max_seconds"] < seen["poll_seconds"]
@@ -733,7 +748,7 @@ def test_an_unrunnable_value_is_refused_before_anything_is_opened(
     buried `transient_exhausted` - surfacing to the student as `failed`, with nothing in the row
     pointing at a flag. A startup refusal cannot reach a student at all.
 
-    THREE ASSERTIONS, and they fail differently: the process exits non-zero (a supervisor or a
+    FOUR ASSERTIONS, and they fail differently: the process exits non-zero (a supervisor or a
     harness has to be able to tell), the message NAMES the flag and its remedy rather than
     echoing a traceback, and `connect` was never called - proof the refusal happened at the
     boundary and not somewhere downstream that had already touched the database.

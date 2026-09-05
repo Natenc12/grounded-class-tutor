@@ -7,18 +7,22 @@ loop.
 THE FLAGS ARE WIRING, NOT POLICY, and that is what keeps them on the right side of ADR 0009.
 Every LIBRARY-SOURCED default below is the library's own constant, read by name and never
 retyped as a literal - the same one-writer rule ADR 0018 states for the model id, applied to the
-queue's numbers. So a run with no flags calls `run` with the values `run` would have defaulted to
-anyway, and retuning a library number moves this script with it instead of leaving a stale copy
-behind. Two flags are deliberately not library-sourced and `_build_parser` says why: `--log-level`
+queue's numbers. So a run with no flags calls `run` with the library's own numbers, and retuning
+one moves this script with it instead of leaving a stale copy behind. (`run` itself defaults only
+the lease, the poll and the cap; `chunk_size` and `chunk_overlap` are REQUIRED of every caller, so
+for those two this script is not echoing a default but supplying the chunker's constant.) Two
+flags are deliberately not library-sourced and `_build_parser` says why: `--log-level`
 defaults to a script-local constant because the level is the application's call (ADR 0009), and
 `--heartbeat-max` defaults to `None` because `run` must derive the cap from the lease in use
 (ADR 0031 5).
 
 WHY A CLI AT ALL. ADR 0011's PM-3 addendum mandates a separate OS process, but until #109 this
-`main()` took no arguments, so a subprocess was pinned to the module defaults - which is exactly
-why `scripts/ingest_smoke.py` runs its worker on a THREAD rather than as the process the ADR
-describes. A caller that has to fake the topology to configure it does not get to demonstrate
-the topology. `--heartbeat-max` is here for the same reason and no other: since ADR 0031 a live
+`main()` took no arguments, so a subprocess was pinned to the module defaults and a caller that
+needed a different lease had no way to ask for one. A caller that has to fake the topology to
+configure it does not get to demonstrate the topology. This did NOT convert
+`scripts/ingest_smoke.py` to a subprocess, and its own docstring is the single writer of why it
+stays on a thread - do not restate that argument here.
+`--heartbeat-max` is here for the same reason and no other: since ADR 0031 a live
 worker renews its own lease, so `--lease` alone can no longer stage an expiry (`ingest_smoke`'s
 `PHASE_THREE_HEARTBEAT_CAP_SECONDS` carries that argument).
 
@@ -107,9 +111,9 @@ def _build_parser() -> argparse.ArgumentParser:
         it is the number `ingest_smoke` had to thread by hand to reach an expiry - so the cap
         gets a flag and the fraction does not.
 
-    Neither has ever been threaded by any SCRIPT in the tree - the tests thread both, which is
-    what ADR 0031 5 made them parameters for. The bar for a flag here is a demonstrated caller
-    outside the suite, not the existence of a parameter.
+    Neither has ever been threaded by any SCRIPT in the tree, though the tests thread both. The
+    bar for a flag here is a demonstrated caller outside the suite, not the existence of a
+    parameter.
     """
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument(
@@ -189,9 +193,13 @@ def _validate(parser: argparse.ArgumentParser, args: argparse.Namespace) -> None
     on the first empty tick, i.e. after the worker has reported itself started.
 
     WHAT IS NOT REFUSED, deliberately: a `--heartbeat-max` below `--lease`, or below one poll
-    interval. Both are legitimate and one of them is the only way to stage a reclaim -
-    `ingest_smoke` runs a 1.0s cap on purpose, under a default poll of 2.0s. A rule refusing
-    those would refuse the single configuration in this tree that needs them.
+    interval. The first is the only way to stage a reclaim, and it has a caller -
+    `ingest_smoke` pairs a 1.0s cap with a 1s lease on purpose
+    (`PHASE_THREE_HEARTBEAT_CAP_SECONDS`, `DEFAULT_SHORT_LEASE_SECONDS`), so the heartbeat stops
+    renewing while the run is still going. The second has no caller today and is left legal
+    anyway: the poll governs how long an EMPTY tick sleeps and has no bearing on how long one
+    job may keep renewing, so a rule relating them would be invented rather than derived. Both
+    are pinned by tests, so neither can be tightened away silently.
     """
     if args.lease < 1:
         parser.error(

@@ -5,10 +5,14 @@ the real dependencies - the connection, the real embedder, the chunk window - an
 loop.
 
 THE FLAGS ARE WIRING, NOT POLICY, and that is what keeps them on the right side of ADR 0009.
-Every default below is the library's own constant, read by name and never retyped as a literal
-- the same one-writer rule ADR 0018 states for the model id, applied to the queue's numbers. So
-a run with no flags calls `run` with the values `run` would have defaulted to anyway, and
-retuning a library number moves this script with it instead of leaving a stale copy behind.
+Every LIBRARY-SOURCED default below is the library's own constant, read by name and never
+retyped as a literal - the same one-writer rule ADR 0018 states for the model id, applied to the
+queue's numbers. So a run with no flags calls `run` with the values `run` would have defaulted to
+anyway, and retuning a library number moves this script with it instead of leaving a stale copy
+behind. Two flags are deliberately not library-sourced and `_build_parser` says why: `--log-level`
+defaults to a script-local constant because the level is the application's call (ADR 0009), and
+`--heartbeat-max` defaults to `None` because `run` must derive the cap from the lease in use
+(ADR 0031 5).
 
 WHY A CLI AT ALL. ADR 0011's PM-3 addendum mandates a separate OS process, but until #109 this
 `main()` took no arguments, so a subprocess was pinned to the module defaults - which is exactly

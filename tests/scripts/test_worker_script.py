@@ -469,10 +469,11 @@ def test_a_retuned_library_constant_reaches_the_flagless_worker(
     entirely. Each draft closed the previous counterexample and left the next one open, because a
     number can be written in more places than a pattern can enumerate.
 
-    Seven routes are measured red against this test - the four named above plus an equal-valued
-    literal, a rebind local to `_build_parser`, and a registration extracted to a helper. They
-    fail for one reason rather than seven: each ends with the worker running a number the library
-    did not supply, and that is the thing asserted. The cost is a failure message that says "the
+    Six distinct routes are measured red against this test: an equal-valued literal default; a
+    module-local constant, with the import kept or deleted; a rebind local to `_build_parser`;
+    `parser.set_defaults`; and a registration extracted to a helper. They fail for one reason
+    rather than six: each ends with the worker running a number the library did not supply, and
+    that is the thing asserted. The cost is a failure message that says "the
     worker did not follow the retune" rather than naming the line, which is the right trade for a
     property whose danger is that it is invisible in every OTHER observation - a retyped literal
     agrees with the library until the day it does not.

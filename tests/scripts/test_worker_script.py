@@ -347,12 +347,13 @@ def test_no_flags_runs_exactly_what_it_ran_before_the_cli_existed(monkeypatch, r
     a test pinning 900 goes red for a change that was correct, while this one keeps asking the
     real question - does a flagless start still run the library's defaults?
 
-    WHAT IT DOES NOT CATCH, measured rather than assumed: a default retyped as a literal that
-    still AGREES with the library. Replacing `default=DEFAULT_LEASE_SECONDS` with `default=900`
-    leaves this whole file green; `default=901` turns it red. So this comparison catches a
-    default that has DRIFTED - which is the retyped literal's eventual symptom, one library
-    retune later - and not the retyping itself. The retyping is caught by
-    `test_every_flag_default_is_a_name_and_never_a_retyped_literal`, which reads the source.
+    WHAT THIS TEST DOES NOT CATCH, measured rather than assumed: a default retyped as a literal
+    that still AGREES with the library. Replacing `default=DEFAULT_LEASE_SECONDS` with
+    `default=900` leaves THIS test green; `default=901` turns it red. So the comparison catches a
+    default that has DRIFTED - the retyped literal's eventual symptom, one library retune later -
+    and not the retyping itself. The retyping is caught elsewhere in this file, by
+    `test_every_library_default_is_an_imported_name_and_the_flag_set_is_closed`, which reads the
+    source; that test is why `default=900` reddens the FILE even though it does not redden this.
 
     THE ABSENT KEYS ARE HALF THE TEST. `max_attempts` and `heartbeat_fraction` are deliberately
     not flags - the retry budget is ratified policy (ADR 0028 §1) and the beat cadence is derived
@@ -421,68 +422,103 @@ def test_every_flag_reaches_the_loop_that_the_defect_said_it_could_not(
     assert seen["heartbeat_max_seconds"] == 1.5
 
 
-def test_every_flag_default_is_a_name_and_never_a_retyped_literal():
+def test_every_library_default_is_an_imported_name_and_the_flag_set_is_closed():
     """The PR's headline promise, enforced on the SOURCE rather than on the value.
 
-    Every `default=` in `_build_parser` must be an imported name, so the library stays the one
-    writer of these numbers (ADR 0018's one-writer rule, applied to the queue's numbers rather
-    than to a model id). A value comparison cannot enforce that:
-    `test_no_flags_runs_exactly_what_it_ran_before_the_cli_existed` reads both sides and both
-    sides are the same number today, so `default=900` passes there and only goes red one library
-    retune later - after a student's worker has already run on the stale number.
+    A value comparison cannot enforce it.
+    `test_no_flags_runs_exactly_what_it_ran_before_the_cli_existed` reads the library's number on
+    both sides, so `default=900` agrees with it and only goes red one library retune later -
+    after a worker has already run on the stale number. So this reads the text instead. `ast` and
+    not a regex: `default=` appears inside the help strings in this file, and a regex would
+    either match those or have to know how they are quoted.
 
-    So this reads the text instead. `ast` and not a regex: `default=` appears inside help strings
-    in this file, and a regex would either match those or need to know how they are quoted.
+    "IS A NAME" IS NOT ENOUGH, and this is the second draft. Asking only for an `ast.Name` never
+    asks where the name is BOUND: deleting the import and writing `DEFAULT_LEASE_SECONDS = 900`
+    at module scope satisfies it, and this very file already establishes that pattern with
+    `DEFAULT_LOG_LEVEL`. So each library-sourced flag's default must be a name this script
+    IMPORTS FROM `gct`, checked against the import statements themselves.
 
-    `None` is the one allowed literal, and it is allowed for a REASON rather than as an
-    exception: `--heartbeat-max` must reach `run` as `None` so the cap is derived from the lease
-    actually in use (ADR 0031 5). Writing `DEFAULT_HEARTBEAT_MAX_SECONDS` there would be the
-    imported name this test asks for and would still be the bug - which is why
-    `test_a_retuned_lease_leaves_the_heartbeat_cap_for_the_library_to_derive` exists as well.
-    Neither test subsumes the other.
+    THE TWO EXEMPTIONS ARE NAMED HERE, not inferred, so adding a third is a visible edit:
+
+      - `--log-level` defaults to `DEFAULT_LOG_LEVEL`, which is script-local ON PURPOSE. There is
+        no library constant to import: where events go and at what level is the application's
+        call, not the library's (ADR 0009), and `gct` emits nothing below INFO.
+      - `--heartbeat-max` defaults to `None`, which is the only permitted literal and is
+        permitted for a reason rather than as an exception: the cap must reach `run` unresolved
+        so it is derived from the lease ACTUALLY IN USE (ADR 0031 5). An imported name written
+        there would satisfy this test and still be the bug, which is why
+        `test_a_retuned_lease_leaves_the_heartbeat_cap_for_the_library_to_derive` exists too.
+        Neither test subsumes the other.
+
+    THE FLAG INVENTORY IS THE OTHER HALF, and it is not symmetry for its own sake. The ast walk
+    matches `<something>.add_argument(...)`, so a flag registered through an alias
+    (`add = parser.add_argument`) escapes it entirely - and the flag that must never be added,
+    `--max-attempts`, is a ratified policy number (ADR 0028 1). Reading the flags off the built
+    parser catches a smuggled flag however it was registered, and catches a DELETED one too,
+    which the "no literals" half would otherwise satisfy trivially by finding nothing.
     """
+    source = _SCRIPT.read_text()
+    tree = ast.parse(source)
+
+    imported_from_gct = {
+        alias.asname or alias.name
+        for node in tree.body
+        if isinstance(node, ast.ImportFrom) and (node.module or "").startswith("gct")
+        for alias in node.names
+    }
+
     parser_source = next(
         node
-        for node in ast.parse(_SCRIPT.read_text()).body
+        for node in tree.body
         if isinstance(node, ast.FunctionDef) and node.name == "_build_parser"
     )
-    literal_defaults = [
-        (call.args[0].value if call.args else "?", ast.unparse(keyword.value))
+    defaults = {
+        call.args[0].value: keyword.value
         for call in ast.walk(parser_source)
         if isinstance(call, ast.Call)
         and isinstance(call.func, ast.Attribute)
         and call.func.attr == "add_argument"
+        and call.args
         for keyword in call.keywords
         if keyword.arg == "default"
-        and not isinstance(keyword.value, ast.Name)
-        and not (isinstance(keyword.value, ast.Constant) and keyword.value.value is None)
-    ]
+    }
 
-    assert literal_defaults == [], (
-        f"these flags spell their default out instead of importing it: {literal_defaults}. "
-        "A literal that agrees with the library today is invisible until the library moves, "
-        "and then the worker silently keeps the old number"
+    # `--log-level` and `--heartbeat-max` are the two exemptions the docstring names; every other
+    # flag's default has to be a name this script imported from the library.
+    not_imported = {
+        flag: ast.unparse(value)
+        for flag, value in defaults.items()
+        if flag not in ("--log-level", "--heartbeat-max")
+        and not (isinstance(value, ast.Name) and value.id in imported_from_gct)
+    }
+    assert not_imported == {}, (
+        f"these flags do not take their default from a name imported out of `gct`: "
+        f"{not_imported}. A literal - or a module-local constant holding one - agrees with the "
+        "library today and is invisible until the library moves, at which point the worker "
+        f"silently keeps the old number. Names imported here: {sorted(imported_from_gct)}"
     )
 
-    # The other direction, so this cannot pass by finding no flags at all: the flags that DO
-    # carry a name must still be there. A `_build_parser` that stopped calling `add_argument`
-    # would satisfy the assertion above trivially.
-    named_defaults = [
-        ast.unparse(keyword.value)
-        for call in ast.walk(parser_source)
-        if isinstance(call, ast.Call)
-        and isinstance(call.func, ast.Attribute)
-        and call.func.attr == "add_argument"
-        for keyword in call.keywords
-        if keyword.arg == "default" and isinstance(keyword.value, ast.Name)
-    ]
-    assert sorted(named_defaults) == [
-        "CHUNK_OVERLAP_WORDS",
-        "CHUNK_SIZE_WORDS",
-        "DEFAULT_LEASE_SECONDS",
-        "DEFAULT_LOG_LEVEL",
-        "DEFAULT_POLL_SECONDS",
-    ]
+    # The two exemptions, pinned so they stay the ones the docstring describes.
+    assert ast.unparse(defaults["--log-level"]) == "DEFAULT_LOG_LEVEL"
+    assert isinstance(defaults["--heartbeat-max"], ast.Constant)
+    assert defaults["--heartbeat-max"].value is None
+
+    # The inventory: exactly these flags, however they were registered.
+    exposed = {
+        option
+        for action in worker_script._build_parser()._actions
+        for option in action.option_strings
+    }
+    assert exposed == {
+        "-h",
+        "--help",
+        "--lease",
+        "--poll",
+        "--chunk-size",
+        "--chunk-overlap",
+        "--heartbeat-max",
+        "--log-level",
+    }
 
 
 def test_a_heartbeat_cap_under_one_poll_interval_is_accepted_on_purpose(

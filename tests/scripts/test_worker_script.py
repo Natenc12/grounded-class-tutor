@@ -432,11 +432,23 @@ def test_every_library_default_is_an_imported_name_and_the_flag_set_is_closed():
     not a regex: `default=` appears inside the help strings in this file, and a regex would
     either match those or have to know how they are quoted.
 
-    "IS A NAME" IS NOT ENOUGH, and this is the second draft. Asking only for an `ast.Name` never
-    asks where the name is BOUND: deleting the import and writing `DEFAULT_LEASE_SECONDS = 900`
-    at module scope satisfies it, and this very file already establishes that pattern with
-    `DEFAULT_LOG_LEVEL`. So each library-sourced flag's default must be a name this script
-    IMPORTS FROM `gct`, checked against the import statements themselves.
+    "IS A NAME" IS NOT ENOUGH, and this is the THIRD draft. Both earlier ones were broken by
+    execution rather than by argument, and the two failures are different, which is why both
+    checks below exist:
+
+      1. Asking only for an `ast.Name` never asks where the name is BOUND. Delete the import,
+         write `DEFAULT_LEASE_SECONDS = 900` at module scope, and it passes - and this very file
+         already establishes that pattern with `DEFAULT_LOG_LEVEL`, so it is the natural edit.
+         Hence: the name must appear in one of this script's `from gct... import ...` statements.
+      2. Reading the IMPORT is still not enough, because an import can be rebound. LEAVE the
+         import in place and add `DEFAULT_LEASE_SECONDS = 900` at module scope: the name is in
+         the import set, the assignment wins at runtime, and every test passed. Nobody deletes an
+         import in order to add a constant, so this is the likelier edit of the two. Hence: a name
+         used as a library default must never be a STORE target anywhere in this file.
+
+    Measured, not argued: with (2) in place the library was retuned to 600 and the worker still
+    ran 900. No behavioural test can see that - 900 is the library's value today - which is the
+    whole reason this test reads the source instead of a value.
 
     THE TWO EXEMPTIONS ARE NAMED HERE, not inferred, so adding a third is a visible edit:
 
@@ -496,6 +508,27 @@ def test_every_library_default_is_an_imported_name_and_the_flag_set_is_closed():
         f"{not_imported}. A literal - or a module-local constant holding one - agrees with the "
         "library today and is invisible until the library moves, at which point the worker "
         f"silently keeps the old number. Names imported here: {sorted(imported_from_gct)}"
+    )
+
+    # ...and the import must still be what the name MEANS at the point the parser reads it. Every
+    # binding form shows up as a `Name` in `Store` context - assignment, augmented assignment, a
+    # `for` target, `with ... as`, a walrus - so one walk covers all of them, at module scope and
+    # inside `_build_parser` alike (a local assignment there would shadow the import just as well).
+    rebound = {
+        node.id
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Name) and isinstance(node.ctx, ast.Store)
+    }
+    library_default_names = {
+        value.id
+        for flag, value in defaults.items()
+        if flag not in ("--log-level", "--heartbeat-max") and isinstance(value, ast.Name)
+    }
+    assert sorted(library_default_names & rebound) == [], (
+        f"these names are imported from `gct` and then reassigned in this file: "
+        f"{sorted(library_default_names & rebound)}. The import satisfies the check above while "
+        "the assignment is what the parser actually reads, so the worker stops following a "
+        "library retune with nothing going red"
     )
 
     # The two exemptions, pinned so they stay the ones the docstring describes.

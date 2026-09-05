@@ -1,4 +1,4 @@
-"""Tests for `scripts/worker.py` - the SIGTERM wiring, and nothing else (issue #82).
+"""Tests for `scripts/worker.py` - its SIGTERM wiring (issue #82) and its CLI (issue #109).
 
 WHY A SCRIPT HAS TESTS AT ALL, when ADR 0009 calls the scripts thin peer callers that usually
 earn none: this one now carries a signal handler, and a handler that is never REGISTERED fails
@@ -16,15 +16,29 @@ What is deliberately NOT here: a test that the released job is actually claimabl
 That is the library's decision and it is covered where it lives, on a real connection through a
 second one - `test_an_interrupt_mid_ingest_leaves_the_job_claimable_at_once`
 (tests/gct/jobs/test_worker.py). This file only proves the signal reaches that path.
+
+THE CLI TESTS OBSERVE `run`'s KEYWORD ARGUMENTS, NEVER A POLL LOOP. `run` is a `while True`
+against Postgres, so the only honest thing to assert here is what this script HANDED it -
+whether the loop then behaves is `tests/gct/jobs/test_worker.py`'s subject and is tested there
+on a real connection. Everything stays offline and free.
+
+`main` is called with an EXPLICIT argv everywhere below, including `[]`. That is not style: this
+module is loaded by path inside a pytest process, so a bare `main()` would parse pytest's own
+flags and exit 2 before reaching a single line under test.
 """
 
 from __future__ import annotations
 
 import importlib.util
+import inspect
+import logging
 import signal
 from pathlib import Path
 
 import pytest
+
+from gct.ingest.chunk import CHUNK_OVERLAP_WORDS, CHUNK_SIZE_WORDS
+from gct.jobs import worker as worker_lib
 
 # Imported by PATH, the same way `test_ask_smoke.py` does it and for the same reason: `scripts/`
 # is deliberately not a package (ADR 0009 - the scripts are peers of the library, not part of
@@ -100,7 +114,7 @@ def test_main_registers_the_handler_for_sigterm(monkeypatch, restore_sigterm):
     monkeypatch.setattr(worker_script, "OpenAIEmbeddings", fake_embedder)
     monkeypatch.setattr(worker_script, "run", stopped)
 
-    worker_script.main()
+    worker_script.main([])
 
     assert signal.getsignal(signal.SIGTERM) is worker_script._interrupt, (
         "a SIGTERM'd worker takes Python's default disposition - dead in the C handler, no "
@@ -160,7 +174,7 @@ def test_the_handler_is_registered_before_the_connection_is_opened(monkeypatch, 
 
     _stub_main_dependencies(monkeypatch, connect=connect_that_looks_around)
 
-    worker_script.main()
+    worker_script.main([])
 
     assert seen == [worker_script._interrupt], (
         "the SIGTERM handler is registered AFTER the connection is opened, so a signal arriving "
@@ -233,7 +247,7 @@ def test_a_sigterm_arriving_during_startup_exits_as_quietly_as_one_mid_run(
     # turns that into one red test with a message.
     escaped: list[BaseException] = []
     try:
-        worker_script.main()
+        worker_script.main([])
     except BaseException as exc:  # noqa: BLE001 - the escape IS the failure being reported
         escaped.append(exc)
 
@@ -282,11 +296,11 @@ def test_the_handler_is_registered_once_per_start_and_replaces_rather_than_stack
     monkeypatch.setattr(signal, "signal", recording_signal)
     _stub_main_dependencies(monkeypatch, connect=lambda: _FakeConn([]))
 
-    worker_script.main()
+    worker_script.main([])
     assert registrations == [int(signal.SIGTERM)], "one start must register exactly one handler"
 
     previous = signal.getsignal(signal.SIGTERM)
-    worker_script.main()
+    worker_script.main([])
 
     assert registrations == [int(signal.SIGTERM)] * 2
     assert previous is worker_script._interrupt
@@ -294,3 +308,228 @@ def test_the_handler_is_registered_once_per_start_and_replaces_rather_than_stack
         "a restart left something other than `_interrupt` installed - a chained or wrapped "
         "handler means the next Ctrl-C unwinds once per start the process has ever made"
     )
+
+
+# ---------------------------------------------------------------------------------------------
+# The CLI (issue #109 PR 1)
+# ---------------------------------------------------------------------------------------------
+
+
+def _spy_on_run(monkeypatch, *, connected: list[bool] | None = None) -> dict:
+    """Drive `main` with every real dependency stubbed and hand back the kwargs `run` received.
+
+    `run` RECORDS AND RETURNS rather than raising, unlike `_stub_main_dependencies` above: these
+    tests are about the arguments, and a stub that raised would leave the recorded dict correct
+    but the exit path entangled with the thing being measured.
+    """
+    seen: dict = {}
+
+    def recording_run(_conn, **kwargs):
+        seen.update(kwargs)
+
+    def connect():
+        if connected is not None:
+            connected.append(True)
+        return _FakeConn([])
+
+    monkeypatch.setattr(worker_script, "connect", connect)
+    monkeypatch.setattr(worker_script, "OpenAIEmbeddings", lambda: object())
+    monkeypatch.setattr(worker_script, "run", recording_run)
+    return seen
+
+
+def test_no_flags_runs_exactly_what_it_ran_before_the_cli_existed(monkeypatch, restore_sigterm):
+    """A CLI must not change the no-argument behaviour it was added to, and this reads WHY.
+
+    Compared against `run`'s OWN SIGNATURE DEFAULTS rather than against numbers written here.
+    That is the assertion that survives a retune: if someone shortens `DEFAULT_LEASE_SECONDS`,
+    a test pinning 900 goes red for a change that was correct, while this one keeps asking the
+    real question - does a flagless start still run the library's defaults? It also catches the
+    failure the flags actually invite, which is this script retyping a default as a literal
+    instead of importing the constant (ADR 0018's one-writer rule, applied to the queue's
+    numbers rather than to a model id).
+
+    THE ABSENT KEYS ARE HALF THE TEST. `max_attempts` and `heartbeat_fraction` are deliberately
+    not flags - the retry budget is ratified policy (ADR 0028 §1) and the beat cadence is derived
+    from the lease on purpose (ADR 0031 §5) - so this script must not pass them at all. Passing
+    them "with the default value" would look identical today and freeze the library's own
+    defaults into a script the next retune would not reach.
+    """
+    seen = _spy_on_run(monkeypatch)
+
+    worker_script.main([])
+
+    defaults = {
+        name: p.default
+        for name, p in inspect.signature(worker_lib.run).parameters.items()
+        if p.default is not inspect.Parameter.empty
+    }
+    assert seen["lease_seconds"] == defaults["lease_seconds"]
+    assert seen["poll_seconds"] == defaults["poll_seconds"]
+    assert seen["heartbeat_max_seconds"] == defaults["heartbeat_max_seconds"]
+    assert seen["chunk_size"] == CHUNK_SIZE_WORDS
+    assert seen["chunk_overlap"] == CHUNK_OVERLAP_WORDS
+    assert "max_attempts" not in seen, (
+        "the script now passes the retry budget itself - a library retune of "
+        "DEFAULT_MAX_ATTEMPTS would no longer reach the worker (ADR 0028 §1)"
+    )
+    assert "heartbeat_fraction" not in seen, (
+        "the script now passes the beat cadence itself - the fraction is derived from the lease "
+        "on purpose so the two cannot drift (ADR 0031 §5)"
+    )
+
+
+def test_every_flag_reaches_the_loop_that_the_defect_said_it_could_not(
+    monkeypatch, restore_sigterm
+):
+    """The defect #109 names, inverted: a non-default value must arrive at `run`, not be ignored.
+
+    On the base tree `main()` took no arguments at all, so `--lease 30` was not "rejected" - it
+    was accepted by the shell, dropped by Python, and the worker polled on the 15-minute default
+    while the caller believed otherwise. Silence is what made it worth a ticket: a flag that
+    errors is a typo, a flag that is ignored is a wrong belief about a running process.
+
+    All five at once, with values that are individually valid and share no digits with any
+    library default, so a stub that happened to echo a default cannot pass this.
+    """
+    seen = _spy_on_run(monkeypatch)
+
+    worker_script.main(
+        [
+            "--lease",
+            "37",
+            "--poll",
+            "0.25",
+            "--chunk-size",
+            "111",
+            "--chunk-overlap",
+            "7",
+            "--heartbeat-max",
+            "1.5",
+        ]
+    )
+
+    assert seen["lease_seconds"] == 37
+    assert seen["poll_seconds"] == 0.25
+    assert seen["chunk_size"] == 111
+    assert seen["chunk_overlap"] == 7
+    assert seen["heartbeat_max_seconds"] == 1.5
+
+
+def test_a_retuned_lease_leaves_the_heartbeat_cap_for_the_library_to_derive(
+    monkeypatch, restore_sigterm
+):
+    """`--lease` alone must hand `run` a `None` cap, not the DEFAULT lease's cap.
+
+    This is the one place a flag could reintroduce a bug the library already fixed. The cap is
+    specified in units of the lease - `HEARTBEAT_CAP_LEASES` of the lease ACTUALLY IN USE (ADR
+    0031 §5) - and `run` resolves it from `None`. A script that instead defaulted the flag to
+    `DEFAULT_HEARTBEAT_MAX_SECONDS` would pin the cap to the default lease's four leases, so
+    `--lease 60` would beat for an hour: sixty leases, not four. The comment beside
+    `HEARTBEAT_CAP_LEASES` records that exact drift as having already happened once, which is
+    why it is pinned from the caller's side too.
+
+    Asserted BOTH ways - `is None`, and not the module constant - because `None` alone would
+    also pass against a script that had stopped passing the argument at all, and the constant
+    alone would pass against a script that hardcoded some other number.
+    """
+    seen = _spy_on_run(monkeypatch)
+
+    worker_script.main(["--lease", "60"])
+
+    assert seen["lease_seconds"] == 60
+    assert seen["heartbeat_max_seconds"] is None, (
+        "the cap was resolved in the script instead of in `run`, so it no longer tracks the "
+        "lease actually in use (ADR 0031 §5)"
+    )
+    assert seen["heartbeat_max_seconds"] != worker_lib.DEFAULT_HEARTBEAT_MAX_SECONDS
+
+
+@pytest.mark.parametrize(
+    ("argv", "remedy"),
+    [
+        (["--lease", "0"], "--lease must be at least 1 second"),
+        (["--lease", "-5"], "--lease must be at least 1 second"),
+        (["--poll", "0"], "--poll must be greater than 0"),
+        (["--poll", "-1"], "--poll must be greater than 0"),
+        (["--chunk-overlap", "250", "--chunk-size", "250"], "--chunk-overlap must be at least 0"),
+        (["--chunk-overlap", "-1"], "--chunk-overlap must be at least 0"),
+        (["--heartbeat-max", "0"], "--heartbeat-max must be greater than 0"),
+    ],
+)
+def test_an_unrunnable_value_is_refused_before_anything_is_opened(
+    monkeypatch, restore_sigterm, capsys, argv, remedy
+):
+    """Refuse, do not convert - and refuse EARLY, before a student's file is ever claimed.
+
+    A worker is a long-lived process holding other people's uploads, so a bad flag does not fail
+    the operator who typed it. `overlap >= size` is the worst of these and it is the reason the
+    check is here rather than left to the library: `chunk_units` raises a plain `ValueError`,
+    `process_one` classifies an unclassified exception as TRANSIENT (ADR 0020 §1, DB-blip class
+    amended per ADR 0028), so every file the worker claims is retried the whole budget and then
+    buried `transient_exhausted` - surfacing to the student as `failed`, with nothing in the row
+    pointing at a flag. A startup refusal cannot reach a student at all.
+
+    THREE ASSERTIONS, and they fail differently: the process exits non-zero (a supervisor or a
+    harness has to be able to tell), the message NAMES the flag and its remedy rather than
+    echoing a traceback, and `connect` was never called - proof the refusal happened at the
+    boundary and not somewhere downstream that had already touched the database.
+    """
+    connected: list[bool] = []
+    _spy_on_run(monkeypatch, connected=connected)
+
+    with pytest.raises(SystemExit) as exit_info:
+        worker_script.main(argv)
+
+    assert exit_info.value.code == 2
+    message = capsys.readouterr().err
+    assert remedy in message, f"the refusal did not name the flag or its remedy: {message!r}"
+    assert "omit" in message, "a refusal that does not say what to do instead is a stack trace"
+    assert connected == [], "the run reached the database before refusing an unrunnable flag"
+
+
+def test_the_log_level_is_a_choice_with_the_old_hardcoded_level_as_its_default(
+    monkeypatch, restore_sigterm
+):
+    """INFO by default (unchanged), and settable - which is the direction a harness needs.
+
+    `--log-level` rather than `ingest_smoke`'s `--verbose`, because the boolean would mean the
+    wrong thing here: that script's `--verbose` lifts WARNING to INFO, while this one already
+    configured INFO, and `gct` emits nothing below it. The demonstrated need is the other
+    direction - a launch harness that owns the terminal wanting the worker quiet (#109 PR 2) -
+    and a boolean cannot express it.
+
+    `basicConfig` is spied rather than allowed to run: it mutates the pytest process's root
+    logger, and what is under test is the level this script CHOOSES, not `logging`'s behaviour.
+    """
+    levels: list[object] = []
+    monkeypatch.setattr(logging, "basicConfig", lambda **kwargs: levels.append(kwargs.get("level")))
+    _spy_on_run(monkeypatch)
+
+    worker_script.main([])
+    worker_script.main(["--log-level", "WARNING"])
+
+    assert levels == [worker_script.DEFAULT_LOG_LEVEL, "WARNING"]
+    assert worker_script.DEFAULT_LOG_LEVEL == "INFO", (
+        "the flagless default log level moved - a worker started the way every runbook line "
+        "starts it now says a different amount"
+    )
+
+
+def test_an_unknown_level_is_refused_by_argparse_rather_than_by_logging(
+    monkeypatch, restore_sigterm
+):
+    """`choices` refuses at the boundary; `basicConfig` would have raised after startup began.
+
+    Worth its own test because the failure mode it removes is not a crash but a LATE crash: an
+    unrecognised level reaches `logging.basicConfig` as a `ValueError` raised after the parse,
+    which reads as a defect in the worker rather than a typo in a flag.
+    """
+    connected: list[bool] = []
+    _spy_on_run(monkeypatch, connected=connected)
+
+    with pytest.raises(SystemExit) as exit_info:
+        worker_script.main(["--log-level", "CHATTY"])
+
+    assert exit_info.value.code == 2
+    assert connected == []

@@ -16,6 +16,7 @@ import math
 import uuid
 from collections.abc import Sequence
 
+import psycopg
 import pytest
 
 from gct.config import ACTIVE_EMBEDDING_MODEL_ID
@@ -319,3 +320,122 @@ class TestRetrieve:
 
         with pytest.raises(TransientEmbeddingError):
             retrieve(conn, "a question", owner_id, class_id, embedder=exploding)
+
+    # --- The id boundary (#126) -------------------------------------------------------------
+    #
+    # `retrieve` bound the caller's `class_id` spelling raw into BOTH of this module's
+    # `%(class_id)s::uuid` casts - the whole-class consistency DISTINCT and the top-k. The two
+    # tests below are the two directions of the same guard, and neither is optional: an accept-only
+    # pin is satisfied by a function that accepts everything, and a refuse-only pin by one that
+    # refuses everything.
+
+    # Python's `uuid.UUID` parses four spellings of one id; Postgres's `::uuid` cast parses three.
+    # Pinning the split is what keeps the accept test from being trivially green - without it, a
+    # passing `urn` case is indistinguishable from a Postgres that quietly started accepting it.
+    _POSTGRES_ACCEPTS_THE_CAST = {"plain": True, "braced": True, "hex32": True, "urn": False}
+
+    @pytest.mark.parametrize("spelling", ["plain", "braced", "hex32", "urn"])
+    def test_every_uuid_spelling_python_accepts_reaches_the_same_chunks(
+        self, db, db_other, ranking_embedder, seed_chunks, spelling
+    ):
+        """Every spelling of one class_id retrieves exactly what the canonical spelling does.
+
+        BOTH SQL SITES ARE EXERCISED BY THIS, which is why it is one test and not two:
+        `_assert_embedding_consistency` runs first and must return True (its own cast), and only
+        then does the top-k run (the second cast). Fix one site and leave the other raw and the
+        `urn` case still goes red - from whichever cast was left.
+
+        `urn` is the only case sensitive to the fix; Postgres normalises the braced and bare-hex
+        spellings itself. The other three pin the OTHER decision - that `retrieve` is LENIENT.
+        Swap in `ingest_file`-style strict rejection of any non-canonical spelling and braced,
+        hex32 and urn go red together. Two different guards, one parametrization.
+        """
+        conn, owner_id, class_id = db
+        canonical = uuid.UUID(class_id)
+        written = {
+            "plain": str(canonical),
+            "braced": f"{{{canonical}}}",
+            "hex32": canonical.hex,
+            "urn": canonical.urn,
+        }[spelling]
+        assert uuid.UUID(written) == canonical, "the spelling under test names a different class"
+
+        # Measured on `db_other`, which is autocommit - a refused cast is its own transaction
+        # there and cannot poison anything this test does later.
+        try:
+            db_other.execute("select %s::uuid", (written,)).fetchone()
+            postgres_accepts = True
+        except psycopg.errors.InvalidTextRepresentation:
+            postgres_accepts = False
+        assert postgres_accepts is self._POSTGRES_ACCEPTS_THE_CAST[spelling], (
+            f"Postgres's own handling of the {spelling} spelling changed; the premise is stale"
+        )
+
+        question = "what is the argument?"
+        ranking_embedder.assign(question, 0.10)
+        seed_chunks(["alpha chunk", "beta chunk"], embedder=ranking_embedder)
+
+        baseline = retrieve(conn, question, owner_id, str(canonical), embedder=ranking_embedder)
+        got = retrieve(conn, question, owner_id, written, embedder=ranking_embedder)
+
+        assert [c.text for c in baseline] == ["alpha chunk", "beta chunk"] or [
+            c.text for c in baseline
+        ] == ["beta chunk", "alpha chunk"], "the canonical baseline itself retrieved nothing usable"
+        assert got == baseline, f"the {spelling} spelling retrieved a different result"
+
+    @pytest.mark.parametrize(
+        "bad",
+        [
+            "intro-to-religion",  # ValueError from the parser
+            None,  # TypeError: no hex/bytes/fields/int argument was given
+            12345,  # AttributeError: int has no `.replace`
+            uuid.UUID("6f1e1b4a-0f0e-4a3e-9a7d-2f0a1b2c3d4e"),  # AttributeError, and the LIKELY one
+        ],
+        ids=["malformed", "none", "int", "already_parsed"],
+    )
+    def test_retrieve_refuses_a_non_uuid_class_id_and_leaves_the_connection_usable(
+        self, db, ranking_embedder, seed_chunks, bad
+    ):
+        """The refusal half - and the CONNECTION assertion is the point of this one.
+
+        `retrieve` is a reader with no transaction of its own. Before this, the raw bind meant a
+        spelling Postgres refused aborted the implicit transaction psycopg had already opened
+        (ADR 0025), so every later statement on that connection failed with
+        `InFailedSqlTransaction`: the caller lost the connection, not just the query. That is the
+        harm that distinguishes this site from the library's other id boundaries - `enqueue` wraps
+        its writes in `conn.transaction()` and psycopg rolls that back cleanly.
+
+        So the transaction is OPENED ON PURPOSE before the call, and the assertions after the
+        raise are the measurement: still INTRANS rather than INERROR, a plain statement still
+        answers, and a real `retrieve` on the same connection still returns the seeded chunks.
+        The last one is what a bare `select 1` cannot show - that the caller's actual work still
+        runs.
+
+        Parametrized over all four ways `uuid.UUID` reports a bad argument, because two of them
+        (`TypeError`, `AttributeError`) are precisely what escaped the guards this ticket widened
+        elsewhere. `already_parsed` is the case that will actually happen: a caller holding the
+        `uuid.UUID` psycopg handed it back passes that instead of `str(...)`.
+        """
+        conn, owner_id, class_id = db
+        question = "what is the argument?"
+        ranking_embedder.assign(question, 0.10)
+        seed_chunks(["alpha chunk", "beta chunk"], embedder=ranking_embedder)
+
+        conn.execute("select 1").fetchone()
+        assert conn.info.transaction_status == psycopg.pq.TransactionStatus.INTRANS, (
+            "this test's premise is a connection with an OPEN implicit transaction"
+        )
+
+        with pytest.raises(ValueError, match=r"retrieve\(\) requires a uuid class_id") as caught:
+            retrieve(conn, question, owner_id, bad, embedder=ranking_embedder)
+
+        assert "create_class" in str(caught.value), "the refusal does not name what to pass instead"
+        assert conn.info.transaction_status == psycopg.pq.TransactionStatus.INTRANS, (
+            "the refusal aborted the caller's transaction - the exact harm this guard prevents"
+        )
+        assert conn.execute("select 1").fetchone() == (1,)
+        still_works = retrieve(conn, question, owner_id, class_id, embedder=ranking_embedder)
+        assert {c.text for c in still_works} == {"alpha chunk", "beta chunk"}, (
+            "the refusal cost the caller its connection"
+        )
+        conn.rollback()

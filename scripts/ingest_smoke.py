@@ -35,17 +35,25 @@ Setup VALIDITY rules (is this run stageable at all?) likewise stay here — they
 corpus directory and a connection, which the core has no access to and no opinion about.
 
 THE WORKER RUNS ON A THREAD, NOT AS A SUBPROCESS, and that is what buys phase 3 (decided
-2026-09-01). `scripts/worker.py` has no CLI surface, so a subprocess is pinned to
-`DEFAULT_LEASE_SECONDS` and the only way to stage a reclaim would be to write `jobs.leased_until`
-from outside — reaching into the queue's own state to fake the one fact the phase is about. On a
-thread the lease is a PARAMETER, so the expiry is the queue's own: `claim` stamps it, the reaper
-compares it against the server clock, and nothing here touches the column. What this script
-supplies is the other side of the race — an embed slow enough to still be running when that lease
-elapses (`_DelayedEmbeddings`). Read the two together: the reclaim, the redelivery and the replace
-are real; the certainty that A is still working when the lease expires is arranged. SINCE ADR 0031
-the slow embed is no longer sufficient on its own — a live worker renews its own lease — so the
-heartbeat CAP is threaded as a parameter too, on the same argument: see
-`PHASE_THREE_HEARTBEAT_CAP_SECONDS` for what this script sets and why.
+2026-09-01; the REASON was re-seated by #109 — read on). On a thread the lease is a PARAMETER, so
+the expiry is the queue's own: `claim` stamps it, the reaper compares it against the server clock,
+and nothing here touches the column. What this script supplies is the other side of the race — an
+embed slow enough to still be running when that lease elapses (`_DelayedEmbeddings`). Read the two
+together: the reclaim, the redelivery and the replace are real; the certainty that A is still
+working when the lease expires is arranged. SINCE ADR 0031 the slow embed is no longer sufficient
+on its own — a live worker renews its own lease — so the heartbeat CAP is threaded as a parameter
+too, on the same argument: see `PHASE_THREE_HEARTBEAT_CAP_SECONDS` for what this script sets and
+why.
+
+THE TIMING NUMBERS ARE NO LONGER WHAT BLOCKS A SUBPROCESS, and this paragraph used to say they
+were: `scripts/worker.py` had no CLI, so a subprocess was pinned to `DEFAULT_LEASE_SECONDS`. Since
+#109 it takes `--lease` and `--heartbeat-max`, so that half is gone. What remains is the OTHER half
+of the race, and it is not a number: `_DelayedEmbeddings` is an in-process object wrapped around
+the real embedder, `scripts/worker.py` constructs its embedder from config (ADR 0018), and no flag
+can hand a child process a wrapped one. A subprocess could therefore hold the short lease and still
+never overrun it, leaving `jobs.leased_until` written from outside as the only way to force the
+expiry — reaching into the queue's own state to fake the one fact the phase is about. That is the
+argument that survives, and it is why adding the CLI did not turn this script into a subprocess.
 
 `scripts/worker.py` is deliberately NOT imported (ADR 0009: the scripts are peers of the library,
 not of each other) — this file does its own wiring, exactly as that one does.

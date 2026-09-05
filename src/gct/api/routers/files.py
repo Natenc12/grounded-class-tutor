@@ -97,14 +97,19 @@ def upload_file(
         does raise `ValueError` here, but its message explains a connection-abort concern a
         client cannot act on.
 
-    THE ROUTE PARSES `class_id` ONCE, AT THE TOP, AND PASSES THE CANONICAL SPELLING TO BOTH
-    LIBRARY CALLS. That is not tidiness, it is the fix for an orphan. `uuid.UUID` accepts
-    spellings Postgres's `::uuid` cast rejects - `urn:uuid:<id>` is the demonstrated one - and
-    `class_exists` binds `str(uuid.UUID(class_id))`, so it answers True for them. `enqueue`
-    binds `class_id` RAW into `%(class_id)s::uuid`. Handing the caller's spelling to both would
-    therefore pass the ownership check and then abort the INSERT, after `stage` had already
-    written the bytes: a 500, a staged file no `files` row points at, and nothing to poll. One
-    parse at the boundary is what keeps the two calls talking about the same id.
+    THE ROUTE PARSES `class_id` ONCE, AT THE TOP, and that parse is what RAISES the 400 above -
+    it runs before any library call, so the client reads the route's own sentence rather than
+    `class_exists`'s, which explains a connection concern a client cannot act on. Passing the
+    canonical spelling on from there costs nothing and keeps both calls talking about one id.
+
+    It is no longer load-bearing for CORRECTNESS, and it was: until #121 `enqueue` bound
+    `class_id` raw into `%(class_id)s::uuid` while `class_exists` normalised first, so a
+    `urn:uuid:<id>` - which `uuid.UUID` accepts and the cast refuses - cleared the ownership
+    check and then aborted the INSERT after `stage` had written the bytes: a 500, a staged file
+    no `files` row points at, and nothing to poll. `enqueue` now canonicalises at its own
+    boundary like every other library entry point, so that orphan is closed at the writer rather
+    than worked around in this one caller. The parse STAYS anyway, for the 400 above: deleting it
+    would hand the client `class_exists`'s message instead.
       - the filename is unusable -> 400 `bad_filename`; the upload exceeds the byte cap -> 413
         `too_large`. Both come from `stage`, both are REQUEST-time (no `files` row exists, so
         there is nothing for a `failed_reason` to hang on - `gct.staging`'s module docstring), and
@@ -153,9 +158,9 @@ def upload_file(
         # promised shape.
         raise ApiError(_STAGING_STATUS[exc.reason], exc.reason, str(exc)) from exc
 
-    # `class_uuid`, never the raw form: `enqueue` binds `class_id` straight into a `::uuid` cast,
-    # and this is the call that would abort - with the bytes already on disk - on a spelling
-    # Python accepted and Postgres will not.
+    # `class_uuid`, the form this route already parsed for its 400 - not because `enqueue` needs
+    # it (since #121 it canonicalises whatever spelling it is handed) but because re-handing the
+    # caller's raw string here would send one id through two parsers for no reason.
     file_id = enqueue(conn, path=staged, owner_id=owner, class_id=class_uuid)
     return UploadAccepted(file_id=file_id, filename=Path(staged).name)
 

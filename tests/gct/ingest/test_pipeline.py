@@ -249,8 +249,11 @@ def test_ingest_file_uses_a_caller_supplied_file_id(pdf_factory, fake_embedder, 
     the student polls is stranded while the chunks land under a second id - no error, no log, an
     upload that appears to hang forever.
 
-    The hand-written INSERT stands in for `enqueue` (#70), which does not exist yet; it is the only
-    thing here pretending. This test drives `index_file`'s upsert onto its UPDATE branch, the
+    The hand-written INSERT stands in for `enqueue` (`gct.jobs.queue`), which is what creates the
+    `queued` row in production; it is the only thing here pretending. It is written by hand rather
+    than calling `enqueue` so this test stays a test of `ingest_file`'s seam alone - calling the
+    real writer would couple it to the queue's own contract and to the class row `enqueue`'s
+    foreign key requires. This test drives `index_file`'s upsert onto its UPDATE branch, the
     counterpart to the INSERT branch every no-`file_id` caller takes.
 
     The two load-bearing assertions are the returned id and the row COUNT. Asserting only that a

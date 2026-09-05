@@ -201,11 +201,13 @@ def test_every_uuid_spelling_python_accepts_publishes_one_canonical_row(
 
     `uuid.UUID` accepts four spellings of the same id; Postgres's `::uuid` cast accepts three of
     them. `class_exists` normalises before it binds, so it answers True for all four - and
-    `enqueue` binds `class_id` RAW into a cast, so the fourth (`urn:uuid:...`) used to reach it
-    unchanged and abort the INSERT *after* `stage` had written the bytes: a 500, an orphaned
-    staged file, and no id to poll. Every spelling must land on ONE row shape, which is what the
-    canonical read-back asserts - not that Postgres renders uuids canonically (it always does),
-    but that there is a row for it to render at all.
+    `enqueue` bound `class_id` RAW into a cast until #121, so the fourth (`urn:uuid:...`) reached
+    it unchanged and aborted the INSERT *after* `stage` had written the bytes: a 500, an orphaned
+    staged file, and no id to poll. Both library calls canonicalise for themselves now; this pins
+    the route's END-TO-END behaviour, which must hold whichever of them does the parsing.
+    Every spelling must land on ONE row shape, which is what the canonical read-back asserts -
+    not that Postgres renders uuids canonically (it always does), but that there is a row for it
+    to render at all.
     """
     root = _repoint_stage(monkeypatch, tmp_path)
     canonical = uuid.UUID(api.class_id)

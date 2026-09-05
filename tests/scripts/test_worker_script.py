@@ -29,7 +29,8 @@ flags and exit 2 before reaching a single line under test.
 
 from __future__ import annotations
 
-import ast
+import argparse
+import importlib
 import importlib.util
 import inspect
 import logging
@@ -352,8 +353,8 @@ def test_no_flags_runs_exactly_what_it_ran_before_the_cli_existed(monkeypatch, r
     `default=900` leaves THIS test green; `default=901` turns it red. So the comparison catches a
     default that has DRIFTED - the retyped literal's eventual symptom, one library retune later -
     and not the retyping itself. The retyping is caught elsewhere in this file, by
-    `test_every_library_default_is_an_imported_name_and_the_flag_set_is_closed`, which reads the
-    source; that test is why `default=900` reddens the FILE even though it does not redden this.
+    `test_a_retuned_library_constant_reaches_the_flagless_worker`, which retunes the library and
+    checks the worker follows; that test is why `default=900` reddens the FILE, not this one.
 
     THE ABSENT KEYS ARE HALF THE TEST. `max_attempts` and `heartbeat_fraction` are deliberately
     not flags - the retry budget is ratified policy (ADR 0028 §1) and the beat cadence is derived
@@ -422,126 +423,104 @@ def test_every_flag_reaches_the_loop_that_the_defect_said_it_could_not(
     assert seen["heartbeat_max_seconds"] == 1.5
 
 
-def test_every_library_default_is_an_imported_name_and_the_flag_set_is_closed():
-    """The PR's headline promise, enforced on the SOURCE rather than on the value.
+def _load_worker_fresh():
+    """A SECOND, independent load of `scripts/worker.py`, so its module-level `from` imports rebind.
 
-    A value comparison cannot enforce it.
-    `test_no_flags_runs_exactly_what_it_ran_before_the_cli_existed` reads the library's number on
-    both sides, so `default=900` agrees with it and only goes red one library retune later -
-    after a worker has already run on the stale number. So this reads the text instead. `ast` and
-    not a regex: `default=` appears inside the help strings in this file, and a regex would
-    either match those or have to know how they are quoted.
-
-    "IS A NAME" IS NOT ENOUGH, and this is the THIRD draft. Both earlier ones were broken by
-    execution rather than by argument, and the two failures are different, which is why both
-    checks below exist:
-
-      1. Asking only for an `ast.Name` never asks where the name is BOUND. Delete the import,
-         write `DEFAULT_LEASE_SECONDS = 900` at module scope, and it passes - and this very file
-         already establishes that pattern with `DEFAULT_LOG_LEVEL`, so it is the natural edit.
-         Hence: the name must appear in one of this script's `from gct... import ...` statements.
-      2. Reading the IMPORT is still not enough, because an import can be rebound. LEAVE the
-         import in place and add `DEFAULT_LEASE_SECONDS = 900` at module scope: the name is in
-         the import set, the assignment wins at runtime, and every test passed. Nobody deletes an
-         import in order to add a constant, so this is the likelier edit of the two. Hence: a name
-         used as a library default must never be a STORE target anywhere in this file.
-
-    Measured, not argued: with (2) in place the library was retuned to 600 and the worker still
-    ran 900. No behavioural test can see that - 900 is the library's value today - which is the
-    whole reason this test reads the source instead of a value.
-
-    THE TWO EXEMPTIONS ARE NAMED HERE, not inferred, so adding a third is a visible edit:
-
-      - `--log-level` defaults to `DEFAULT_LOG_LEVEL`, which is script-local ON PURPOSE. There is
-        no library constant to import: where events go and at what level is the application's
-        call, not the library's (ADR 0009), and `gct` emits nothing below INFO.
-      - `--heartbeat-max` defaults to `None`, which is the only permitted literal and is
-        permitted for a reason rather than as an exception: the cap must reach `run` unresolved
-        so it is derived from the lease ACTUALLY IN USE (ADR 0031 5). An imported name written
-        there would satisfy this test and still be the bug, which is why
-        `test_a_retuned_lease_leaves_the_heartbeat_cap_for_the_library_to_derive` exists too.
-        Neither test subsumes the other.
-
-    THE FLAG INVENTORY IS THE OTHER HALF, and it is not symmetry for its own sake. The ast walk
-    matches `<something>.add_argument(...)`, so a flag registered through an alias
-    (`add = parser.add_argument`) escapes it entirely - and the flag that must never be added,
-    `--max-attempts`, is a ratified policy number (ADR 0028 1). Reading the flags off the built
-    parser catches a smuggled flag however it was registered, and catches a DELETED one too,
-    which the "no literals" half would otherwise satisfy trivially by finding nothing.
+    `from gct.jobs.worker import DEFAULT_LEASE_SECONDS` copies the value at import time, and this
+    file imported the script once at collection. Patching the library constant afterwards cannot
+    reach that copy - so a test about a RETUNE has to re-execute the module under the patch.
     """
-    source = _SCRIPT.read_text()
-    tree = ast.parse(source)
+    spec = importlib.util.spec_from_file_location("worker_script_retuned", _SCRIPT)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
 
-    imported_from_gct = {
-        alias.asname or alias.name
-        for node in tree.body
-        if isinstance(node, ast.ImportFrom) and (node.module or "").startswith("gct")
-        for alias in node.names
-    }
 
-    parser_source = next(
-        node
-        for node in tree.body
-        if isinstance(node, ast.FunctionDef) and node.name == "_build_parser"
+@pytest.mark.parametrize(
+    ("module_name", "constant", "kwarg", "retuned"),
+    [
+        ("gct.jobs.worker", "DEFAULT_LEASE_SECONDS", "lease_seconds", 613),
+        ("gct.jobs.worker", "DEFAULT_POLL_SECONDS", "poll_seconds", 3.25),
+        ("gct.ingest.chunk", "CHUNK_SIZE_WORDS", "chunk_size", 271),
+        ("gct.ingest.chunk", "CHUNK_OVERLAP_WORDS", "chunk_overlap", 19),
+    ],
+)
+def test_a_retuned_library_constant_reaches_the_flagless_worker(
+    monkeypatch, restore_sigterm, module_name, constant, kwarg, retuned
+):
+    """The PR's headline promise, asked as a QUESTION ABOUT BEHAVIOUR rather than about source.
+
+    The promise is that the library stays the one writer of these numbers (ADR 0018's one-writer
+    rule, applied to the queue's numbers rather than to a model id). Which is to say: retune the
+    library and the flagless worker follows. So this retunes the library and checks that it does.
+
+    THREE SOURCE-READING DRAFTS PRECEDED THIS AND ALL THREE WERE BROKEN BY EXECUTION, which is
+    why the approach changed rather than the pattern being tightened a fourth time. Draft 1 asked
+    that each `default=` be an `ast.Name`; a module-local `DEFAULT_LEASE_SECONDS = 900` satisfied
+    it. Draft 2 also required the name to appear in a `from gct...` import; leaving the import in
+    place and rebinding the name afterwards satisfied it. Draft 3 also forbade the name from
+    being a `Store` target anywhere in the file; `parser.set_defaults(lease=900)` is neither an
+    `add_argument` call nor an assignment to that name, and argparse applies it anyway - and
+    moving the registration into a module-level helper took it out of the inspected function
+    entirely. Each draft closed the previous counterexample and left the next one open, because a
+    number can be written in more places than a pattern can enumerate.
+
+    Every one of those five routes fails this test, and so does a route nobody has thought of
+    yet: they all end with the worker running a number the library did not supply, and that is
+    the thing asserted. The cost is that a failure here says "the worker did not follow the
+    retune" rather than naming the line - which is the right trade for a property whose whole
+    danger is that it is invisible in every OTHER observation, since a retyped literal agrees
+    with the library until the day it does not.
+
+    A SECOND MODULE LOAD is what makes this work at all - see `_load_worker_fresh`. The values
+    are deliberately unlike any library default and unlike each other, so a stub echoing the
+    wrong one cannot pass.
+    """
+    monkeypatch.setattr(importlib.import_module(module_name), constant, retuned)
+    fresh = _load_worker_fresh()
+
+    seen: dict = {}
+    monkeypatch.setattr(fresh, "connect", lambda: _FakeConn([]))
+    monkeypatch.setattr(fresh, "OpenAIEmbeddings", lambda: object())
+    monkeypatch.setattr(fresh, "run", lambda _conn, **kwargs: seen.update(kwargs))
+
+    fresh.main([])
+
+    assert seen[kwarg] == retuned, (
+        f"the library was retuned to {constant}={retuned} and the flagless worker ran "
+        f"{seen[kwarg]!r} instead. Something between the library and `run` is holding a number "
+        "of its own - a literal, a rebound name, a `set_defaults`, a helper - and it will keep "
+        "holding it after every future retune"
     )
-    defaults = {
-        call.args[0].value: keyword.value
-        for call in ast.walk(parser_source)
-        if isinstance(call, ast.Call)
-        and isinstance(call.func, ast.Attribute)
-        and call.func.attr == "add_argument"
-        and call.args
-        for keyword in call.keywords
-        if keyword.arg == "default"
-    }
 
-    # `--log-level` and `--heartbeat-max` are the two exemptions the docstring names; every other
-    # flag's default has to be a name this script imported from the library.
-    not_imported = {
-        flag: ast.unparse(value)
-        for flag, value in defaults.items()
-        if flag not in ("--log-level", "--heartbeat-max")
-        and not (isinstance(value, ast.Name) and value.id in imported_from_gct)
-    }
-    assert not_imported == {}, (
-        f"these flags do not take their default from a name imported out of `gct`: "
-        f"{not_imported}. A literal - or a module-local constant holding one - agrees with the "
-        "library today and is invisible until the library moves, at which point the worker "
-        f"silently keeps the old number. Names imported here: {sorted(imported_from_gct)}"
-    )
 
-    # ...and the import must still be what the name MEANS at the point the parser reads it. Every
-    # binding form shows up as a `Name` in `Store` context - assignment, augmented assignment, a
-    # `for` target, `with ... as`, a walrus - so one walk covers all of them, at module scope and
-    # inside `_build_parser` alike (a local assignment there would shadow the import just as well).
-    rebound = {
-        node.id
-        for node in ast.walk(tree)
-        if isinstance(node, ast.Name) and isinstance(node.ctx, ast.Store)
-    }
-    library_default_names = {
-        value.id
-        for flag, value in defaults.items()
-        if flag not in ("--log-level", "--heartbeat-max") and isinstance(value, ast.Name)
-    }
-    assert sorted(library_default_names & rebound) == [], (
-        f"these names are imported from `gct` and then reassigned in this file: "
-        f"{sorted(library_default_names & rebound)}. The import satisfies the check above while "
-        "the assignment is what the parser actually reads, so the worker stops following a "
-        "library retune with nothing going red"
-    )
+def test_the_flag_set_is_closed_on_the_parser_that_actually_parses(monkeypatch, restore_sigterm):
+    """Which flags exist, read off the parser that actually parses - not one built to look at.
 
-    # The two exemptions, pinned so they stay the ones the docstring describes.
-    assert ast.unparse(defaults["--log-level"]) == "DEFAULT_LOG_LEVEL"
-    assert isinstance(defaults["--heartbeat-max"], ast.Constant)
-    assert defaults["--heartbeat-max"].value is None
+    An inventory taken from a freshly-called `_build_parser()` sees only what that function
+    registers, and `main` holds the returned parser for two more statements before parsing.
+    Registering `--max-attempts` there, with `default=None` and threaded to `run` only when
+    supplied, left `main([])` byte-identical and the whole suite green while
+    `worker.py --max-attempts 2` really did override the retry budget - which ADR 0028 1
+    ratifies as policy precisely so that it is not a deployment knob. So the parser is captured
+    at the moment it is asked to parse, which is the last point anything can have been added.
 
-    # The inventory: exactly these flags, however they were registered.
-    exposed = {
-        option
-        for action in worker_script._build_parser()._actions
-        for option in action.option_strings
-    }
+    Asserted as an EQUALITY, so a deleted flag fails too; a set of required flags would be
+    satisfied by a parser that had grown three more.
+    """
+    captured: dict = {}
+    real_parse_args = argparse.ArgumentParser.parse_args
+
+    def capturing_parse_args(self, args=None, namespace=None):
+        captured["parser"] = self
+        return real_parse_args(self, args, namespace)
+
+    monkeypatch.setattr(argparse.ArgumentParser, "parse_args", capturing_parse_args)
+    _spy_on_run(monkeypatch)
+
+    worker_script.main([])
+
+    exposed = {option for action in captured["parser"]._actions for option in action.option_strings}
     assert exposed == {
         "-h",
         "--help",
@@ -552,6 +531,12 @@ def test_every_library_default_is_an_imported_name_and_the_flag_set_is_closed():
         "--heartbeat-max",
         "--log-level",
     }
+
+    # And the refusal, end to end: whatever route a future flag is registered by, one that was
+    # never registered has to be rejected rather than ignored.
+    with pytest.raises(SystemExit) as refused:
+        worker_script.main(["--max-attempts", "2"])
+    assert refused.value.code == 2
 
 
 def test_a_heartbeat_cap_under_one_poll_interval_is_accepted_on_purpose(

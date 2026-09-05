@@ -39,7 +39,7 @@ import logging
 import uuid
 
 from fastapi import APIRouter
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from gct.api.deps import Conn, Embedder, Generator, OwnerId
 from gct.api.errors import ApiError
@@ -150,7 +150,18 @@ class AskRequest(BaseModel):
     `uuid.UUID` and renders every unusable spelling as one 400 `bad_class_id`; a `min_length` or a
     pattern here would send SOME of those through the 422 `validation` envelope instead, so a
     client would have to handle two different bodies for one mistake.
+
+    `extra="forbid"`, the same choice `NewClass` makes and for the same reason one layer up: the
+    two fields a client is most likely to send and this route does not accept are `k` and
+    `owner_id`, and pydantic's default of DROPPING an unknown key answers both of them with
+    silence. A caller who set `k` would get an answer retrieved at `DEFAULT_K` and no way to tell,
+    which makes the paragraph above a preference rather than a rule; a caller who set `owner_id`
+    would get someone else's scope with no signal (F12). Refusing at the boundary rather than
+    converting is what this codebase does, and it is what makes "NO `k`" enforced instead of
+    merely written down.
     """
+
+    model_config = ConfigDict(extra="forbid")
 
     class_id: str
     question: str = Field(max_length=MAX_QUESTION_CHARS)

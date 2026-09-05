@@ -17,6 +17,7 @@ own decision, made there.
 
 from __future__ import annotations
 
+import json
 from typing import Any
 
 from fastapi import FastAPI, Request
@@ -51,11 +52,33 @@ class ApiError(Exception):
         self.detail = detail
 
 
+class _EscapedJSONResponse(JSONResponse):
+    """Starlette's JSONResponse, but escaping non-ASCII instead of emitting it raw.
+
+    Starlette renders with `ensure_ascii=False`, so `.encode("utf-8")` is the last step and it
+    RAISES on a lone surrogate. A surrogate is reachable from an ordinary request: JSON carries
+    it as a `\\uXXXX` escape, so the bytes on the wire are plain ASCII, pydantic decodes it into
+    a `str`, and the rejected value is echoed back in the 422's `detail`. Rendering then dies
+    INSIDE the handler, and the client gets a 500 `internal` for a request that was merely
+    malformed - the actionable per-field list gone, and the blame moved from the request to the
+    server. `jsonable_encoder` in `_validation` does not reach this: it fixes a non-serialisable
+    `ctx`, and a surrogate survives it as a perfectly good `str`.
+
+    Escaping is applied to EVERY envelope rather than to the 422 alone, because any handler that
+    echoes caller-supplied text has the same last step.
+    """
+
+    def render(self, content: Any) -> bytes:
+        return json.dumps(
+            content, ensure_ascii=True, allow_nan=False, indent=None, separators=(",", ":")
+        ).encode("utf-8")
+
+
 def envelope(status_code: int, kind: str, message: str, detail: Any | None = None) -> JSONResponse:
     """Render one envelope. Built through the pydantic model so the wire shape and the
     documented shape cannot drift apart."""
     body = ErrorEnvelope(error=ErrorBody(kind=kind, message=message, detail=detail))
-    return JSONResponse(status_code=status_code, content=body.model_dump())
+    return _EscapedJSONResponse(status_code=status_code, content=body.model_dump())
 
 
 async def _api_error(request: Request, exc: ApiError) -> JSONResponse:

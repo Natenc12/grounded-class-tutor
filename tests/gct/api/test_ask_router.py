@@ -600,6 +600,49 @@ def test_a_missing_question_is_the_shared_422_envelope(api):
     assert response.json()["error"]["kind"] == "validation"
 
 
+def test_a_lone_surrogate_in_the_question_is_a_422_and_not_a_500(api):
+    """The rejected VALUE is echoed back in the 422's `detail`, and rendering it is the last step.
+
+    Starlette's `JSONResponse` renders with `ensure_ascii=False`, so a lone surrogate in `detail`
+    raises `UnicodeEncodeError` inside `errors._validation` and the envelope collapses to a 500
+    `internal`: the server blaming itself for a request that was merely malformed, with the
+    per-field list the client needed gone. Reachable from an ordinary client - JSON carries a
+    surrogate as a `\\uXXXX` escape, so the bytes below are plain ASCII and nothing rejects them
+    before pydantic has a `str`. Sent as RAW BYTES for that reason: `json=` cannot encode a lone
+    surrogate, so the natural spelling of this test would raise in httpx and "prove" the defect
+    unreachable. Pinned here and not only in the errors module because this route is one of the
+    two ways to reach it. `envelope` escapes; see `gct.api.errors._EscapedJSONResponse`."""
+    _providers(api)
+
+    body = f'{{"class_id": "{api.class_id}", "question": "a\\ud800b"}}'.encode("ascii")
+    response = api.client.post("/ask", content=body, headers={"content-type": "application/json"})
+
+    assert response.status_code == 422
+    error = response.json()["error"]
+    assert error["kind"] == "validation"
+    assert isinstance(error["detail"], list)
+    assert any("question" in str(entry) for entry in error["detail"])
+
+
+@pytest.mark.parametrize("field,value", [("k", 50), ("owner_id", "mallory"), ("history", [])])
+def test_an_unknown_body_field_is_refused_rather_than_dropped(api, field, value):
+    """`AskRequest` forbids extras, so "NO `k`" is enforced rather than merely documented.
+
+    pydantic's default is to DROP an unknown key. Under it a caller who set `k` got an answer
+    retrieved at `DEFAULT_K` with no signal, and a caller who set `owner_id` got V1's hardcoded
+    owner's scope with no signal (F12) - the same silence `NewClass` forbids extras to avoid, one
+    route over. Both directions are pinned: the accepted body two lines down still answers."""
+    _providers(api, ScriptedGeneration("Argued from motion [S1].\nCOVERAGE: complete"))
+
+    response = _ask(api, **{field: value})
+
+    assert response.status_code == 422
+    error = response.json()["error"]
+    assert error["kind"] == "validation"
+    assert any(field in str(entry) for entry in error["detail"])
+    assert _ask(api).status_code == 200
+
+
 def test_the_question_bound_refuses_one_character_over_and_admits_the_bound_itself(api, db_other):
     """Both sides of the cap, so `too long` is not passing because the route refuses everything.
     The bound is a module constant, read here rather than typed, so moving it moves this test."""
@@ -648,13 +691,15 @@ def test_a_question_reaches_the_model_verbatim(api, db_other):
 # --- what the response deliberately does NOT carry ---------------------------------------------
 
 
-def test_the_top_k_is_not_client_settable_and_the_retrieved_set_stays_off_the_wire(api, db_other):
+def test_the_top_k_is_the_routes_own_and_the_retrieved_set_stays_off_the_wire(api, db_other):
     """Two omissions, one request, because they are the same decision seen twice.
 
-    `k` is not a request field: an unrecognised `k` in the body is ignored by pydantic, and the
-    prompt still carries exactly `DEFAULT_K` sources - so the answer to one question cannot depend
-    on an unauthenticated caller's tuning. `S{DEFAULT_K + 1}` is absent from the prompt AND
-    `S{DEFAULT_K}` is present, so this fails whether the route widened the top-k or narrowed it.
+    `k` is not a request field, and the route passes none of its own: the prompt carries exactly
+    `DEFAULT_K` sources, so the answer to one question cannot depend on an unauthenticated
+    caller's tuning. `S{DEFAULT_K + 1}` is absent from the prompt AND `S{DEFAULT_K}` is present,
+    so this fails whether the route widened the top-k or narrowed it. What happens to a `k` a
+    caller actually sends is a DIFFERENT claim and lives in its own test: `AskRequest` forbids
+    extras, so it is a 422 rather than the silent drop this test used to assert.
 
     `retrieved` is not a response field: the retrieved set exists for the eval runner's recall@k
     (ADR 0023) and the HTTP client renders citations. Asserting the exact key set is what stops it
@@ -663,7 +708,7 @@ def test_the_top_k_is_not_client_settable_and_the_retrieved_set_stays_off_the_wi
     _seed(db_other, api, texts=[f"chunk {i}" for i in range(DEFAULT_K + 2)])
     generator = _providers(api, ScriptedGeneration("Argued from motion [S1].\nCOVERAGE: complete"))
 
-    response = _ask(api, k=99)
+    response = _ask(api)
 
     assert response.status_code == 200, response.text
     assert set(response.json()) == RESPONSE_KEYS

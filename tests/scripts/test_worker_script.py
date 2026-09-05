@@ -29,6 +29,7 @@ flags and exit 2 before reaching a single line under test.
 
 from __future__ import annotations
 
+import ast
 import importlib.util
 import inspect
 import logging
@@ -344,10 +345,14 @@ def test_no_flags_runs_exactly_what_it_ran_before_the_cli_existed(monkeypatch, r
     Compared against `run`'s OWN SIGNATURE DEFAULTS rather than against numbers written here.
     That is the assertion that survives a retune: if someone shortens `DEFAULT_LEASE_SECONDS`,
     a test pinning 900 goes red for a change that was correct, while this one keeps asking the
-    real question - does a flagless start still run the library's defaults? It also catches the
-    failure the flags actually invite, which is this script retyping a default as a literal
-    instead of importing the constant (ADR 0018's one-writer rule, applied to the queue's
-    numbers rather than to a model id).
+    real question - does a flagless start still run the library's defaults?
+
+    WHAT IT DOES NOT CATCH, measured rather than assumed: a default retyped as a literal that
+    still AGREES with the library. Replacing `default=DEFAULT_LEASE_SECONDS` with `default=900`
+    leaves this whole file green; `default=901` turns it red. So this comparison catches a
+    default that has DRIFTED - which is the retyped literal's eventual symptom, one library
+    retune later - and not the retyping itself. The retyping is caught by
+    `test_every_flag_default_is_a_name_and_never_a_retyped_literal`, which reads the source.
 
     THE ABSENT KEYS ARE HALF THE TEST. `max_attempts` and `heartbeat_fraction` are deliberately
     not flags - the retry budget is ratified policy (ADR 0028 §1) and the beat cadence is derived
@@ -416,6 +421,95 @@ def test_every_flag_reaches_the_loop_that_the_defect_said_it_could_not(
     assert seen["heartbeat_max_seconds"] == 1.5
 
 
+def test_every_flag_default_is_a_name_and_never_a_retyped_literal():
+    """The PR's headline promise, enforced on the SOURCE rather than on the value.
+
+    Every `default=` in `_build_parser` must be an imported name, so the library stays the one
+    writer of these numbers (ADR 0018's one-writer rule, applied to the queue's numbers rather
+    than to a model id). A value comparison cannot enforce that:
+    `test_no_flags_runs_exactly_what_it_ran_before_the_cli_existed` reads both sides and both
+    sides are the same number today, so `default=900` passes there and only goes red one library
+    retune later - after a student's worker has already run on the stale number.
+
+    So this reads the text instead. `ast` and not a regex: `default=` appears inside help strings
+    in this file, and a regex would either match those or need to know how they are quoted.
+
+    `None` is the one allowed literal, and it is allowed for a REASON rather than as an
+    exception: `--heartbeat-max` must reach `run` as `None` so the cap is derived from the lease
+    actually in use (ADR 0031 5). Writing `DEFAULT_HEARTBEAT_MAX_SECONDS` there would be the
+    imported name this test asks for and would still be the bug - which is why
+    `test_a_retuned_lease_leaves_the_heartbeat_cap_for_the_library_to_derive` exists as well.
+    Neither test subsumes the other.
+    """
+    parser_source = next(
+        node
+        for node in ast.parse(_SCRIPT.read_text()).body
+        if isinstance(node, ast.FunctionDef) and node.name == "_build_parser"
+    )
+    literal_defaults = [
+        (call.args[0].value if call.args else "?", ast.unparse(keyword.value))
+        for call in ast.walk(parser_source)
+        if isinstance(call, ast.Call)
+        and isinstance(call.func, ast.Attribute)
+        and call.func.attr == "add_argument"
+        for keyword in call.keywords
+        if keyword.arg == "default"
+        and not isinstance(keyword.value, ast.Name)
+        and not (isinstance(keyword.value, ast.Constant) and keyword.value.value is None)
+    ]
+
+    assert literal_defaults == [], (
+        f"these flags spell their default out instead of importing it: {literal_defaults}. "
+        "A literal that agrees with the library today is invisible until the library moves, "
+        "and then the worker silently keeps the old number"
+    )
+
+    # The other direction, so this cannot pass by finding no flags at all: the flags that DO
+    # carry a name must still be there. A `_build_parser` that stopped calling `add_argument`
+    # would satisfy the assertion above trivially.
+    named_defaults = [
+        ast.unparse(keyword.value)
+        for call in ast.walk(parser_source)
+        if isinstance(call, ast.Call)
+        and isinstance(call.func, ast.Attribute)
+        and call.func.attr == "add_argument"
+        for keyword in call.keywords
+        if keyword.arg == "default" and isinstance(keyword.value, ast.Name)
+    ]
+    assert sorted(named_defaults) == [
+        "CHUNK_OVERLAP_WORDS",
+        "CHUNK_SIZE_WORDS",
+        "DEFAULT_LEASE_SECONDS",
+        "DEFAULT_LOG_LEVEL",
+        "DEFAULT_POLL_SECONDS",
+    ]
+
+
+def test_a_heartbeat_cap_under_one_poll_interval_is_accepted_on_purpose(
+    monkeypatch, restore_sigterm
+):
+    """`_validate` calls this combination deliberately legal; nothing else holds it open.
+
+    It is the only configuration that can force a lease to lapse INSIDE a run, which is what a
+    reclaim has to be staged from - `ingest_smoke` runs a 1.0s cap under the default 2.0s poll
+    for exactly that reason (`PHASE_THREE_HEARTBEAT_CAP_SECONDS`). Without this test a later
+    tightening of the validator can refuse the combination with the whole suite still green,
+    quietly removing the reason `--heartbeat-max` was added at all.
+
+    Asserted as an ACCEPTANCE - the value reaching `run` - rather than as "no SystemExit": a
+    parser that swallowed the flag would also not raise.
+    """
+    seen = _spy_on_run(monkeypatch)
+
+    worker_script.main(["--heartbeat-max", "1.0"])
+
+    assert seen["poll_seconds"] == worker_lib.DEFAULT_POLL_SECONDS, (
+        "this test is only meaningful while the cap it passes is UNDER the default poll"
+    )
+    assert seen["heartbeat_max_seconds"] == 1.0
+    assert seen["heartbeat_max_seconds"] < seen["poll_seconds"]
+
+
 def test_a_retuned_lease_leaves_the_heartbeat_cap_for_the_library_to_derive(
     monkeypatch, restore_sigterm
 ):
@@ -429,9 +523,13 @@ def test_a_retuned_lease_leaves_the_heartbeat_cap_for_the_library_to_derive(
     `HEARTBEAT_CAP_LEASES` records that exact drift as having already happened once, which is
     why it is pinned from the caller's side too.
 
-    Asserted BOTH ways - `is None`, and not the module constant - because `None` alone would
-    also pass against a script that had stopped passing the argument at all, and the constant
-    alone would pass against a script that hardcoded some other number.
+    A SCRIPT THAT STOPPED PASSING THE ARGUMENT is caught here too, and not by a second
+    assertion: `_spy_on_run` records `run`'s kwargs in a dict, so the omitted argument makes the
+    lookup below raise `KeyError` before any comparison happens. An earlier draft of this
+    docstring claimed the opposite and defended a `!= DEFAULT_HEARTBEAT_MAX_SECONDS` line with
+    it; that line could never fail, because `None != 3600.0` is unconditionally true once the
+    assertion above it has passed. It is gone rather than reworded - an assertion presented to
+    the reader as coverage, which cannot fail, is worse than no assertion.
     """
     seen = _spy_on_run(monkeypatch)
 
@@ -442,7 +540,6 @@ def test_a_retuned_lease_leaves_the_heartbeat_cap_for_the_library_to_derive(
         "the cap was resolved in the script instead of in `run`, so it no longer tracks the "
         "lease actually in use (ADR 0031 §5)"
     )
-    assert seen["heartbeat_max_seconds"] != worker_lib.DEFAULT_HEARTBEAT_MAX_SECONDS
 
 
 @pytest.mark.parametrize(

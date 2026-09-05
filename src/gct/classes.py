@@ -14,6 +14,16 @@ ADR 0027) - the same precondition as every writer in `gct.jobs.queue` and `index
 `class_exists` is the READ half, added for `POST /files` (issue #110): the upload route has to
 answer "is this the caller's class?" before it enqueues anything, and that question is scoped
 (F6/F12), so it cannot be left to the foreign key - see its docstring.
+
+WHAT IS A STORABLE CLASS NAME is this module's question, all of it (issue #107). `text not null`
+is not the answer: it admits `''`, and it admits two strings psycopg refuses to send at all - one
+containing a NUL byte, and one containing an unpaired surrogate. Those two used to escape as raw
+`psycopg.DataError` and `UnicodeEncodeError`, which is a caller error wearing an implementation
+detail, and every caller had to know psycopg to tell it from a bug. `gct.staging.validate_filename`
+already answers the identical question for a FILEname - same two characters, refused at the
+library boundary as a typed error whose docstring names this exact failure ("a `UnicodeEncodeError`
+on a lone surrogate ... would render a bad request as a 500"). `ClassNameError` is that shape,
+applied to the writer that lacked it.
 """
 
 from __future__ import annotations
@@ -23,6 +33,87 @@ import uuid
 import psycopg
 
 from gct.db import require_idle
+
+# The closed set of reasons a name is refused - a token a caller switches on, exactly as
+# `gct.staging.STAGING_REASONS` is. Widening it is a change the API's rendering map is required to
+# notice: `tests/gct/api/test_classes_router.py::test_every_class_name_reason_has_a_rendering`
+# compares the two sets and fails the moment a reason ships without a sentence to go with it.
+CLASS_NAME_REASONS = ("blank", "unstorable")
+
+
+class ClassNameError(ValueError):
+    """A name refused BEFORE any statement runs - no row, and the connection as it was found.
+
+    `reason` is a `CLASS_NAME_REASONS` token for an adapter to switch on; `remedy` is what the
+    caller can DO, and `str(exc)` carries detail and remedy together, so a caller that only logs
+    the exception still names the fix. Deliberately the `StagingError` shape (`gct.staging`),
+    because it is deliberately the same job.
+
+    A `ValueError` SUBCLASS, unlike `StagingError`, for one backward-compatibility reason and no
+    design one: `create_class` shipped the blank refusal as a bare `ValueError` in issue #106 and
+    `tests/gct/test_classes.py` pins that type and message. Subclassing keeps every existing
+    caller working. It is NOT an invitation to catch `ValueError` around this call - doing that is
+    what let a lone surrogate render as "name must not be blank", since `UnicodeEncodeError` is a
+    `ValueError` too. Catch this class and switch on `reason`.
+    """
+
+    def __init__(self, reason: str, detail: str, *, remedy: str) -> None:
+        assert reason in CLASS_NAME_REASONS, f"unknown class-name reason: {reason!r}"
+        super().__init__(f"{detail} - {remedy}")
+        self.reason = reason
+        self.detail = detail
+        self.remedy = remedy
+
+
+def validate_name(name: str) -> str:
+    """Return `name` UNCHANGED if it can be stored as a class name; raise `ClassNameError` if not.
+
+    REJECT, NEVER NORMALIZE - the same rule, for the same reason, as `validate_filename`: an
+    accepted name is stored verbatim and displayed verbatim, so a trimmed or scrubbed name would
+    be a label the student never typed. Every check runs BEFORE any statement, so a refused call
+    leaves the connection exactly as it found it.
+
+    Refused:
+      - blank: `''`, `'   '`, `'\t\n'`. `not null` is not `not blank`, and a class with an
+        invisible name is unusable on every surface that lists classes.
+      - not encodable as UTF-8 (an unpaired surrogate such as `'\ud800'`) - psycopg cannot put
+        the value on the wire, and no `text` column can hold it.
+      - a NUL (0x00) anywhere - Postgres `text` cannot contain one, whatever the encoding.
+
+    THE THREE SETS ARE DISJOINT, so no check shadows another and the order below is not
+    load-bearing: NUL and a surrogate are not whitespace, so a string containing either is never
+    blank, and a whitespace-only string always encodes. `test_the_name_rules_do_not_shadow_each
+    _other` asserts the reason each input gets rather than trusting that.
+
+    Kept as-is: everything else. Surrounding whitespace, astral characters and emoji, other C0
+    control characters - Postgres stores all of them in a `text` column, so refusing them here
+    would be this module inventing a rule about display that no component owns (see
+    `gct.api.routers.classes` on why there is no length cap either).
+    """
+    if not name.strip():
+        raise ClassNameError(
+            "blank",
+            f"create_class() refuses a blank name ({name!r}): `classes.name` is what every "
+            "surface displays, and the schema's NOT NULL does not reject whitespace",
+            remedy="pass the name the student typed; the value is stored verbatim",
+        )
+    try:
+        name.encode("utf-8")
+    except UnicodeEncodeError:
+        raise ClassNameError(
+            "unstorable",
+            f"class name {name!r} is not valid UTF-8 (it contains an unpaired surrogate), so "
+            "psycopg cannot send it and no text column can hold it",
+            remedy="pass text decoded as UTF-8; an unpaired surrogate means it was decoded wrong",
+        ) from None
+    if "\x00" in name:
+        raise ClassNameError(
+            "unstorable",
+            f"class name {name!r} contains a NUL (0x00) byte, which a PostgreSQL text field "
+            "cannot store",
+            remedy="remove the NUL byte from the name",
+        )
+    return name
 
 
 def create_class(conn: psycopg.Connection, *, owner_id: str, name: str) -> str:
@@ -36,27 +127,35 @@ def create_class(conn: psycopg.Connection, *, owner_id: str, name: str) -> str:
     no client-side uuid to be handed a colliding value. `_resolve_class` minted its own client-side
     with no reason recorded for doing so; the library lets the DB mint, as `enqueue` does.
 
-    A BLANK NAME IS REFUSED, not stored and not trimmed. The schema's `name text not null` accepts
-    `''` and `'   '` - `not null` is not `not blank` - and a class with an invisible name is
-    unusable on every surface that lists classes (Slice 4's create-class screen is the first).
-    Refusing at the library boundary means no adapter has to remember the rule, and refusing
-    rather than trimming means the caller's value is stored VERBATIM when it is accepted: a name
-    with surrounding whitespace is not silently rewritten into a different name, which is the
-    kind of quiet conversion this codebase does not do at boundaries. The check runs BEFORE any
-    statement so a rejected call leaves the connection exactly as it found it.
+    AN UNUSABLE NAME IS REFUSED, not stored and not trimmed - `validate_name` above holds the
+    whole rule and its argument. It runs AFTER `require_idle`, so a call that is invalid in both
+    ways reports the connection first; see the comment on that line. Refusing at the library
+    boundary means no adapter has to remember it, and refusing rather than trimming means the
+    caller's value is stored VERBATIM when it is accepted: a name with surrounding whitespace is
+    not silently rewritten into a different name, which is the kind of quiet conversion this
+    codebase does not do at boundaries. Both guards run BEFORE any statement, so a rejected call
+    leaves the connection exactly as it found it.
+
+    RAISES `ClassNameError`, NEVER A BARE `ValueError`, and that distinction is the fix for a
+    shipped defect (issue #107's fix round): `UnicodeEncodeError` IS a `ValueError`, so a caller
+    catching `ValueError` around this call to mean "blank" told a client that a name containing
+    an unpaired surrogate was blank - and the only remedy that message named could not fix the
+    request. A NUL byte missed such a catch entirely, as `psycopg.DataError`, and shipped a
+    caller error as a 500. Both are now refused by `validate_name` before psycopg sees them, with
+    a `reason` an adapter switches on.
 
     PRECONDITION ON `conn` (ADR 0025): it MUST NOT already be inside a transaction, or the block
     below degrades to a SAVEPOINT and this function returns having published nothing. Enforced by
     `require_idle` (ADR 0027), whose message names the remedy. Commits before returning, same
     contract as `enqueue`.
     """
-    if not name.strip():
-        raise ValueError(
-            f"create_class() refuses a blank name ({name!r}): `classes.name` is what every "
-            "surface displays, and the schema's NOT NULL does not reject whitespace. Pass the "
-            "name the student typed; the value is stored verbatim."
-        )
+    # Connection guard FIRST, then the payload guard. Not a taste call and not this function's
+    # own idea: `gct.db.require_idle` states the rule ("Called first by every writer") and
+    # `index_file` carries the argument for it, which is not restated here. Both fire before the
+    # transaction opens, so a refused call writes nothing either way - what the order decides is
+    # WHICH error a doubly-invalid call gets, and it must be the same answer every writer gives.
     require_idle(conn, "create_class")
+    validate_name(name)
 
     with conn.transaction():
         row = conn.execute(

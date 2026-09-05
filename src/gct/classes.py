@@ -28,11 +28,10 @@ applied to the writer that lacked it.
 
 from __future__ import annotations
 
-import uuid
-
 import psycopg
 
 from gct.db import require_idle
+from gct.ids import canonical_uuid
 
 # The closed set of reasons a name is refused - a token a caller switches on, exactly as
 # `gct.staging.STAGING_REASONS` is. Widening it is a change the API's rendering map is required to
@@ -195,6 +194,11 @@ def class_exists(conn: psycopg.Connection, *, class_id: str, owner_id: str) -> b
     Postgres's cast rejects (`urn:uuid:<id>`), so validating the raw string and then binding
     THAT would pass the check and still hit the exact abort the check prevents; binding
     `str(uuid.UUID(class_id))` normalises every accepted spelling to the one Postgres takes.
+    `gct.ids.canonical_uuid` is the parse, shared with the library's other id-taking boundaries so
+    that the SET OF EXCEPTIONS the parser can raise has one writer. It shipped here catching only
+    `ValueError`, which let `None` (a `TypeError`) and an already-parsed `uuid.UUID` (an
+    `AttributeError`) escape with the parser's own message and no remedy - the opposite of what
+    this guard is for, and the whole of #126 at this site.
 
     A READER, so deliberately NO `require_idle`: a SELECT inside a transaction is correct, and
     this function must be callable from anywhere. But a SELECT is also enough to OPEN psycopg's
@@ -203,14 +207,15 @@ def class_exists(conn: psycopg.Connection, *, class_id: str, owner_id: str) -> b
     guard against. That is the caller's wiring to get right - autocommit, which is the API's
     connection contract (`gct.api.deps.get_conn`).
     """
-    try:
-        canonical = str(uuid.UUID(class_id))
-    except ValueError as exc:
-        raise ValueError(
-            f"class_exists() requires a uuid class_id; got {class_id!r}. An id that is not a "
-            "uuid cannot name any class - reject it at the boundary rather than asking the "
-            "database, which would abort the connection's open transaction."
-        ) from exc
+    canonical = canonical_uuid(
+        class_id,
+        fn="class_exists",
+        param="class_id",
+        remedy=(
+            "An id that is not a uuid cannot name any class - reject it at the boundary rather "
+            "than asking the database, which would abort the connection's open transaction."
+        ),
+    )
 
     row = conn.execute(
         """

@@ -186,16 +186,18 @@ def ingest_file(
     if file_id is None:
         file_id = str(uuid4())
     else:
-        # Validated BEFORE `compose`, which parses and then EMBEDS - a paid call. Postgres would
-        # reject a malformed id anyway, but only at `index_file`'s `::uuid` cast, i.e. after the
-        # embedding run is already bought. This is the cheapest check in the pipeline and it was
-        # the last to run; the fix is ordering, not detection. It also gives Slice 2 a clean
+        # Validated BEFORE `compose`, which parses and then EMBEDS - a paid call. A malformed id
+        # is rejected downstream anyway - by `index_file`'s own strict guard since #126, and by
+        # Postgres's `::uuid` cast before that - but not until after the embedding run is bought.
+        # This is the cheapest check in the pipeline and it was the last to run; the fix is
+        # ordering, not detection. It also gives Slice 2 a clean
         # terminal failure (a bad id never becomes good on retry, ADR 0011) instead of a psycopg
         # error raised from inside the index transaction.
         #
         # STRICT on purpose: Python's `UUID()` parses spellings Postgres rejects (urn:uuid:...,
-        # stray hyphens), which would pass a lax `UUID(file_id)` guard and still die at the
-        # `::uuid` cast - after the embed was bought. The worker's id arrives from the DB already
+        # stray hyphens), which would pass a lax `UUID(file_id)` guard and still die one layer
+        # down - at `index_file`'s strict guard now, at the `::uuid` cast before #126 - after the
+        # embed was bought. The worker's id arrives from the DB already
         # canonical, so any other spelling (or a `uuid.UUID` instance) here is an upstream bug;
         # refuse it loudly rather than convert it quietly.
         #

@@ -410,10 +410,10 @@ def test_ingest_file_still_mints_a_file_id_when_none_is_supplied(
 def test_ingest_file_rejects_a_malformed_file_id_before_spending_anything(pdf_factory):
     """A `file_id` that isn't a uuid fails INSTANTLY - no parse, no embed, no DB.
 
-    Postgres rejects a malformed id on its own, at `index_file`'s `::uuid` cast. That is a real
-    check in the wrong place: `compose` has already run by then, so a typo costs a full embedding
-    run before anyone finds out. The defect was ordering, not detection, so this test pins the
-    ORDER rather than the message.
+    A malformed id is rejected downstream on its own - by `index_file`'s strict guard since #126,
+    and by Postgres's `::uuid` cast before that. That is a real check in the wrong place: `compose`
+    has already run by then, so a typo costs a full embedding run before anyone finds out. The
+    defect was ordering, not detection, so this test pins the ORDER rather than the message.
 
     It proves that by making the later steps fatal instead of merely expensive. `conn=None` cannot
     be executed against and `_ExplodingEmbedder` raises on use, so this test can only pass if the
@@ -1098,11 +1098,12 @@ _NOT_A_USABLE_CLASS_ID = {
 def test_ingest_file_rejects_a_bad_class_id_before_spending_anything(pdf_factory, kind):
     """A `class_id` that isn't a uuid fails INSTANTLY - no parse, no embed, no DB (#126).
 
-    Same tripwire discipline as the `file_id` test above, and the same defect: Postgres would
-    reject the id on its own, but not until `index_file`'s `::uuid` cast, which is AFTER `compose`
-    has bought a full embedding run. `conn=None` cannot be executed against and
-    `_ExplodingEmbedder` raises on use, so a `ValueError` here proves neither was reached - move
-    this guard below `compose` and the `RuntimeError` escapes instead, which is why the exception
+    Same tripwire discipline as the `file_id` test above, and the same defect: the id is rejected
+    downstream on its own - by `index_file`'s guard now, by Postgres's `::uuid` cast before #126 -
+    but not until AFTER `compose` has bought a full embedding run. `conn=None` cannot be executed
+    against and `_ExplodingEmbedder` raises on use, so a `ValueError` here proves neither was
+    reached - move this guard below `compose` and the `RuntimeError` escapes instead, which is why
+    the exception
     TYPE is asserted and not merely that something raised.
 
     LENIENT, unlike `file_id`: this test is the refusing half only. The accepting half - that a

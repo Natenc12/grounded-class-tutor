@@ -33,8 +33,12 @@ import argparse
 import importlib
 import importlib.util
 import inspect
+import json
 import logging
+import os
 import signal
+import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -465,12 +469,22 @@ def test_a_retuned_library_constant_reaches_the_flagless_worker(
     entirely. Each draft closed the previous counterexample and left the next one open, because a
     number can be written in more places than a pattern can enumerate.
 
-    Every one of those five routes fails this test, and so does a route nobody has thought of
-    yet: they all end with the worker running a number the library did not supply, and that is
-    the thing asserted. The cost is that a failure here says "the worker did not follow the
-    retune" rather than naming the line - which is the right trade for a property whose whole
-    danger is that it is invisible in every OTHER observation, since a retyped literal agrees
-    with the library until the day it does not.
+    Seven routes are measured red against this test - the four named above plus an equal-valued
+    literal, a rebind local to `_build_parser`, and a registration extracted to a helper. They
+    fail for one reason rather than seven: each ends with the worker running a number the library
+    did not supply, and that is the thing asserted. The cost is a failure message that says "the
+    worker did not follow the retune" rather than naming the line, which is the right trade for a
+    property whose danger is that it is invisible in every OTHER observation - a retyped literal
+    agrees with the library until the day it does not.
+
+    WHAT THIS STILL DOES NOT REACH, stated rather than implied, because three earlier drafts each
+    claimed a closure they did not have. It observes `main([])`. A number introduced outside that
+    call - in the `if __name__ == "__main__":` block, which no other test here executes - is
+    invisible to it; `test_the_real_script_entry_point_follows_a_retune` drives that path in a
+    subprocess. And no test defends against an author actively hiding a knob: a flag registered
+    only when its own spelling appears in `argv` escapes any inventory taken from a normal run.
+    That is a limit of testing rather than a hole to patch, and saying so beats a fourth claim
+    that gets falsified.
 
     A SECOND MODULE LOAD is what makes this work at all - see `_load_worker_fresh`. The values
     are deliberately unlike any library default and unlike each other, so a stub echoing the
@@ -539,6 +553,94 @@ def test_the_flag_set_is_closed_on_the_parser_that_actually_parses(monkeypatch, 
     assert refused.value.code == 2
 
 
+def test_the_real_script_entry_point_follows_a_retune(tmp_path):
+    """The `if __name__ == "__main__":` line, which every OTHER test in this file skips.
+
+    They all import the module under a different name and call `main([])`, so the two lines that
+    run when an operator types `python scripts/worker.py` are never executed. The gap is not
+    theoretical: planting `main(sys.argv[1:] or ["--lease", "900"])` in that block leaves the
+    whole suite green while the real flagless command ignores a retuned library.
+
+    RUN WITH NO ARGUMENTS, which is the point and was the second draft of this test. A first
+    draft used `--help` and that same mutant defeated it: `sys.argv[1:]` is then `["--help"]`,
+    which is truthy, so the planted fallback never fires. Only the argument-free invocation
+    exercises the path the runbook line actually takes.
+
+    `sitecustomize.py` on `PYTHONPATH` is how the retune and the stubs cross the process
+    boundary - Python imports it before the script, so patching `gct.jobs.worker` there is seen
+    by the script's own `from gct.jobs.worker import ...`. Monkeypatching cannot cross a process,
+    and editing the library to test it would be testing the edit. Stubbing `run`, `connect` and
+    the embedder keeps this offline and free: no database, no provider, no poll loop.
+    """
+    (tmp_path / "sitecustomize.py").write_text(
+        """
+import json
+import types
+
+import gct.db
+import gct.jobs.worker as w
+import gct.providers.openai_provider as prov
+
+w.DEFAULT_LEASE_SECONDS = 613
+gct.db.connect = lambda: types.SimpleNamespace(autocommit=False, close=lambda: None)
+prov.OpenAIEmbeddings = lambda: None
+
+
+def _fake_run(_conn, **kwargs):
+    kwargs.pop("embedder", None)
+    print("RUN_KWARGS " + json.dumps(kwargs))
+    raise SystemExit(0)
+
+
+w.run = _fake_run
+"""
+    )
+    env = {**os.environ, "PYTHONPATH": str(tmp_path), "OPENAI_API_KEY": "sk-not-used"}
+
+    flagless = subprocess.run(
+        [sys.executable, str(_SCRIPT)],
+        cwd=_SCRIPT.parent.parent,
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=120,
+    )
+    assert flagless.returncode == 0, flagless.stderr
+    handed = json.loads(
+        next(
+            line[len("RUN_KWARGS ") :]
+            for line in flagless.stdout.splitlines()
+            if line.startswith("RUN_KWARGS ")
+        )
+    )
+    # The WHOLE kwarg set, not just the retuned one. A first draft asserted only the lease, and a
+    # mutant appending `--heartbeat-max 3600` in the `__main__` guard sailed past it - resolving
+    # in the script the cap ADR 0031 5 says must be derived from the lease in use.
+    assert handed == {
+        "chunk_size": CHUNK_SIZE_WORDS,
+        "chunk_overlap": CHUNK_OVERLAP_WORDS,
+        "lease_seconds": 613,
+        "poll_seconds": worker_lib.DEFAULT_POLL_SECONDS,
+        "heartbeat_max_seconds": None,
+    }, (
+        "the REAL flagless entry point handed `run` something the library did not supply. Every "
+        f"other test in this file calls `main([])` and cannot see this. Got: {handed}"
+    )
+
+    # ...and the number an operator READS. A previous defeat route left `--help` advertising 900
+    # while the loop ran something else, so the printed default earns its own assertion.
+    helped = subprocess.run(
+        [sys.executable, str(_SCRIPT), "--help"],
+        cwd=_SCRIPT.parent.parent,
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=120,
+    )
+    assert helped.returncode == 0, helped.stderr
+    assert "613" in helped.stdout and "900" not in helped.stdout
+
+
 def test_a_heartbeat_cap_under_one_poll_interval_is_accepted_on_purpose(
     monkeypatch, restore_sigterm
 ):
@@ -601,11 +703,17 @@ def test_a_retuned_lease_leaves_the_heartbeat_cap_for_the_library_to_derive(
     [
         (["--lease", "0"], "--lease must be at least 1 second"),
         (["--lease", "-5"], "--lease must be at least 1 second"),
-        (["--poll", "0"], "--poll must be greater than 0"),
-        (["--poll", "-1"], "--poll must be greater than 0"),
+        (["--poll", "0"], "--poll must be a finite number greater than 0"),
+        (["--poll", "-1"], "--poll must be a finite number greater than 0"),
+        # `nan` and `inf` parse as floats and reach `time.sleep`. `nan` is the sharp one: no
+        # comparison with it is ever true, so a bare `<= 0` lets it straight through and the
+        # worker dies on its first EMPTY tick - after reporting itself started.
+        (["--poll", "nan"], "--poll must be a finite number greater than 0"),
+        (["--poll", "inf"], "--poll must be a finite number greater than 0"),
         (["--chunk-overlap", "250", "--chunk-size", "250"], "--chunk-overlap must be at least 0"),
         (["--chunk-overlap", "-1"], "--chunk-overlap must be at least 0"),
-        (["--heartbeat-max", "0"], "--heartbeat-max must be greater than 0"),
+        (["--heartbeat-max", "0"], "--heartbeat-max must be a finite number greater than 0"),
+        (["--heartbeat-max", "nan"], "--heartbeat-max must be a finite number greater than 0"),
     ],
 )
 def test_an_unrunnable_value_is_refused_before_anything_is_opened(
@@ -650,8 +758,9 @@ def test_the_log_level_is_a_choice_with_the_old_hardcoded_level_as_its_default(
     direction - a launch harness that owns the terminal wanting the worker quiet (#109 PR 2) -
     and a boolean cannot express it.
 
-    `basicConfig` is spied rather than allowed to run: it mutates the pytest process's root
-    logger, and what is under test is the level this script CHOOSES, not `logging`'s behaviour.
+    `basicConfig` is spied for the first half, because what is under test there is the level the
+    script CHOOSES. The second half lets it run and reads the root logger back, because a choice
+    is not an outcome - a later `setLevel` could undo it and the spy would never know.
     """
     levels: list[object] = []
     monkeypatch.setattr(logging, "basicConfig", lambda **kwargs: levels.append(kwargs.get("level")))
@@ -661,6 +770,25 @@ def test_the_log_level_is_a_choice_with_the_old_hardcoded_level_as_its_default(
     worker_script.main(["--log-level", "WARNING"])
 
     assert levels == [worker_script.DEFAULT_LOG_LEVEL, "WARNING"]
+
+    monkeypatch.undo()  # the real `basicConfig` back; the spy above has served its purpose
+    _spy_on_run(monkeypatch)
+    root = logging.getLogger()
+    was_level, was_handlers = root.level, root.handlers[:]
+    # `basicConfig` DOES NOTHING when the root logger already has handlers, and under pytest it
+    # always does. Clearing them is not a convenience - it reproduces the only state this line
+    # ever runs in, a fresh worker process - and without it the assertion below would pass or
+    # fail on pytest's logging plugin rather than on the script.
+    root.handlers.clear()
+    try:
+        worker_script.main([])
+        assert root.level == logging.INFO, (
+            f"the root logger ended at {root.level}, not INFO. A worker started the way every "
+            "runbook line starts it would print less than the operator was told to expect"
+        )
+    finally:
+        root.setLevel(was_level)
+        root.handlers[:] = was_handlers
     assert worker_script.DEFAULT_LOG_LEVEL == "INFO", (
         "the flagless default log level moved - a worker started the way every runbook line "
         "starts it now says a different amount"

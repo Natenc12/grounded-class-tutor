@@ -27,6 +27,7 @@ Usage:
 
 import argparse
 import logging
+import math
 import signal
 from collections.abc import Sequence
 from types import FrameType
@@ -188,11 +189,12 @@ def _validate(parser: argparse.ArgumentParser, args: argparse.Namespace) -> None
             "default. A lease of 0 or less has already expired when `claim` grants it, so the "
             "reaper can hand the job to a second worker mid-embed"
         )
-    if args.poll <= 0:
+    if not math.isfinite(args.poll) or args.poll <= 0:
         parser.error(
-            f"--poll must be greater than 0 (got {args.poll}); omit it for the library default. "
-            "0 spins a hot loop against Postgres and a negative value raises inside `time.sleep` "
-            "on the first empty tick"
+            f"--poll must be a finite number greater than 0 (got {args.poll}); omit it for the "
+            "library default. 0 spins a hot loop against Postgres, a negative value raises "
+            "inside `time.sleep` on the first empty tick, and `nan`/`inf` reach that same sleep "
+            "- `nan` because no comparison with it is ever true, so a bare `<= 0` lets it past"
         )
     if not 0 <= args.chunk_overlap < args.chunk_size:
         parser.error(
@@ -202,9 +204,12 @@ def _validate(parser: argparse.ArgumentParser, args: argparse.Namespace) -> None
             "transient fault: every file it claims is retried the whole budget and then marked "
             "`failed` for the student"
         )
-    if args.heartbeat_max is not None and args.heartbeat_max <= 0:
+    if args.heartbeat_max is not None and (
+        not math.isfinite(args.heartbeat_max) or args.heartbeat_max <= 0
+    ):
         parser.error(
-            f"--heartbeat-max must be greater than 0 (got {args.heartbeat_max}); omit it to let "
+            f"--heartbeat-max must be a finite number greater than 0 (got {args.heartbeat_max}); "
+            "omit it to let "
             "the library derive the cap from --lease. A cap of 0 or less means the lease is "
             "never renewed at all, which is the pre-ADR-0031 behaviour and not a configuration"
         )

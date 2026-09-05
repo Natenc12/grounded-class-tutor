@@ -16,12 +16,13 @@ an id read back out of the database - where it is canonical by construction - ge
 `require_canonical_uuid`, because any other spelling there is an upstream bug worth hearing about
 rather than quietly converting.
 
-NOT ADOPTED EVERYWHERE, deliberately. `enqueue` and `ingest.pipeline.ingest_file` keep the inline
-guards they shipped with: each carries a long docstring arguing its own case, and moving the code
-out from under that prose would leave the prose describing something that is no longer there.
-They are the shape this module was extracted from, so the two remaining copies of the exception
-set are visible rather than hidden - which is the honest cost of scoping this to the sites #126
-names.
+NOT ADOPTED EVERYWHERE, deliberately. `enqueue`, and `ingest.pipeline.ingest_file`'s `file_id`
+guard, keep the inline guards they shipped with: each carries a long docstring arguing its own
+case, and moving the code out from under that prose would leave the prose describing something
+that is no longer there. They are the shape this module was extracted from, so the two remaining
+copies of the exception set are visible rather than hidden - which is the honest cost of scoping
+this to the sites #126 names. (`ingest_file`'s `class_id` guard, added by #126, does go through
+`canonical_uuid`.)
 """
 
 from __future__ import annotations

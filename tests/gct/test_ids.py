@@ -86,3 +86,15 @@ def test_both_shapes_refuse_every_parser_rejection_with_the_remedy(kind):
     with pytest.raises(ValueError, match=r"caller\(\) requires a canonical uuid file_id") as strict:
         require_canonical_uuid(bad, fn="caller", param="file_id", remedy="pass str(id)")
     assert "pass str(id)" in str(strict.value)
+
+
+def test_the_lenient_refusal_of_a_uuid_instance_tells_the_caller_to_pass_str_id():
+    """A `uuid.UUID` IS a uuid, so "requires a uuid" alone is false of that input, and the caller
+    has already followed every remedy about ids that are not uuids. The message must carry the
+    one remedy that applies - `str(id)` - itself, not rely on the caller's `remedy` text to say it
+    (this one deliberately does not). Reverting the message to its pre-/land wording turns this
+    red; nothing else in the suite reads the sentence."""
+    with pytest.raises(ValueError) as refused:
+        canonical_uuid(uuid.UUID(CANONICAL), fn="caller", param="class_id", remedy="Use a real id.")
+    assert "pass str(id) if you hold a uuid.UUID" in str(refused.value)
+    assert isinstance(refused.value.__cause__, AttributeError)

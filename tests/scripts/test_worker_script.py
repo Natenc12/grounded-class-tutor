@@ -402,8 +402,11 @@ def test_every_flag_reaches_the_loop_that_the_defect_said_it_could_not(
     while the caller believed otherwise. Silence is what made it worth a ticket: a flag that
     errors is a typo, a flag that is ignored is a wrong belief about a running process.
 
-    All five at once, with values that are individually valid and share no digits with any
-    library default, so a stub that happened to echo a default cannot pass this.
+    All five at once, and no value here equals the default OF THE PARAMETER IT IS PASSED AS, so
+    a stub echoing that parameter's default cannot pass. Not a stronger claim than that: `0.25`
+    is `DEFAULT_HEARTBEAT_FRACTION`, which an earlier draft of this sentence overlooked while
+    asserting the values shared no digits with any library default. It is passed as `--poll`,
+    whose default is 2.0, so the pin holds - but only the narrow reading was ever true.
     """
     seen = _spy_on_run(monkeypatch)
 
@@ -652,9 +655,8 @@ def test_a_heartbeat_cap_under_one_poll_interval_is_accepted_on_purpose(
     """`_validate` declares this combination legal and nothing else in the suite pins it.
 
     Measured: before this test existed, adding a rule to `_validate` refusing a cap below one
-    poll interval left all 17 tests of the day green. A rule relating those two numbers would be
-    invented rather than derived - the poll governs how long an EMPTY tick sleeps and has no
-    bearing on how long one job may keep renewing - so nothing should grow one by accident.
+    poll interval left all 17 tests of the day green. WHY no such rule belongs is `_validate`'s
+    own docstring's argument and is not restated here.
 
     THE OTHER SHAPE `_validate` declares legal, a cap below the LEASE, is deliberately not
     retested here: `test_every_flag_reaches_the_loop_that_the_defect_said_it_could_not` already
@@ -708,9 +710,10 @@ def test_an_unrunnable_value_is_refused_before_anything_is_opened(
     buried `transient_exhausted` - surfacing to the student as `failed`, with nothing in the row
     pointing at a flag. A startup refusal cannot reach a student at all.
 
-    FOUR ASSERTIONS, and they fail differently: the process exits non-zero (a supervisor or a
-    harness has to be able to tell), the message NAMES the flag and its remedy rather than
-    echoing a traceback, and `connect` was never called - proof the refusal happened at the
+    FOUR ASSERTIONS ON THREE PROPERTIES, and they fail differently: the process exits non-zero
+    (a supervisor or a harness has to be able to tell), the message NAMES the flag AND says
+    `omit` - two asserts, because a message can name the flag while offering no way out - rather
+    than echoing a traceback, and `connect` was never called - proof the refusal happened at the
     boundary and not somewhere downstream that had already touched the database.
     """
     connected: list[bool] = []

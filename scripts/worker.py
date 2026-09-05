@@ -1,21 +1,19 @@
 """Run the ingestion worker - a separate OS process polling the job queue (ADR 0011 addendum).
 
-Thin peer caller (ADR 0009): every decision lives in `gct.jobs.worker`; this file only wires
-the real dependencies - the connection, the real embedder, the chunk window - and starts the
-loop.
+Thin peer caller (ADR 0009): every decision lives in `gct.jobs.worker`; this file only wires the
+real dependencies - the connection, the real embedder, the chunk window - and starts the loop.
 
-THE FLAGS ARE WIRING, NOT POLICY, and that is what keeps them on the right side of ADR 0009.
-Every LIBRARY-SOURCED default below is the library's own constant, read by name and never
-retyped as a literal - the same one-writer rule ADR 0018 states for the model id, applied to the
-queue's numbers. So a run with no flags calls `run` with the library's own numbers, and retuning
-one moves this script with it instead of leaving a stale copy behind. (Of the five values this
-script
-passes, `run` defaults three; `chunk_size` and `chunk_overlap` are REQUIRED of every caller, so
-for those two this script supplies the chunker's constant rather than echoing a default.) Two
-flags are deliberately not library-sourced and `_build_parser` says why: `--log-level`
-defaults to a script-local constant because the level is the application's call (ADR 0009), and
-`--heartbeat-max` defaults to `None` because `run` must derive the cap from the lease in use
-(ADR 0031 5).
+THE FLAGS ARE WIRING, NOT POLICY, and that is what keeps them on the right side of ADR 0009. Every
+LIBRARY-SOURCED default below is the library's own constant, read by name and never retyped as a
+literal - the same one-writer rule ADR 0018 states for the model id, applied to the queue's
+numbers. So a run with no flags calls `run` with the library's own numbers, and retuning one moves
+this script with it instead of leaving a stale copy behind. (Of the five FLAG-DERIVED values this
+script passes to `run` - it also passes the connection and the embedder - `run` defaults three;
+`chunk_size` and `chunk_overlap` are REQUIRED of every caller, so for those two this script
+supplies the chunker's constant rather than echoing a default.) Two flags are deliberately not
+library-sourced and `_build_parser` says why: `--log-level` defaults to a script-local constant
+because the level is the application's call (ADR 0009), and `--heartbeat-max` defaults to `None`
+because `run` must derive the cap from the lease in use (ADR 0031 5).
 
 WHY A CLI AT ALL. ADR 0011's PM-3 addendum mandates a separate OS process, but until #109 this
 `main()` took no arguments, so a subprocess was pinned to the module defaults and a caller that
@@ -196,7 +194,9 @@ def _validate(parser: argparse.ArgumentParser, args: argparse.Namespace) -> None
     interval. Neither is a fault, and both are pinned by tests so neither can be tightened away
     silently.
 
-    A short cap has a real caller - `ingest_smoke` passes one on purpose - and WHY a particular
+    A short cap has a real caller: `ingest_smoke` passes one to `run` on purpose. (To `run`, not
+    to this CLI - that script does its own wiring and never invokes this one, ADR 0009.) WHY a
+    particular
     cap stages what that script needs is `scripts/ingest_smoke.py`'s argument, stated beside
     `PHASE_THREE_HEARTBEAT_CAP_SECONDS`. Do not restate it here: two drafts of this paragraph
     did, and both got it wrong in a different way, because the condition is about that script's

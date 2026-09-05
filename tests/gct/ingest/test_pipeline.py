@@ -1083,3 +1083,71 @@ def test_zero_width_space_is_not_whitespace_to_python_and_survives_the_empty_che
 
     assert len(units) == 1, "U+200B survives the `empty` terminal - it is not Python whitespace"
     assert sum(len(u.text.split()) for u in units) == 1, "and it consumes ceiling budget"
+
+
+# The three ways `uuid.UUID` reports a bad argument, plus a malformed string (#126).
+_NOT_A_USABLE_CLASS_ID = {
+    "malformed": "intro-to-religion",
+    "none": None,
+    "int": 12345,
+    "already_parsed": uuid4(),
+}
+
+
+@pytest.mark.parametrize("kind", sorted(_NOT_A_USABLE_CLASS_ID))
+def test_ingest_file_rejects_a_bad_class_id_before_spending_anything(pdf_factory, kind):
+    """A `class_id` that isn't a uuid fails INSTANTLY - no parse, no embed, no DB (#126).
+
+    Same tripwire discipline as the `file_id` test above, and the same defect: Postgres would
+    reject the id on its own, but not until `index_file`'s `::uuid` cast, which is AFTER `compose`
+    has bought a full embedding run. `conn=None` cannot be executed against and
+    `_ExplodingEmbedder` raises on use, so a `ValueError` here proves neither was reached - move
+    this guard below `compose` and the `RuntimeError` escapes instead, which is why the exception
+    TYPE is asserted and not merely that something raised.
+
+    LENIENT, unlike `file_id`: this test is the refusing half only. The accepting half - that a
+    urn-spelled class_id ingests and publishes under the canonical spelling - is
+    `test_ingest_file_canonicalises_the_class_id_it_publishes_under`.
+    """
+    path = pdf_factory("lecture.pdf", ["alpha beta gamma"])
+
+    with pytest.raises(ValueError, match=r"ingest_file\(\) requires a uuid class_id") as caught:
+        ingest_file(
+            path,
+            OWNER_ID,
+            _NOT_A_USABLE_CLASS_ID[kind],
+            embedder=_ExplodingEmbedder(),
+            conn=None,
+        )
+
+    assert "create_class" in str(caught.value), "the refusal does not name what to pass instead"
+
+
+def test_ingest_file_canonicalises_the_class_id_it_publishes_under(
+    pdf_factory, fake_embedder, db, db_other
+):
+    """The lenient half: `urn:uuid:<id>` ingests, and every row lands under the canonical spelling.
+
+    `urn` is the spelling `uuid.UUID` accepts and Postgres's `::uuid` cast refuses, so before this
+    it reached `index_file` intact, aborted the insert with an `InvalidTextRepresentation` naming a
+    Postgres type - and did so only after the embedding run was already bought.
+
+    The `files` row and the `chunks` rows are both checked, through `db_other`, because they are
+    written from two different values: the argument and the `class_id` `compose` stamped onto every
+    `PreparedChunk`. Canonicalising one and not the other would leave them describing the same
+    class in two spellings, which the F6/F12 scope filter reads as two different classes.
+    """
+    conn, owner_id, class_id = db
+    path = pdf_factory("lecture.pdf", ["alpha beta gamma", "delta epsilon"])
+
+    urn = UUID(class_id).urn
+    assert urn != class_id, "the spelling under test is the canonical one; nothing is proven"
+
+    file_id = ingest_file(path, owner_id, urn, embedder=fake_embedder, conn=conn)
+
+    assert db_other.execute(
+        "select class_id::text, status from files where file_id = %s::uuid", (file_id,)
+    ).fetchone() == (class_id, "ready")
+    assert db_other.execute(
+        "select distinct class_id::text from chunks where file_id = %s::uuid", (file_id,)
+    ).fetchall() == [(class_id,)], "the chunks landed under a different spelling than the file"

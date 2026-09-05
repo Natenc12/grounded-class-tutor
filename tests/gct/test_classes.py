@@ -414,3 +414,40 @@ def test_the_connection_guard_runs_before_the_name_guard(db, db_other):
     assert caught.value.reason == "blank"
 
     assert _row_count(db_other, owner_id) == 1, "a refused create wrote a row (db seeds one class)"
+
+
+# The three ways `uuid.UUID` reports a bad argument. `class_exists` shipped catching only the
+# first, so the other two escaped carrying the parser's own message and no remedy (#126).
+_NOT_A_USABLE_ID = {
+    "malformed": "intro-to-religion",  # ValueError from the parser
+    "none": None,  # TypeError: no hex/bytes/fields/int argument was given
+    "int": 12345,  # AttributeError: int has no `.replace`
+    "already_parsed": uuid.UUID("6f1e1b4a-0f0e-4a3e-9a7d-2f0a1b2c3d4e"),  # AttributeError
+}
+
+
+@pytest.mark.parametrize("kind", sorted(_NOT_A_USABLE_ID))
+def test_class_exists_refuses_every_way_the_parser_can_reject_an_id(db, kind):
+    """One remedy-naming `ValueError` for all three of `uuid.UUID`'s failure modes (#126).
+
+    The guard here caught only `ValueError`, so `None` came back as a `TypeError` reading "one of
+    the hex, bytes, bytes_le, fields, or int arguments must be given" and an already-parsed
+    `uuid.UUID` as "'UUID' object has no attribute 'replace'" - the parser's internals, naming no
+    remedy, from a function whose entire job at this line is to refuse well.
+
+    `already_parsed` is the case that will actually happen: psycopg returns uuid columns as
+    `uuid.UUID` instances, so a caller holding a real id passes the natural thing.
+
+    The connection assertion is the second direction: a refusal that left the connection INTRANS
+    would arm the ADR 0025 trap for the writer the API calls next in the same handler.
+    """
+    conn, owner_id, _ = db
+    conn.rollback()
+    assert conn.info.transaction_status == psycopg.pq.TransactionStatus.IDLE
+
+    with pytest.raises(ValueError, match=r"class_exists\(\) requires a uuid class_id") as caught:
+        class_exists(conn, class_id=_NOT_A_USABLE_ID[kind], owner_id=owner_id)
+
+    assert "cannot name any class" in str(caught.value), "the refusal names no remedy"
+    assert conn.info.transaction_status == psycopg.pq.TransactionStatus.IDLE
+    assert conn.execute("select 1").fetchone() == (1,), "the refusal cost the caller its connection"

@@ -105,10 +105,11 @@ def enqueue(
     "nobody looked" are indistinguishable from the code alone.
 
     `class_id` IS PARSED AND THE CANONICAL SPELLING IS BOUND (#121), and this is now the shape
-    EVERY id-taking boundary in the library takes: `class_exists`, `get_file_status`, `retrieve`,
-    `index_file` and `ingest_file` all canonicalise a caller-supplied `class_id` (#126 closed the
-    four that still bound raw). `gct.ids` is the shared parse they call; this function keeps its
-    own copy of it, and that module's docstring is the writer of why.
+    EVERY id-taking boundary in the library takes - `class_exists`, `retrieve`, `index_file` and
+    `ingest_file` for a caller's `class_id`, `get_file_status` for a `file_id` (#126: two sites
+    bound raw, two caught too little of what the parser raises; all four now go through
+    `gct.ids`). This function keeps its own copy of that parse, and `gct.ids`'s docstring is the
+    writer of why.
 
     `get_file_status` is the writer of WHY - which spellings `uuid.UUID` accepts that Postgres's
     `::uuid` cast does not, and why validating the raw string and then binding THAT is not the

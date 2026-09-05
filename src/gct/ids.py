@@ -60,7 +60,10 @@ def canonical_uuid(value: object, *, fn: str, param: str, remedy: str) -> str:
     try:
         return str(uuid.UUID(value))  # type: ignore[arg-type]
     except _PARSER_REJECTIONS as exc:
-        raise ValueError(f"{fn}() requires a uuid {param}; got {value!r}. {remedy}") from exc
+        raise ValueError(
+            f"{fn}() requires a uuid {param} as a str (pass str(id) if you hold a uuid.UUID); "
+            f"got {value!r}. {remedy}"
+        ) from exc
 
 
 def require_canonical_uuid(value: object, *, fn: str, param: str, remedy: str) -> str:

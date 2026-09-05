@@ -96,8 +96,9 @@ def _build_parser() -> argparse.ArgumentParser:
         it is the number `ingest_smoke` had to thread by hand to reach an expiry - so the cap
         gets a flag and the fraction does not.
 
-    Neither has ever been threaded by any caller in the tree. The bar for a flag here is a
-    demonstrated caller, not the existence of a parameter.
+    Neither has ever been threaded by any SCRIPT in the tree - the tests thread both, which is
+    what ADR 0031 5 made them parameters for. The bar for a flag here is a demonstrated caller
+    outside the suite, not the existence of a parameter.
     """
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument(

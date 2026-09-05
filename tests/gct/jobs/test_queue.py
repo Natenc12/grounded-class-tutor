@@ -261,6 +261,158 @@ def test_enqueue_rejects_a_class_that_does_not_exist(db, db_other, tmp_path):
     )
 
 
+# WHICH SPELLING ACTUALLY BITES, asserted rather than asserted-about. `uuid.UUID` parses four
+# forms of one id; Postgres's `::uuid` cast parses three. Pinning the split here is what keeps the
+# test below from being trivially green: without it, a `urn` case that passed would be
+# indistinguishable from a `urn` Postgres had quietly started accepting.
+_POSTGRES_ACCEPTS_THE_CAST = {"plain": True, "braced": True, "hex32": True, "urn": False}
+
+
+@pytest.mark.parametrize("spelling", ["plain", "braced", "hex32", "urn"])
+def test_every_uuid_spelling_python_accepts_publishes_one_canonical_row(
+    db, db_other, tmp_path, spelling
+):
+    """`enqueue` canonicalises `class_id` at its own boundary, so no caller has to (#121).
+
+    `class_exists` normalises before it binds and answers True for all four spellings; `enqueue`
+    bound the caller's string RAW into `%(class_id)s::uuid`, so `urn:uuid:<id>` cleared every
+    ownership check in the library and then aborted the INSERT with an `InvalidTextRepresentation`
+    naming a Postgres type. The route (#110) worked around it by parsing once at the top, which
+    protected exactly one caller; the next one - a script, the Slice 3 exit smoke - hit it again.
+
+    PARAMETRIZED, not looped. Parametrizing gives each spelling its OWN `db` fixture, hence its
+    own `owner_id`, which is what makes "exactly one row" a real assertion instead of a running
+    count.
+
+    WHAT EACH CASE ACTUALLY BUYS, measured rather than assumed, because a maintainer trimming this
+    test will trim it on whatever this docstring says. Only `urn` is sensitive to the fix under
+    review: revert `enqueue` to binding raw and that case alone goes red. Postgres normalises the
+    braced and bare-32-hex spellings ITSELF, so any fix that leaves them raw still publishes a
+    canonical row - a urn-only special case passes all four, which was measured and is why the
+    earlier claim that it "would still mangle the braced form" is not the reason to keep them.
+    They pin the OTHER decision: that `enqueue` is LENIENT. Swap in `ingest_file`-style strict
+    rejection of any non-canonical spelling and braced, hex32 and urn all go red together. Two
+    different guards, one parametrization.
+
+    Read back through `db_other`, a SECOND connection: `db`'s own connection sees its uncommitted
+    work, so the canonical value would read back correctly whether or not it was ever published.
+    """
+    conn, owner_id, class_id = db
+    source = _lecture(tmp_path)
+    canonical = uuid.UUID(class_id)
+    written = {
+        "plain": str(canonical),
+        "braced": f"{{{canonical}}}",
+        "hex32": canonical.hex,
+        "urn": canonical.urn,
+    }[spelling]
+    assert uuid.UUID(written) == canonical, "the spelling under test names a different class"
+
+    # Measured on `db_other`, which is autocommit - a refused cast is its own transaction there and
+    # cannot poison anything this test does later.
+    try:
+        db_other.execute("select %s::uuid", (written,)).fetchone()
+        postgres_accepts = True
+    except psycopg.errors.InvalidTextRepresentation:
+        postgres_accepts = False
+    assert postgres_accepts is _POSTGRES_ACCEPTS_THE_CAST[spelling], (
+        f"Postgres's own handling of the {spelling} spelling changed; this test's premise is stale"
+    )
+
+    file_id = enqueue(conn, path=source, owner_id=owner_id, class_id=written)
+
+    published = db_other.execute(
+        "select file_id::text, class_id::text, status from files where owner_id = %s",
+        (owner_id,),
+    ).fetchall()
+    assert len(published) == 1, f"the {spelling} spelling published {len(published)} files rows"
+    assert published[0] == (file_id, str(canonical), "queued")
+    assert db_other.execute(
+        "select class_id::text from jobs where file_id = %s::uuid", (file_id,)
+    ).fetchone() == (str(canonical),), "the jobs row carries a different class_id than the file"
+
+
+def test_enqueue_refuses_a_class_id_that_is_not_a_uuid_and_leaves_the_connection_alone(
+    db, db_other, tmp_path
+):
+    """The other half of #121's acceptance: refused with a remedy, never an opaque `DataError`.
+
+    The remedy names what to PASS - the id `create_class` returned - because a caller holding a
+    non-uuid string has no way to derive one. It deliberately does NOT carry the siblings'
+    "would abort the connection's open transaction" sentence: `class_exists` and `get_file_status`
+    are readers with no transaction of their own, and that IS their reason, but `enqueue` wraps its
+    inserts in `conn.transaction()` on a connection `require_idle` has already proven IDLE. The
+    two assertions after the raise are that measurement, not decoration - the connection is still
+    IDLE and still answering, so a docstring claiming otherwise would be a false one.
+    """
+    conn, owner_id, _ = db
+    source = _lecture(tmp_path)
+
+    with pytest.raises(ValueError, match=r"enqueue\(\) requires a uuid class_id") as caught:
+        enqueue(conn, path=source, owner_id=owner_id, class_id="intro-to-religion")
+
+    assert "create_class" in str(caught.value), "the refusal does not name what to pass instead"
+    assert conn.info.transaction_status == psycopg.pq.TransactionStatus.IDLE
+    assert conn.execute("select 1").fetchone() == (1,), "the refusal cost the caller its connection"
+    conn.rollback()
+    assert (
+        db_other.execute("select count(*) from files where owner_id = %s", (owner_id,)).fetchone()[
+            0
+        ]
+        == 0
+    ), "a refused enqueue published a files row"
+
+
+# WHAT `uuid.UUID` RAISES DEPENDS ON WHAT IT WAS HANDED, and the three cases are not
+# interchangeable — which is the whole reason the guard catches three types rather than one.
+# The comment on each is the parser's own failure mode, recorded so a future reader can tell
+# a deliberate set from a copied one.
+_NOT_EVEN_A_STRING = {
+    "none": None,  # TypeError: no hex/bytes/fields/int argument was given
+    "int": 12345,  # AttributeError: int has no `.replace`
+    "list": ["not", "an", "id"],  # AttributeError: list has no `.replace`
+    "already_parsed": uuid.UUID("6f1e1b4a-0f0e-4a3e-9a7d-2f0a1b2c3d4e"),  # AttributeError
+}
+
+
+@pytest.mark.parametrize("kind", sorted(_NOT_EVEN_A_STRING))
+def test_enqueue_refuses_a_class_id_that_is_not_even_a_string(db, db_other, tmp_path, kind):
+    """A non-`str` `class_id` gets the SAME remedy-naming refusal a malformed string gets (#121).
+
+    `uuid.UUID` reports a bad argument three different ways: a malformed string is a `ValueError`,
+    `None` is a `TypeError`, and anything without `.replace` — an `int`, a `list`, an already-parsed
+    `uuid.UUID` — is an `AttributeError` raised from inside the parser. A guard that caught only
+    `ValueError` therefore refused *some* bad ids with a remedy and let the rest escape carrying
+    `uuid.UUID`'s own message, which names the parser's internals and nothing a caller can act on.
+    `ingest_file` (`gct/ingest/pipeline.py`) already catches all three; this is the same set, and
+    the test exists so the set cannot be quietly narrowed back.
+
+    `already_parsed` is the case that will actually happen: a caller holding the `uuid.UUID` it
+    just built passes it instead of `str(...)`, and before this it got
+    `'UUID' object has no attribute 'replace'`.
+
+    Nothing shipped can reach any of these today — the upload route's `class_id` is a FastAPI Form
+    field, hence always a `str` — so this pins a boundary contract, not a live path.
+    """
+    conn, owner_id, _ = db
+    source = _lecture(tmp_path)
+
+    with pytest.raises(ValueError, match=r"enqueue\(\) requires a uuid class_id") as caught:
+        enqueue(conn, path=source, owner_id=owner_id, class_id=_NOT_EVEN_A_STRING[kind])
+
+    assert "create_class" in str(caught.value), "the refusal does not name what to pass instead"
+    # The connection is untouched because the raise happens before `conn.transaction()` opens.
+    assert conn.info.transaction_status == psycopg.pq.TransactionStatus.IDLE
+    assert conn.execute("select 1").fetchone() == (1,), "the refusal cost the caller its connection"
+    conn.rollback()
+    assert (
+        db_other.execute("select count(*) from files where owner_id = %s", (owner_id,)).fetchone()[
+            0
+        ]
+        == 0
+    ), "a refused enqueue published a files row"
+
+
 def test_claim_returns_the_oldest_queued_job(db, db_other, tmp_path):
     """FIFO by `created_at`: the job that has waited longest wins — and the other is untouched.
 

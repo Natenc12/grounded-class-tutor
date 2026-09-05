@@ -221,3 +221,45 @@ def test_file_status_refuses_attribute_assignment(db, tmp_path):
         with pytest.raises(dataclasses.FrozenInstanceError):
             setattr(got, field, value)
     assert (got.status, got.failed_reason, got.filename) == ("queued", None, "lecture-3.pdf")
+
+
+# The three ways `uuid.UUID` reports a bad argument. `get_file_status` shipped catching only the
+# first, so the other two escaped carrying the parser's own message and no remedy (#126).
+_NOT_A_USABLE_ID = {
+    "malformed": "lecture-3",  # ValueError from the parser
+    "none": None,  # TypeError: no hex/bytes/fields/int argument was given
+    "int": 12345,  # AttributeError: int has no `.replace`
+    "already_parsed": uuid.UUID("6f1e1b4a-0f0e-4a3e-9a7d-2f0a1b2c3d4e"),  # AttributeError
+}
+
+
+@pytest.mark.parametrize("kind", sorted(_NOT_A_USABLE_ID))
+def test_get_file_status_refuses_every_way_the_parser_can_reject_an_id(db, tmp_path, kind):
+    """One remedy-naming `ValueError` for all three of `uuid.UUID`'s failure modes (#126).
+
+    Only the malformed STRING was covered before, and it is the only one of the three a route can
+    produce today - which is what made the other two a trap rather than a bug. `None` escaped as
+    a `TypeError` and an already-parsed `uuid.UUID` as an `AttributeError`, both naming the
+    parser's internals instead of the remedy.
+
+    Run on a connection with an OPEN transaction, and the arm that matters is the one after the
+    raise: still INTRANS rather than INERROR, and the reader still answers correctly for a real
+    id. A guard that let the parser's exception through would not abort anything either - but a
+    guard that had validated and then bound the RAW string would, and that is the shape this
+    module's sibling test pins from the other side.
+    """
+    file_id, owner_id = _enqueued(db, tmp_path)
+    conn = db[0]
+    conn.autocommit = False
+    conn.execute("select 1").fetchone()
+    assert conn.info.transaction_status == psycopg.pq.TransactionStatus.INTRANS
+
+    with pytest.raises(ValueError, match=r"get_file_status\(\) requires a uuid file_id") as caught:
+        get_file_status(conn, file_id=_NOT_A_USABLE_ID[kind], owner_id=owner_id)
+
+    assert "cannot name any file" in str(caught.value), "the refusal names no remedy"
+    assert conn.info.transaction_status == psycopg.pq.TransactionStatus.INTRANS
+    assert get_file_status(conn, file_id=file_id, owner_id=owner_id) == FileStatus(
+        status="queued", failed_reason=None, filename="lecture-3.pdf"
+    )
+    conn.rollback()

@@ -1076,3 +1076,66 @@ def test_index_file_accepts_an_uppercase_file_id_exactly_as_ingest_file_does(db,
     assert db_other.execute(
         "select file_id::text, status from files where owner_id = %s", (owner_id,)
     ).fetchall() == [(file_id, "ready")]
+
+
+def test_each_chunk_keeps_its_own_class_id_when_it_disagrees_with_the_file(db, db_other):
+    """A chunk's `class_id` is written from THE CHUNK, never from the file-level argument (#126).
+
+    This pins a decision the guards above made and nothing else could catch. `index_file`
+    canonicalises the argument and every chunk's own `class_id` separately, and binds the
+    per-chunk value; overwriting the chunk rows with the file's id would be one character's
+    difference in the same statement and passes every other test in this module, because `compose`
+    never produces a chunk whose scope differs from its file's. `index_file` is a supported direct
+    entry point (the PM-4 seam, ADR 0020), so a direct caller can, and this is the only test that
+    hands it such a set.
+
+    WHY NOT SILENTLY OVERWRITE, which is the tempting alternative and would make the rows
+    self-consistent: retrieval filters chunks on `owner_id AND class_id` (F6/F12), so overwriting
+    would move a caller's chunks into a class it never named and answer another class's questions
+    from them - a scope violation with no trace, since the rows would look correct. Divergence is a
+    caller bug, and this box surfaces it as data rather than papering over it.
+
+    BOTH DIRECTIONS, because a one-sided pin is exactly what the overwrite survives: the chunk rows
+    carry the CHUNK's class, and they do NOT carry the file's. The `files` row is asserted too -
+    the two values diverging is the whole scenario, so a fix that made them agree by moving the
+    FILE instead would otherwise slip through.
+
+    Read back through `db_other`, a SECOND connection: the subject is what was PUBLISHED, and
+    `db`'s own connection sees its uncommitted work either way.
+    """
+    conn, owner_id, file_class = db
+    chunk_class = _seed_class(conn, owner_id)
+    conn.commit()  # back to IDLE, which `require_idle` demands of every writer
+    assert chunk_class != file_class, "the two classes are the same; nothing would be proven"
+    file_id = str(uuid.uuid4())
+
+    index_file(
+        conn,
+        file_id=file_id,
+        filename="lecture.pdf",
+        owner_id=owner_id,
+        class_id=file_class,
+        chunks=[
+            _chunk(owner_id, chunk_class, "alpha", 1),
+            _chunk(owner_id, chunk_class, "beta", 2),
+        ],
+    )
+    conn.commit()
+
+    assert db_other.execute(
+        "select class_id::text from files where file_id = %s::uuid", (file_id,)
+    ).fetchone() == (file_class,), "the files row did not keep the class_id it was called with"
+
+    published = db_other.execute(
+        "select distinct class_id::text from chunks where file_id = %s::uuid", (file_id,)
+    ).fetchall()
+    assert published == [(chunk_class,)], (
+        f"the chunks were written under {published!r}, not their own class"
+    )
+    assert (
+        db_other.execute(
+            "select count(*) from chunks where file_id = %s::uuid and class_id = %s::uuid",
+            (file_id, file_class),
+        ).fetchone()[0]
+        == 0
+    ), "a chunk took the file-level class_id instead of its own"

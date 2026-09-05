@@ -433,7 +433,7 @@ def fail(conn: psycopg.Connection, *, job_id: str, lease_token: str, error: str)
     """Terminal failure: state='failed' + last_error.
 
     `last_error` is free text - distinct from `files.failed_reason`, which is a
-    closed CHECK set of five values that only #71 writes.
+    closed CHECK set the migrations own (`gct/files.py` names them) and only `_bury` writes.
 
     Commits before returning, same contract as `claim`. `attempts` is untouched:
     the trail of how many tries this job burned is exactly what a human reading a

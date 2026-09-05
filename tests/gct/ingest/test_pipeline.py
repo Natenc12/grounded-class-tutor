@@ -139,11 +139,16 @@ class _ExplodingEmbedder:
 def test_ingest_file_embed_failure_leaves_db_untouched(pdf_factory, db):
     """ADR 0020's property ("an embed failure leaves the DB untouched") holds only by STATEMENT
     ORDER inside `ingest_file`: `compose` (embed included) is pure and fully precedes the only
-    transaction (`index_file`, in `index.py`) - nothing currently goes red if that ordering ever
-    breaks. It's ONE OF TWO shapes a Slice-2 worker will be tempted to break, e.g. pre-creating the
-    `files` row as `processing` before `compose` runs. An embedder that raises must leave zero
-    `files` rows AND zero `chunks` rows for this owner - if a future worker pre-writes a row before
-    `compose`, this goes red.
+    transaction (`index_file`, in `index.py`). THIS test is what pins that order: an embedder that
+    raises must leave zero `files` rows AND zero `chunks` rows for this owner, so an `ingest_file`
+    that ever wrote a row before `compose` goes red here.
+
+    What it CANNOT see is the worker path. There the `files` row already exists before
+    `ingest_file` runs - `enqueue` writes it `queued` and the worker stamps it `processing` - and
+    an embed failure must leave that row in place for the retry. This test calls `ingest_file`
+    directly with no prior row, so no change to the worker can reach it;
+    `tests/gct/jobs/test_worker.py` owns that path
+    (`test_a_transient_failure_backs_off_then_requeues_the_job`).
 
     SCOPE - this pins the WRITE-ORDER half only. The other half is the caller's connection state
     (ADR 0020, publication claim amended per ADR 0025): a worker that leases a job and then ingests

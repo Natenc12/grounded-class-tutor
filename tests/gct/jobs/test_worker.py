@@ -2267,8 +2267,9 @@ def test_a_retry_that_succeeds_leaves_no_failed_reason_on_the_ready_file(
     Half-bury a corrupt file, then replace the bytes AT THE SAME `staging_ref` with a parseable
     PDF and let the same job's next attempt run. That input change is the ordinary case, not a
     contrivance: `enqueue` records that `path` need not exist and routes a missing or unreadable
-    file to terminal `unparseable`, and `staging_ref` is a plain absolute path that Slice 3's
-    stager writes asynchronously. Bytes arriving late, bytes being replaced, and a raised
+    file to terminal `unparseable`, and `staging_ref` is a plain absolute path that
+    `gct.staging.stage` writes before `enqueue` runs and nothing guards afterwards. Bytes arriving
+    late, bytes being replaced, and a raised
     `MAX_INGEST_WORDS` all reach exactly this sequence.
 
     Asserts the chunk set as well as the columns, because `('ready', None)` on a file with no

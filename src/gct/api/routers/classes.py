@@ -106,7 +106,8 @@ class ClassCreated(BaseModel):
     """The 201 body: the id every later call takes, and the name the class was created under.
 
     `class_id` is the handle for the whole rest of the loop - `POST /files` takes it as a form
-    field and `POST /ask` will take it too - so it is the one field this response exists for.
+    field and `POST /ask` takes it in its JSON body - so it is the one field this response exists
+    for.
 
     `name` is echoed for the reason `UploadAccepted` echoes `filename`: it is what every surface
     that lists classes will display, and this is the one moment a client can catch a name it did

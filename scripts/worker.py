@@ -85,8 +85,14 @@ def _build_parser() -> argparse.ArgumentParser:
 
     Split out for the reason `ingest_smoke._build_parser` gives: help text is documentation that
     ships inside the program, it drifts exactly like a comment, and unlike a comment a user acts
-    on it. Every `default=` here is an imported name, so the help strings that interpolate those
-    defaults cannot go stale either.
+    on it. Every LIBRARY-SOURCED `default=` here is an imported name, so a help string that
+    interpolates one cannot go stale. The two that are not - `--log-level`, whose level is the
+    application's call under ADR 0009 and has no library constant to import, and
+    `--heartbeat-max`, which must stay `None` so `run` derives the cap from the lease in use
+    (ADR 0031 §5) - are the two exceptions, and they are the ones listed in the module docstring
+    above. `--heartbeat-max` states its derivation in its own `help=`; `--log-level`'s reason is
+    in `main`'s comment beside `basicConfig`, not in its help, because an operator choosing a
+    level does not need the ADR.
 
     WHAT IS DELIBERATELY NOT A FLAG. `run` also takes `max_attempts` and `heartbeat_fraction`,
     and both are left off:

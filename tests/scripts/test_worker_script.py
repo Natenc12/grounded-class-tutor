@@ -358,7 +358,9 @@ def test_no_flags_runs_exactly_what_it_ran_before_the_cli_existed(monkeypatch, r
     default that has DRIFTED - the retyped literal's eventual symptom, one library retune later -
     and not the retyping itself. The retyping is caught elsewhere in this file, by
     `test_a_retuned_library_constant_reaches_the_flagless_worker`, which retunes the library and
-    checks the worker follows; that test is why `default=900` reddens the FILE, not this one.
+    checks the worker follows - and `test_the_real_script_entry_point_follows_a_retune`, which
+    asks the same question of the real subprocess. Either is why `default=900` reddens the FILE
+    while leaving this test green.
 
     THE ABSENT KEYS ARE HALF THE TEST. `max_attempts` and `heartbeat_fraction` are deliberately
     not flags - the retry budget is ratified policy (ADR 0028 §1) and the beat cadence is derived
@@ -625,7 +627,8 @@ w.run = _fake_run
         "heartbeat_max_seconds": None,
     }, (
         "the REAL flagless entry point handed `run` something the library did not supply. Every "
-        f"other test in this file calls `main([])` and cannot see this. Got: {handed}"
+        "other test in this file drives `main` IN-PROCESS and so never executes the `__main__` "
+        f"guard this one runs through. Got: {handed}"
     )
 
     # ...and the number an operator READS. A previous defeat route left `--help` advertising 900

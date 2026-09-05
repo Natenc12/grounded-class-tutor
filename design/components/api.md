@@ -195,7 +195,11 @@ Router mounted at `/ask`; the models, the status map and the message-substitutio
 beside it in `src/gct/api/routers/ask.py`, which owns every sentence this section does not
 restate.
 
-`POST /ask` takes JSON `{class_id, question}`. It parses `class_id` ONCE at the top for the same
+`POST /ask` takes JSON `{class_id, question}` and nothing else — `AskRequest` **forbids extra
+fields**, the same choice `NewClass` makes, because pydantic's default of dropping an unknown
+key answers the two a client is most likely to send with silence: `k` (an answer retrieved at
+`DEFAULT_K` with no signal, which would make "no `k` field" a preference rather than a rule)
+and `owner_id` (V1's hardcoded scope with no signal, F12). It parses `class_id` ONCE at the top for the same
 reason `POST /files` does — `retrieve` binds it raw into a `::uuid` cast, so a spelling Python
 accepts and Postgres refuses would abort a request that named a real class. `enqueue` had the
 identical shape and #121 fixed it at the writer; `retrieve` is still raw, so the parse here is

@@ -73,9 +73,10 @@ def enqueue(
 ) -> str:
     """Create the `files` row (queued) and its `jobs` row in ONE transaction; return file_id.
 
-    With no API adapter in Slice 2, this is the only thing that can create the
-    `queued` file row the worker later claims - which is exactly what #69's
-    caller-supplied `file_id` exists to support.
+    This is the ONLY thing that creates the `queued` file row the worker later claims:
+    `POST /files` reaches it rather than inserting a row of its own, so there is one writer
+    of that row however the upload arrived - which is exactly what #69's caller-supplied
+    `file_id` exists to support.
 
     `staging_ref` is the file's ABSOLUTE PATH (decided 2026-08-03; confirmed when the stager
     arrived, #105). `gct.staging.stage` returns exactly the string a caller then passes here

@@ -179,7 +179,7 @@ def ingest_file(
 
     Raises `ValueError` on a malformed `file_id`, before `compose` runs. Only the FORMAT is
     checked: nothing here or in `index_file` verifies the id names a row this caller may write.
-    That scope question is #24, parked on #71 - see the note on the guard below.
+    That scope question is open and owned by no layer - see the note on the guard below.
     """
     if file_id is None:
         file_id = str(uuid4())
@@ -202,8 +202,9 @@ def ingest_file(
         # `index_file` opens its transaction - which is precisely the ADR 0025 precondition this
         # function's own docstring forbids breaking. No layer checks it today: a wrong id is
         # silently written into (#24 records the evidence). Where that check belongs - the
-        # worker's claim step or the publish step - is #24's question, parked on #71; do not
-        # decide it here.
+        # worker's claim step or the publish step - is not this function's call: it is handed a
+        # string, not a session, and cannot tell whose row the id names. #24 raised the question
+        # and closed without settling it; do not settle it here.
         try:
             canonical = str(UUID(file_id)) == file_id.lower()
         except (ValueError, AttributeError, TypeError):

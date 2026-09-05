@@ -26,7 +26,11 @@ from gct.providers.base import TransientEmbeddingError
 from gct.retriever.retrieve import retrieve
 
 OWNER_ID = "test-owner"
-CLASS_ID = "test-class"
+# A REAL uuid, not a readable stand-in like the owner beside it. `compose` never looks at this
+# value, but `ingest_file` canonicalises it before spending anything (#126), so a non-uuid here
+# would make every ingest_file test in this module fail at the guard instead of where it is
+# aimed. `owner_id` stays a plain string because it is a `text` column with no cast anywhere.
+CLASS_ID = "6f1e1b4a-0f0e-4a3e-9a7d-2f0a1b2c3d4e"
 
 
 def test_compose_stamps_provenance_model_and_embeds_all(pdf_factory, fake_embedder):

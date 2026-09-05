@@ -23,6 +23,7 @@ from uuid import UUID, uuid4
 import psycopg
 
 from gct.config import MAX_INGEST_WORDS
+from gct.ids import canonical_uuid
 from gct.ingest.chunk import CHUNK_OVERLAP_WORDS, CHUNK_SIZE_WORDS, chunk_units
 from gct.ingest.index import index_file
 from gct.ingest.parse import ParseError, parse_file
@@ -177,7 +178,8 @@ def ingest_file(
     bought and no DB touched (ADR 0029). It is a PRECONDITION, not queue machinery - the PM-4 seam
     holds and Slice 2's worker wraps this unchanged (ADR 0020).
 
-    Raises `ValueError` on a malformed `file_id`, before `compose` runs. Only the FORMAT is
+    Raises `ValueError` on a malformed `file_id` or `class_id`, before `compose` runs - i.e.
+    before the only paid call on this path (#126). Only the FORMAT is
     checked: nothing here or in `index_file` verifies the id names a row this caller may write.
     That scope question is #24, parked on #71 - see the note on the guard below.
     """
@@ -212,6 +214,34 @@ def ingest_file(
             raise ValueError(
                 f"file_id must be a canonical uuid string (pass str(id)), got {file_id!r}"
             )
+
+    # `class_id` IS CANONICALISED HERE, BEFORE `compose` - and the position is the whole point,
+    # exactly as it is for the `file_id` guard above (#126). `index_file` guards its own boundary
+    # too, but by the time control reaches it `compose` has already parsed, chunked and EMBEDDED,
+    # so a spelling Postgres refuses would have cost a full paid embedding run before anything
+    # rejected it. The fix that saves the money is ordering; the guard downstream is the boundary
+    # contract for `index_file`'s own direct callers.
+    #
+    # LENIENT, unlike `file_id` above, and for the reason `enqueue`'s docstring states: this id
+    # comes from a person - the Slice 1 scripts and the eval runner pass whatever was typed -
+    # while `file_id` comes back out of the database already canonical. Same function, two
+    # sources, two guards. The `file_id` guard deliberately stays FIRST, so a call that gets both
+    # wrong is told about the one it cannot recover from - pinned by
+    # `test_ingest_file_rejects_a_malformed_file_id_before_spending_anything`, which passes a
+    # non-uuid class_id and expects the file_id complaint.
+    #
+    # The canonical form is what `compose` stamps onto every `PreparedChunk`, so the chunk rows
+    # and the `files` row cannot end up describing the same class in two different spellings.
+    class_id = canonical_uuid(
+        class_id,
+        fn="ingest_file",
+        param="class_id",
+        remedy=(
+            "Pass the id `create_class` returned for the class this file belongs to - an id "
+            "that is not a uuid cannot name any class, and the check is here so a bad one is "
+            "refused before the embedding run is bought."
+        ),
+    )
 
     chunks = compose(
         path,

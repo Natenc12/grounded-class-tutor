@@ -30,6 +30,7 @@ from typing import TYPE_CHECKING
 import psycopg
 
 from gct.db import require_idle
+from gct.ids import canonical_uuid, require_canonical_uuid
 
 
 class PublishRefused(Exception):
@@ -90,6 +91,10 @@ def index_file(
     ADR 0027 measured that prediction (every firing was a caller already in the hazardous state,
     zero false alarms) and reversed it - accepted via #75.
 
+    Raises `ValueError` before the transaction opens on an id that cannot reach those casts
+    intact (#126): `file_id` must already be canonical, `class_id` - the argument and the one on
+    every chunk - is canonicalised. The guards below carry which is which and why.
+
     SQL-boundary conversions (schema quirks, migrations/0001_init.sql):
       - `page_or_slide` int -> text (`chunks.page_or_slide` is `text`).
       - uuid columns (`file_id`, `class_id`) -> cast `%s::uuid`; `owner_id` is `text`.
@@ -108,9 +113,70 @@ def index_file(
     ADR 0025). The guard runs BEFORE the
     transaction opens, so nothing is written at all - not even the `files` row.
     """
-    # Connection guard first: a wiring error outranks a payload error, and both must fire before
-    # the transaction opens so a refused call writes nothing at all.
+    # Connection guard first: a wiring error outranks a payload error, and every guard here must
+    # fire before the transaction opens so a refused call writes nothing at all.
     require_idle(conn, "index_file")
+
+    # ID GUARDS (#126). Three `%(...)s::uuid` casts below took the caller's spelling raw, and
+    # `uuid.UUID` accepts spellings the cast refuses (`urn:uuid:<id>`), so a caller that had
+    # already checked the id with Python still failed inside Postgres - naming a Postgres type
+    # and no remedy. They run BEFORE `conn.transaction()`, so a refused call is indistinguishable
+    # from one that never happened.
+    #
+    # STRICT ON `file_id`, LENIENT ON `class_id`, and the split is not this function's invention:
+    # it is the criterion `enqueue`'s docstring states - where the id comes from, not reader vs
+    # writer. `file_id` is the id `ingest_file` either minted (`uuid4`) or read back out of the
+    # `jobs` row a worker claimed, canonical by construction in both cases, so any other spelling
+    # is an upstream bug and converting it quietly would hide it; `ingest_file`'s own `file_id`
+    # guard already refuses on exactly this reasoning, and this is the same rule enforced at the
+    # boundary a direct caller of `index_file` actually crosses. `class_id` travels down from a
+    # person - a script, the upload route's form field - and the sibling boundaries that take it
+    # (`enqueue`, `class_exists`, `retrieve`) all convert, so refusing here would make this the
+    # one place in the library that disagrees about the same id.
+    #
+    # THE COST OF NOT HAVING THIS WAS PAID EARLIER THAN THE CAST. `index_file` is reached from
+    # `ingest_file`, which parses, chunks and EMBEDS first, so a mis-spelled `class_id` used to
+    # buy a whole embedding run before Postgres rejected it. That is why `ingest_file` now
+    # canonicalises before `compose` as well: this guard is the boundary's, not the saving.
+    file_id = require_canonical_uuid(
+        file_id,
+        fn="index_file",
+        param="file_id",
+        remedy=(
+            "Pass the id `ingest_file` returned or the one on the claimed job row; a file_id "
+            "reaches this function from the database, where it is already canonical, so any "
+            "other spelling means the caller built it somewhere it should not have."
+        ),
+    )
+    class_id = canonical_uuid(
+        class_id,
+        fn="index_file",
+        param="class_id",
+        remedy=(
+            "Pass the id `create_class` returned for the class this file belongs to - an id "
+            "that is not a uuid cannot name any class, so the file and its chunks would have "
+            "nowhere to be scoped to."
+        ),
+    )
+    # EVERY CHUNK'S OWN `class_id` TOO, not just the file-level one. Step 3 binds `chunk.class_id`
+    # into its own cast, so guarding only the argument would let a urn-spelled chunk clear steps 1
+    # and 2 and abort at the insert - a half-guard that trades an early refusal for a late one.
+    # Canonicalised into a parallel list rather than in the comprehension below so the refusal
+    # still lands before `BEGIN`; the per-chunk value is kept (not overwritten with `class_id`)
+    # because a chunk disagreeing with its file about scope is a caller bug this box must not
+    # silently paper over - it would break the F6/F12 filter with no trace.
+    chunk_class_ids = [
+        canonical_uuid(
+            chunk.class_id,
+            fn="index_file",
+            param="chunk class_id",
+            remedy=(
+                "Every PreparedChunk carries the scope its rows are written under (F6/F12); "
+                "build them with the same canonical class_id the file is indexed under."
+            ),
+        )
+        for chunk in chunks
+    ]
 
     # Empty-set guard: `executemany` over an empty sequence is a no-op, so steps 1-2 below would
     # commit alone and publish a `ready` file with zero chunks. Raise (not assert): this guard must
@@ -226,13 +292,13 @@ def index_file(
                     {
                         "file_id": file_id,
                         "owner_id": chunk.owner_id,
-                        "class_id": chunk.class_id,
+                        "class_id": chunk_class_id,
                         "text": chunk.text,
                         "file": chunk.file,
                         "page_or_slide": str(chunk.page_or_slide),
                         "embedding": chunk.embedding,
                         "embedding_model_id": chunk.embedding_model_id,
                     }
-                    for chunk in chunks
+                    for chunk, chunk_class_id in zip(chunks, chunk_class_ids, strict=True)
                 ],
             )

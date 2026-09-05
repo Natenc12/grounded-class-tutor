@@ -10,10 +10,11 @@
 > not raised), **0025** / **0027** (the idle-connection precondition, and its guard). Source:
 > `design/roadmap.md` → Slice 3; `design/architecture.md` (thin adapter, no business logic).
 >
-> **Scope of this revision (issue #104):** only what the skeleton settles — the composition root.
-> Only the `POST /classes` section at the bottom is still a **stub**, for #107 to fill; the
-> composition root above decides no route-level behaviour, and the filled route sections each
-> name the issue that owns theirs.
+> **Scope of this revision (issue #104):** only what the skeleton settles — the composition root,
+> which decides no route-level behaviour. Each route section below names the issue that owns it
+> and states its own contract; this header does not enumerate which of them are filled, because
+> that sentence turns false the moment any route ticket merges and it is not the writer of that
+> fact.
 
 ## Responsibility
 Translate HTTP ⇄ core calls. A handler **validates, calls one library callable, and renders** —
@@ -196,8 +197,9 @@ restate.
 
 `POST /ask` takes JSON `{class_id, question}`. It parses `class_id` ONCE at the top for the same
 reason `POST /files` does — `retrieve` binds it raw into a `::uuid` cast, so a spelling Python
-accepts and Postgres refuses would abort a request that named a real class (#121 reports the
-identical shape in `enqueue`) — then checks ownership with `class_exists` BEFORE `ask(conn,
+accepts and Postgres refuses would abort a request that named a real class. `enqueue` had the
+identical shape and #121 fixed it at the writer; `retrieve` is still raw, so the parse here is
+load-bearing rather than defensive — then checks ownership with `class_exists` BEFORE `ask(conn,
 question, owner_id, class_id, embedder=, generator=)`, using the singletons above.
 
 **All four grounding states are 200.** `GROUNDED`, `PARTIAL`, `REFUSAL` and `INTEGRITY_FLAGGED`

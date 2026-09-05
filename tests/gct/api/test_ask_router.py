@@ -548,8 +548,8 @@ def test_every_uuid_spelling_python_accepts_reaches_the_same_class(api, db_other
     normalises before it binds, so all four pass the ownership check - and `retrieve` binds
     `class_id` RAW into that cast (both of its queries), so `urn:uuid:...` would reach it
     unchanged and abort with `InvalidTextRepresentation`: a 500 for a request that named a real
-    class the caller owns. That is issue #121's shape, reported against `enqueue`; this pins that
-    `/ask` cannot repeat it whether or not #121 lands.
+    class the caller owns. `enqueue` had the same shape and #121 fixed it at the writer;
+    `retrieve` was outside that ticket and is still raw, so this pins the route's own parse.
     """
     _seed(db_other, api, texts=["Motion requires a mover."])
     _providers(api, ScriptedGeneration("Argued from motion [S1].\nCOVERAGE: complete"))

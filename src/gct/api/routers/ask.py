@@ -297,11 +297,12 @@ def ask_question(
     `class_id` IS PARSED ONCE, AT THE TOP, AND THE CANONICAL SPELLING GOES DOWNSTREAM. Same fix as
     `upload_file`, for the same live defect one layer down: `retrieve` binds `class_id` RAW into
     `%(class_id)s::uuid` (both of its queries), and `uuid.UUID` accepts spellings that cast
-    rejects - `urn:uuid:<id>` is the demonstrated one (issue #121, which reports the identical
-    shape in `enqueue`). Handing the caller's spelling to both calls would pass `class_exists`,
-    which canonicalises before it binds, and then abort inside `retrieve` with a raw
-    `InvalidTextRepresentation` - a 500 for a request that was entirely valid. Parsing here means
-    this route cannot repeat that shape whether or not #121 is ever fixed.
+    rejects - `urn:uuid:<id>` is the demonstrated one. Handing the caller's spelling to both
+    calls would pass `class_exists`, which canonicalises before it binds, and then abort inside
+    `retrieve` with a raw `InvalidTextRepresentation` - a 500 for a request that was entirely
+    valid. `enqueue` had this exact shape and #121 fixed it AT THE WRITER, which is the better
+    place; `retrieve` was not in that ticket's scope and still binds raw, so this parse is what
+    stands between a caller's spelling and that cast.
 
     A non-uuid `class_id` is 400 in the route's own words. `class_exists` does raise `ValueError`
     for it, but its message explains a connection-abort concern a client cannot act on.

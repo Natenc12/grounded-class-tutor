@@ -871,3 +871,271 @@ def test_a_raising_guard_propagates_and_publishes_nothing(db, db_other):
     assert db_other.execute(
         "select status, failed_reason from files where file_id = %s::uuid", (file_id,)
     ).fetchone() == ("failed", "transient_exhausted")
+
+
+# --- The id boundary (#126) -----------------------------------------------------------------
+#
+# `index_file` bound FIVE `%(...)s::uuid` binds from caller-supplied ids across three statements:
+# `file_id` in the `files` upsert, the chunk delete and the chunk insert, and `class_id` in the
+# upsert and again on every chunk in that insert. The guards it now runs are
+# two DIFFERENT decisions, so they get two sets of tests: `class_id` is LENIENT (canonicalise) and
+# `file_id` is STRICT (refuse anything non-canonical), by the criterion `enqueue`'s docstring
+# states - where the id comes from, not reader vs writer.
+
+# Python's `uuid.UUID` parses four spellings of one id; Postgres's `::uuid` cast parses three.
+# Pinning the split keeps the accept test below from being trivially green.
+_POSTGRES_ACCEPTS_THE_CAST = {"plain": True, "braced": True, "hex32": True, "urn": False}
+
+# WHAT `uuid.UUID` RAISES DEPENDS ON WHAT IT WAS HANDED, and the three cases are not
+# interchangeable - which is why the guard catches three types rather than one.
+_NOT_A_USABLE_ID = {
+    "malformed": "intro-to-religion",  # ValueError from the parser
+    "none": None,  # TypeError: no hex/bytes/fields/int argument was given
+    "int": 12345,  # AttributeError: int has no `.replace`
+    "already_parsed": uuid.UUID("6f1e1b4a-0f0e-4a3e-9a7d-2f0a1b2c3d4e"),  # AttributeError
+}
+
+
+@pytest.mark.parametrize("spelling", ["plain", "braced", "hex32", "urn"])
+def test_every_class_id_spelling_python_accepts_publishes_one_canonical_scope(
+    db, db_other, spelling
+):
+    """`index_file` is LENIENT on `class_id`, and the whole row set lands under ONE spelling.
+
+    The spelling is used TWICE on purpose - as the argument and on every `PreparedChunk` - because
+    the two reach different casts. Guarding only the argument leaves the per-chunk bind raw, and a
+    `urn` chunk then clears the `files` upsert and the chunk delete before aborting at the insert:
+    a half-guard that trades an early refusal for a late one.
+
+    Only `urn` is sensitive to the canonicalisation; Postgres normalises braced and bare-hex
+    itself. The other three pin the LENIENCY decision - make this site strict like `file_id` and
+    braced, hex32 and urn go red together.
+
+    Read back through `db_other`, a SECOND connection: `db`'s own connection sees its uncommitted
+    work, so the canonical value would read back correctly whether or not it was published.
+    """
+    conn, owner_id, class_id = db
+    canonical = uuid.UUID(class_id)
+    written = {
+        "plain": str(canonical),
+        "braced": f"{{{canonical}}}",
+        "hex32": canonical.hex,
+        "urn": canonical.urn,
+    }[spelling]
+    assert uuid.UUID(written) == canonical, "the spelling under test names a different class"
+
+    try:
+        db_other.execute("select %s::uuid", (written,)).fetchone()
+        postgres_accepts = True
+    except psycopg.errors.InvalidTextRepresentation:
+        postgres_accepts = False
+    assert postgres_accepts is _POSTGRES_ACCEPTS_THE_CAST[spelling], (
+        f"Postgres's own handling of the {spelling} spelling changed; the premise is stale"
+    )
+
+    file_id = str(uuid.uuid4())
+    index_file(
+        conn,
+        file_id=file_id,
+        filename="lecture.pdf",
+        owner_id=owner_id,
+        class_id=written,
+        chunks=[_chunk(owner_id, written, "alpha", 1), _chunk(owner_id, written, "beta", 2)],
+    )
+
+    assert db_other.execute(
+        "select class_id::text, status from files where file_id = %s::uuid", (file_id,)
+    ).fetchone() == (str(canonical), "ready")
+    assert db_other.execute(
+        "select distinct class_id::text from chunks where file_id = %s::uuid", (file_id,)
+    ).fetchall() == [(str(canonical),)], "the chunks landed under a different class than the file"
+    assert (
+        db_other.execute(
+            "select count(*) from chunks where file_id = %s::uuid", (file_id,)
+        ).fetchone()[0]
+        == 2
+    )
+
+
+@pytest.mark.parametrize("kind", sorted(_NOT_A_USABLE_ID))
+@pytest.mark.parametrize("where", ["argument", "chunk"])
+def test_index_file_refuses_a_non_uuid_class_id_and_publishes_nothing(db, db_other, kind, where):
+    """Both class_id binds refuse, with a remedy, before the transaction opens.
+
+    `where` is the arm that would be missing from a guard on the argument alone: the per-chunk
+    `class_id` reaches its own cast in step 3, so a chunk carrying a bad id has to be refused
+    before `BEGIN` too, or the refusal arrives after two statements have already run inside the
+    transaction.
+
+    `already_parsed` is the case that will actually happen - psycopg hands uuid columns back as
+    `uuid.UUID` instances, so a caller reassembling chunks from a query holds exactly that.
+
+    `db_other` is what makes "publishes nothing" a real assertion: `db`'s own connection would
+    show the same zero whether the guard ran before the writes or the transaction rolled back
+    after them, and only the first is what this guard promises.
+    """
+    conn, owner_id, class_id = db
+    bad = _NOT_A_USABLE_ID[kind]
+    file_id = str(uuid.uuid4())
+    argument = bad if where == "argument" else class_id
+    on_chunk = bad if where == "chunk" else class_id
+    expected = (
+        r"index_file\(\) requires a uuid class_id"
+        if where == "argument"
+        else (r"index_file\(\) requires a uuid chunk class_id")
+    )
+
+    with pytest.raises(ValueError, match=expected) as caught:
+        index_file(
+            conn,
+            file_id=file_id,
+            filename="lecture.pdf",
+            owner_id=owner_id,
+            class_id=argument,
+            chunks=[_chunk(owner_id, on_chunk, "alpha", 1)],
+        )
+
+    assert "class" in str(caught.value), "the refusal does not name what to pass instead"
+    # Refused BEFORE `conn.transaction()`, so the connection is exactly as it was found.
+    assert conn.info.transaction_status == psycopg.pq.TransactionStatus.IDLE
+    assert (
+        db_other.execute("select count(*) from files where owner_id = %s", (owner_id,)).fetchone()[
+            0
+        ]
+        == 0
+    ), "a refused index_file published a files row"
+
+
+@pytest.mark.parametrize("spelling", ["braced", "hex32", "urn", "already_parsed"])
+def test_index_file_refuses_a_non_canonical_file_id_and_publishes_nothing(db, db_other, spelling):
+    """`file_id` is STRICT - the opposite decision to `class_id`, and this is what pins it apart.
+
+    A `file_id` reaches this function from the database: either `ingest_file` minted it with
+    `uuid4()` or a worker read it off the `jobs` row it claimed, canonical in both cases. So any
+    other spelling means the caller built it somewhere it should not have, and converting it
+    quietly would hide that. Note `braced` and `hex32` are spellings Postgres itself WOULD accept -
+    they are refused on the source-of-the-id argument, not because the cast would fail, which is
+    exactly what makes this a strict guard rather than a canonicalising one.
+
+    The accepting direction is `test_index_file_lands_full_set_and_flips_ready` and every other
+    test in this module: they all pass `str(uuid.uuid4())` and publish. CASE is the one axis this
+    guard does not treat as non-canonical - see the test below for why.
+    """
+    conn, owner_id, class_id = db
+    canonical = uuid.uuid4()
+    written = {
+        "braced": f"{{{canonical}}}",
+        "hex32": canonical.hex,
+        "urn": canonical.urn,
+        "already_parsed": canonical,
+    }[spelling]
+
+    with pytest.raises(ValueError, match=r"index_file\(\) requires a canonical uuid file_id"):
+        index_file(
+            conn,
+            file_id=written,
+            filename="lecture.pdf",
+            owner_id=owner_id,
+            class_id=class_id,
+            chunks=[_chunk(owner_id, class_id, "alpha", 1)],
+        )
+
+    assert conn.info.transaction_status == psycopg.pq.TransactionStatus.IDLE
+    assert (
+        db_other.execute(
+            "select count(*) from files where file_id = %s::uuid", (str(canonical),)
+        ).fetchone()[0]
+        == 0
+    ), "a refused index_file published a files row"
+
+
+def test_index_file_accepts_an_uppercase_file_id_exactly_as_ingest_file_does(db, db_other):
+    """The one spelling the strict guard lets through, pinned so nobody "tightens" it by accident.
+
+    `require_canonical_uuid` compares against `value.lower()`, which is `ingest_file`'s shipped
+    criterion copied rather than re-decided: `uuid.UUID` renders lowercase, so an all-caps
+    hyphenated id differs from the canonical form in case ALONE and Postgres stores it as the same
+    value. Refusing it would make the two guards disagree about the same id, which is the class of
+    bug this whole ticket is about.
+
+    The publish is read back through `db_other`, since the claim is that the row SURVIVED, and it
+    is asserted lowercase - proof the column normalised, not just that the guard let it pass.
+    """
+    conn, owner_id, class_id = db
+    file_id = str(uuid.uuid4())
+
+    index_file(
+        conn,
+        file_id=file_id.upper(),
+        filename="lecture.pdf",
+        owner_id=owner_id,
+        class_id=class_id,
+        chunks=[_chunk(owner_id, class_id, "alpha", 1)],
+    )
+
+    assert db_other.execute(
+        "select file_id::text, status from files where owner_id = %s", (owner_id,)
+    ).fetchall() == [(file_id, "ready")]
+
+
+def test_each_chunk_keeps_its_own_class_id_when_it_disagrees_with_the_file(db, db_other):
+    """A chunk's `class_id` is written from THE CHUNK, never from the file-level argument (#126).
+
+    This pins a decision the guards above made and nothing else could catch. `index_file`
+    canonicalises the argument and every chunk's own `class_id` separately, and binds the
+    per-chunk value; overwriting the chunk rows with the file's id would be one character's
+    difference in the same statement and passes every other test in this module, because `compose`
+    never produces a chunk whose scope differs from its file's. `index_file` is a supported direct
+    entry point (the PM-4 seam, ADR 0020), so a direct caller can, and this is the only test that
+    hands it such a set.
+
+    WHY NOT SILENTLY OVERWRITE, which is the tempting alternative and would make the rows
+    self-consistent: retrieval filters chunks on `owner_id AND class_id` (F6/F12), so overwriting
+    would move a caller's chunks into a class it never named and answer another class's questions
+    from them - a scope violation with no trace, since the rows would look correct. Divergence is a
+    caller bug, and this box surfaces it as data rather than papering over it.
+
+    BOTH DIRECTIONS, because a one-sided pin is exactly what the overwrite survives: the chunk rows
+    carry the CHUNK's class, and they do NOT carry the file's. The `files` row is asserted too -
+    the two values diverging is the whole scenario, so a fix that made them agree by moving the
+    FILE instead would otherwise slip through.
+
+    Read back through `db_other`, a SECOND connection: the subject is what was PUBLISHED, and
+    `db`'s own connection sees its uncommitted work either way.
+    """
+    conn, owner_id, file_class = db
+    chunk_class = _seed_class(conn, owner_id)
+    conn.commit()  # back to IDLE, which `require_idle` demands of every writer
+    assert chunk_class != file_class, "the two classes are the same; nothing would be proven"
+    file_id = str(uuid.uuid4())
+
+    index_file(
+        conn,
+        file_id=file_id,
+        filename="lecture.pdf",
+        owner_id=owner_id,
+        class_id=file_class,
+        chunks=[
+            _chunk(owner_id, chunk_class, "alpha", 1),
+            _chunk(owner_id, chunk_class, "beta", 2),
+        ],
+    )
+    conn.commit()
+
+    assert db_other.execute(
+        "select class_id::text from files where file_id = %s::uuid", (file_id,)
+    ).fetchone() == (file_class,), "the files row did not keep the class_id it was called with"
+
+    published = db_other.execute(
+        "select distinct class_id::text from chunks where file_id = %s::uuid", (file_id,)
+    ).fetchall()
+    assert published == [(chunk_class,)], (
+        f"the chunks were written under {published!r}, not their own class"
+    )
+    assert (
+        db_other.execute(
+            "select count(*) from chunks where file_id = %s::uuid and class_id = %s::uuid",
+            (file_id, file_class),
+        ).fetchone()[0]
+        == 0
+    ), "a chunk took the file-level class_id instead of its own"

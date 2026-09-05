@@ -246,10 +246,11 @@ fields**, the same choice `NewClass` makes, because pydantic's default of droppi
 key answers the two a client is most likely to send with silence: `k` (an answer retrieved at
 `DEFAULT_K` with no signal, which would make "no `k` field" a preference rather than a rule)
 and `owner_id` (V1's hardcoded scope with no signal, F12). It parses `class_id` ONCE at the top for the same
-reason `POST /files` does — `retrieve` binds it raw into a `::uuid` cast, so a spelling Python
-accepts and Postgres refuses would abort a request that named a real class. `enqueue` had the
-identical shape and #121 fixed it at the writer; `retrieve` is still raw, so the parse here is
-load-bearing rather than defensive — then checks ownership with `class_exists` BEFORE `ask(conn,
+reason `POST /files` does — the parse is what PRODUCES THE 400, in the route's own words, instead
+of `class_exists`'s message about a connection concern a client cannot act on. It is no longer what
+prevents a 500: `retrieve` bound `class_id` raw into a `::uuid` cast until #126 and canonicalises
+at its own boundary now, as every library entry point does — then checks ownership with
+`class_exists` BEFORE `ask(conn,
 question, owner_id, class_id, embedder=, generator=)`, using the singletons above.
 
 **All four grounding states are 200.** `GROUNDED`, `PARTIAL`, `REFUSAL` and `INTEGRITY_FLAGGED`

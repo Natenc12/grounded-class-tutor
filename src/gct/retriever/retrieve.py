@@ -29,6 +29,7 @@ from dataclasses import dataclass
 
 import psycopg
 
+from gct.ids import canonical_uuid
 from gct.providers.base import Embeddings
 
 # Provisional top-k. The interface fixes the param; the VALUE is empirical - tuned against
@@ -95,6 +96,12 @@ def _assert_embedding_consistency(
     # Whole-class DISTINCT, carrying the FULL owner+class scope: the guard is not exempt from
     # the isolation filter (F6/F12). class_id is a uuid column, owner_id is text - cast at the
     # SQL boundary, matching ingest/index.py's idiom.
+    #
+    # `class_id` ARRIVES ALREADY CANONICAL and this is the reason the parse lives in `retrieve`
+    # rather than here: this helper is private and `retrieve` is its only caller, so one parse at
+    # the public entry covers both of this module's `::uuid` binds, and a second parse here would
+    # be a second writer for the same decision. A future second caller of this helper inherits
+    # that precondition - canonicalise before calling, or move the parse down.
     rows = conn.execute(
         """
         select distinct embedding_model_id
@@ -172,6 +179,10 @@ def retrieve(
 
     `conn` MUST come from `gct.db.connect()`: the query vector is a `list[float]` and only
     adapts to `vector(1536)` when the pgvector type is registered on the connection.
+
+    `class_id` is canonicalised before any statement and a non-uuid is refused with a `ValueError`
+    naming the remedy (#126) - see step 0b. `owner_id` gets no such treatment and needs none: it
+    is a `text` column bound with no cast, so no spelling of it can fail inside Postgres.
     """
     # 0. `k < 1` is a caller bug, and a silent one: `LIMIT 0` returns [] from a healthy class,
     #    which the Grounder cannot tell apart from an empty class and turns into a REFUSAL.
@@ -179,11 +190,46 @@ def retrieve(
     if k < 1:
         raise ValueError(f"k must be >= 1, got {k!r}")
 
+    # 0b. Canonicalise `class_id` BEFORE ANY STATEMENT (#126). Both queries below bind it into a
+    #     `%(class_id)s::uuid` cast, and `uuid.UUID` accepts spellings that cast refuses
+    #     (`urn:uuid:<id>` is the demonstrated one), so a caller-supplied spelling handed over raw
+    #     fails inside Postgres rather than here.
+    #
+    #     THE HARM IS SPECIFIC TO THIS FUNCTION AND WORSE THAN A REJECTED READ. `retrieve` is a
+    #     reader with no transaction of its own, so on a non-autocommit connection the failed cast
+    #     aborts the implicit transaction psycopg opened (ADR 0025) and EVERY LATER STATEMENT on
+    #     that connection fails with `InFailedSqlTransaction` - the caller loses the connection,
+    #     not just the query. `enqueue` was spared exactly this because it wraps its writes in
+    #     `conn.transaction()`, which rolls back cleanly; nothing here does.
+    #
+    #     LENIENT, not strict, and the criterion is where the id comes from rather than reader vs
+    #     writer - `enqueue`'s docstring is the writer of that argument. Every `class_id` reaching
+    #     `retrieve` was typed by a person somewhere upstream (a script, the eval runner, an HTTP
+    #     query parameter), so converting an accepted spelling is right and refusing it would only
+    #     move the same work into every caller. That is also what makes this function AGREE with
+    #     `class_exists`, which has always accepted these spellings: before this, one could say the
+    #     class exists while the other aborted the connection asking about it.
+    #
+    #     REJECTED: doing the same for `owner_id`, which sits right beside it in every parameter
+    #     dict here. It is a `text` column bound with NO cast (migrations/0001_init.sql), so it has
+    #     no spelling Postgres can reject and cannot produce this failure at all. A `None` owner
+    #     binds as NULL and matches nothing, which is a silent empty result rather than a poisoned
+    #     connection - a different complaint, and not one this function is the right place to fix.
+    canonical_class_id = canonical_uuid(
+        class_id,
+        fn="retrieve",
+        param="class_id",
+        remedy=(
+            "Pass the id `create_class` returned for the class being searched - an id that is "
+            "not a uuid cannot name any class, so there is nothing to retrieve from."
+        ),
+    )
+
     # 1. Guard FIRST (ADR 0018) - before the paid embed call, so an empty class costs nothing
     #    and a mismatched class fails before it can produce garbage similarity. A mismatch
     #    raises out of here; only the empty-class case returns False.
     if not _assert_embedding_consistency(
-        conn, owner_id=owner_id, class_id=class_id, embedder=embedder
+        conn, owner_id=owner_id, class_id=canonical_class_id, embedder=embedder
     ):
         return []
 
@@ -210,7 +256,7 @@ def retrieve(
         order by distance asc
         limit %(k)s
         """,
-        {"q_vec": q_vec, "owner_id": owner_id, "class_id": class_id, "k": k},
+        {"q_vec": q_vec, "owner_id": owner_id, "class_id": canonical_class_id, "k": k},
     ).fetchall()
 
     # 4/5. Distance -> normalized similarity, page_or_slide text -> int (mirroring index.py's

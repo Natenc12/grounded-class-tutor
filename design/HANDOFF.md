@@ -39,7 +39,7 @@ which is still not *proven faithful* — see caveat).  **Rigor:** Deep (ADR 0001
 4. **data-model.md** — the row shapes (`classes · files · chunks · jobs`); single source of truth for the schema.
 5. **components/** — make-or-break build specs, in this order:
    **grounder.md** (the trust core) → **retriever.md** (read path) → **ingestion-worker.md** (write path)
-   → **api.md** (the thin HTTP adapter; composition root + route stubs).
+   → **api.md** (the thin HTTP adapter; composition root + the route contracts).
 6. **roadmap.md** — the V1 build sequence (Slices 0–4) + the two-pass spike slate.
 7. **eval/questions.jsonl** — the smoke-suite benchmark (authored; grows over the project's life, ADR 0021); the differentiator's only V1 test.
 8. **pre-mortem.md** — the adversarial ledger (PM-1…PM-5) behind this handoff.

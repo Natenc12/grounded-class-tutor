@@ -544,12 +544,19 @@ def test_a_non_uuid_class_id_is_400_in_the_routes_own_words(api):
 def test_every_uuid_spelling_python_accepts_reaches_the_same_class(api, db_other, spelling):
     """The route parses `class_id` ONCE and hands the canonical form downstream.
 
-    `uuid.UUID` accepts four spellings; Postgres's `::uuid` cast accepts three. `class_exists`
-    normalises before it binds, so all four pass the ownership check - and `retrieve` binds
-    `class_id` RAW into that cast (both of its queries), so `urn:uuid:...` would reach it
-    unchanged and abort with `InvalidTextRepresentation`: a 500 for a request that named a real
-    class the caller owns. `enqueue` had the same shape and #121 fixed it at the writer;
-    `retrieve` was outside that ticket and is still raw, so this pins the route's own parse.
+    `uuid.UUID` accepts four spellings of the same id; Postgres's `::uuid` cast accepts three.
+    `class_exists` normalises before it binds, so it answers True for all four - and `retrieve`
+    bound `class_id` RAW into that cast, in BOTH of its queries, until #126, so `urn:uuid:...`
+    reached it unchanged and aborted with `InvalidTextRepresentation`: a 500 for a request that
+    named a real class the caller owns. `enqueue` had the same shape and #121 fixed it at the
+    writer; #126 did the same for `retrieve`. Both library calls canonicalise for themselves now,
+    so this pins the route's END-TO-END behaviour, which must hold whichever of them parses.
+
+    WHAT IT DOES NOT PIN, and the earlier claim that it pinned "the route's own parse" was simply
+    wrong: delete the parse and all four cases here stay GREEN, because `class_exists` and
+    `retrieve` each canonicalise what they are handed. Measured, not reasoned. The parse is pinned
+    by `test_a_non_uuid_class_id_is_400_in_the_routes_own_words`, which turns 500 when it is
+    deleted - the 400 in the route's own words is what the parse owns, and all it owns.
     """
     _seed(db_other, api, texts=["Motion requires a mover."])
     _providers(api, ScriptedGeneration("Argued from motion [S1].\nCOVERAGE: complete"))

@@ -108,6 +108,6 @@ amendment.
   retry attempt identically to a genuine transient failure (`claim` bumps `attempts`,
   `reclaim_expired` deliberately does not reset it). A file that is merely slow can therefore
   exhaust its budget and be reported `failed` when nothing about it is wrong. This ADR makes that
-  outcome *consistent* rather than a coin-flip on timing; it does not make it *correct*. Tracked
-  separately — the naive fix (skip the bump on a reclaim) reintroduces the poison-file loop
-  `reclaim_expired`'s docstring exists to prevent, so it needs a decision of its own.
+  outcome *consistent* rather than a coin-flip on timing; it does not make it *correct*. The naive
+  fix (skip the bump on a reclaim) reintroduces the poison-file loop `reclaim_expired`'s docstring
+  exists to prevent, so it needed a decision of its own: **ADR 0031** is that decision.

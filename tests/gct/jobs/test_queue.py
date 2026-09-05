@@ -35,8 +35,8 @@ def _lecture(tmp_path: Path) -> Path:
     """A real file on disk, so `staging_ref`'s `resolve()` has something honest to resolve.
 
     `enqueue` never opens the file — it only derives two column values from the path — but a
-    path that exists keeps the test from passing for a reason that would not survive Slice 3,
-    when a real stager puts real bytes behind this argument.
+    path that exists keeps the test from passing for a reason the real caller would not supply:
+    `gct.staging.stage` (#105) writes bytes to disk and hands `enqueue` the resolved path.
     """
     source = tmp_path / "lecture-3.pdf"
     source.write_bytes(b"%PDF-1.4 not a real pdf")
@@ -525,7 +525,7 @@ def test_claim_publishes_the_lease_before_returning(db, db_other, tmp_path):
     left that unguarded at runtime.
 
     Also pins that `files.status` still reads `queued`: every transition after `queued` on
-    that axis belongs to #71, so claim writing it would be a second writer.
+    that axis belongs to the worker, so claim writing it would be a second writer.
     """
     conn, owner_id, class_id = db
     file_id = enqueue(conn, path=_lecture(tmp_path), owner_id=owner_id, class_id=class_id)
@@ -552,7 +552,7 @@ def test_claim_publishes_the_lease_before_returning(db, db_other, tmp_path):
     file_status = db_other.execute(
         "select status from files where file_id = %s::uuid", (file_id,)
     ).fetchone()[0]
-    assert file_status == "queued", "claim wrote files.status — that axis belongs to #71"
+    assert file_status == "queued", "claim wrote files.status — that axis belongs to the worker"
 
 
 def test_claim_on_an_empty_queue_returns_none(db):
@@ -881,7 +881,7 @@ def test_complete_publishes_done_and_touches_only_its_job(db, db_other, tmp_path
     file_status = db_other.execute(
         "select status from files where file_id = %s::uuid", (first,)
     ).fetchone()[0]
-    assert file_status == "queued", "complete wrote files.status — that axis belongs to #71"
+    assert file_status == "queued", "complete wrote files.status — that axis belongs to the worker"
 
 
 def test_fail_publishes_failed_with_the_error_and_keeps_attempts(db, db_other, tmp_path):

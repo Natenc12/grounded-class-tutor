@@ -17,10 +17,11 @@ one of the values the route knows how to render actionably. The membership test 
 
 from __future__ import annotations
 
-import uuid
 from dataclasses import dataclass
 
 import psycopg
+
+from gct.ids import canonical_uuid
 
 
 @dataclass(frozen=True)
@@ -73,7 +74,10 @@ def get_file_status(conn: psycopg.Connection, *, file_id: str, owner_id: str) ->
     with `InvalidTextRepresentation`), so validating the raw string and then binding it would pass
     the check and still hit the exact abort the check exists to prevent. Every id the parser
     accepts - hyphenated, braced, bare 32-hex, urn - reaches the database as the one spelling it
-    accepts too.
+    accepts too. `gct.ids.canonical_uuid` is that parse, shared with the library's other id-taking
+    boundaries so the set of exceptions `uuid.UUID` can raise has one writer. It shipped here
+    catching only `ValueError`, so `None` (a `TypeError`) and an already-parsed `uuid.UUID` (an
+    `AttributeError`) escaped with the parser's own message and no remedy - #126 at this site.
 
     This is a READER and deliberately does not call `require_idle`: a SELECT inside a
     transaction is correct. But a SELECT is also enough to OPEN psycopg's implicit transaction on a
@@ -81,14 +85,15 @@ def get_file_status(conn: psycopg.Connection, *, file_id: str, owner_id: str) ->
     the same connection arms exactly the trap the writers guard against. The remedy is the
     caller's wiring - autocommit at the request-scoped connection, which is the API's contract.
     """
-    try:
-        canonical = str(uuid.UUID(file_id))
-    except ValueError as exc:
-        raise ValueError(
-            f"get_file_status() requires a uuid file_id; got {file_id!r}. An id that is not a "
-            "uuid cannot name any file - reject it at the boundary rather than asking the "
-            "database, which would abort the connection's open transaction."
-        ) from exc
+    canonical = canonical_uuid(
+        file_id,
+        fn="get_file_status",
+        param="file_id",
+        remedy=(
+            "An id that is not a uuid cannot name any file - reject it at the boundary rather "
+            "than asking the database, which would abort the connection's open transaction."
+        ),
+    )
 
     row = conn.execute(
         """

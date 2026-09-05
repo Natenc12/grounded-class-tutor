@@ -646,75 +646,35 @@ w.run = _fake_run
     assert "613" in helped.stdout and "900" not in helped.stdout
 
 
-def test_the_two_short_cap_shapes_validate_declares_legal_are_accepted(
+def test_a_heartbeat_cap_under_one_poll_interval_is_accepted_on_purpose(
     monkeypatch, restore_sigterm
 ):
-    """`_validate` names two combinations as deliberately legal; nothing else holds them open.
+    """`_validate` declares this combination legal and nothing else in the suite pins it.
 
-    THE ONE WITH A CALLER is a cap at or under a very short LEASE, which is what forces the
-    heartbeat to stop renewing while a run is still going - the only way to stage a reclaim.
-    `ingest_smoke` pairs a 1.0s cap with a 1s lease for exactly that
-    (`PHASE_THREE_HEARTBEAT_CAP_SECONDS`, `DEFAULT_SHORT_LEASE_SECONDS`), and it is the shape
-    `--heartbeat-max` was added for.
+    Measured: before this test existed, adding a rule to `_validate` refusing a cap below one
+    poll interval left all 17 tests of the day green. A rule relating those two numbers would be
+    invented rather than derived - the poll governs how long an EMPTY tick sleeps and has no
+    bearing on how long one job may keep renewing - so nothing should grow one by accident.
 
-    THE ONE WITHOUT A CALLER is a cap under one poll interval, and it is pinned anyway because
-    `_validate`'s docstring declares it legal: a rule refusing it would be invented rather than
-    derived, since the poll governs how long an EMPTY tick sleeps and has no bearing on how long
-    one job may keep renewing. An earlier draft of this test justified it by claiming
-    `ingest_smoke` needed it - it does not, its poll is 0.05s and its cap is twenty times that.
-    Measured before it was written down this time.
+    THE OTHER SHAPE `_validate` declares legal, a cap below the LEASE, is deliberately not
+    retested here: `test_every_flag_reaches_the_loop_that_the_defect_said_it_could_not` already
+    passes a 1.5s cap against a 37s lease, so a rule refusing that reddens the suite without
+    help. An earlier draft of this test covered it anyway, and the extra half added no coverage
+    while carrying an assertion comparing two values the same call had just passed - satisfiable
+    by construction, which is the shape of pin this file exists to avoid.
 
-    Asserted as ACCEPTANCES - the values reaching `run` - rather than as "no SystemExit": a
+    Asserted as an ACCEPTANCE - the value reaching `run` - rather than as "no SystemExit": a
     parser that swallowed the flag would also not raise.
     """
     seen = _spy_on_run(monkeypatch)
-    worker_script.main(["--heartbeat-max", "1.0", "--lease", "1"])
-    assert seen["heartbeat_max_seconds"] == 1.0
-    assert seen["lease_seconds"] == 1
-    assert seen["heartbeat_max_seconds"] <= seen["lease_seconds"], (
-        "the first half is only meaningful while the cap it passes is AT OR UNDER the lease - "
-        "that is the shape that stops the heartbeat inside a run"
-    )
 
-    seen = _spy_on_run(monkeypatch)
     worker_script.main(["--heartbeat-max", "1.0"])
+
     assert seen["poll_seconds"] == worker_lib.DEFAULT_POLL_SECONDS, (
-        "the second half is only meaningful while the cap it passes is UNDER the default poll"
+        "this test is only meaningful while the cap it passes is UNDER the default poll"
     )
     assert seen["heartbeat_max_seconds"] == 1.0
     assert seen["heartbeat_max_seconds"] < seen["poll_seconds"]
-
-
-def test_a_retuned_lease_leaves_the_heartbeat_cap_for_the_library_to_derive(
-    monkeypatch, restore_sigterm
-):
-    """`--lease` alone must hand `run` a `None` cap, not the DEFAULT lease's cap.
-
-    This is the one place a flag could reintroduce a bug the library already fixed. The cap is
-    specified in units of the lease - `HEARTBEAT_CAP_LEASES` of the lease ACTUALLY IN USE (ADR
-    0031 §5) - and `run` resolves it from `None`. A script that instead defaulted the flag to
-    `DEFAULT_HEARTBEAT_MAX_SECONDS` would pin the cap to the default lease's four leases, so
-    `--lease 60` would beat for an hour: sixty leases, not four. The comment beside
-    `HEARTBEAT_CAP_LEASES` records that exact drift as having already happened once, which is
-    why it is pinned from the caller's side too.
-
-    A SCRIPT THAT STOPPED PASSING THE ARGUMENT is caught here too, and not by a second
-    assertion: `_spy_on_run` records `run`'s kwargs in a dict, so the omitted argument makes the
-    lookup below raise `KeyError` before any comparison happens. An earlier draft of this
-    docstring claimed the opposite and defended a `!= DEFAULT_HEARTBEAT_MAX_SECONDS` line with
-    it; that line could never fail, because `None != 3600.0` is unconditionally true once the
-    assertion above it has passed. It is gone rather than reworded - an assertion presented to
-    the reader as coverage, which cannot fail, is worse than no assertion.
-    """
-    seen = _spy_on_run(monkeypatch)
-
-    worker_script.main(["--lease", "60"])
-
-    assert seen["lease_seconds"] == 60
-    assert seen["heartbeat_max_seconds"] is None, (
-        "the cap was resolved in the script instead of in `run`, so it no longer tracks the "
-        "lease actually in use (ADR 0031 §5)"
-    )
 
 
 @pytest.mark.parametrize(

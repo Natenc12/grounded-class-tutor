@@ -8,9 +8,10 @@ THE FLAGS ARE WIRING, NOT POLICY, and that is what keeps them on the right side 
 Every LIBRARY-SOURCED default below is the library's own constant, read by name and never
 retyped as a literal - the same one-writer rule ADR 0018 states for the model id, applied to the
 queue's numbers. So a run with no flags calls `run` with the library's own numbers, and retuning
-one moves this script with it instead of leaving a stale copy behind. (`run` itself defaults only
-the lease, the poll and the cap; `chunk_size` and `chunk_overlap` are REQUIRED of every caller, so
-for those two this script is not echoing a default but supplying the chunker's constant.) Two
+one moves this script with it instead of leaving a stale copy behind. (Of the five values this
+script
+passes, `run` defaults three; `chunk_size` and `chunk_overlap` are REQUIRED of every caller, so
+for those two this script supplies the chunker's constant rather than echoing a default.) Two
 flags are deliberately not library-sourced and `_build_parser` says why: `--log-level`
 defaults to a script-local constant because the level is the application's call (ADR 0009), and
 `--heartbeat-max` defaults to `None` because `run` must derive the cap from the lease in use
@@ -18,8 +19,7 @@ defaults to a script-local constant because the level is the application's call 
 
 WHY A CLI AT ALL. ADR 0011's PM-3 addendum mandates a separate OS process, but until #109 this
 `main()` took no arguments, so a subprocess was pinned to the module defaults and a caller that
-needed a different lease had no way to ask for one. A caller that has to fake the topology to
-configure it does not get to demonstrate the topology. This did NOT convert
+needed a different lease had no way to ask for one. This did NOT convert
 `scripts/ingest_smoke.py` to a subprocess, and its own docstring is the single writer of why it
 stays on a thread - do not restate that argument here.
 `--heartbeat-max` is here for the same reason and no other: since ADR 0031 a live
@@ -193,13 +193,18 @@ def _validate(parser: argparse.ArgumentParser, args: argparse.Namespace) -> None
     on the first empty tick, i.e. after the worker has reported itself started.
 
     WHAT IS NOT REFUSED, deliberately: a `--heartbeat-max` below `--lease`, or below one poll
-    interval. The first is the only way to stage a reclaim, and it has a caller -
-    `ingest_smoke` pairs a 1.0s cap with a 1s lease on purpose
-    (`PHASE_THREE_HEARTBEAT_CAP_SECONDS`, `DEFAULT_SHORT_LEASE_SECONDS`), so the heartbeat stops
-    renewing while the run is still going. The second has no caller today and is left legal
-    anyway: the poll governs how long an EMPTY tick sleeps and has no bearing on how long one
-    job may keep renewing, so a rule relating them would be invented rather than derived. Both
-    are pinned by tests, so neither can be tightened away silently.
+    interval. Neither is a fault, and both are pinned by tests so neither can be tightened away
+    silently.
+
+    A short cap has a real caller - `ingest_smoke` passes one on purpose - and WHY a particular
+    cap stages what that script needs is `scripts/ingest_smoke.py`'s argument, stated beside
+    `PHASE_THREE_HEARTBEAT_CAP_SECONDS`. Do not restate it here: two drafts of this paragraph
+    did, and both got it wrong in a different way, because the condition is about that script's
+    induced delay and not about any number this file can see.
+
+    The poll case needs no caller to be left legal: the poll governs how long an EMPTY tick
+    sleeps and has no bearing on how long one job may keep renewing, so a rule relating them
+    would be invented rather than derived.
     """
     if args.lease < 1:
         parser.error(

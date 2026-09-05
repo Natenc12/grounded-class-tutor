@@ -190,9 +190,11 @@ def ingest_file(
         # is rejected downstream anyway - by `index_file`'s own strict guard since #126, and by
         # Postgres's `::uuid` cast before that - but not until after the embedding run is bought.
         # This is the cheapest check in the pipeline and it was the last to run; the fix is
-        # ordering, not detection. It also gives Slice 2 a clean
-        # terminal failure (a bad id never becomes good on retry, ADR 0011) instead of a psycopg
-        # error raised from inside the index transaction.
+        # ordering, not detection. It also gives Slice 2 a clean terminal failure (a bad id never
+        # becomes good on retry, ADR 0011) rather than the same refusal a layer down, after the
+        # spend: `index_file`'s own ValueError since #126 - measured, with the connection IDLE
+        # throughout, because that guard runs before its transaction opens - and before #126 a
+        # psycopg error raised from inside the index transaction.
         #
         # STRICT on purpose: Python's `UUID()` parses spellings Postgres rejects (urn:uuid:...,
         # stray hyphens), which would pass a lax `UUID(file_id)` guard and still die one layer

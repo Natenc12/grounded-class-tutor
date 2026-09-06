@@ -25,7 +25,7 @@ API needs and the library lacks is added to the library (#106), never to a route
 
 What the adapter does own, and owns **once** (the composition root, `src/gct/api/`): the per-request
 connection a library writer will accept, the one source of the V1 owner, the app-wide provider
-singletons, the startup requirements, and the error envelope.
+singletons, the startup requirements, the error envelope, and the bound on a request body.
 
 ## Position & dependencies
 - **Down — the core:** `gct.jobs.queue.enqueue`, `gct.ask.ask`, and #106's `create_class` /
@@ -103,8 +103,13 @@ Every non-2xx response body is exactly:
 ```
 - `kind` — a stable machine token a client switches on. Framework-level kinds this component
   emits: `validation` (422, `detail` = pydantic's per-field list), `http` (the framework's own
-  404/405), `internal` (500 — the exception text is **not** echoed; it belongs in the server log).
+  404/405), `internal` (500 — the exception text is **not** echoed; it belongs in the server log),
+  and the two the body bound refuses with, `body_too_large` (413) and `body_too_nested` (400).
   Routes mint their own domain kinds.
+- **Those last two are the component's and appear on EVERY route,** which is what makes them worth
+  naming here rather than under a route: they are refused in middleware, before routing has picked
+  a handler, so no route section can be their writer and a client switch built per-route misses
+  them. See *The request-body bound* below.
 - `message` — for a human; names the remedy where one exists.
 - Routes raise **`ApiError(status_code, kind, message, detail=None)`**; the status is the raiser's
   choice. **Which status a given failure maps to is each route issue's decision**, not this spec's.
@@ -113,6 +118,29 @@ Every non-2xx response body is exactly:
   minting a second one — see that route's section for the `kind` → status split and the one
   message it substitutes. **A refusal is never an envelope:** the four *grounding* states are 200
   bodies (ADR 0016), and only the fifth, transport-level `ERROR`, leaves this way.
+
+### The request-body bound (`gct.api.limits`) — **#125**
+```
+BodyLimit(app)                      installed by create_app, outermost user middleware
+MAX_JSON_BODY_BYTES / MAX_JSON_BODY_DEPTH   in gct.config, provisional (MAX_STAGE_BYTES's shape)
+```
+One gate in front of every parser, for the reason a per-route rule cannot be one: a field
+constraint runs *after* the whole body is parsed in memory, so it cannot bound what gets parsed
+(`routers/ask.py`'s `MAX_QUESTION_CHARS` is a bound on a VALUE and stays one). Over either bound
+the request is refused with the envelope above — 413 `body_too_large`, 400 `body_too_nested` — and
+the message names the bound it exceeded.
+
+**The multipart exemption is a design constraint, not an optimisation.** On `POST /files` the
+uploaded file IS the request body and `gct.staging.stage` already bounds it while streaming
+(`MAX_STAGE_BYTES`, ADR 0010). A single raw body-size check would apply to that stream and refuse
+every real course upload, so a `multipart/form-data` request is passed through with the same
+`receive` callable it arrived with. The residue: that label also takes a body off this bound on a
+JSON route, where pydantic then refuses it 422 — smaller than the unbounded state that preceded
+the module, and recorded in `limits.py` rather than silently.
+
+**This middleware renders its refusals and must never raise them.** `add_exception_handler`
+registers on `ExceptionMiddleware`, which sits *inside* user middleware, so an `ApiError` raised
+here escapes past it and reaches the client as the 500 this module exists to remove.
 
 ### The skeleton's own route
 ```
@@ -129,6 +157,8 @@ reached Postgres, and closed — not merely that the process is up.
 | Uncaught exception in a handler | 500 `internal` envelope; traceback to the server log only | `errors.install` |
 | Unknown path / method | 404 / 405 `http` envelope | `errors.install` |
 | Request fails validation | 422 `validation` envelope, field list in `detail` | `errors.install` |
+| JSON body over the byte or depth bound | 413 `body_too_large` / 400 `body_too_nested`, the bound named in `message`; parser never runs | `limits.install` |
+| Multipart upload of any size | passed through unbounded by this component; bounded while streaming by `stage` | `gct.staging` (`MAX_STAGE_BYTES`, ADR 0010) |
 
 ## Invariants
 - One connection per request, autocommit, closed on exit, and no test FIXTURE overrides it —

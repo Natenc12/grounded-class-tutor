@@ -459,6 +459,52 @@ def test_a_buffered_body_is_replayed_with_its_chunk_boundaries_intact() -> None:
     assert seen == chunks
 
 
+def test_the_depth_scan_reads_a_body_that_arrives_across_several_chunks() -> None:
+    """The scan sees the WHOLE body, not the first message of it.
+
+    A client chooses where its chunk boundaries fall, so a scan that read only `messages[0]`
+    would be stepped around by putting three brackets in the first chunk and the other 1,197 in
+    the second. That is not hypothetical: a mutant replacing the join at
+    `src/gct/api/limits.py` with `messages[0].get("body", b"")` left the entire suite green -
+    nothing else here drives the depth scan with a chunked body. The byte counter has its own
+    running total and its own pins; this is the depth scan's.
+
+    The first assertion is what makes the third one mean something: it states that the opening
+    chunk really is shallow on its own, so the refusal can only have come from assembling both.
+    """
+
+    async def inner(scope, receive, send) -> None:
+        await PlainTextResponse("ok")(scope, receive, send)
+
+    deep = nested_body(1_200)
+    head, tail = deep[:12], deep[12:]
+    assert scan_depth(head, limit=MAX_JSON_BODY_DEPTH) <= MAX_JSON_BODY_DEPTH
+
+    sent = _run(
+        BodyLimit(inner),
+        _scope("application/json"),
+        [
+            {"type": "http.request", "body": head, "more_body": True},
+            {"type": "http.request", "body": tail, "more_body": False},
+        ],
+    )
+    assert sent[0]["status"] == 400
+    rendered = b"".join(m.get("body", b"") for m in sent if m["type"] == "http.response.body")
+    assert json.loads(rendered)["error"]["kind"] == "body_too_nested"
+
+    # And the contrast, so this is about DEPTH and not about chunked bodies being refused: a
+    # shallow body split the same way goes through to the app.
+    ok = _run(
+        BodyLimit(inner),
+        _scope("application/json"),
+        [
+            {"type": "http.request", "body": b'{"a"', "more_body": True},
+            {"type": "http.request", "body": b": 1}", "more_body": False},
+        ],
+    )
+    assert ok[0]["status"] == 200
+
+
 def test_an_api_error_raised_in_middleware_would_arrive_as_a_500() -> None:
     """WHY `limits` renders its refusals instead of raising them - pinned, because the tidier
     shape is the broken one and nothing else would say so.

@@ -67,6 +67,37 @@ MAX_STAGE_BYTES = 100 * 1024 * 1024
 # after any later `chdir`.
 STAGING_DIR = Path(os.environ.get("GCT_STAGING_DIR", "data/staging")).resolve()
 
+# --- The adapter's request-body bound (issue #125) -------------------------------------------
+# What the API will buffer and hand to a JSON parser: a byte ceiling and a nesting ceiling,
+# enforced in ONE place (`gct.api.limits`, in front of every route) and never per-router.
+#
+# They sit BESIDE `MAX_STAGE_BYTES` because the three numbers are only legible together: a
+# multipart upload is EXEMPT from the byte bound below, and it is exempt precisely because
+# `MAX_STAGE_BYTES` already owns that path and bounds it while STREAMING. Split them across two
+# modules and the next editor to lower one cannot see that the other is the reason this one has a
+# deliberate hole in it.
+#
+# Both are PROVISIONAL in the shape `MAX_STAGE_BYTES` is: no ADR owns either NUMBER yet, so what
+# each must admit is written down instead of an argument for its exact value.
+#
+# `MAX_JSON_BODY_BYTES` must admit the largest LEGITIMATE JSON body the adapter has, which is
+# `POST /ask`: a uuid plus a question of `MAX_QUESTION_CHARS` characters. At its worst that is not
+# 2000 bytes but 24,068 - a client may send astral-plane characters as `\uXXXX\uXXXX` surrogate
+# pairs, twelve bytes per character, and `max_length` counts characters. 64 KiB is that with ~2.7x
+# headroom, and still two orders of magnitude below the multi-megabyte class name this bound
+# exists to refuse.
+MAX_JSON_BODY_BYTES = 64 * 1024
+
+# `MAX_JSON_BODY_DEPTH` must admit 1: every request body in this adapter is a flat object of
+# strings. What it must stay UNDER is the depth at which rendering a REJECTED body recurses -
+# `errors._validation` runs `jsonable_encoder` over pydantic's echo of the offending value, and
+# past some depth that raises `RecursionError` inside the handler, so the 422 collapses into a
+# 500 (issue #125). That depth is not a constant and must not be treated as one: the same
+# interpreter broke anywhere between 480 and 970 depending only on how much stack the caller had
+# already spent. So this is set far below the lowest of them rather than near any of them - 32 is
+# ~15x under the shallowest break ever measured and 32x over the deepest legitimate body.
+MAX_JSON_BODY_DEPTH = 32
+
 # --- The V1 owner (ADR 0004) ----------------------------------------------------------------
 # V1 is ONE hardcoded user with no auth (ADR 0004; ADR 0002's tenancy clause as amended by it).
 # Every row the API writes and every scoped query it runs carries this owner_id, so V3 turns

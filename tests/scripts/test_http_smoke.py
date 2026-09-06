@@ -38,6 +38,7 @@ no attribute '__dict__'` at import - measured on the first attempt to load this 
 from __future__ import annotations
 
 import importlib.util
+import ipaddress
 import json
 import logging
 import os
@@ -45,6 +46,7 @@ import re
 import shlex
 import signal
 import socket
+import subprocess
 import sys
 import threading
 import time
@@ -142,6 +144,91 @@ def _stub_health(payload: bytes, *, status: int = 200):
         server.shutdown()
         server.server_close()
         thread.join(timeout=5)
+
+
+@contextmanager
+def _recording_openai_endpoint():
+    """An HTTP endpoint that ANSWERS every request and remembers what it was asked for.
+
+    The difference from a closed port is the whole point, and it is what
+    `test_the_real_pair_comes_up_and_never_reaches_a_paid_endpoint` was rebuilt on: a closed port
+    can only be observed through what a child does about the failure, and this one is observed
+    directly. It answers 500 rather than something plausible because nothing here wants the SDK
+    to succeed - only to be seen.
+    """
+    seen: list[str] = []
+
+    class Handler(BaseHTTPRequestHandler):
+        def _record(self):
+            seen.append(f"{self.command} {self.path}")
+            length = int(self.headers.get("Content-Length") or 0)
+            if length:
+                self.rfile.read(length)
+            self.send_response(500)
+            self.send_header("Content-Length", "0")
+            self.end_headers()
+
+        do_GET = _record  # noqa: N815 - the stdlib's spelling
+        do_POST = _record  # noqa: N815 - same
+
+        def log_message(self, *args):
+            pass
+
+    server = HTTPServer((http_smoke.LOOPBACK, 0), Handler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        yield SimpleNamespace(
+            base_url=f"http://{http_smoke.LOOPBACK}:{server.server_address[1]}/v1", seen=seen
+        )
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=5)
+
+
+def _child_with_log(log_path: Path) -> http_smoke.Child:
+    """A `Child` around a log file and no real process - for the two questions `Child` answers."""
+    return http_smoke.Child(
+        name="probe", process=SimpleNamespace(pid=-1, returncode=None), log_path=log_path
+    )
+
+
+def _open_fds() -> int:
+    """How many descriptors this process holds. `/dev/fd` is macOS's and Linux's own view of it."""
+    return len(os.listdir("/dev/fd"))
+
+
+class _FakeConn:
+    """Answers `preflight`'s queries in order, and records whether it was closed.
+
+    A stand-in rather than a real connection because the conditions being staged - a half-applied
+    schema, a queue with rows in it - are either impossible or destructive to arrange on the
+    machine's own database. The SQL those queries actually contain is executed against the real
+    schema by the `db`-marked test below; neither half is sufficient alone.
+    """
+
+    def __init__(self, *answers: list):
+        self._answers = list(answers)
+        self.closed = False
+
+    def execute(self, _sql, *_args, **_kwargs):
+        rows = self._answers.pop(0)
+        return SimpleNamespace(fetchone=lambda: rows[0] if rows else None, fetchall=lambda: rows)
+
+    def close(self):
+        self.closed = True
+
+
+@pytest.fixture
+def stageable(monkeypatch):
+    """Everything `preflight` checks BEFORE the one a test is about, stubbed to pass.
+
+    The key check is the API's own function, so a machine without `OPENAI_API_KEY` (CI, where
+    these tests still run) would otherwise refuse at the first line and no later branch would be
+    reached.
+    """
+    monkeypatch.setattr("gct.api.app.require_openai_key", lambda: None)
 
 
 @pytest.fixture
@@ -524,13 +611,21 @@ def test_the_child_environment_is_inherited_and_output_is_unbuffered(monkeypatch
     assert env["GCT_A_SETTING_THE_LANE_SUPPLIES"] == "sentinel"
 
 
-def test_every_usage_line_in_the_docstring_actually_parses():
-    """The examples a reader copies are checked against the parser that has to accept them.
+def test_every_usage_line_in_the_docstring_is_one_the_whole_cli_accepts():
+    """The examples a reader copies, run through every refusal the CLI makes - not just parsing.
 
-    Not hypothetical. The inherited draft advertised `--worker-arg --poll --worker-arg 0.5`, and
-    argparse refuses it - it reads `--poll` as an option, not as that flag's value, so the only
-    spelling that worked was one `=` per token and nobody would have guessed it. Help text is
-    documentation shipped inside the program; unlike a comment, a user types it.
+    Not hypothetical, twice over. The inherited draft advertised `--worker-arg --poll
+    --worker-arg 0.5`, which argparse refuses outright. The version that replaced it advertised
+    `-- --poll 0.5 --log-level WARNING`, which parses perfectly and then hangs the launch for
+    sixty seconds, because WARNING silences the line readiness waits for - so a test that called
+    `parse_args` ratified it. `_parse` is the parser AND the refusals behind one name, which is
+    why this calls that rather than the parser.
+
+    WHAT THIS STILL CANNOT SEE, stated rather than implied: it does not RUN the examples. Each
+    one launches uvicorn and a worker against a real database, and one of them sets a 90-second
+    timeout. What is executed is the entire boundary the operator's typing meets; an example that
+    is wrong about something no refusal covers would still get through, and the answer to that is
+    another refusal, not another test.
     """
     usage = http_smoke.__doc__.split("Usage:")[1]
     lines = [line.strip() for line in usage.strip().splitlines() if line.strip()]
@@ -539,9 +634,62 @@ def test_every_usage_line_in_the_docstring_actually_parses():
         tokens = shlex.split(line)
         assert "scripts/http_smoke.py" in tokens, f"not a usage line for this script: {line!r}"
         argv = tokens[tokens.index("scripts/http_smoke.py") + 1 :]
-        # A SystemExit out of `parse_args` IS the failure: argparse refused a line the file
-        # tells a reader to type.
-        http_smoke._build_parser().parse_args(argv)
+        # A SystemExit out of `_parse` IS the failure: the CLI refused a line the file tells a
+        # reader to type.
+        http_smoke._parse(argv)
+
+
+@pytest.mark.parametrize(
+    "spelling",
+    [
+        ["--log-level", "WARNING"],
+        ["--log-level=WARNING"],
+        ["--log-level", "ERROR"],
+        # argparse accepts any unambiguous prefix, and `--lo` is one on the worker's CLI
+        # (verified against that parser: `--l` is ambiguous with `--lease`, `--lo` is not). A
+        # guard matching only the full spelling would wave exactly this through.
+        ["--lo", "WARNING"],
+        # Last one wins, the way argparse resolves a repeated option.
+        ["--log-level", "INFO", "--log-level", "WARNING"],
+    ],
+)
+def test_a_worker_log_level_above_info_is_refused_at_the_boundary(spelling):
+    """A flag that makes readiness unsatisfiable is refused in milliseconds, not waited out.
+
+    Readiness for the worker is `log_contains(WORKER_STARTED_TOKEN)` and the library logs that
+    line at INFO, so `--log-level WARNING` produces a launch that fails after the whole
+    `--ready-timeout` with "the worker is still running but never logged 'worker started' … (the
+    child wrote nothing)" - a message naming neither the cause nor the fix, sixty seconds in at
+    the default. Measured at `--ready-timeout 8` before this refusal existed.
+
+    Same boundary `scripts/worker.py:_validate` draws for a range argparse accepts (#109 PR 1):
+    usage to stderr, exit 2, the remedy in the sentence.
+    """
+    with pytest.raises(SystemExit) as exit_info:
+        http_smoke._parse(["--", *spelling])
+    assert exit_info.value.code == 2
+
+
+@pytest.mark.parametrize(
+    ("worker_args", "why"),
+    [
+        (["--log-level", "INFO"], "the level the probe reads"),
+        (["--log-level", "DEBUG"], "below INFO: the line is still emitted"),
+        (["--poll", "0.5", "--lease", "60"], "nothing about logging at all"),
+        (["--lease", "60"], "a flag whose name starts the same way as the refused one"),
+        # An invalid LEVEL is the worker's own parser's message to write; answering it here would
+        # put a second writer on the list of valid levels.
+        (["--log-level", "LOUD"], "not a level at all - refused downstream, not here"),
+    ],
+)
+def test_the_refusal_leaves_every_other_worker_flag_alone(worker_args, why):
+    """The other direction, which is what stops the guard from becoming a second CLI.
+
+    A check on the pass-through is a check on somebody else's flags, so it has to be narrow
+    enough that the worker's own parser stays the writer of everything except the one coupling
+    this harness genuinely has.
+    """
+    assert http_smoke._parse(["--", *worker_args]).worker_args == worker_args, why
 
 
 def test_everything_after_the_double_dash_reaches_the_worker_and_nothing_else_does():
@@ -553,16 +701,379 @@ def test_everything_after_the_double_dash_reaches_the_worker_and_nothing_else_do
     business guessing which of two CLIs an unknown flag belongs to.
     """
     args = http_smoke._build_parser().parse_args(
-        ["--ready-timeout", "5", "--", "--poll", "0.5", "--log-level", "WARNING"]
+        ["--ready-timeout", "5", "--", "--poll", "0.5", "--lease", "60"]
     )
     assert args.ready_timeout == 5.0
-    assert args.worker_args == ["--poll", "0.5", "--log-level", "WARNING"]
+    assert args.worker_args == ["--poll", "0.5", "--lease", "60"]
 
     assert http_smoke._build_parser().parse_args([]).worker_args == []
 
     with pytest.raises(SystemExit) as exit_info:
         http_smoke._build_parser().parse_args(["--poll", "0.5"])
     assert exit_info.value.code == 2
+
+
+# --------------------------------------------------------------------------------------------
+# The constants that are contracts, and the two questions `Child` answers about a log
+# --------------------------------------------------------------------------------------------
+
+
+def test_the_bind_address_is_a_loopback_address_and_not_a_wildcard():
+    """`LOOPBACK` is the reason a lane's smoke server cannot be reached off-box.
+
+    The harness binds the socket itself and hands uvicorn the fd, so this constant - not
+    uvicorn's `--host` default - decides who can connect. Spelled `0.0.0.0` it would still pass
+    every other test in this file (the probe and `_accepts` both connect over loopback either
+    way) while serving the API, unauthenticated, to the whole network the machine is on. The
+    address is asserted for what it IS rather than against a literal, so the pin survives `::1`.
+    """
+    assert ipaddress.ip_address(http_smoke.LOOPBACK).is_loopback
+
+    sock = http_smoke._reserve_listener()
+    try:
+        assert ipaddress.ip_address(sock.getsockname()[0]).is_loopback
+    finally:
+        sock.close()
+
+
+def test_the_reserved_socket_can_hold_more_than_one_pending_connection():
+    """Nothing accepts on this socket between the bind and uvicorn's first `accept`.
+
+    That window is the readiness poll: the harness connects to a socket whose owner is still
+    importing, and the kernel holds those connections in the listen queue. A backlog too small to
+    hold them makes the probe fail against a healthy child.
+
+    THE OBSERVABLE HALF IS PLATFORM-DEPENDENT, which is why the constant is asserted too.
+    Measured while writing this test: macOS clamps `listen(0)` up to `somaxconn`, so 128 pending
+    connections are accepted and the loop below sees nothing wrong; Linux gives that same call a
+    queue of one, where the second connection is refused. The assertion on the constant is what
+    makes the pin hold on the machine the mutation runs on.
+    """
+    want = 3
+    assert http_smoke.LISTEN_BACKLOG >= want, (
+        "the listen backlog cannot hold the connections the readiness poll makes while the "
+        "server child is still starting"
+    )
+
+    sock = http_smoke._reserve_listener()
+    port = sock.getsockname()[1]
+    pending = []
+    try:
+        for _ in range(want):
+            pending.append(socket.create_connection((http_smoke.LOOPBACK, port), timeout=2.0))
+    except OSError:
+        pass
+    finally:
+        for conn in pending:
+            conn.close()
+        sock.close()
+
+    assert len(pending) == want, (
+        f"only {len(pending)} of {want} connections were queued by a socket nothing is accepting "
+        "on - a readiness probe against a still-importing child would be refused"
+    )
+
+
+def test_a_failure_message_carries_the_end_of_the_childs_log_and_is_bounded(tmp_path):
+    """The tail is the only place a failure's real reason ever appears, and it is the END of it.
+
+    A worker's log grows without bound and the interesting lines are the last ones - a traceback,
+    an argparse refusal. Quoting from the start would report a startup banner about a process
+    that died an hour later; quoting all of it would bury the message in a launch failure's own
+    output. Both halves are asserted, because either one alone passes on a tail that is simply
+    wrong in the other direction.
+    """
+    log = tmp_path / "many.log"
+    log.write_text("".join(f"line-{n:03d}\n" for n in range(1, 201)), "utf-8")
+    tail = _child_with_log(log).tail()
+
+    assert len(tail.splitlines()) == http_smoke.LOG_TAIL_LINES, (
+        f"the tail was {len(tail.splitlines())} lines of a 200-line log; a failure message "
+        "carries a bounded quantity or it carries nothing anyone reads"
+    )
+    assert tail.splitlines()[-1] == "line-200"
+    assert "line-001" not in tail, "the tail quoted the START of the log, not the end"
+
+    empty = tmp_path / "silent.log"
+    empty.write_text("", "utf-8")
+    assert _child_with_log(empty).tail() == "(the child wrote nothing)", (
+        "a child that wrote nothing has to SAY so - that sentence is what tells an operator the "
+        "failure is not in the log they are being pointed at"
+    )
+
+
+def test_a_log_that_cannot_be_read_is_reported_inline_and_never_counts_as_readiness(tmp_path):
+    """Both questions `Child` asks a log have to survive the log not being there.
+
+    `tail` is called from inside a failure message, so a raise there replaces the launch failure
+    with an OSError from the reporting code. `log_contains` is the readiness probe itself, and
+    the direction it fails in is what matters: an unreadable log answering True would report a
+    worker as started that has written nothing at all, which is the exact lie readiness exists
+    to prevent.
+    """
+    missing = tmp_path / "never-created" / "worker.log"
+    child = _child_with_log(missing)
+
+    assert "could not read" in child.tail()
+    assert str(missing) in child.tail()
+    assert child.log_contains(http_smoke.WORKER_STARTED_TOKEN) is False, (
+        "an unreadable log counted as containing the worker's start-of-loop line"
+    )
+
+
+def test_the_exit_statuses_are_the_numbers_a_caller_branches_on():
+    """Three literal numbers, because they are a CLI's contract with whatever runs it.
+
+    0 is success to every shell, CI step and `&&` on earth, so a refusal that returned it would
+    be a refusal reported as a pass - a ceremony that never ran, reading green. 2 is the setup
+    exit `scripts/ingest_smoke.py` and `scripts/ask_smoke.py` already use for "this machine is
+    not stageable", and a caller distinguishing "the code is broken" from "your database is
+    down" reads exactly this number.
+    """
+    assert (http_smoke.EXIT_OK, http_smoke.EXIT_FAILED, http_smoke.EXIT_SETUP) == (0, 1, 2)
+
+
+def test_a_bind_that_fails_closes_the_socket_instead_of_leaking_the_fd(monkeypatch):
+    """The failure path of `_reserve_listener` is the one that can leak, and it is measurable.
+
+    A raise out of `bind` or `listen` leaves the socket object referenced by the traceback, so
+    its descriptor stays open for as long as the exception is alive - which, in a caller that
+    catches and retries, is long enough to matter. Measured directly here rather than argued: an
+    unassignable address (TEST-NET-3, RFC 5737) makes the bind fail, and the process's own
+    descriptor count is read while the exception is still held.
+    """
+    monkeypatch.setattr(http_smoke, "LOOPBACK", "203.0.113.9")
+
+    before = _open_fds()
+    with pytest.raises(OSError) as err:
+        http_smoke._reserve_listener()
+    leaked = _open_fds() - before
+
+    assert err.value.errno is not None
+    assert leaked == 0, (
+        f"{leaked} descriptor(s) stayed open after a failed bind - the socket outlives the "
+        "function that could not use it"
+    )
+
+
+# --------------------------------------------------------------------------------------------
+# `preflight()` - everything refused before a child exists
+# --------------------------------------------------------------------------------------------
+
+
+def test_preflight_turns_the_apis_own_key_refusal_into_a_setup_error(monkeypatch):
+    """A missing key is this machine's problem, and it has to arrive wearing that label.
+
+    Left to the children it arrives as uvicorn dying during startup - reported quickly by the
+    dead-child check, but as a LAUNCH failure carrying somebody else's traceback. The API's own
+    `require_openai_key` is what decides the rule; this only re-labels the refusal and adds the
+    one fact the API cannot know, which is that a smoke is what invoked it.
+    """
+
+    def _no_key():
+        raise RuntimeError("OPENAI_API_KEY is not set, so the API cannot embed queries.")
+
+    monkeypatch.setattr("gct.api.app.require_openai_key", _no_key)
+
+    with pytest.raises(http_smoke.SetupError) as err:
+        http_smoke.preflight()
+    assert "OPENAI_API_KEY is not set" in str(err.value), "the API's own words were dropped"
+    assert "refuses to start" in str(err.value)
+
+
+def test_preflight_turns_an_unreachable_database_into_a_setup_error_naming_the_remedy(
+    monkeypatch, stageable
+):
+    """An unreachable Postgres is the other "not set up" condition, and it names where to look.
+
+    Both children open their own connection at startup, so without this the failure is a worker
+    that dies inside `connect()` and a message about a child that never became observable.
+    """
+
+    def _no_database():
+        raise OSError("connection to server at 127.0.0.1 port 1 failed")
+
+    monkeypatch.setattr("gct.db.connect", _no_database)
+
+    with pytest.raises(http_smoke.SetupError) as err:
+        http_smoke.preflight()
+    assert "cannot reach Postgres" in str(err.value)
+    assert "DATABASE_URL" in str(err.value), "the message did not name the thing to check"
+
+
+@pytest.mark.parametrize(
+    ("regclass", "refused", "why"),
+    [
+        (("files", "jobs"), False, "both tables present is the only stageable case"),
+        (("files", None), True, "`jobs` missing - the worker dies on its first claim"),
+        ((None, "jobs"), True, "`files` missing - the API cannot record an upload"),
+        ((None, None), True, "nothing is applied at all"),
+    ],
+)
+def test_preflight_refuses_a_schema_that_is_missing_either_table(
+    monkeypatch, stageable, regclass, refused, why
+):
+    """EITHER table missing is a half-migrated database, and half is not a state to launch into.
+
+    An `and` here instead of an `or` would pass a database with `files` but no `jobs` - which
+    starts a worker that connects cleanly and then dies on its first claim, minutes later, with
+    the failure attributed to the queue rather than to the migration.
+    """
+    conn = _FakeConn([regclass], [])
+    monkeypatch.setattr("gct.db.connect", lambda: conn)
+
+    if refused:
+        with pytest.raises(http_smoke.SetupError) as err:
+            http_smoke.preflight()
+        assert "scripts/migrate.py" in str(err.value), why
+    else:
+        http_smoke.preflight()
+
+    assert conn.closed, "preflight leaked its connection - the close is in a `finally` for this"
+
+
+def test_preflight_refuses_a_database_that_already_has_work_the_worker_would_claim(
+    monkeypatch, stageable
+):
+    """The cost guard, in the words an operator has to act on.
+
+    The worker this harness launches is real: it claims whatever `jobs` holds in whatever
+    `DATABASE_URL` names, so a run that uploads nothing still embeds - and bills for - somebody
+    else's file, and moves that file's status on the way. `preflight` is where that is refused,
+    because it runs before either child exists.
+
+    The message is asserted, not just the raise: this refusal blocks a run, so it has to name
+    which rows blocked it and what to do about them, or the operator's only move is to delete
+    the check.
+    """
+    waiting = [
+        (5, "job-a", "file-a", "queued"),
+        (5, "job-b", "file-b", "processing"),
+        (5, "job-c", "file-c", "queued"),
+    ]
+    conn = _FakeConn([("files", "jobs")], waiting)
+    monkeypatch.setattr("gct.db.connect", lambda: conn)
+
+    with pytest.raises(http_smoke.SetupError) as err:
+        http_smoke.preflight()
+
+    message = str(err.value)
+    assert "job-a" in message and "file-a" in message, "the refusal did not name the rows"
+    assert "2 more" in message, (
+        "five rows were waiting and three were named; a refusal that quietly truncates leaves an "
+        f"operator draining what they can see. Got: {message}"
+    )
+    assert "scripts/worker.py" in message, "the remedy was not named"
+    assert conn.closed
+
+
+def test_preflight_returns_when_the_queue_is_empty(monkeypatch, stageable):
+    """The other direction, which is the one that runs every time the harness is used.
+
+    A guard that refused unconditionally would be indistinguishable from a broken script, and a
+    guard only ever tested in its refusing direction is how that ships.
+    """
+    conn = _FakeConn([("files", "jobs")], [])
+    monkeypatch.setattr("gct.db.connect", lambda: conn)
+
+    http_smoke.preflight()
+    assert conn.closed
+
+
+def test_the_claimable_query_counts_exactly_the_rows_the_real_worker_would_take(db):
+    """The guard's SQL, run against the real schema, with all four states in the table.
+
+    Two things only a real database can answer. That the statement is valid at all - the stubbed
+    tests above would ratify a typo in a column name forever. And that the predicate matches what
+    `gct.jobs.queue.claim` and `reclaim_expired` actually do: a `queued` row is claimable, and so
+    is a `processing` row whose lease has lapsed, because the worker's own first tick reaps it
+    back to `queued`. A live lease belongs to a worker that is still working, and a `done` row is
+    finished; neither is this harness's business.
+
+    Counted as a DELTA against whatever the database already held, so the assertion is about the
+    four rows this test inserted rather than about the machine being pristine.
+    """
+    conn, owner_id, class_id = db
+    before, _ = http_smoke.claimable_jobs(conn)
+
+    file_id = conn.execute(
+        "insert into files (owner_id, class_id, filename, status) "
+        "values (%s, %s::uuid, %s, 'queued') returning file_id::text",
+        (owner_id, class_id, "already-waiting.pdf"),
+    ).fetchone()[0]
+    for state, leased_until in (
+        ("queued", None),
+        ("processing", "now() - interval '1 hour'"),
+        ("processing", "now() + interval '1 hour'"),
+        ("done", None),
+    ):
+        conn.execute(
+            "insert into jobs (file_id, owner_id, class_id, state, leased_until) "
+            f"values (%s::uuid, %s, %s::uuid, %s, {leased_until or 'null'})",
+            (file_id, owner_id, class_id, state),
+        )
+    conn.commit()
+
+    after, sample = http_smoke.claimable_jobs(conn)
+    assert after - before == 2, (
+        "of a queued row, an expired lease, a live lease and a finished job, exactly two are "
+        f"claimable by the worker this harness launches; the query counted {after - before}"
+    )
+    assert sample, "the query named none of the rows it counted"
+
+
+def test_preflight_refuses_the_real_database_once_a_job_is_waiting_in_it(db, monkeypatch):
+    """The whole guard, end to end, over a real row and a SECOND connection.
+
+    `preflight` opens its own connection through `gct.db.connect`, so the row this test commits
+    is read back by a connection that is not the one that wrote it - the refusal is proof the
+    work was published, not just computed.
+    """
+    conn, owner_id, class_id = db
+    monkeypatch.setattr("gct.api.app.require_openai_key", lambda: None)
+
+    file_id = conn.execute(
+        "insert into files (owner_id, class_id, filename, status) "
+        "values (%s, %s::uuid, %s, 'queued') returning file_id::text",
+        (owner_id, class_id, "someone-elses-upload.pdf"),
+    ).fetchone()[0]
+    job_id = conn.execute(
+        "insert into jobs (file_id, owner_id, class_id, state) "
+        "values (%s::uuid, %s, %s::uuid, 'queued') returning job_id::text",
+        (file_id, owner_id, class_id),
+    ).fetchone()[0]
+    conn.commit()
+
+    with pytest.raises(http_smoke.SetupError) as err:
+        http_smoke.preflight()
+    assert job_id in str(err.value), (
+        "the refusal did not name the job that is actually in the database. Got: " + str(err.value)
+    )
+
+
+def test_the_script_itself_exits_2_when_the_machine_is_not_stageable():
+    """The exit status a caller branches on, taken from the real process rather than from `main`.
+
+    Every other test here calls `main()` in-process, where the return value is whatever the
+    function said. This runs `scripts/http_smoke.py` the way an operator or a CI step does and
+    reads the status the interpreter actually exited with, which is what `raise SystemExit(...)`
+    at the bottom of the script is for.
+    """
+    env = {
+        **os.environ,
+        "DATABASE_URL": "postgresql://127.0.0.1:1/nothing-is-listening-here",
+        "OPENAI_API_KEY": "sk-placeholder-this-test-must-not-spend",
+    }
+    finished = subprocess.run(
+        [sys.executable, str(_SCRIPT)], env=env, capture_output=True, timeout=120, check=False
+    )
+
+    assert finished.returncode == 2 == http_smoke.EXIT_SETUP, (
+        f"the script exited {finished.returncode} against an unreachable database, where a "
+        "caller reads 2 as 'this machine is not stageable' and 0 as 'the smoke passed'. "
+        f"stderr: {finished.stderr.decode('utf-8', 'replace')[-500:]}"
+    )
+    assert b"SETUP" in finished.stderr
 
 
 # --------------------------------------------------------------------------------------------
@@ -687,7 +1198,9 @@ def test_main_reports_an_unstageable_machine_as_setup_and_a_failed_launch_as_fai
         raise http_smoke.SetupError("no Postgres here")
 
     monkeypatch.setattr(http_smoke, "preflight", _refuse)
-    assert http_smoke.main([]) == http_smoke.EXIT_SETUP
+    setup_code = http_smoke.main([])
+    assert setup_code == http_smoke.EXIT_SETUP
+    assert setup_code != 0, "a machine that could not be staged reported success to its caller"
     assert "SETUP" in capsys.readouterr().err
 
     monkeypatch.setattr(http_smoke, "preflight", lambda: None)
@@ -698,8 +1211,33 @@ def test_main_reports_an_unstageable_machine_as_setup_and_a_failed_launch_as_fai
         yield  # pragma: no cover - unreachable, present so this is a generator
 
     monkeypatch.setattr(http_smoke, "launched", _fails_to_launch)
-    assert http_smoke.main([]) == http_smoke.EXIT_FAILED
+    failed_code = http_smoke.main([])
+    assert failed_code == http_smoke.EXIT_FAILED
+    assert failed_code != 0, "a launch that failed reported success to its caller"
     assert "FAIL" in capsys.readouterr().err
+
+
+def test_an_interrupted_run_is_a_failure_and_never_a_pass(monkeypatch, restore_sigterm, capsys):
+    """A ceremony that was stopped part-way did not pass, and the exit status has to say so.
+
+    This is the Ctrl-C and the `kill` path - the one whose whole purpose is that the `with`
+    blocks unwind and both children are torn down. Tearing them down successfully is not the
+    same as the run having succeeded: exiting 0 here would report a smoke that never finished as
+    a green gate, to a CI step or an operator who reads the number rather than the sentence.
+    """
+    monkeypatch.setattr(http_smoke, "preflight", lambda: None)
+
+    @contextmanager
+    def _interrupted(**_kwargs):
+        raise KeyboardInterrupt("signal 15")
+        yield  # pragma: no cover - unreachable, present so this is a generator
+
+    monkeypatch.setattr(http_smoke, "launched", _interrupted)
+
+    code = http_smoke.main([])
+    assert code == http_smoke.EXIT_FAILED, "an interrupted run did not report as a failure"
+    assert code != 0
+    assert "stopped" in capsys.readouterr().err
 
 
 def test_main_installs_the_handler_that_makes_a_killed_harness_tear_its_children_down(
@@ -763,37 +1301,69 @@ def test_the_real_pair_comes_up_and_never_reaches_a_paid_endpoint(db, monkeypatc
     `scripts/worker.py`'s own logging config puts `WORKER_STARTED_TOKEN` into the log file
     `log_contains` reads.
 
-    AND THAT THE LAUNCH IS FREE, measured rather than argued. Both children DO construct real
+    AND THAT THE LAUNCH IS FREE, OBSERVED RATHER THAN INFERRED. Both children DO construct real
     OpenAI clients at startup - the worker at wiring, the API in its lifespan - and the question
-    a cost claim turns on is whether construction is a CALL. So the SDK is pointed at a closed
-    loopback port for the duration: if either child issued a request while starting, it would
-    get a connection error and die, and this test would fail as a launch failure. It passes, so
-    neither did. The key is a placeholder for the same reason - the API refuses to start without
-    one, and this proves that requirement is satisfiable without a real one.
+    a cost claim turns on is whether construction is a CALL. So the SDK is pointed at an endpoint
+    that RECORDS every request it receives, and the assertion is that it received none.
+
+    The version this replaces pointed the SDK at a CLOSED port and inferred "a request would have
+    killed the child, the child lived, therefore no request". That inference is false and the
+    test was incapable of failing: `process_one` classifies an unclassified exception as
+    TRANSIENT (ADR 0020 §1, amended per ADR 0028), so a worker that IS calling retries through
+    its whole budget and stays alive the entire time. Measured on this branch, with one file
+    queued: the worker was still running after 20s with the SDK's own `Retrying request to
+    /embeddings` lines in its log, and the test went green.
+
+    The hold inside the block is what the observation costs. `run` ticks once immediately and
+    then every `DEFAULT_POLL_SECONDS`, so three of those covers the startup tick plus two more -
+    a call issued on any of them lands in the recording endpoint's list. Derived from the
+    library's own constant so a retune of the poll interval cannot silently shrink it to nothing.
+
+    WHAT THE HOLD IS AND IS NOT PROOF OF, now that `preflight` refuses a database with claimable
+    work in it: the queue this worker polls is empty, so this pins a property the HARNESS
+    ENFORCES rather than one it stumbled into. It is kept, and kept in this shape, because
+    `launched()` is below that guard - PR 3's ceremony and every future caller reach it directly
+    - and because "the pair, brought up and left running, buys nothing" is a claim about the
+    launch that no amount of refusing at preflight would establish.
 
     Takes `db` for the Postgres gate it carries, not for the connection: both children open
     their own, and the fixture is what makes this skip locally when Postgres is down and
     HARD-FAIL in CI. No `db_other` - this test writes nothing and claims no publication.
 
     One thing it does to the database, worth knowing before the next person adds to it: the
-    worker is a REAL worker, and it may complete one poll tick (reap, claim) against the test
-    database in the moment between reporting itself started and being torn down. It enqueues
-    nothing itself. The suite is serial and each ship lane has its own database, so the only
-    row it can reach is one an earlier test failed to clean up.
+    worker is a REAL worker, and it completes several poll ticks (reap, claim) against the test
+    database while the hold runs. It enqueues nothing itself. The queue is asserted empty first,
+    so a red here is attributable: a claimable row would make the worker ingest, and the failure
+    would be this test's premise rather than the launch buying something.
     """
-    monkeypatch.setenv("OPENAI_API_KEY", "sk-placeholder-this-test-must-not-spend")
-    monkeypatch.setenv("OPENAI_BASE_URL", f"http://{http_smoke.LOOPBACK}:1/v1")
+    conn, _owner_id, _class_id = db
+    waiting, sample = http_smoke.claimable_jobs(conn)
+    assert waiting == 0, (
+        f"{waiting} job(s) were claimable before this test launched a real worker ({sample}); "
+        "the worker would ingest them and this test would be measuring somebody else's upload"
+    )
 
-    with http_smoke.launched() as stack:
-        port = int(stack.base_url.rsplit(":", 1)[1])
-        assert stack.server.process.poll() is None
-        assert stack.worker.process.poll() is None
-        assert http_smoke.health_ok(stack.base_url)
-        with urllib.request.urlopen(  # noqa: S310 - loopback, and the URL came from the harness
-            f"{stack.base_url}/health", timeout=http_smoke.PROBE_HTTP_TIMEOUT_SECONDS
-        ) as response:
-            assert json.loads(response.read().decode("utf-8")) == {"status": "ok"}
-        assert stack.worker.log_contains(http_smoke.WORKER_STARTED_TOKEN)
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-placeholder-this-test-must-not-spend")
+
+    with _recording_openai_endpoint() as openai:
+        monkeypatch.setenv("OPENAI_BASE_URL", openai.base_url)
+
+        with http_smoke.launched() as stack:
+            port = int(stack.base_url.rsplit(":", 1)[1])
+            assert stack.server.process.poll() is None
+            assert stack.worker.process.poll() is None
+            assert http_smoke.health_ok(stack.base_url)
+            with urllib.request.urlopen(  # noqa: S310 - loopback, URL came from the harness
+                f"{stack.base_url}/health", timeout=http_smoke.PROBE_HTTP_TIMEOUT_SECONDS
+            ) as response:
+                assert json.loads(response.read().decode("utf-8")) == {"status": "ok"}
+            assert stack.worker.log_contains(http_smoke.WORKER_STARTED_TOKEN)
+            time.sleep(3 * worker_lib.DEFAULT_POLL_SECONDS)
+
+        assert openai.seen == [], (
+            "the pair reached the model provider while merely coming up and idling, which with a "
+            f"real key is money spent by a run that uploaded nothing: {openai.seen}"
+        )
 
     assert stack.server.process.returncode in http_smoke.CLEAN_EXIT_STATUSES, (
         f"uvicorn stopped with {stack.server.process.returncode}, which is not one of the "

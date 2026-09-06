@@ -48,6 +48,8 @@ uv run python scripts/ask_smoke.py      # Slice 1 exit gate — SPENDS MONEY (re
 uv run python scripts/ingest_smoke.py   # Slice 2 exit gate — SPENDS MONEY
 uv run python scripts/worker.py         # the poll worker — a SEPARATE process, never in the API loop (ADR 0011)
 uv run uvicorn gct.api.app:app          # the Slice 3 API — its own process; refuses to start without OPENAI_API_KEY
+uv run python scripts/http_smoke.py     # Slice 3 exit gate — launches API + worker itself; SPENDS MONEY
+uv run python scripts/http_smoke.py --launch-only   # ...the same launch, no ceremony, no cost
 uv run pytest tests/ -q                 # full suite
 uv run pytest -m db -q                  # just the Postgres-backed tests (DB must be up)
 uv run pytest -m "not live" -q          # exactly what CI runs
@@ -68,6 +70,14 @@ smokes three times each, with `OPENAI_API_KEY` from the repository secrets, on: 
 push to `main` as a canary, or by hand. Never on a bare pull request, so a fork cannot spend the key.
 It fails rather than skips when the secret is absent. The Slice 2 gate runs on a corpus
 `scripts/ci_corpus.py` generates, because the write path does not care what the documents say.
+**The Slice 3 gate (`http_smoke.py`) is CI-*capable* but not wired into that workflow** — a
+distinction worth keeping straight, because it is the only paid gate where "could it run there"
+and "does it" have different answers. It grounds on what it uploads, so a generated corpus was not
+a free inheritance from Slice 2; it was measured, and the questions hold. Which paid gates run on
+what cadence is a cost decision, not a capability one. Unlike the other two it starts its own
+`uvicorn` and its own worker, so nothing needs to be running first — and `--launch-only` proves
+that pair comes up for free, which is the thing to run when the machine, not the product, is in
+doubt.
 **The Slice 1 gate (`ask_smoke.py`) cannot run in CI:** its questions are anchored to the dogfood
 corpus by file and page, and that corpus is gitignored. It stays local — `/ship`'s acceptance lane
 and `/land` run it. A green `CI` check still says nothing about any gate, and a green `live-gates`

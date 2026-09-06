@@ -110,6 +110,13 @@ Every non-2xx response body is exactly:
   naming here rather than under a route: they are refused in middleware, before routing has picked
   a handler, so no route section can be their writer and a client switch built per-route misses
   them. See *The request-body bound* below.
+- **`detail` on a 422 echoes the client's own rejected value, and every string in an envelope is
+  bounded** at `MAX_ERROR_ECHO_CHARS` (`gct.config`, provisional in `MAX_STAGE_BYTES`'s shape):
+  past it the string is truncated and marked with the length it really was. A bound on the VALUE,
+  not on the shape — the per-field list and every key in an entry are unchanged, so a client reads
+  the same envelope it always did. It is needed because a bound on what comes IN cannot bound what
+  goes OUT: the multipart exemption below takes a body off the request bound, and the 422 was
+  otherwise the size of the request (#134).
 - `message` — for a human; names the remedy where one exists.
 - Routes raise **`ApiError(status_code, kind, message, detail=None)`**; the status is the raiser's
   choice. **Which status a given failure maps to is each route issue's decision**, not this spec's.
@@ -136,7 +143,8 @@ uploaded file IS the request body and `gct.staging.stage` already bounds it whil
 every real course upload, so a `multipart/form-data` request is passed through with the same
 `receive` callable it arrived with. The residue: that label also takes a body off this bound on a
 JSON route, where pydantic then refuses it 422 — smaller than the unbounded state that preceded
-the module, and recorded in `limits.py` rather than silently.
+the module, and recorded in `limits.py` rather than silently. What that 422 COSTS is bounded on
+the way out instead, by the envelope's echo bound above (#134).
 
 **This middleware renders its refusals and must never raise them.** `add_exception_handler`
 registers on `ExceptionMiddleware`, which sits *inside* user middleware, so an `ApiError` raised

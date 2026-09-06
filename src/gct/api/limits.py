@@ -47,8 +47,10 @@ PYDANTIC, not a form parser - FastAPI chooses its parser
 from the route's declared parameter, so a route taking a model is handed the raw bytes and
 `starlette.formparsers.MultiPartParser` is never constructed (measured with a spy on it: zero
 calls). Worth naming precisely rather than left as "the form parser", because pydantic's 422
-echoes the whole rejected body back under `detail` - so the refusal costs a response the size of
-the request. That echo predates this module and this module does not change it.
+echoes the rejected body back under `detail`. That echo predates this module and this module does
+not change it - but what it COSTS no longer follows the request's size: `errors._json_safe` bounds
+every string it renders (`MAX_ERROR_ECHO_CHARS`, issue #134), which is where a bound on a RESPONSE
+belongs.
 
 THIS MODULE RENDERS ITS REFUSALS; IT MUST NEVER RAISE THEM. That is not a style choice and a
 future edit would break it silently. Starlette's stack is `ServerErrorMiddleware` -> USER

@@ -40,6 +40,7 @@ no attribute '__dict__'` at import - measured on the first attempt to load this 
 
 from __future__ import annotations
 
+import hashlib
 import importlib.util
 import ipaddress
 import json
@@ -51,6 +52,7 @@ import signal
 import socket
 import subprocess
 import sys
+import tempfile
 import threading
 import time
 import urllib.request
@@ -58,9 +60,13 @@ from contextlib import contextmanager
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
 from types import SimpleNamespace
+from typing import Annotated
 
 import pytest
+from fastapi import FastAPI, File, Form, UploadFile
+from fastapi.testclient import TestClient
 
+from gct.ingest.parse import ParseError, parse_file
 from gct.jobs import worker as worker_lib
 
 _SCRIPT = Path(__file__).resolve().parents[2] / "scripts" / "http_smoke.py"
@@ -1425,3 +1431,487 @@ def test_the_real_pair_comes_up_and_never_reaches_a_paid_endpoint(db, monkeypatc
     assert not _is_alive(stack.server.pid)
     assert not _is_alive(stack.worker.pid)
     assert not http_smoke._accepts(port)
+
+
+# --------------------------------------------------------------------------------------------
+# The ceremony, against a scripted API
+# --------------------------------------------------------------------------------------------
+#
+# WHY A STAND-IN API AT ALL, when the gate's whole point is the real one. The real loop is the
+# PASS: it is what `uv run python scripts/http_smoke.py` proves, on real models, for money. What
+# it cannot show is any of the FAILURES - a gate is only worth its exit status if it reddens on a
+# product that has gone wrong, and there is no way to make the real product refuse a question it
+# can answer, or answer one it cannot, or fail an upload for the wrong reason. So the pass is
+# measured against the real thing and every fault is pinned against a server that can be told to
+# misbehave. These tests are free, offline, and they are the ones that stop `run_gate` from
+# becoming a function that returns `[]` no matter what happened.
+
+_CORPUS_NAME = "hydrology-lecture-01.pdf"
+
+
+def _ready_answer(state: str = "GROUNDED", citations: list[dict] | None = None) -> dict:
+    """An `AskResponse` body of the shape `src/gct/api/routers/ask.py` renders."""
+    if citations is None:
+        citations = [{"label": "S1", "file": _CORPUS_NAME, "page_or_slide": 3, "chunk_id": "c-1"}]
+    return {
+        "state": state,
+        "answer_prose": "Residence time in the atmosphere is about nine days. [S1]",
+        "citations": citations,
+        "coverage": {"complete": True, "gaps": []},
+        "integrity": {"ok": True, "reasons": []},
+    }
+
+
+def _refused_answer() -> dict:
+    """A `REFUSAL` body: no citations, and no prose to show (`answer()`'s canned refusal)."""
+    return {
+        "state": "REFUSAL",
+        "answer_prose": None,
+        "citations": [],
+        "coverage": {"complete": False, "gaps": ["the course materials do not cover this"]},
+        "integrity": {"ok": True, "reasons": []},
+    }
+
+
+def _status(status: str, failed_reason: str | None = None, message: str = "a sentence") -> dict:
+    """A `FileStatusResponse` body of the shape `src/gct/api/routers/files.py` renders."""
+    return {
+        "filename": _CORPUS_NAME,
+        "status": status,
+        "failed_reason": failed_reason,
+        "message": message,
+    }
+
+
+# The full state machine, for the one test whose subject is the sequence. Every other test uses
+# the AT_ONCE pair below: a plan whose first entry is already terminal returns on the first poll,
+# so nothing sleeps for a status transition that test is not about.
+_READY = [_status("queued"), _status("processing"), _status("ready")]
+_UNPARSEABLE = [
+    _status("queued"),
+    _status("failed", "unparseable", "We could not read any text out of this file - ..."),
+]
+_READY_AT_ONCE = [_status("ready")]
+_UNPARSEABLE_AT_ONCE = [_status("failed", "unparseable", "a sentence naming the remedy")]
+
+
+@contextmanager
+def _scripted_api(*, uploads, answers, filenames=(_CORPUS_NAME, http_smoke.UNPARSEABLE_FILENAME)):
+    """An HTTP server that answers the ceremony's four routes from a script, and records the ask.
+
+    `uploads` is one status LIST per upload, in the order the ceremony uploads: each
+    `GET /files/{id}` takes the next entry and the last one repeats, which is how a file that
+    never settles is expressed (a list ending in a non-terminal status). `answers` is one
+    `(status, body)` per `POST /ask`, in order.
+
+    A real socket and the stdlib's own server rather than a monkeypatched `_call`, for the reason
+    the module docstring gives about stand-in children: patching out the transport would leave the
+    thing being tested - a request built here, parsed there, and a body read back - as the one
+    part no test executes.
+    """
+    state = SimpleNamespace(seen=[], content_types=[], plans=[list(plan) for plan in uploads])
+
+    class Handler(BaseHTTPRequestHandler):
+        def log_message(self, *args):
+            pass
+
+        def _reply(self, status: int, body: object) -> None:
+            raw = json.dumps(body).encode()
+            self.send_response(status)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(raw)))
+            self.end_headers()
+            self.wfile.write(raw)
+
+        def do_POST(self):  # noqa: N802 - the stdlib's spelling
+            length = int(self.headers.get("Content-Length") or 0)
+            payload = self.rfile.read(length)
+            state.seen.append(f"POST {self.path}")
+            if self.path == "/classes":
+                self._reply(201, {"class_id": "class-1", "name": json.loads(payload)["name"]})
+            elif self.path == "/files":
+                state.content_types.append(self.headers.get("Content-Type", ""))
+                nth = sum(1 for line in state.seen if line == "POST /files")
+                self._reply(202, {"file_id": f"file-{nth}", "filename": filenames[nth - 1]})
+            elif self.path == "/ask":
+                status, body = answers[sum(1 for line in state.seen if line == "POST /ask") - 1]
+                self._reply(status, body)
+            else:
+                self._reply(404, {"error": {"kind": "not_found", "message": self.path}})
+
+        def do_GET(self):  # noqa: N802 - the stdlib's spelling
+            state.seen.append(f"GET {self.path}")
+            nth = int(self.path.rsplit("-", 1)[1])
+            plan = state.plans[nth - 1]
+            self._reply(200, plan.pop(0) if len(plan) > 1 else plan[0])
+
+    server = HTTPServer((http_smoke.LOOPBACK, 0), Handler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    state.base_url = f"http://{http_smoke.LOOPBACK}:{server.server_address[1]}"
+    try:
+        yield state
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=5)
+
+
+def _run_gate(api, corpus: Path, **kwargs) -> list[str]:
+    """`run_gate` against a scripted API, with this suite's questions."""
+    return http_smoke.run_gate(
+        api.base_url,
+        corpus=corpus,
+        question="What is residence time in the water cycle?",
+        out_of_corpus_question="What were the main causes of the French Revolution?",
+        **kwargs,
+    )
+
+
+@pytest.fixture
+def corpus(tmp_path) -> Path:
+    """A file for the ceremony to upload. Its CONTENT is never parsed by anything under test."""
+    path = tmp_path / _CORPUS_NAME
+    path.write_bytes(b"%PDF-1.7\nnot read by anything in these tests\n")
+    return path
+
+
+def test_the_gate_passes_when_the_loop_does_what_the_exit_criterion_says(corpus, capsys):
+    """The shape of a green run, and the baseline every fault test below is a single edit from.
+
+    Also the only place the ORDER is pinned. The exit criterion is a sequence - a class before an
+    upload, an upload polled to `ready` before a question, and the unreadable file last so its
+    failure cannot be what the asks were answered from - and a `run_gate` that did the same four
+    kinds of request in another order would still return `[]` here without it.
+    """
+    with _scripted_api(
+        uploads=[_READY, _UNPARSEABLE],
+        answers=[(200, _ready_answer()), (200, _refused_answer())],
+    ) as api:
+        assert _run_gate(api, corpus) == []
+
+    assert api.seen == [
+        "POST /classes",
+        "POST /files",
+        "GET /files/file-1",
+        "GET /files/file-1",
+        "GET /files/file-1",
+        "POST /ask",
+        "POST /ask",
+        "POST /files",
+        "GET /files/file-2",
+        "GET /files/file-2",
+    ], api.seen
+    printed = capsys.readouterr().out
+    assert "queued -> processing -> ready" in printed
+    assert "failed(unparseable)" in printed
+
+
+def test_a_refusal_to_a_question_the_corpus_answers_is_a_fault(corpus):
+    """The differentiator's other failure mode, and the one no library test can stage over HTTP.
+
+    Refusing everything is a trivially "honest" tutor and a useless one, so a gate that only
+    checked the refusal would pass a product that had stopped answering entirely.
+    """
+    with _scripted_api(
+        uploads=[_READY_AT_ONCE, _UNPARSEABLE_AT_ONCE],
+        answers=[(200, _refused_answer()), (200, _refused_answer())],
+    ) as api:
+        faults = _run_gate(api, corpus)
+
+    assert any("REFUSAL" in fault and "cited answer" in fault for fault in faults), faults
+
+
+def test_an_answer_to_a_question_the_corpus_does_not_cover_is_a_fault(corpus):
+    """Fabrication is the failure this product exists to not have, so the gate has to see it."""
+    with _scripted_api(
+        uploads=[_READY_AT_ONCE, _UNPARSEABLE_AT_ONCE],
+        answers=[(200, _ready_answer()), (200, _ready_answer())],
+    ) as api:
+        faults = _run_gate(api, corpus)
+
+    assert any("out-of-corpus" in fault for fault in faults), faults
+
+
+def test_a_refusal_rendered_as_a_client_error_is_a_fault(corpus):
+    """ADR 0016 over HTTP: a refusal is a SUCCESSFUL outcome and leaves as a 200.
+
+    The state is the refusal the product should give; only the status is wrong. Rendering "your
+    materials do not cover this" as a 4xx tells a client the request was bad when the answer was
+    right, and it is the exact shape an edit that treats refusal as an error case produces - so
+    the gate names the status separately from the state.
+    """
+    with _scripted_api(
+        uploads=[_READY_AT_ONCE, _UNPARSEABLE_AT_ONCE],
+        answers=[(200, _ready_answer()), (400, _refused_answer())],
+    ) as api:
+        faults = _run_gate(api, corpus)
+
+    assert any("successful outcome" in fault and "ADR 0016" in fault for fault in faults), faults
+
+
+def test_a_citation_naming_a_file_this_run_did_not_upload_is_a_fault(corpus):
+    """A cited answer is only worth anything if the citation points into the student's own file.
+
+    The state is GROUNDED and there IS a citation, so a gate that checked only those two would
+    pass an answer attributed to a file this run never uploaded - which is what a scope leak
+    across owners or classes would look like from here (F6/F12).
+    """
+    elsewhere = [{"label": "S1", "file": "somebody-elses.pdf", "page_or_slide": 2, "chunk_id": "x"}]
+    with _scripted_api(
+        uploads=[_READY_AT_ONCE, _UNPARSEABLE_AT_ONCE],
+        answers=[(200, _ready_answer(citations=elsewhere)), (200, _refused_answer())],
+    ) as api:
+        faults = _run_gate(api, corpus)
+
+    assert any("somebody-elses.pdf" in fault for fault in faults), faults
+
+
+def test_a_cited_state_with_no_citations_and_no_prose_is_two_faults(corpus):
+    """Every fault, not the first: three different defects are three different things to fix."""
+    hollow = {**_ready_answer(citations=[]), "answer_prose": "   "}
+    with _scripted_api(
+        uploads=[_READY_AT_ONCE, _UNPARSEABLE_AT_ONCE],
+        answers=[(200, hollow), (200, _refused_answer())],
+    ) as api:
+        faults = _run_gate(api, corpus)
+
+    assert any("cited nothing" in fault for fault in faults), faults
+    assert any("no prose" in fault for fault in faults), faults
+
+
+def test_a_file_that_lands_failed_instead_of_ready_skips_the_asks_rather_than_failing_them(corpus):
+    """A fault about the upload, and no money spent restating it twice more.
+
+    `answer()` renders an empty retrieval as the canned refusal with no generation call, so asking
+    anyway would add two faults that are both consequences of the one above - and on the REAL
+    loop the in-corpus ask is a paid call, which is the difference between a tidy report and a
+    charge for a question that could not have been answered.
+    """
+    with _scripted_api(uploads=[_UNPARSEABLE_AT_ONCE, _UNPARSEABLE_AT_ONCE], answers=[]) as api:
+        faults = _run_gate(api, corpus)
+
+    assert "POST /ask" not in api.seen, api.seen
+    assert any("instead of `ready`" in fault for fault in faults), faults
+
+
+def test_the_unreadable_file_failing_for_the_wrong_reason_is_a_fault(corpus):
+    """The reason is what the student acts on, so `failed` alone is not the assertion.
+
+    `empty` and `unparseable` are both terminal and both true of a file that yielded no text, and
+    they send the student to two different remedies (`_FAILED_MESSAGE`): re-export versus OCR. A
+    gate that accepted either would stop noticing which one the pipeline decided.
+    """
+    wrong = [_status("failed", "empty", "there is no text in it")]
+    with _scripted_api(
+        uploads=[_READY_AT_ONCE, wrong],
+        answers=[(200, _ready_answer()), (200, _refused_answer())],
+    ) as api:
+        faults = _run_gate(api, corpus)
+
+    assert any("'empty'" in fault and "unparseable" in fault for fault in faults), faults
+
+
+def test_a_terminal_reason_with_no_message_to_show_is_a_fault(corpus):
+    """ "Actionable" is the Exit criterion's word, and a reason token alone is not actionable.
+
+    The wording is NOT checked - `_FAILED_MESSAGE` is its writer and a test there already fails
+    when a migration widens the reason set without a sentence. What this checks is that something
+    reached the surface at all, which is the half that a rendering change could silently drop.
+    """
+    silent = [_status("failed", "unparseable", "")]
+    with _scripted_api(
+        uploads=[_READY_AT_ONCE, silent],
+        answers=[(200, _ready_answer()), (200, _refused_answer())],
+    ) as api:
+        faults = _run_gate(api, corpus)
+
+    assert any("no message" in fault for fault in faults), faults
+
+
+def test_a_file_that_never_settles_is_reported_against_the_timeout_it_was_actually_given(corpus):
+    """A stall is bounded, and the number in the message is the one this run was given.
+
+    Same defect `_await` was rebuilt to avoid one layer up: a message that interpolates the
+    DEFAULT tells an operator who just typed `--ingest-timeout 0.3` that it waited 120 seconds.
+    """
+    stuck = [_status("queued"), _status("processing")]
+    with _scripted_api(uploads=[stuck], answers=[]) as api:
+        started = time.monotonic()
+        with pytest.raises(http_smoke.GateError) as gate_error:
+            _run_gate(api, corpus, ingest_timeout=0.3)
+        elapsed = time.monotonic() - started
+
+    assert "0.3s" in str(gate_error.value), str(gate_error.value)
+    assert "'processing'" in str(gate_error.value)
+    assert elapsed < 5, f"a 0.3s bound took {elapsed:.1f}s to report"
+
+
+def test_a_class_the_api_would_not_create_stops_the_run_instead_of_cascading(corpus):
+    """A step that cannot continue raises; there is no id to upload against and no verdict to give.
+
+    And the message carries the API's own envelope - `kind` and `message` - because that pair is
+    what the API wrote for a human with a problem, and a `KeyError` from the line after would be
+    the wrong half of the story.
+    """
+    with _scripted_api(uploads=[], answers=[]) as api:
+        api.base_url += "/nowhere"  # every route 404s through the scripted server's fallback
+        with pytest.raises(http_smoke.GateError) as gate_error:
+            _run_gate(api, corpus)
+
+    assert "POST /classes did not create the class" in str(gate_error.value)
+    assert "not_found" in str(gate_error.value)
+
+
+# --------------------------------------------------------------------------------------------
+# The wire format, and the fixture that has to be unreadable
+# --------------------------------------------------------------------------------------------
+
+
+def test_the_multipart_body_is_read_back_as_the_form_field_and_the_file_bytes():
+    """The one piece of wire format this script hand-rolls, parsed by the parser that will get it.
+
+    Hand-rolled because the standard library has no `multipart/form-data` encoder, so this is the
+    one place in the loop where a byte in the wrong position means a request that parses into
+    something else. The app here MIRRORS `src/gct/api/routers/files.py:upload_file`'s two
+    parameters rather than being it: the real route wants Postgres, a staging directory and two
+    providers, none of which have anything to do with whether these bytes decode. The real route
+    does get them - on every run of the gate itself, which is the end-to-end half of this claim.
+
+    The content is every byte value, four times over, so a CR, an LF and a lone `-` all sit inside
+    the part: those are the characters a boundary is made of, and an encoder that mishandles them
+    truncates a real PDF at some byte nobody would predict.
+    """
+    app = FastAPI()
+
+    @app.post("/files")
+    def _echo(class_id: Annotated[str, Form()], file: Annotated[UploadFile, File()]) -> dict:
+        return {
+            "class_id": class_id,
+            "filename": file.filename,
+            "digest": hashlib.sha256(file.file.read()).hexdigest(),
+        }
+
+    content = bytes(range(256)) * 4
+    content_type, body = http_smoke.multipart(
+        {"class_id": "class-1"}, part="file", filename="a lecture.pdf", content=content
+    )
+
+    with TestClient(app) as client:
+        response = client.post("/files", content=body, headers={"Content-Type": content_type})
+
+    assert response.status_code == 200, response.text
+    assert response.json() == {
+        "class_id": "class-1",
+        "filename": "a lecture.pdf",
+        "digest": hashlib.sha256(content).hexdigest(),
+    }
+
+
+@pytest.mark.parametrize(
+    ("filename", "what"),
+    [
+        ('lecture".pdf', "a quote closes the header's quoted string"),
+        ("lecture\r\nX-Injected: 1.pdf", "a CRLF starts a header of the attacker's choosing"),
+        ("lecture\n.pdf", "a bare newline does the same to a lenient parser"),
+    ],
+)
+def test_a_filename_that_would_forge_a_header_is_refused_rather_than_escaped(filename, what):
+    """Refuse at the boundary, do not convert - and this one really can arrive.
+
+    `gct.staging.validate_filename` forbids `/`, `\\` and NUL and permits both a quote and a
+    newline, so a `--corpus` whose name contains one reaches this encoder. Escaping it would
+    upload the file under a name the student never chose, and that name is the citation label
+    every answer shows.
+    """
+    with pytest.raises(http_smoke.GateError) as refused:
+        http_smoke.multipart({}, part="file", filename=filename, content=b"x")
+
+    # `repr`, because that is how the refusal quotes it: a message that pasted a raw newline
+    # into itself would be the same defect being refused, one layer out.
+    assert repr(filename) in str(refused.value), what
+
+
+def test_the_unparseable_fixture_is_unparseable_to_the_real_parser():
+    """The gate asserts `failed_reason == 'unparseable'`; this is why those bytes produce it.
+
+    Free and offline, and it pins the fixture from the side the gate cannot see: over HTTP the
+    only evidence is the reason the worker recorded, so a fixture that drifted into `empty` or
+    `unsupported` would turn a passing product into a red gate with no clue as to which end was
+    wrong. `parse_file` is the one writer of that judgement and this asks it directly.
+    """
+    path = Path(tempfile.mkdtemp()) / http_smoke.UNPARSEABLE_FILENAME
+    path.write_bytes(http_smoke.UNPARSEABLE_PDF_BYTES)
+
+    with pytest.raises(ParseError) as parse_error:
+        parse_file(path)
+
+    assert parse_error.value.reason == http_smoke.UNPARSEABLE_REASON
+
+
+# --------------------------------------------------------------------------------------------
+# The corpus and the questions anchored to it
+# --------------------------------------------------------------------------------------------
+
+
+def test_a_corpus_with_no_question_anchored_to_it_is_refused_at_the_boundary():
+    """`--corpus` without `--question` fails in milliseconds instead of after two paid calls.
+
+    The default question asks about a fact in the generated hydrology PDF. Against anyone else's
+    materials it gets the honest refusal the product is right to give, which this gate reads as
+    the loop being broken - a red naming the answer rather than the cause, arrived at after an
+    upload, an ingest and a generation call.
+    """
+    with pytest.raises(SystemExit) as exit_info:
+        http_smoke._parse(["--corpus", "lecture.pdf"])
+    assert exit_info.value.code == 2
+
+
+def test_a_question_without_a_corpus_is_accepted_and_the_defaults_fill_the_rest_in():
+    """The other direction, so the refusal above cannot quietly become "both or neither".
+
+    Asking a different question of the GENERATED corpus is a legitimate thing to do - it is how
+    the four candidate questions were measured - and there is nothing about it to refuse.
+    """
+    args = http_smoke._parse(["--question", "What is an aquifer?"])
+    assert args.question == "What is an aquifer?"
+    assert args.corpus is None
+    assert args.out_of_corpus_question == http_smoke.DEFAULT_OUT_OF_CORPUS_QUESTION
+
+    defaults = http_smoke._parse([])
+    assert defaults.question == http_smoke.DEFAULT_QUESTION
+
+
+def test_launch_only_uploads_nothing_asks_nothing_and_says_it_is_not_the_gate(
+    monkeypatch, restore_sigterm, stub_children, capsys
+):
+    """The free half, and the reason its PASS line is worded differently from the gate's.
+
+    The stand-in children answer `/health` and nothing else, so a run that reached the ceremony
+    would fail on the first `POST /classes` - which is what makes this a real check that
+    `--launch-only` ran none of it, rather than a reading of a flag. What it must not do is print
+    a PASS a tired operator files as the exit gate.
+    """
+    monkeypatch.setattr(http_smoke, "preflight", lambda: None)
+
+    assert http_smoke.main(["--launch-only"]) == http_smoke.EXIT_OK
+
+    printed = capsys.readouterr().out
+    assert "PASS" in printed
+    assert "not the Slice 3 exit gate" in printed
+    assert "class" not in printed and "upload" not in printed
+
+
+def test_the_generated_corpus_is_one_readable_pdf_the_gate_can_upload():
+    """`generated_corpus` really produces a file, by running the script that is its one writer.
+
+    Free: `scripts/ci_corpus.py` builds a PDF with `reportlab` and touches no network and no
+    database. It is also the only check outside CI that the Slice 2 gate's corpus generator still
+    runs at all - this gate would otherwise report its absence as a `SetupError` about a dev
+    extra, which is the correct message and not a substitute for knowing.
+    """
+    with http_smoke.generated_corpus() as corpus:
+        assert corpus.is_file()
+        assert corpus.suffix == ".pdf"
+        assert parse_file(corpus), "the corpus this gate uploads must have text to index"
+    assert not corpus.exists(), "the generated corpus outlived the block that owns it"

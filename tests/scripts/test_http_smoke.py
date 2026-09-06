@@ -1243,7 +1243,9 @@ def test_main_reports_an_unstageable_machine_as_setup_and_a_failed_launch_as_fai
         raise http_smoke.SetupError("no Postgres here")
 
     monkeypatch.setattr(http_smoke, "preflight", _refuse)
-    setup_code = http_smoke.main([])
+    # `--launch-only` throughout this group: their subject is `main`'s exit statuses, and the
+    # ceremony would need a corpus, a real API and money to reach the same three returns.
+    setup_code = http_smoke.main(["--launch-only"])
     assert setup_code == http_smoke.EXIT_SETUP
     assert setup_code != 0, "a machine that could not be staged reported success to its caller"
     assert "SETUP" in capsys.readouterr().err
@@ -1256,7 +1258,7 @@ def test_main_reports_an_unstageable_machine_as_setup_and_a_failed_launch_as_fai
         yield  # pragma: no cover - unreachable, present so this is a generator
 
     monkeypatch.setattr(http_smoke, "launched", _fails_to_launch)
-    failed_code = http_smoke.main([])
+    failed_code = http_smoke.main(["--launch-only"])
     assert failed_code == http_smoke.EXIT_FAILED
     assert failed_code != 0, "a launch that failed reported success to its caller"
     assert "FAIL" in capsys.readouterr().err
@@ -1279,7 +1281,7 @@ def test_an_interrupted_run_is_a_failure_and_never_a_pass(monkeypatch, restore_s
 
     monkeypatch.setattr(http_smoke, "launched", _interrupted)
 
-    code = http_smoke.main([])
+    code = http_smoke.main(["--launch-only"])
     assert code == http_smoke.EXIT_FAILED, "an interrupted run did not report as a failure"
     assert code != 0
     assert "stopped" in capsys.readouterr().err
@@ -1296,7 +1298,7 @@ def test_main_installs_the_handler_that_makes_a_killed_harness_tear_its_children
     the disposition back.
     """
     monkeypatch.setattr(http_smoke, "preflight", lambda: None)
-    assert http_smoke.main([]) == http_smoke.EXIT_OK
+    assert http_smoke.main(["--launch-only"]) == http_smoke.EXIT_OK
     assert signal.getsignal(signal.SIGTERM) is http_smoke._interrupt
 
 
@@ -1329,7 +1331,9 @@ def test_main_reports_a_child_that_stopped_any_other_way_as_a_failure(monkeypatc
         )
 
     monkeypatch.setattr(http_smoke, "launched", _yields_a_badly_stopped_worker)
-    assert http_smoke.main([]) == http_smoke.EXIT_FAILED
+    # `--launch-only`, or the ceremony reaches a closed port and this returns 1 for the wrong
+    # reason - the check under test is the one on `returncode`, after the block.
+    assert http_smoke.main(["--launch-only"]) == http_smoke.EXIT_FAILED
 
 
 # --------------------------------------------------------------------------------------------

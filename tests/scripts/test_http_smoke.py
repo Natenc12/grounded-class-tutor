@@ -10,16 +10,19 @@ imagined: with `_interrupt` NOT installed, a SIGTERM to the harness left both ch
 
 WHAT RUNS WHERE, and it is a two-way split rather than the usual one:
 
-  - OFFLINE AND FREE - everything below except the last test. The children are STAND-INS: a
-    dozen lines of `socket` that serve one canned `/health`, a `print` that emits the worker's
-    token, a `sleep` that never becomes observable. That is not a weaker version of the real
-    launch; it is the honest scope. This file's subject is processes, sockets and signals, and a
-    stand-in child exercises every one of those mechanisms while removing the two things that
-    would make the test skip - Postgres and a key.
-  - REAL, AND MARKED `db` - `test_the_real_pair_comes_up_and_never_reaches_a_paid_endpoint`
-    alone. Only a run of the ACTUAL pair can show that uvicorn's `--fd` spelling serves our ASGI
-    app, that the real worker's own logging config puts `WORKER_STARTED_TOKEN` where
-    `log_contains` looks, and that neither child buys anything on the way up.
+  - OFFLINE AND FREE - all but the three `db`-marked tests. The children are STAND-INS: a dozen
+    lines of `socket` that serve one canned `/health`, a `print` that emits the worker's token, a
+    `sleep` that never becomes observable, and a `_FakeConn` that answers `preflight`'s queries.
+    That is not a weaker version of the real launch; it is the honest scope. This file's subject
+    is processes, sockets and signals, and a stand-in child exercises every one of those
+    mechanisms while removing the two things that would make the test skip - Postgres and a key.
+  - REAL, AND MARKED `db` - three. `test_the_real_pair_comes_up_and_never_reaches_a_paid_endpoint`
+    is the one that launches the pair: only a run of the ACTUAL pair can show that uvicorn's
+    `--fd` spelling serves our ASGI app, that the real worker's own logging config puts
+    `WORKER_STARTED_TOKEN` where `log_contains` looks, and that neither child buys anything while
+    coming up and idling. The other two run `preflight`'s guard against the real schema, because
+    SQL that is only ever executed behind a fake connection is SQL nobody has checked - a typo in
+    a column name would live forever behind the stubs.
 
 The token the harness greps for is pinned from BOTH sides, and both halves are needed. The
 library half (`test_the_token_the_harness_waits_for_is_the_one_the_library_actually_logs`) reads

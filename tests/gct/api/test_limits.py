@@ -80,6 +80,22 @@ def nested_body_in(encoding: str, arrays: int = 1_200) -> bytes:
     return text.encode(encoding)
 
 
+def escaped_quote_body() -> bytes:
+    """A valid JSON body carrying an ESCAPED QUOTE before its nesting.
+
+    The escape is the whole point. Cut this body immediately after the backslash and rejoin the
+    halves with any byte between them, and that byte becomes the escaped character - so the real
+    `"` closes the string, everything after it reads as string data, and the nesting is skipped.
+    Byte-exact it scans past the bound; one separator and it scans as depth 1.
+
+    Sized off the bound (`+ 9`, so the wrapping object makes it `MAX_JSON_BODY_DEPTH + 10`) rather
+    than typed, for the reason every other body here is: a literal stops being over the bound the
+    day the bound moves.
+    """
+    arrays = MAX_JSON_BODY_DEPTH + 9
+    return ('{"pad": "he said \\"hi\\"", "name": ' + "[" * arrays + "]" * arrays + "}").encode()
+
+
 # --------------------------------------------------------------------------------------------
 # scan_depth - the part whose bugs are silent
 # --------------------------------------------------------------------------------------------
@@ -481,7 +497,7 @@ def test_the_depth_scan_reads_a_body_that_arrives_across_several_chunks() -> Non
     entire suite green - nothing else here drives the depth scan with a chunked body. The byte
     counter has its own running total and its own pins; this is the depth scan's.
 
-    THREE CASES, AND EACH KILLS A MUTANT THE OTHER TWO LEAVE ALIVE. The first two split the body
+    FOUR CASES, AND EACH KILLS A MUTANT THE OTHER THREE LEAVE ALIVE. The first two split the body
     in two and move the nesting from one side to the other, which kills `messages[0]` and
     `messages[-1]` respectively. Neither can kill the third mutant - scan every message but take
     the deepest, never assembling - because in both of them the carrier chunk is over the bound
@@ -491,7 +507,18 @@ def test_the_depth_scan_reads_a_body_that_arrives_across_several_chunks() -> Non
 
     That third mutant is not equivalent, which is why it earns a case rather than a note. Driven
     over a real uvicorn server by a socket client sending the body in 20-byte writes, it answers
-    500 `internal` - the exact defect #125 removes - while passing all 991 tests in this repo.
+    500 `internal` - the exact defect #125 removes - while passing every test in this repo as the
+    suite stood BEFORE the third case was written. (Stated in the past tense on purpose: the third
+    case is what changed that, so at this commit the mutant fails exactly one test - this one.)
+
+    THE FOURTH CASE IS ABOUT THE JOIN BEING BYTE-EXACT, which the other three do not check: their
+    chunks are solid brackets, so a join that inserted a separator would produce the same depth
+    and every one of them would still pass. `b"".join` -> `b" ".join` is a one-character typo that
+    survives all three, and it is not equivalent - it reintroduces #125's 500. The mechanism is
+    the one `nested_body_in` attacks from the other direction: a chunk boundary immediately after
+    the backslash of an escaped quote, so the inserted byte becomes the escaped character and the
+    real quote then CLOSES the string. Everything after it reads as string data, the nesting is
+    skipped, and a body that scans 33 byte-exact scans 1 with a separator.
 
     The shallow-chunk assertions are what make the status assertions mean something: they state
     that the chunks the nesting is NOT in really are shallow on their own, so a refusal can only
@@ -542,6 +569,27 @@ def test_the_depth_scan_reads_a_body_that_arrives_across_several_chunks() -> Non
         ],
     )
     assert sent[0]["status"] == 400, "many small chunks"
+    rendered = b"".join(m.get("body", b"") for m in sent if m["type"] == "http.response.body")
+    assert json.loads(rendered)["error"]["kind"] == "body_too_nested"
+
+    # The fourth case: the join has to be BYTE-EXACT, not merely complete. The cut is located
+    # rather than typed - immediately after the backslash that escapes the closing quote - so it
+    # stays on the escape wherever the literal moves.
+    escaped = escaped_quote_body()
+    cut = escaped.index(b'\\"", ') + 1
+    assert escaped[cut - 1 : cut] == b"\\", "the cut must land directly after the escape"
+    assert json.loads(escaped), "the body is real JSON, so the parser really would recurse on it"
+    assert scan_depth(escaped, limit=MAX_JSON_BODY_DEPTH) > MAX_JSON_BODY_DEPTH
+    assert scan_depth(b" ".join([escaped[:cut], escaped[cut:]]), limit=MAX_JSON_BODY_DEPTH) == 1
+    sent = _run(
+        BodyLimit(inner),
+        _scope("application/json"),
+        [
+            {"type": "http.request", "body": escaped[:cut], "more_body": True},
+            {"type": "http.request", "body": escaped[cut:], "more_body": False},
+        ],
+    )
+    assert sent[0]["status"] == 400, "split on an escape"
     rendered = b"".join(m.get("body", b"") for m in sent if m["type"] == "http.response.body")
     assert json.loads(rendered)["error"]["kind"] == "body_too_nested"
 

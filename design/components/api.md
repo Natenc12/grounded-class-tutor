@@ -109,7 +109,7 @@ Every non-2xx response body is exactly:
 - **Those last two are the component's and appear on EVERY route,** which is what makes them worth
   naming here rather than under a route: they are refused in middleware, before routing has picked
   a handler, so no route section can be their writer and a client switch built per-route misses
-  them. See *The request-body bound* above.
+  them. See *The request-body bound* below.
 - `message` — for a human; names the remedy where one exists.
 - Routes raise **`ApiError(status_code, kind, message, detail=None)`**; the status is the raiser's
   choice. **Which status a given failure maps to is each route issue's decision**, not this spec's.

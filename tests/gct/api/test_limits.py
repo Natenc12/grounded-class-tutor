@@ -6,10 +6,11 @@ because getting it wrong is silent in both directions: too eager and an ordinary
 containing `[[[` is refused, too lax and the 500 comes back.
 
 THE MULTIPART PIN IS THE NET AND IT IS LOAD-BEARING. Nothing else in this repo uploads a
-MB-scale file over HTTP: the largest UPLOAD payload in the whole api suite is `PDF_BYTES`, 54
-bytes, and all three paid smokes are library-level with no HTTP client in them. (Not the largest
-payload of any kind - `test_ask_router.py` posts a ~2 KB question body - but the upload path is
-the one this pin is about, and 54 bytes is what it had.) So a bound that accidentally
+MB-scale file over HTTP: before this file existed the largest UPLOAD payload in the api suite was
+`PDF_BYTES`, 54 bytes of file content inside a 368-byte multipart body, and all three paid smokes
+are library-level with no HTTP client in them. (Not the largest payload of any kind -
+`test_ask_router.py` posts a 2,066-byte question body - but the upload path is the one this pin is
+about, and 54 bytes is what it had.) So a bound that accidentally
 applied to the streamed upload would leave every check on the board green while `POST /files`
 refused every real course file. `test_a_corpus_scale_multipart_upload_is_still_accepted` is what
 catches that, and it is why the payload is SYNTHETIC: the dogfood corpus is gitignored, and a pin
@@ -472,25 +473,29 @@ def test_a_buffered_body_is_replayed_with_its_chunk_boundaries_intact() -> None:
 
 
 def test_the_depth_scan_reads_a_body_that_arrives_across_several_chunks() -> None:
-    """The scan sees the WHOLE body, not the first message of it.
+    """The scan JOINS the buffered chunks; it does not read one of them, or each in turn.
 
-    A client chooses where its chunk boundaries fall, so a scan that read only `messages[0]`
-    would be stepped around by putting three brackets in the first chunk and the other 1,197 in
-    the second. That is not hypothetical: a mutant replacing the join at
-    `src/gct/api/limits.py` with `messages[0].get("body", b"")` left the entire suite green -
-    nothing else here drives the depth scan with a chunked body. The byte counter has its own
-    running total and its own pins; this is the depth scan's.
+    A client chooses where its chunk boundaries fall, so any scan that judges a body by a single
+    message is a scan the client picks its way around. That is not hypothetical: a mutant
+    replacing the join at `src/gct/api/limits.py` with `messages[0].get("body", b"")` left the
+    entire suite green - nothing else here drives the depth scan with a chunked body. The byte
+    counter has its own running total and its own pins; this is the depth scan's.
 
-    The shallow-chunk assertion is what makes the status assertion mean something: it states
-    that the chunk without the nesting really is shallow on its own, so the refusal can only
-    have come from assembling both.
+    THREE CASES, AND EACH KILLS A MUTANT THE OTHER TWO LEAVE ALIVE. The first two split the body
+    in two and move the nesting from one side to the other, which kills `messages[0]` and
+    `messages[-1]` respectively. Neither can kill the third mutant - scan every message but take
+    the deepest, never assembling - because in both of them the carrier chunk is over the bound
+    ON ITS OWN, which is exactly what the `carrier` assertion states. So the third case cuts the
+    same body into many chunks each shorter than the bound: no chunk is deep enough to be
+    refused by itself, the join is, and only code that assembles can answer 400.
 
-    BOTH SPLITS, and the second is not symmetry for its own sake. A pin that only puts the
-    nesting in the LAST chunk kills `messages[0]` and leaves `messages[-1]` alive - and that
-    mutant is not equivalent: over a real server with chunked transfer-encoding it answers
-    500 `internal`, the exact defect #125 removes, while surviving every test in this repo.
-    So the claim in this test's name is asserted from both ends: no single message, first or
-    last, is enough on its own.
+    That third mutant is not equivalent, which is why it earns a case rather than a note. Driven
+    over a real uvicorn server by a socket client sending the body in 20-byte writes, it answers
+    500 `internal` - the exact defect #125 removes - while passing all 991 tests in this repo.
+
+    The shallow-chunk assertions are what make the status assertions mean something: they state
+    that the chunks the nesting is NOT in really are shallow on their own, so a refusal can only
+    have come from putting them together.
     """
 
     async def inner(scope, receive, send) -> None:
@@ -516,6 +521,29 @@ def test_the_depth_scan_reads_a_body_that_arrives_across_several_chunks() -> Non
         assert sent[0]["status"] == 400, label
         rendered = b"".join(m.get("body", b"") for m in sent if m["type"] == "http.response.body")
         assert json.loads(rendered)["error"]["kind"] == "body_too_nested", label
+
+    # The third case: the SAME body, cut so that no chunk carries the nesting on its own. The
+    # chunk size is derived from the bound rather than typed, so it cannot drift out from under
+    # the assertion below - a chunk of solid `[` is only as deep as it is long, so half the
+    # bound leaves every chunk comfortably under it whatever the bound becomes.
+    pieces = [
+        deep[start : start + MAX_JSON_BODY_DEPTH // 2]
+        for start in range(0, len(deep), MAX_JSON_BODY_DEPTH // 2)
+    ]
+    assert len(pieces) > 2, "the point of this case is MANY chunks, not the two above"
+    deepest_alone = max(scan_depth(piece, limit=MAX_JSON_BODY_DEPTH) for piece in pieces)
+    assert deepest_alone <= MAX_JSON_BODY_DEPTH, deepest_alone
+    sent = _run(
+        BodyLimit(inner),
+        _scope("application/json"),
+        [
+            {"type": "http.request", "body": piece, "more_body": index < len(pieces) - 1}
+            for index, piece in enumerate(pieces)
+        ],
+    )
+    assert sent[0]["status"] == 400, "many small chunks"
+    rendered = b"".join(m.get("body", b"") for m in sent if m["type"] == "http.response.body")
+    assert json.loads(rendered)["error"]["kind"] == "body_too_nested"
 
     # And the contrast, so this is about DEPTH and not about chunked bodies being refused: a
     # shallow body split the same way goes through to the app.

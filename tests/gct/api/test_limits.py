@@ -22,6 +22,7 @@ passes against a route that never writes at all.
 from __future__ import annotations
 
 import asyncio
+import json
 from functools import partial
 
 import pytest
@@ -32,7 +33,13 @@ from starlette.responses import PlainTextResponse
 
 from gct.api import errors, limits
 from gct.api.errors import ApiError
-from gct.api.limits import BodyLimit, is_multipart, may_be_parsed_as_json, scan_depth
+from gct.api.limits import (
+    BodyLimit,
+    _to_utf8,
+    is_multipart,
+    may_be_parsed_as_json,
+    scan_depth,
+)
 from gct.api.routers import files as files_router
 from gct.api.routers.ask import MAX_QUESTION_CHARS
 from gct.config import MAX_JSON_BODY_BYTES, MAX_JSON_BODY_DEPTH
@@ -50,6 +57,24 @@ def nested_body(arrays: int) -> bytes:
     """`{"name": [[[...]]]}` - an object holding `arrays` nested arrays, so the body's own
     nesting is `arrays + 1`. Stated because every boundary assertion below turns on that +1."""
     return b'{"name": ' + b"[" * arrays + b"]" * arrays + b"}"
+
+
+# The encodings `json.loads` accepts that are not UTF-8. Both BOM forms are here because
+# `json.detect_encoding` reaches them by a different branch than the BOM-less ones (a byte-order
+# mark, versus sniffing null bytes), and a fix that handled only one branch would look right.
+NON_UTF8_ENCODINGS = ["utf-16", "utf-16-le", "utf-16-be", "utf-32", "utf-32-le", "utf-32-be"]
+
+
+def nested_body_in(encoding: str, arrays: int = 1_200) -> bytes:
+    """The deep body again, in an encoding `json.loads` accepts but a raw-byte scan cannot read.
+
+    The `Ģ` is the whole attack, not decoration. In UTF-16LE that character (U+0122) is the bytes
+    `22 01` - a bare `"` sitting INSIDE a string literal - so a scanner walking raw bytes reads
+    the string as closing there, leaves `in_string` inverted for the rest of the body, and skips
+    every structural bracket that follows. The body scans as depth 1 and the 500 comes back.
+    """
+    text = '{"pad": "Ģ", "name": ' + "[" * arrays + "]" * arrays + "}"
+    return text.encode(encoding)
 
 
 # --------------------------------------------------------------------------------------------
@@ -103,11 +128,49 @@ def test_scan_depth_stops_once_it_passes_the_limit() -> None:
 
 
 def test_multibyte_characters_cannot_forge_a_bracket() -> None:
-    """The scanner walks raw BYTES, before anything decodes them. That is safe only because
-    every UTF-8 continuation byte is >= 0x80 and every character it counts is ASCII - so a body
-    full of astral-plane text scans as the depth its structure actually has."""
+    """The scanner walks raw BYTES, before anything decodes them. Within UTF-8 that is safe,
+    because every continuation byte is >= 0x80 and every character it counts is ASCII - so a body
+    full of astral-plane text scans as the depth its structure actually has. The three tests
+    below are why that sentence needs "within UTF-8" in it."""
     body = '{"question": "' + "\U0001f600" * 500 + '"}'
     assert scan_depth(body.encode("utf-8"), limit=100) == 1
+
+
+@pytest.mark.parametrize("encoding", NON_UTF8_ENCODINGS)
+def test_a_non_utf8_body_is_normalised_before_it_is_scanned(encoding: str) -> None:
+    """The three facts that together make this a bug rather than a curiosity.
+
+    `scan_depth` on the raw bytes reports 1 - it is blind. `scan_depth` on the normalised bytes
+    reports the nesting that is really there. And `json.loads` accepts the raw bytes, which is
+    what makes the blindness reachable: the body the scanner waved through is a body the parser
+    builds and the error renderer then walks recursively.
+    """
+    raw = nested_body_in(encoding)
+
+    assert scan_depth(raw, limit=MAX_JSON_BODY_DEPTH) == 1
+    assert scan_depth(_to_utf8(raw), limit=MAX_JSON_BODY_DEPTH) > MAX_JSON_BODY_DEPTH
+    assert isinstance(json.loads(raw), dict)
+
+
+def test_a_utf8_body_reaches_the_scanner_as_the_very_same_object() -> None:
+    """The common path decodes nothing and copies nothing - object identity, so a future edit
+    that normalises unconditionally is caught here rather than in a profile. A UTF-8 BOM needs no
+    conversion either: its three bytes are all >= 0x80, so the scanner already ignores them."""
+    body = nested_body(3)
+    assert _to_utf8(body) is body
+
+    with_bom = b"\xef\xbb\xbf" + body
+    assert _to_utf8(with_bom) is with_bom
+    assert scan_depth(with_bom, limit=100) == 4
+
+
+def test_normalising_cannot_invent_nesting_that_is_not_there() -> None:
+    """The other direction, so the fix is not one-sided: a legitimate non-UTF-8 body - brackets
+    inside a string, exactly the case `scan_depth` exists to get right - still scans as depth 1
+    after normalisation, rather than being refused as 'too deeply nested'."""
+    text = '{"question": "what does [[[ mean in Gödel\'s notation?"}'
+    for encoding in NON_UTF8_ENCODINGS:
+        assert scan_depth(_to_utf8(text.encode(encoding)), limit=100) == 1, encoding
 
 
 # --------------------------------------------------------------------------------------------
@@ -187,6 +250,32 @@ def test_a_body_one_past_the_depth_bound_is_refused(probe: TestClient) -> None:
     response = probe.post("/probe", content=nested_body(MAX_JSON_BODY_DEPTH), headers=JSON)
     assert response.status_code == 400
     assert response.json()["error"]["kind"] == "body_too_nested"
+
+
+@pytest.mark.parametrize("encoding", NON_UTF8_ENCODINGS)
+def test_a_deep_body_in_a_non_utf8_encoding_is_refused(probe: TestClient, encoding: str) -> None:
+    """The bound covers every encoding the parser downstream of it accepts, not just UTF-8.
+
+    Before `_to_utf8` this was a **500 `internal`** on all six - the exact answer this module
+    exists to remove, reachable by re-encoding the same attack body.
+    """
+    response = probe.post("/probe", content=nested_body_in(encoding), headers=JSON)
+    assert response.status_code == 400, response.text
+    assert response.json()["error"]["kind"] == "body_too_nested"
+
+
+@pytest.mark.parametrize("encoding", NON_UTF8_ENCODINGS)
+def test_a_legitimate_non_utf8_body_still_reaches_the_route(
+    probe: TestClient, encoding: str
+) -> None:
+    """The positive arm. Normalising for the scan must not change what the app is handed: a real
+    UTF-16 request is parsed and answered, and the non-ASCII characters survive intact - which is
+    also the statement that `_replay` still hands on the client's own bytes, not the scanner's
+    normalised copy."""
+    name = "Ģrundlagen der Biologie \U0001f600"
+    response = probe.post("/probe", content=f'{{"name": "{name}"}}'.encode(encoding), headers=JSON)
+    assert response.status_code == 200, response.text
+    assert response.json()["length"] == len(name)
 
 
 def test_the_depth_refusal_names_the_bound(probe: TestClient) -> None:
@@ -417,6 +506,18 @@ def test_a_deeply_nested_body_is_a_4xx_on_ask(api) -> None:
 def test_a_deeply_nested_body_is_a_4xx_on_classes(api) -> None:
     response = api.client.post("/classes", content=nested_body(1_200), headers=JSON)
     assert response.status_code == 400
+    assert response.json()["error"]["kind"] == "body_too_nested"
+
+
+def test_a_deeply_nested_utf16_body_is_a_4xx_on_classes(api) -> None:
+    """The encoding hole, on a real route rather than a probe.
+
+    `starlette.requests.Request.json` hands raw bytes to `json.loads`, which sniffs them with
+    `json.detect_encoding` - so UTF-16 reaches the render exactly like UTF-8 does. This body was
+    a 500 `internal` while the depth scan understood only UTF-8.
+    """
+    response = api.client.post("/classes", content=nested_body_in("utf-16-le"), headers=JSON)
+    assert response.status_code == 400, response.text
     assert response.json()["error"]["kind"] == "body_too_nested"
 
 

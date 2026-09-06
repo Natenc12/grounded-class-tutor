@@ -52,11 +52,17 @@ REJECTED, and why:
     streaming check already bounds memory at the limit plus one chunk.
   - **A method allowlist** (bound only POST/PUT/PATCH). A body-less GET costs one `receive()` of
     an empty message, and a list of methods is a thing that goes stale.
+  - **Refusing a non-UTF-8 body outright** (400) rather than normalising it for the scan. Shorter,
+    and it matches the repo's refuse-don't-convert stance at a boundary - but it would change the
+    outcome for a body `json.loads` accepts today, and this module's declared job is to BOUND a
+    body, not to narrow what JSON may be. `_to_utf8` converts for the SCAN only: what reaches the
+    app is still the exact bytes the client sent, replayed by `_replay`.
 """
 
 from __future__ import annotations
 
 import email.message
+import json
 
 from fastapi import FastAPI
 from starlette.types import ASGIApp, Message, Receive, Scope, Send
@@ -82,19 +88,63 @@ KIND_TOO_NESTED = "body_too_nested"
 _STATUS_TOO_LARGE = 413
 _STATUS_TOO_NESTED = 400
 
-# The four structural characters, as raw bytes. Scanning bytes rather than decoded text is safe
-# for exactly one reason and it is worth stating: every one of these is ASCII, and every
-# continuation byte of a multi-byte UTF-8 sequence is >= 0x80, so no character outside ASCII can
-# ever contribute a byte that looks like one of these. A body may therefore be scanned BEFORE it
-# is decoded - which is the point, since decoding it is work this module is refusing to do.
+# The four structural characters, as raw bytes. Scanning bytes rather than decoded text is sound
+# for UTF-8 AND ONLY FOR UTF-8: every one of these is ASCII and every continuation byte of a
+# multi-byte UTF-8 sequence is >= 0x80, so WITHIN UTF-8 no non-ASCII character can contribute a
+# byte that looks like one of these.
+#
+# That premise does not extend to the other encodings `json.loads` accepts, and the earlier
+# version of this comment claimed it did - which is how a UTF-16 body walked past the bound and
+# came back as the 500 this module exists to remove. In UTF-16LE `Ģ` is the bytes `22 01`:
+# a bare `"` sitting INSIDE a string literal, which the scanner reads as the string closing.
+# `_to_utf8` therefore normalises a non-UTF-8 body before `scan_depth` ever sees it. Read the two
+# together: the scan still decodes nothing in the common case, and never scans an encoding it
+# cannot read.
 _OPEN = (0x5B, 0x7B)  # [ {
 _CLOSE = (0x5D, 0x7D)  # ] }
 _QUOTE = 0x22  # "
 _BACKSLASH = 0x5C  # \
 
+# What `json.detect_encoding` calls the two encodings `scan_depth` can read as-is. `utf-8-sig`
+# needs no conversion either: a BOM is `EF BB BF`, three bytes that are all >= 0x80.
+_UTF8_ENCODINGS = ("utf-8", "utf-8-sig")
+
+
+def _to_utf8(body: bytes) -> bytes:
+    """Return `body` as UTF-8, so `scan_depth` is reading an encoding it can read.
+
+    `json.loads` does not require UTF-8. Handed raw bytes it sniffs the first four with
+    `json.detect_encoding` and accepts UTF-16 and UTF-32 as well, so a body in one of those
+    reaches the recursive render exactly like a UTF-8 one - while a raw-byte scan of it counts
+    almost nothing (see the `_QUOTE` note above). Normalising here is what keeps the scan and the
+    parser looking at the same document.
+
+    The UTF-8 case - which is every real client - returns the SAME object after a four-byte
+    sniff, so the common path still decodes nothing and copies nothing.
+
+    `errors="replace"` cannot hide nesting: a structural character is one code unit that always
+    decodes to itself, and U+FFFD encodes to `EF BF BD`, never a structural byte. So a
+    replacement can only remove a bracket that was never valid, never invent one.
+
+    The `except` is defensive rather than reachable - `detect_encoding` returns only codec names
+    that exist, and `replace` does not raise - and it returns the body unscanned rather than
+    letting the exception out, because an exception raised in this middleware arrives at the
+    client as the very 500 the module removes (see the module docstring).
+    """
+    encoding = json.detect_encoding(body[:4])
+    if encoding in _UTF8_ENCODINGS:
+        return body
+    try:
+        return body.decode(encoding, errors="replace").encode("utf-8", errors="replace")
+    except (LookupError, UnicodeError):
+        return body
+
 
 def scan_depth(body: bytes, *, limit: int) -> int:
     """Return the deepest JSON container nesting in `body`, giving up once it passes `limit`.
+
+    `body` must be UTF-8 - the caller normalises anything else through `_to_utf8` first, and the
+    `_QUOTE` note above says what goes wrong when it does not.
 
     Structural brackets only: a bracket INSIDE a string literal is data, not nesting, so a
     perfectly ordinary question - `{"question": "what does [[[ mean in this notation?"}` - must
@@ -275,8 +325,10 @@ class BodyLimit:
                 break
 
         if may_be_parsed_as_json(content_type):
+            # Every buffered chunk, not just the first: a client chooses where its chunk
+            # boundaries fall, so a scan of one message is a scan a client can step around.
             body = b"".join(m.get("body", b"") for m in messages if m["type"] == "http.request")
-            if scan_depth(body, limit=self.max_depth) > self.max_depth:
+            if scan_depth(_to_utf8(body), limit=self.max_depth) > self.max_depth:
                 await self._refuse(
                     scope,
                     receive,

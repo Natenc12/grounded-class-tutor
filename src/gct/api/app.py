@@ -13,7 +13,7 @@ from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
 
-from gct.api import errors
+from gct.api import errors, limits
 from gct.api.routers import ask, classes, files, health
 from gct.config import load_settings
 from gct.providers.base import Embeddings, Generation
@@ -71,6 +71,11 @@ def create_app(
 
     app = FastAPI(title="Grounded Class Tutor", lifespan=lifespan)
     errors.install(app)
+    # The body bound goes on EVERY app this factory builds, including the ones tests build, so
+    # no route can be reached without it (issue #125). It is middleware and the handlers above
+    # are not, which is why it renders its own refusals rather than raising - `limits`'s module
+    # docstring carries the mechanism.
+    limits.install(app)
     # Mounted HERE, once, so #107/#108/#110 each edit only their own router module and never
     # this file. `health` is the skeleton's own surface: the one route this ticket owns.
     for router in (health.router, classes.router, files.router, ask.router):

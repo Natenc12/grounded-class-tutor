@@ -34,6 +34,14 @@ and a script and the API would disagree about what a valid class is. Contrast `t
 files, which the route can refuse honestly because `gct.config.MAX_INGEST_WORDS` and ADR 0029 own
 the number. The first surface that actually has a display problem is Slice 4's class list, and a
 cap belongs beside that number when one exists - not as a literal typed into one router.
+That paragraph is about the NAME and is still exactly true; a reader should not be surprised that a
+multi-megabyte one is nonetheless refused. It is refused before this module runs, by a bound on the
+request BODY that every route shares (`gct.api.limits`, issue #125) - a different quantity, with a
+different owner, wearing whichever status that module chooses. The status is deliberately NOT named
+here: it is not this module's to pick, and a copy of it in a file that has no reason to be edited
+when it changes is the second writer this paragraph exists to avoid. `create_class` still accepts
+any name it is handed, so a caller that is not an HTTP request is unaffected, which is what keeps
+the rule above one-writer rather than two.
 
 `owner_id` NEVER COMES FROM THE BODY (F12). It is the `OwnerId` dependency, the adapter's one
 source (`gct.api.deps.owner_id`), and `NewClass` forbids extra fields precisely so a client that

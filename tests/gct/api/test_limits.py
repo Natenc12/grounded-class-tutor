@@ -68,13 +68,23 @@ def nested_body(arrays: int) -> bytes:
 NON_UTF8_ENCODINGS = ["utf-16", "utf-16-le", "utf-16-be", "utf-32", "utf-32-le", "utf-32-be"]
 
 
-def nested_body_in(encoding: str, arrays: int = 1_200) -> bytes:
+def nested_body_in(encoding: str, arrays: int = MAX_JSON_BODY_DEPTH + 9) -> bytes:
     """The deep body again, in an encoding `json.loads` accepts but a raw-byte scan cannot read.
 
     The `Ģ` is the whole attack, not decoration. In UTF-16LE that character (U+0122) is the bytes
     `22 01` - a bare `"` sitting INSIDE a string literal - so a scanner walking raw bytes reads
     the string as closing there, leaves `in_string` inverted for the rest of the body, and skips
     every structural bracket that follows. The body scans as depth 1 and the 500 comes back.
+
+    THE DEFAULT IS SIZED OFF THE BOUND, AND THAT IS A PORTABILITY RULE, not just the usual
+    derive-don't-type one. It was a literal 1,200, which is over the bound on every interpreter -
+    but `test_a_non_utf8_body_is_normalised_before_it_is_scanned` also asserts `json.loads`
+    ACCEPTS this body, and how deep `json.loads` can go is interpreter-dependent: 994 on CPython
+    3.10, 3,999 on 3.12, which raised the parser off the C stack. So 1,200 parsed locally and
+    raised `RecursionError` in CI, and CI is the one that runs the version `pyproject.toml`
+    actually floors at. A body sized off `MAX_JSON_BODY_DEPTH` is over the bound by construction
+    and nowhere near any interpreter's parser limit, so it cannot go red for a reason that has
+    nothing to do with what the test is about.
     """
     text = '{"pad": "Ģ", "name": ' + "[" * arrays + "]" * arrays + "}"
     return text.encode(encoding)

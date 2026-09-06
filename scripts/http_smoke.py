@@ -52,16 +52,24 @@ die, with its exit status and the tail of its own log, instead of consuming the 
 reporting a hang. That is the difference between a harness that tells you what broke and one that
 tells you it waited.
 
+IT REFUSES A DATABASE THAT ALREADY HAS WORK IN IT, and that is a cost guard rather than tidiness.
+The worker this launches is the real one: it polls `jobs` in whatever `DATABASE_URL` names and
+claims anything it finds there, so a run that uploads nothing still ingests — and bills for —
+somebody else's queued file. `preflight` refuses that up front (see its docstring for what was
+measured). Everything this harness itself enqueues happens after both children are up, so the
+guard never sees a file the run is responsible for.
+
 Usage:
     uv run python scripts/http_smoke.py
     uv run python scripts/http_smoke.py --ready-timeout 90
-    uv run python scripts/http_smoke.py -- --poll 0.5 --log-level WARNING
+    uv run python scripts/http_smoke.py -- --poll 0.5 --lease 60
 """
 
 from __future__ import annotations
 
 import argparse
 import json
+import logging
 import os
 import shutil
 import signal
@@ -77,6 +85,10 @@ from contextlib import ExitStack, contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 from types import FrameType
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:  # `gct` and its dependencies are imported only where a real run needs them
+    import psycopg
 
 # The interface the smoke serves and probes on. Ours, not uvicorn's `--host` default: we own the
 # socket, so the bind address is decided here and a smoke server cannot be reached off-box.
@@ -129,6 +141,21 @@ EXIT_OK = 0
 EXIT_FAILED = 1
 EXIT_SETUP = 2
 
+# The rows the worker this harness launches would take if it found them: `claim` selects
+# `state = 'queued'` (`src/gct/jobs/queue.py`), and its own first tick calls `reclaim_expired`,
+# which turns a `processing` row whose lease has lapsed back into a queued one. So both belong in
+# the same question — "is there work here that is not ours?" — and asking only about `queued`
+# would miss a row this harness itself is about to requeue. `count(*) over ()` is the total before
+# `limit`, so one statement answers how many there are and names the first few.
+_WORK_THE_WORKER_WOULD_CLAIM = """
+    select count(*) over () as waiting, job_id::text, file_id::text, state
+    from jobs
+    where state = 'queued'
+       or (state = 'processing' and leased_until < now())
+    order by created_at
+    limit 3
+"""
+
 
 class SetupError(RuntimeError):
     """The run was never stageable — refused before anything was launched.
@@ -166,7 +193,9 @@ class Child:
                 handle.seek(0, os.SEEK_END)
                 handle.seek(max(0, handle.tell() - LOG_TAIL_BYTES))
                 text = handle.read().decode("utf-8", "replace")
-        except OSError as err:  # pragma: no cover - a log we cannot read is not the failure
+        except OSError as err:
+            # Reported inline rather than raised: this runs INSIDE a failure message, so a raise
+            # here would replace the launch failure with an error from the code explaining it.
             return f"(could not read {self.log_path}: {err})"
         kept = text.splitlines()[-lines:]
         return "\n".join(kept) if kept else "(the child wrote nothing)"
@@ -174,7 +203,9 @@ class Child:
     def log_contains(self, token: str) -> bool:
         try:
             return token in self.log_path.read_text("utf-8", "replace")
-        except OSError:  # pragma: no cover - same
+        except OSError:
+            # False, and the direction matters: this IS the worker's readiness probe, so a log
+            # that cannot be read must never answer "started" about a child that wrote nothing.
             return False
 
 
@@ -193,18 +224,40 @@ def repo_root() -> Path:
 
 
 def preflight() -> None:
-    """Refuse, up front and with the remedy, the two conditions that otherwise arrive as a hang.
+    """Refuse, up front and with the remedy, the conditions that otherwise arrive as a hang — or
+    as a bill.
 
-    Both are checked HERE rather than left to the children because of where they land otherwise.
-    A missing key makes uvicorn exit during startup and an unreachable database makes the worker
-    die inside `connect()` — with a dead-child check on every tick those are reported quickly, but
-    they are reported as a launch failure with somebody else's traceback attached, when they are
-    really "this machine is not set up". Naming the remedy costs a line and saves the reader a
-    debugging session (the same argument `gct.db.require_idle`'s message makes).
+    The first two are checked HERE rather than left to the children because of where they land
+    otherwise. A missing key makes uvicorn exit during startup and an unreachable database makes
+    the worker die inside `connect()` — with a dead-child check on every tick those are reported
+    quickly, but they are reported as a launch failure with somebody else's traceback attached,
+    when they are really "this machine is not set up". Naming the remedy costs a line and saves
+    the reader a debugging session (the same argument `gct.db.require_idle`'s message makes).
 
     The key requirement is the API's OWN, imported rather than restated: a second copy of "which
     variable, and what it is for" is a second writer for the fact, and this one would be checked
     from a script nobody edits when the rule changes.
+
+    THE THIRD REFUSAL IS WHAT MAKES THE COST CLAIM STRUCTURAL RATHER THAN CONDITIONAL, and it is
+    the one to read before deleting anything here. Neither child issues an API call while starting
+    — that is measured, and it is why a launch is free — but the worker is a REAL worker, and
+    `gct.jobs.worker.run` polls `jobs` in whatever database `DATABASE_URL` names and claims
+    whatever is there. Without this check a harness that uploads nothing still ingests other
+    people's files. Measured on a lane database holding one queued PDF:
+
+      - a 25s hold against a recording endpoint drew 12 `POST /v1/embeddings` — billable against a
+        real key, from a run that enqueued nothing;
+      - a 20s hold against a closed endpoint spent the file's whole retry budget and buried it,
+        so the harness alone drove an unrelated upload from `queued` to `failed`;
+      - even a bare ~0.1s run moved `files.status` to `processing` and `jobs.attempts` 0 → 1.
+
+    A bare `uv run python scripts/http_smoke.py` reads `.env`, which on a dev machine is the
+    dogfood database, so "don't run it there" was the whole protection. Now it refuses.
+
+    ORDERING, FOR WHOEVER ADDS THE CEREMONY (#109 PR 3): this runs ONCE, before either child
+    exists, and the ceremony's own upload happens after `launched()` has yielded. A file this run
+    enqueues can therefore never be seen by this check — the guard does not block the smoke's own
+    work, only work that was already waiting when it started.
     """
     from gct.api.app import require_openai_key  # imported here: only a real run needs fastapi
     from gct.db import connect
@@ -224,14 +277,41 @@ def preflight() -> None:
         ) from err
     try:
         files, jobs = conn.execute("select to_regclass('files'), to_regclass('jobs')").fetchone()
+        if files is None or jobs is None:
+            raise SetupError(
+                "the schema is not applied — `files` and/or `jobs` is missing from the database "
+                "in `DATABASE_URL`. Run `uv run python scripts/migrate.py` first. (Left unchecked "
+                "this surfaces as a worker that starts cleanly and dies on its first claim.)"
+            )
+        waiting, sample = claimable_jobs(conn)
     finally:
         conn.close()
-    if files is None or jobs is None:
-        raise SetupError(
-            "the schema is not applied — `files` and/or `jobs` is missing from the database in "
-            "`DATABASE_URL`. Run `uv run python scripts/migrate.py` first. (Left unchecked this "
-            "surfaces as a worker that starts cleanly and dies on its first claim.)"
+
+    if waiting:
+        rows = "; ".join(
+            f"job {job_id} ({state}) for file {file_id}" for job_id, file_id, state in sample
         )
+        more = "" if waiting <= len(sample) else f" (and {waiting - len(sample)} more)"
+        raise SetupError(
+            f"{waiting} job(s) in the database `DATABASE_URL` names are waiting to be claimed: "
+            f"{rows}{more}. This smoke launches the REAL worker, which would claim them and "
+            "embed their files — money spent, and somebody else's upload moved to `processing` "
+            "and on to `ready` or `failed` — for a run that uploaded nothing. Let a worker "
+            "finish them (`uv run python scripts/worker.py`), or point `DATABASE_URL` at a "
+            "scratch database."
+        )
+
+
+def claimable_jobs(conn: psycopg.Connection) -> tuple[int, list[tuple[str, str, str]]]:
+    """How many jobs the launched worker could take, and up to three of them, oldest first.
+
+    Split out from `preflight` so the predicate can be executed against a real schema in a test
+    without a launch: the whole guard is one SQL statement, and a statement that is only ever run
+    behind a fake connection is a statement nobody has checked against the real tables.
+    """
+    rows = conn.execute(_WORK_THE_WORKER_WOULD_CLAIM).fetchall()
+    waiting = rows[0][0] if rows else 0
+    return waiting, [(job_id, file_id, state) for _, job_id, file_id, state in rows]
 
 
 def _reserve_listener() -> socket.socket:
@@ -262,8 +342,9 @@ def worker_argv(extra: Sequence[str] = ()) -> list[str]:
     pinned to the module defaults (#109 PR 1), and a harness that could not reach those flags
     would leave that CLI with no caller outside its own tests. Nothing is passed by default —
     a flag this file supplied would be this file deciding a queue number, which is not its call
-    (ADR 0009) — and `--log-level` in particular is left alone because the harness needs the INFO
-    line it waits for.
+    (ADR 0009) — and `--log-level` in particular is never supplied here. It is also the one flag
+    a caller cannot freely choose: above INFO it silences the line readiness waits for, so the
+    CLI refuses it rather than hanging (`_refuse_a_worker_level_the_probe_cannot_see`).
     """
     return [sys.executable, str(repo_root() / "scripts" / "worker.py"), *extra]
 
@@ -495,9 +576,81 @@ def _build_parser() -> argparse.ArgumentParser:
         nargs="*",
         metavar="WORKER_ARG",
         help="everything after `--` is handed to scripts/worker.py unread "
-        "(e.g. `... -- --poll 0.5 --log-level WARNING`)",
+        "(e.g. `... -- --poll 0.5 --lease 60`). A worker --log-level above INFO is the one "
+        "thing refused here: it silences the line readiness waits for",
     )
     return parser
+
+
+def _refuse_a_worker_level_the_probe_cannot_see(
+    parser: argparse.ArgumentParser, worker_args: Sequence[str]
+) -> None:
+    """Refuse a worker `--log-level` above INFO, at the boundary, naming the remedy.
+
+    The one worker flag this harness cannot stay out of, and the reason is a coupling this file
+    already has: readiness is `log_contains(WORKER_STARTED_TOKEN)`, and `gct.jobs.worker.run`
+    logs that line at INFO. Run the child at WARNING and the probe becomes unsatisfiable, so a
+    healthy worker is waited out for the whole `--ready-timeout` and reported as a hang —
+    measured at `--ready-timeout 8`: "the worker is still running but never logged 'worker
+    started' … (the child wrote nothing)", which names neither the cause nor the fix, and at the
+    default takes sixty seconds to say it.
+
+    Refusing rather than rewriting the flag: the harness has no business overriding what an
+    operator typed, and it is the same strict-refusal boundary `scripts/worker.py:_validate`
+    draws for a range argparse accepts (#109 PR 1) — usage to stderr, exit 2, in the time it
+    takes to parse.
+
+    A level argparse would not accept at all (`--log-level LOUD`) is deliberately NOT refused
+    here: the worker's own CLI owns that message, and answering it twice would put a second
+    writer on the list of valid levels.
+    """
+    level = _worker_log_level(worker_args)
+    if level is None:
+        return
+    numeric = logging.getLevelName(level.upper())
+    if isinstance(numeric, int) and numeric > logging.INFO:
+        parser.error(
+            f"a worker --log-level of {level} silences the line this harness waits for: "
+            f"`gct.jobs.worker.run` logs {WORKER_STARTED_TOKEN!r} at INFO, so anything above "
+            "INFO makes readiness unsatisfiable and the launch fails after --ready-timeout with "
+            "an empty log to show for it. Pass DEBUG or INFO, or leave the flag off."
+        )
+
+
+def _worker_log_level(worker_args: Sequence[str]) -> str | None:
+    """The level the worker would end up running at, or None if the pass-through never sets one.
+
+    Reads the tokens the way the worker's own parser will. Two behaviours are copied on purpose
+    and neither is decorative: argparse accepts any UNAMBIGUOUS PREFIX of a long option, so
+    `--lo WARNING` reaches `--log-level` on that CLI (`--l` is ambiguous with `--lease` and is
+    refused there), and a repeated option takes its LAST value. A scan that matched only the full
+    spelling, or only the first occurrence, would wave through exactly the spellings that still
+    silence the probe.
+    """
+    found: str | None = None
+    for index, token in enumerate(worker_args):
+        name, sets_inline, inline = token.partition("=")
+        if not (name.startswith("--") and len(name) >= 4 and "--log-level".startswith(name)):
+            continue
+        if sets_inline:
+            found = inline
+        elif index + 1 < len(worker_args):
+            found = worker_args[index + 1]
+    return found
+
+
+def _parse(argv: Sequence[str] | None) -> argparse.Namespace:
+    """The whole CLI boundary — the parser AND every refusal — behind one name.
+
+    One writer, because the usage examples in this module's docstring are checked by running
+    them through THIS function: a test that only called `parse_args` would ratify an example
+    that parses cleanly and then fails at launch, which is precisely the defect that put
+    `-- --poll 0.5 --log-level WARNING` in the docstring in the first place.
+    """
+    parser = _build_parser()
+    args = parser.parse_args(argv)
+    _refuse_a_worker_level_the_probe_cannot_see(parser, args.worker_args)
+    return args
 
 
 def main(argv: Sequence[str] | None = None) -> int:
@@ -505,16 +658,23 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     Runnable rather than import-only, and that is a claim about this file rather than a
     convenience: "two processes came up over a real socket and both were reaped" is only
-    believable if something executes it, and this is the smallest thing that does. It spends no
-    money — both children DO construct real OpenAI clients at startup, but construction is not a
-    call and nothing here uploads or asks, so neither reaches a paid endpoint. That is measured
-    rather than argued, by running the whole launch with the SDK pointed at a closed port:
-    `test_the_real_pair_comes_up_and_never_reaches_a_paid_endpoint`.
+    believable if something executes it, and this is the smallest thing that does.
+
+    WHAT IT COSTS, stated as what is true rather than what would be convenient. Neither child
+    issues an API call while starting — both construct real OpenAI clients, but construction is
+    not a call, and nothing here uploads or asks. That half is measured, against an endpoint that
+    records every request it is sent, by
+    `test_the_real_pair_comes_up_and_never_reaches_a_paid_endpoint`. It is not the whole claim,
+    and an earlier version of this sentence stopped there and was wrong: the worker is a real
+    worker and claims whatever `jobs` already holds, so a run against a database with queued work
+    embeds — and bills for — files this run never uploaded. `preflight` refuses to start against
+    such a database (its docstring carries what that was measured to do), which is what makes
+    "this run spends nothing" a property of the script rather than of whatever was in the queue.
 
     `argv` is taken rather than read from `sys.argv`, for the reason `scripts/worker.py:main`
     records: this module is loaded by path inside a pytest process.
     """
-    args = _build_parser().parse_args(argv)
+    args = _parse(argv)
     signal.signal(signal.SIGTERM, _interrupt)
     try:
         preflight()

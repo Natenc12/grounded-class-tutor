@@ -1079,6 +1079,40 @@ def test_the_script_itself_exits_2_when_the_machine_is_not_stageable():
     assert b"SETUP" in finished.stderr
 
 
+def test_the_script_itself_refuses_a_worker_log_level_above_info():
+    """`main` reaches the CLI through `_parse`, not through the bare parser - pinned from outside.
+
+    Every in-process test of the refusal calls `_parse` directly, so `main` swapping it for
+    `_build_parser().parse_args(argv)` left all of them green while the real script, given
+    `-- --log-level WARNING`, launched the pair and failed sixty seconds later naming neither cause
+    nor remedy. This runs the script as an operator would and reads the status and the sentence.
+
+    The refusal happens before `preflight`, so the environment below is deliberately one that
+    cannot be staged: if the check were bypassed, the run would still exit 2 - for the WRONG reason
+    - which is why the sentence is asserted and not just the status.
+    """
+    env = {
+        **os.environ,
+        "DATABASE_URL": "postgresql://127.0.0.1:1/nothing-is-listening-here",
+        "OPENAI_API_KEY": "sk-placeholder-this-test-must-not-spend",
+    }
+    finished = subprocess.run(
+        [sys.executable, str(_SCRIPT), "--ready-timeout", "1", "--", "--log-level", "WARNING"],
+        env=env,
+        capture_output=True,
+        timeout=120,
+        check=False,
+    )
+
+    stderr = finished.stderr.decode("utf-8", "replace")
+    assert finished.returncode == 2 == http_smoke.EXIT_SETUP, (
+        f"the script exited {finished.returncode} for a worker --log-level the harness cannot "
+        f"work under; a caller reads 2 as 'refused before anything was launched'. stderr: "
+        f"{stderr[-500:]}"
+    )
+    assert "silences the line this harness waits for" in stderr, stderr[-500:]
+
+
 # --------------------------------------------------------------------------------------------
 # `launched()` composed, against stand-in children
 # --------------------------------------------------------------------------------------------

@@ -298,6 +298,8 @@ a test asserts both the behaviour and its absence from the source.
 ## Open / deferred (out of this spec)
 - Connection pooling — V2, with the Supabase move (ADR 0006).
 - Authentication — V3 (ADR 0004); replaces `owner_id` with the authenticated principal.
-- The HTTP exit smoke that drives this adapter end to end, and the harness that launches
-  uvicorn and `scripts/worker.py` as separate processes for it — #109, its PRs 2 and 3. The
-  worker's CLI those need is shipped (#109 PR 1).
+- The HTTP exit smoke's ceremony — create a class, upload, poll to `ready`, ask — which drives
+  this adapter end to end (#109, its last PR). What it attaches inside is shipped:
+  `scripts/http_smoke.py` launches `uvicorn gct.api.app:app` and `scripts/worker.py` as separate
+  OS processes (ADR 0011, PM-3 addendum), proves each is up, and tears both down; the worker's
+  CLI it drives is `scripts/worker.py`'s own.

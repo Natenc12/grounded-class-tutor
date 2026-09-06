@@ -84,6 +84,11 @@ def test_truncation_is_idempotent_at_a_bound_below_the_marker(monkeypatch) -> No
     monkeypatch.setattr(errors, "MAX_ERROR_ECHO_CHARS", 10)
     once = _bounded("a" * 20)
     assert _bounded(once) == once
+    # Stability alone is a WEAK pin: `f(f(x)) == f(x)` is trivially true of the identity function
+    # and of any constant, so the two lines above stay green against a `_bounded` that does
+    # nothing at all. The fixed point has to be pinned by VALUE for this test to mean what its
+    # name says.
+    assert once == f"{MARKER}20 chars]"[:10]
 
 
 def test_the_clamp_is_a_no_op_at_the_shipped_bound() -> None:

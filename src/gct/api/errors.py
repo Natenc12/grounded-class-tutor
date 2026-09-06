@@ -28,6 +28,7 @@ from fastapi.responses import JSONResponse
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from gct.api.schemas import ErrorBody, ErrorEnvelope
+from gct.config import MAX_ERROR_ECHO_CHARS
 
 # The three kinds this module emits itself. Routes mint their own (a domain token per failure
 # they render); these are the framework-level ones no route raises.
@@ -53,48 +54,95 @@ class ApiError(Exception):
         self.detail = detail
 
 
-def _json_safe(value: Any) -> Any:
-    """Replace every non-finite float with its repr, recursively.
+def _bounded(text: str) -> str:
+    """Truncate one string to `MAX_ERROR_ECHO_CHARS`, marked with the length it really was.
 
-    `NaN`, `Infinity` and `-Infinity` are not JSON, and `allow_nan=False` - starlette's own
-    setting, kept here - makes `json.dumps` RAISE on one rather than emit it. A client puts one
-    in the body without trying: `json.dumps(float("nan"))` emits a bare `NaN` by default, and
-    FastAPI's parser accepts it. Pydantic then rejects the field and echoes the offending value
-    into the 422's `detail`, which is how a float nobody in this codebase produced reaches the
-    render. Stringified rather than dropped so the client can still see what was rejected.
+    The result is never LONGER than the bound, which makes this idempotent: `_validation` runs
+    `_json_safe` over the error list and `render` runs it again over the finished envelope, and a
+    marker that pushed the string past the bound would be appended twice on the way out.
+    """
+    if len(text) <= MAX_ERROR_ECHO_CHARS:
+        return text
+    marker = f"...[truncated from {len(text)} chars]"
+    return text[: max(0, MAX_ERROR_ECHO_CHARS - len(marker))] + marker
+
+
+def _json_safe(value: Any) -> Any:
+    """Make every leaf of an envelope renderable AND bounded, recursively.
+
+    Three leaf hazards, one arrival: the value is the CLIENT's, pydantic echoes it into the 422's
+    `detail`, and this runs at the last step - so an unhandled one dies INSIDE the exception
+    handler and the envelope collapses to a 500, the server taking the blame for a request that
+    was merely malformed. Each was measured, none is exotic.
+
+      - **A non-finite float.** `NaN`, `Infinity` and `-Infinity` are not JSON, and
+        `allow_nan=False` - starlette's own setting, kept in `render` - makes `json.dumps` RAISE
+        on one rather than emit it. A client puts one in the body without trying:
+        `json.dumps(float("nan"))` emits a bare `NaN` by default, and FastAPI's parser accepts
+        it. Stringified rather than dropped so the client can still see what was rejected.
+      - **Undecodable bytes.** When FastAPI cannot parse a body at all - no content type, or one
+        that is not JSON - pydantic's `input` is the RAW BODY, and one `0xff` byte is enough:
+        `jsonable_encoder`'s handler for `bytes` is `lambda o: o.decode()`, which raises
+        `UnicodeDecodeError`, and `json.dumps` would raise `TypeError` on the bytes regardless
+        (issue #134). Decoded with `errors="replace"`. That is not the repo's refuse-don't-convert
+        rule bending: the request was already REFUSED, 422, and this is the description of what
+        was refused - the bytes are not being accepted as input to anything.
+      - **A string the client sized.** The echo used to be as large as the request: 2,000,000
+        bytes in, 2,000,215 out, because a `multipart/form-data` label takes a body off #125's
+        request bound (`limits.py`) and pydantic then hands the whole thing back. Bounded by
+        `MAX_ERROR_ECHO_CHARS`.
+
+    BOUNDED AT EVERY STRING, not at the `input` key it was reported through. A key list is a
+    second writer that goes stale the first time pydantic adds a key, and `input` is not the only
+    client-controlled one: an `extra="forbid"` model echoes the client's own key into `loc`, and
+    `gct.staging.validate_filename` puts an unbounded `filename` into the sentence a route hands
+    to `message`. Dict KEYS are bounded too, for that first case; two keys that differ only past
+    the bound collapse into one, which is the accepted cost of describing a body nobody will
+    read twice.
+
+    REJECTED: dropping `input` instead of truncating it. It fixes the same two symptoms and is
+    shorter, but it changes the SHAPE of every 422 entry - `api.md` documents `detail` as
+    pydantic's per-field list - where truncating changes only the VALUE of a pathological one.
     """
     if isinstance(value, float) and not math.isfinite(value):
         return repr(value)
+    if isinstance(value, bytes):
+        return _bounded(value.decode("utf-8", "replace"))
+    if isinstance(value, str):
+        return _bounded(value)
     if isinstance(value, dict):
-        return {key: _json_safe(item) for key, item in value.items()}
+        return {_json_safe(key): _json_safe(item) for key, item in value.items()}
     if isinstance(value, (list, tuple)):
         return [_json_safe(item) for item in value]
     return value
 
 
 class _SafeJSONResponse(JSONResponse):
-    """Starlette's JSONResponse, hardened against the two ways rendering an envelope can RAISE.
+    """Starlette's JSONResponse, hardened against the ways rendering an envelope can go wrong.
 
-    Both hazards are the same shape and both were measured, not argued: the offending value comes
-    from the CLIENT, pydantic echoes it into the 422's `detail`, and `render` is the last step. It
-    dies INSIDE the exception handler, so the envelope collapses to a 500 `internal` - the server
-    blaming itself for a request that was merely malformed, with the per-field list the client
-    needed gone. Neither input is exotic; each is an ordinary client's mistake.
+    Every hazard is the same shape and each was measured, not argued: the offending value comes
+    from the CLIENT, pydantic echoes it into the 422's `detail`, and `render` is the last step. A
+    raise here happens INSIDE the exception handler, so the envelope collapses to a 500
+    `internal` - the server blaming itself for a request that was merely malformed, with the
+    per-field list the client needed gone. None of them is exotic; each is an ordinary client
+    mistake.
 
-    - **A lone surrogate.** Starlette renders with `ensure_ascii=False`, so `.encode("utf-8")`
-      raises on one. JSON carries a surrogate as a `\\uXXXX` escape, so the bytes on the wire are
-      plain ASCII and nothing rejects them before pydantic holds a `str`. Fixed by escaping.
-      `jsonable_encoder` in `_validation` does not reach it: that fixes a non-serialisable `ctx`,
-      and a surrogate survives it as a perfectly good `str`.
-    - **A non-finite float.** `allow_nan=False` raises on `NaN`/`Infinity`. Fixed by `_json_safe`.
-      This one is NOT new here - starlette 1.6.0 already passes `allow_nan=False`, so it 500s the
-      same way on the plain `JSONResponse` this class replaces.
+    Most of them are properties of a LEAF, and `_json_safe` is their one writer - the non-finite
+    float, the undecodable byte string, the client-sized string. It is applied to EVERY envelope
+    rather than to the 422 alone, because any handler that echoes caller-supplied text reaches
+    this same last step.
+
+    ONE is a property of this render rather than of any leaf's type, so it lives here: **a lone
+    surrogate.** Starlette renders with `ensure_ascii=False`, so `.encode("utf-8")` raises on
+    one. JSON carries a surrogate as a `\\uXXXX` escape, so the bytes on the wire are plain ASCII
+    and nothing rejects them before pydantic holds a `str`. Fixed by escaping - `ensure_ascii` is
+    the only deliberate change below. `jsonable_encoder` in `_validation` does not reach it: that
+    fixes a non-serialisable `ctx`, and a surrogate survives it as a perfectly good `str`.
 
     `allow_nan`, `indent` and `separators` are starlette 1.6.0's own values, restated because
-    overriding `render` means restating all of them; `ensure_ascii` is the only deliberate change.
-
-    Applied to EVERY envelope rather than to the 422 alone, because any handler that echoes
-    caller-supplied text reaches the same last step.
+    overriding `render` means restating all of them. `allow_nan=False` is why a non-finite float
+    is a hazard at all, and it is NOT new here - starlette 1.6.0 already passes it, so a plain
+    `JSONResponse` 500s on `NaN` the same way.
     """
 
     def render(self, content: Any) -> bytes:
@@ -131,8 +179,17 @@ async def _validation(request: Request, exc: RequestValidationError) -> JSONResp
     # fails JSON serialisation inside this handler - so the 422 envelope collapses into a bare
     # 500 `internal` and the validation message the client needed is gone. FastAPI's own default
     # 422 handler runs the list through the same encoder for the same reason.
+    #
+    # `_json_safe` runs FIRST, before the encoder, and the ORDER is the whole point: the encoder
+    # is the step that dies on the client's bytes (issue #134), so leaving the leaves to
+    # `render` - which applies `_json_safe` to every envelope anyway - would still 500 on one
+    # `0xff`. Applying it twice is free: it is idempotent (`_bounded`), and the second pass is
+    # what bounds whatever the encoder itself produced from a `ctx` exception.
     return envelope(
-        422, KIND_VALIDATION, "request validation failed", jsonable_encoder(exc.errors())
+        422,
+        KIND_VALIDATION,
+        "request validation failed",
+        jsonable_encoder(_json_safe(exc.errors())),
     )
 
 

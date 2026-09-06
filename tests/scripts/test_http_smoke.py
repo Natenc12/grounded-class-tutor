@@ -1088,8 +1088,12 @@ def test_the_script_itself_refuses_a_worker_log_level_above_info():
     nor remedy. This runs the script as an operator would and reads the status and the sentence.
 
     The refusal happens before `preflight`, so the environment below is deliberately one that
-    cannot be staged: if the check were bypassed, the run would still exit 2 - for the WRONG reason
-    - which is why the sentence is asserted and not just the status.
+    cannot be staged: if the check were bypassed, the run would still exit 2 - for the WRONG
+    reason, at `preflight` - which is why the status alone proves nothing. The sentence alone does
+    not either: `parser.error` prints it BEFORE raising, so a `main` that swallowed the
+    `SystemExit`, or a refusal rewritten to warn and continue, leaves the sentence in stderr and
+    then exits 2 at preflight. What separates the two is that a refusal that stops here never
+    reaches preflight, whose report is the only writer of `SETUP` in this run's output.
     """
     env = {
         **os.environ,
@@ -1111,6 +1115,10 @@ def test_the_script_itself_refuses_a_worker_log_level_above_info():
         f"{stderr[-500:]}"
     )
     assert "silences the line this harness waits for" in stderr, stderr[-500:]
+    assert "SETUP" not in stderr, (
+        "the run reached preflight after the refusal, so the refusal did not stop it: "
+        f"{stderr[-500:]}"
+    )
 
 
 # --------------------------------------------------------------------------------------------

@@ -481,28 +481,41 @@ def test_the_depth_scan_reads_a_body_that_arrives_across_several_chunks() -> Non
     nothing else here drives the depth scan with a chunked body. The byte counter has its own
     running total and its own pins; this is the depth scan's.
 
-    The first assertion is what makes the third one mean something: it states that the opening
-    chunk really is shallow on its own, so the refusal can only have come from assembling both.
+    The shallow-chunk assertion is what makes the status assertion mean something: it states
+    that the chunk without the nesting really is shallow on its own, so the refusal can only
+    have come from assembling both.
+
+    BOTH SPLITS, and the second is not symmetry for its own sake. A pin that only puts the
+    nesting in the LAST chunk kills `messages[0]` and leaves `messages[-1]` alive - and that
+    mutant is not equivalent: over a real server with chunked transfer-encoding it answers
+    500 `internal`, the exact defect #125 removes, while surviving every test in this repo.
+    So the claim in this test's name is asserted from both ends: no single message, first or
+    last, is enough on its own.
     """
 
     async def inner(scope, receive, send) -> None:
         await PlainTextResponse("ok")(scope, receive, send)
 
     deep = nested_body(1_200)
-    head, tail = deep[:12], deep[12:]
-    assert scan_depth(head, limit=MAX_JSON_BODY_DEPTH) <= MAX_JSON_BODY_DEPTH
+    for label, head, tail in (
+        ("nesting in the last chunk", deep[:12], deep[12:]),
+        ("nesting in the first chunk", deep[:-12], deep[-12:]),
+    ):
+        carrier, shallow = (tail, head) if label.endswith("last chunk") else (head, tail)
+        assert scan_depth(shallow, limit=MAX_JSON_BODY_DEPTH) <= MAX_JSON_BODY_DEPTH, label
+        assert scan_depth(carrier, limit=MAX_JSON_BODY_DEPTH) > MAX_JSON_BODY_DEPTH, label
 
-    sent = _run(
-        BodyLimit(inner),
-        _scope("application/json"),
-        [
-            {"type": "http.request", "body": head, "more_body": True},
-            {"type": "http.request", "body": tail, "more_body": False},
-        ],
-    )
-    assert sent[0]["status"] == 400
-    rendered = b"".join(m.get("body", b"") for m in sent if m["type"] == "http.response.body")
-    assert json.loads(rendered)["error"]["kind"] == "body_too_nested"
+        sent = _run(
+            BodyLimit(inner),
+            _scope("application/json"),
+            [
+                {"type": "http.request", "body": head, "more_body": True},
+                {"type": "http.request", "body": tail, "more_body": False},
+            ],
+        )
+        assert sent[0]["status"] == 400, label
+        rendered = b"".join(m.get("body", b"") for m in sent if m["type"] == "http.response.body")
+        assert json.loads(rendered)["error"]["kind"] == "body_too_nested", label
 
     # And the contrast, so this is about DEPTH and not about chunked bodies being refused: a
     # shallow body split the same way goes through to the app.

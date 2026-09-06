@@ -27,8 +27,8 @@ worker renews its own lease, so `--lease` alone can no longer stage an expiry (`
 Usage:
     uv run python scripts/worker.py
     uv run python scripts/worker.py --lease 30 --poll 0.5
-    uv run python scripts/worker.py --log-level WARNING     # quiet, for a harness that owns
-                                                            # the terminal (#109 PR 2)
+    uv run python scripts/worker.py --log-level WARNING     # only reaps and failures, for a
+                                                            # worker left running unattended
 """
 
 import argparse
@@ -161,8 +161,9 @@ def _build_parser() -> argparse.ArgumentParser:
         choices=_LOG_LEVELS,
         default=DEFAULT_LOG_LEVEL,
         help=f"level for the root logger (default {DEFAULT_LOG_LEVEL}). WARNING leaves only "
-        "reaps and failures, for a harness that owns the terminal; DEBUG adds the client "
-        "libraries' own lines, since `gct` itself emits nothing below INFO",
+        "reaps and failures, for a worker left running unattended whose log is read after the "
+        "fact; DEBUG adds the client libraries' own lines, since `gct` itself emits nothing "
+        "below INFO. The start-of-loop line is INFO, so anything WATCHING for it needs that",
     )
     return parser
 

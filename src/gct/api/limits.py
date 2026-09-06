@@ -31,9 +31,19 @@ strongest available statement that this module did not touch the upload stream.
 
 Exempted by CONTENT-TYPE, not by a path list. A path list goes stale the day a route is added -
 it would have to be edited by an issue that has no reason to look here - whereas the content type
-is the request's own declaration of which parser it is headed for. It opens no hole: an 8 MB body
-LABELLED `multipart/form-data` and posted to a JSON-body route is refused 422, never parsed as
-JSON and never stored. The refuser is PYDANTIC, not a form parser - FastAPI chooses its parser
+is the request's own declaration of which parser it is headed for.
+
+WHAT THE LABEL DOES AND DOES NOT BUY A CLIENT - stated in both directions, because a reader of
+this module will otherwise conclude that every request body is bounded at `MAX_JSON_BODY_BYTES`,
+and one header is enough to make that false. An 8 MB body LABELLED `multipart/form-data` and
+posted to a JSON-body route is refused 422, never parsed as JSON and never stored - so the label
+is no way past a route. It is, however, a way OUT of the byte bound below: such a body is not
+counted here at all, and reaches pydantic at whatever size the client sent, exactly as every body
+on every route did before this module existed. Closing that would mean putting an in-memory byte
+check on multipart requests, which is the one thing this module must not do - `POST /files` is
+multipart and `MAX_STAGE_BYTES` owns its size, streaming (ADR 0010). So the residue is smaller
+than what was there before and is recorded on the PR rather than fixed here. The refuser is
+PYDANTIC, not a form parser - FastAPI chooses its parser
 from the route's declared parameter, so a route taking a model is handed the raw bytes and
 `starlette.formparsers.MultiPartParser` is never constructed (measured with a spy on it: zero
 calls). Worth naming precisely rather than left as "the form parser", because pydantic's 422
@@ -237,11 +247,17 @@ def may_be_parsed_as_json(content_type: str | None) -> bool:
     the route as raw bytes, which is measured and pinned.
 
     Scanning them anyway would be actively wrong rather than merely wasteful, because bracket
-    BYTES occur in binary at a rate that has nothing to do with JSON: over 400 draws of 64 KiB of
-    `os.urandom`, `scan_depth` reported depths from 9 to 67 (median 24.5), with 28% of draws
-    already past a limit of 32. So the refusal would land on ordinary uploads, unpredictably. An
-    earlier version of this paragraph cited a single draw - "measured at 31, one under the limit"
-    - as if the number were a property of binary; it is one sample from that spread.
+    BYTES occur in binary at a rate that has nothing to do with JSON. Over 400 draws of 64 KiB of
+    `os.urandom`, `scan_depth` reports a median depth of 25 with roughly a quarter to a third of
+    draws already past a limit of 32; three independent runs of that experiment gave 25%, 28% and
+    26%. So the refusal would land on ordinary uploads, unpredictably.
+
+    THE EXTREMES OF THAT SPREAD ARE NOT A BOUND AND ARE NOT QUOTED HERE. The same three runs
+    peaked at 69, 81 and 73 - the tail moves every time, which is what a tail does. An earlier
+    version of this paragraph cited a single draw ("measured at 31, one under the limit") as if
+    the number were a property of binary; a later one quoted a min and a max, which is the same
+    mistake with a wider window and reproduces no better. The median and the fraction past the
+    limit are the parts that hold still, so they are the parts stated.
     """
     if not content_type:
         return True

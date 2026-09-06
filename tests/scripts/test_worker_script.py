@@ -732,13 +732,18 @@ def test_an_unrunnable_value_is_refused_before_anything_is_opened(
 def test_the_log_level_is_a_choice_with_the_old_hardcoded_level_as_its_default(
     monkeypatch, restore_sigterm
 ):
-    """INFO by default (unchanged), and settable - which is the direction a harness needs.
+    """INFO by default (unchanged), and settable in either direction.
 
     `--log-level` rather than `ingest_smoke`'s `--verbose`, because the boolean would mean the
     wrong thing here: that script's `--verbose` lifts WARNING to INFO, while this one already
-    configured INFO, and `gct` emits nothing below it. The demonstrated need is the other
-    direction - a launch harness that owns the terminal wanting the worker quiet (#109 PR 2) -
-    and a boolean cannot express it.
+    configured INFO, and `gct` emits nothing below it. A boolean here could only unmute the
+    third-party clients - a different thing wearing a name a reader would map onto the other
+    script's - so the choice is between naming four levels and shipping a flag that lies.
+
+    The launch harness was named here as the demonstrated need for the QUIET direction, and it
+    landed needing the opposite: its readiness probe reads the worker's own start-of-loop line,
+    which is INFO, so it now refuses any level above that. The claim is dropped rather than
+    restated - `scripts/http_smoke.py` is the single writer of what it needs.
 
     `basicConfig` is spied for the first half, because what is under test there is the level the
     script CHOOSES. The second half lets it run and reads the root logger back, because a choice

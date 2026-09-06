@@ -66,6 +66,49 @@ def test_truncation_is_idempotent() -> None:
     assert once["input"].count(MARKER) == 1
 
 
+def test_the_bound_holds_even_when_the_marker_does_not_fit_inside_it(monkeypatch) -> None:
+    """The degenerate bound, which the shipped value hides. Budgeting for the marker floors at 0
+    below `len(marker)`, so without the final clamp `_bounded` returns the marker alone - LONGER
+    than the bound it was asked for. `MAX_ERROR_ECHO_CHARS` is PROVISIONAL, so the only thing
+    keeping the unclamped form correct was a number a future retune is invited to change."""
+    monkeypatch.setattr(errors, "MAX_ERROR_ECHO_CHARS", 10)
+    assert len(_bounded("a" * 20)) <= 10
+    # The other arm: an admissible string at that bound still comes back byte-for-byte, so a
+    # `lambda _: ""` cannot satisfy the assertion above.
+    assert _bounded("a" * 10) == "a" * 10
+
+
+def test_truncation_is_idempotent_at_a_bound_below_the_marker(monkeypatch) -> None:
+    """Idempotence is a COROLLARY of the bound holding, so it fails wherever the bound does: a
+    result over the bound gets truncated and marked again by the second pass."""
+    monkeypatch.setattr(errors, "MAX_ERROR_ECHO_CHARS", 10)
+    once = _bounded("a" * 20)
+    assert _bounded(once) == once
+
+
+def test_the_clamp_is_a_no_op_at_the_shipped_bound() -> None:
+    """Byte-for-byte: the clamp is correctness at a bound nobody has set, never a behavior change
+    at the one everybody gets. `keep + len(marker) == MAX_ERROR_ECHO_CHARS` by construction here,
+    so clamping to `MAX_ERROR_ECHO_CHARS` removes nothing."""
+    over = "a" * (MAX_ERROR_ECHO_CHARS * 3)
+    marker = f"{MARKER}{len(over)} chars]"
+    unclamped = over[: max(0, MAX_ERROR_ECHO_CHARS - len(marker))] + marker
+    assert _bounded(over) == unclamped
+
+
+def test_a_client_can_send_marker_shaped_text_and_the_echo_is_still_bounded() -> None:
+    """What the bound does NOT promise. The surviving prefix is the client's own text, so a
+    client who sends marker-shaped bytes gets them back beside the real marker and a reader
+    cannot tell which is which. Authenticating the marker would take dropping `input`, the shape
+    change `_json_safe`'s docstring records as rejected. Pinned so the weaker promise is the one
+    on file: the SIZE is guaranteed, the marker's provenance is not."""
+    forged = "X" * 400 + f"{MARKER}12345 chars]" + "Y" * 400
+    bounded = _bounded(forged)
+    assert len(bounded) == MAX_ERROR_ECHO_CHARS
+    assert bounded.count(MARKER) == 2
+    assert bounded.endswith(f"{MARKER}{len(forged)} chars]")
+
+
 def test_undecodable_bytes_render_as_text_rather_than_killing_the_render() -> None:
     """`json.dumps` raises `TypeError` on `bytes` and `jsonable_encoder`'s handler for them is
     `lambda o: o.decode()`, which raises `UnicodeDecodeError` on `0xff`. Both happen inside the

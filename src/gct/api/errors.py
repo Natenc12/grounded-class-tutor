@@ -57,14 +57,28 @@ class ApiError(Exception):
 def _bounded(text: str) -> str:
     """Truncate one string to `MAX_ERROR_ECHO_CHARS`, marked with the length it really was.
 
-    The result is never LONGER than the bound, which makes this idempotent: `_validation` runs
-    `_json_safe` over the error list and `render` runs it again over the finished envelope, and a
-    marker that pushed the string past the bound would be appended twice on the way out.
+    The result is never longer than the bound AT ANY VALUE OF THE BOUND, which is what makes this
+    idempotent - `_validation` runs `_json_safe` over the error list and `render` runs it again
+    over the finished envelope, so a result over the bound would be truncated and marked a second
+    time on the way out.
+
+    The final clamp is the load-bearing part of that, not belt-and-braces. Budgeting for the
+    marker (`MAX_ERROR_ECHO_CHARS - len(marker)`) holds the bound only while the bound is the
+    larger of the two; below `len(marker)` the subtraction floors at 0 and the marker ALONE is
+    already over. `MAX_ERROR_ECHO_CHARS` is PROVISIONAL by declaration (`config.py`), so the
+    value that makes the unclamped form correct is exactly the one a future retune may change.
+    At 512 the clamp is a no-op - `keep + len(marker) == MAX_ERROR_ECHO_CHARS` by construction -
+    so it costs nothing on the path anyone actually takes.
+
+    What is NOT promised: that a marker in the output was written here. The surviving prefix is
+    the client's own text, so a client can send marker-shaped bytes and get them echoed beside
+    the real one. Bounding the echo is the guarantee; authenticating it is not, and could only be
+    bought by dropping `input` - the shape change this function exists to avoid.
     """
     if len(text) <= MAX_ERROR_ECHO_CHARS:
         return text
     marker = f"...[truncated from {len(text)} chars]"
-    return text[: max(0, MAX_ERROR_ECHO_CHARS - len(marker))] + marker
+    return (text[: max(0, MAX_ERROR_ECHO_CHARS - len(marker))] + marker)[:MAX_ERROR_ECHO_CHARS]
 
 
 def _json_safe(value: Any) -> Any:

@@ -6,8 +6,10 @@ because getting it wrong is silent in both directions: too eager and an ordinary
 containing `[[[` is refused, too lax and the 500 comes back.
 
 THE MULTIPART PIN IS THE NET AND IT IS LOAD-BEARING. Nothing else in this repo uploads a
-MB-scale file over HTTP: the largest payload in the whole api suite is `PDF_BYTES`, 54 bytes, and
-all three paid smokes are library-level with no HTTP client in them. So a bound that accidentally
+MB-scale file over HTTP: the largest UPLOAD payload in the whole api suite is `PDF_BYTES`, 54
+bytes, and all three paid smokes are library-level with no HTTP client in them. (Not the largest
+payload of any kind - `test_ask_router.py` posts a ~2 KB question body - but the upload path is
+the one this pin is about, and 54 bytes is what it had.) So a bound that accidentally
 applied to the streamed upload would leave every check on the board green while `POST /files`
 refused every real course file. `test_a_corpus_scale_multipart_upload_is_still_accepted` is what
 catches that, and it is why the payload is SYNTHETIC: the dogfood corpus is gitignored, and a pin
@@ -364,12 +366,22 @@ def test_a_body_with_no_content_type_is_still_depth_scanned(probe: TestClient) -
 
 def test_an_oversized_body_labelled_multipart_is_not_parsed_as_json(probe: TestClient) -> None:
     """The exemption opens no hole. A huge body wearing a multipart label and aimed at a
-    JSON-body route is refused by starlette's form parser - not a 500, and nothing stored."""
+    JSON-body route is refused 422 - not a 500, and nothing stored.
+
+    By PYDANTIC, not by a form parser: FastAPI picks its parser from the route's declared
+    parameter, so a route taking a model is handed raw bytes and `MultiPartParser` is never
+    constructed. Asserted below rather than described, because the refuser is the whole point of
+    the test - the exemption is safe because the body still meets a validator, and which
+    validator that is decides what happens if the route's signature ever changes.
+    """
     body = b'{"name": "' + b"A" * (2 * MAX_JSON_BODY_BYTES) + b'"}'
     response = probe.post(
         "/probe", content=body, headers={"content-type": "multipart/form-data; boundary=x"}
     )
     assert response.status_code == 422
+    detail = response.json()["error"]["detail"]
+    assert detail[0]["type"] == "model_attributes_type"
+    assert detail[0]["loc"] == ["body"]
 
 
 # --------------------------------------------------------------------------------------------

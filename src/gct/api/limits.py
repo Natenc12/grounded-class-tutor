@@ -32,8 +32,13 @@ strongest available statement that this module did not touch the upload stream.
 Exempted by CONTENT-TYPE, not by a path list. A path list goes stale the day a route is added -
 it would have to be edited by an issue that has no reason to look here - whereas the content type
 is the request's own declaration of which parser it is headed for. It opens no hole: an 8 MB body
-LABELLED `multipart/form-data` and posted to a JSON-body route is refused 422 by starlette's form
-parser (measured), never parsed as JSON and never stored.
+LABELLED `multipart/form-data` and posted to a JSON-body route is refused 422, never parsed as
+JSON and never stored. The refuser is PYDANTIC, not a form parser - FastAPI chooses its parser
+from the route's declared parameter, so a route taking a model is handed the raw bytes and
+`starlette.formparsers.MultiPartParser` is never constructed (measured with a spy on it: zero
+calls). Worth naming precisely rather than left as "the form parser", because pydantic's 422
+echoes the whole rejected body back under `detail` - so the refusal costs a response the size of
+the request. That echo predates this module and this module does not change it.
 
 THIS MODULE RENDERS ITS REFUSALS; IT MUST NEVER RAISE THEM. That is not a style choice and a
 future edit would break it silently. Starlette's stack is `ServerErrorMiddleware` -> USER
@@ -225,12 +230,18 @@ def may_be_parsed_as_json(content_type: str | None) -> bool:
     flipping it - on one route, by an issue with no reason to read this module - cannot quietly
     reopen the 500.
 
-    A body that declares a NON-JSON type is not scanned, and that is measured rather than assumed:
-    `application/octet-stream`, `text/plain` and form encodings all reach the route as raw bytes,
-    so no nesting in them can recurse the render. Scanning them anyway would be actively wrong,
-    not merely wasteful - 64 KiB of random binary was measured at a bracket depth of 31, one under
-    the limit, so a slightly larger or less random upload would be refused as "too deeply nested"
-    when it contains no JSON at all.
+    A body that declares a NON-JSON type is not scanned. The reason is categorical, not a
+    measurement: such a body is never handed to `json.loads`, so it never becomes the pydantic
+    echo that `jsonable_encoder` walks recursively, so no nesting in it can reach the render this
+    bound protects. `application/octet-stream`, `text/plain` and the form encodings all arrive at
+    the route as raw bytes, which is measured and pinned.
+
+    Scanning them anyway would be actively wrong rather than merely wasteful, because bracket
+    BYTES occur in binary at a rate that has nothing to do with JSON: over 400 draws of 64 KiB of
+    `os.urandom`, `scan_depth` reported depths from 9 to 67 (median 24.5), with 28% of draws
+    already past a limit of 32. So the refusal would land on ordinary uploads, unpredictably. An
+    earlier version of this paragraph cited a single draw - "measured at 31, one under the limit"
+    - as if the number were a property of binary; it is one sample from that spread.
     """
     if not content_type:
         return True

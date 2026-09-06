@@ -573,12 +573,12 @@ def test_the_depth_scan_reads_a_body_that_arrives_across_several_chunks() -> Non
     assert json.loads(rendered)["error"]["kind"] == "body_too_nested"
 
     # The fourth case: the join has to be BYTE-EXACT, not merely complete. The cut is located
-    # rather than typed - it keys on the byte sequence `\"", `, so it follows the literal as long
-    # as that sequence survives a rewrite. It does not follow an ARBITRARY move, and it does not
-    # need to: a rewrite that drops the sequence raises `ValueError` from `.index`, and one that
-    # moves the nesting out from behind the escape trips the `separated scan == 1` assertion. Both
-    # fail loudly, which is the property that matters - this locator cannot silently start
-    # asserting something weaker.
+    # rather than typed - it keys on the byte sequence `\"", `, so it follows the FIRST such
+    # sequence in the body, which a rewrite can relocate to a literal other than the one described
+    # here. It does not follow an ARBITRARY move, and it does not need to: a rewrite that drops the
+    # sequence raises `ValueError` from `.index`, and one that moves the nesting out from behind
+    # the escape trips the `separated scan == 1` assertion. Both fail loudly, which is the property
+    # that matters - this locator cannot silently start asserting something weaker.
     escaped = escaped_quote_body()
     cut = escaped.index(b'\\"", ') + 1
     assert escaped[cut - 1 : cut] == b"\\", "the cut must land directly after the escape"

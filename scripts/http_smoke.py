@@ -569,9 +569,9 @@ def launched(
 # questions kept below then went GROUNDED and REFUSAL on three consecutive runs of this whole
 # gate over HTTP, citing the same page each time. No flip in either direction, and a gate that
 # flips is worse than no gate (both runs are in this PR's ship record). So the generated corpus
-# is the default — which also makes this the only paid gate in the repo a CI runner could execute
-# at all, the dogfood corpus being gitignored. Wiring it into `live-gates.yml` is not this
-# issue's to decide; what is decided here is that nothing in the SCRIPT prevents it.
+# is the default — which also makes this the only paid gate that COULD run in CI and does not; two
+# already do, and `live-gates.yml` is the writer of which. Wiring this one in is not this issue's
+# to decide; what is decided here is that nothing in the SCRIPT prevents it.
 #
 # One PDF, four pages, no deck. `ci_corpus.page_text` walks its paragraph list two per page, so
 # four pages carry all eight paragraphs exactly once: the smallest corpus that is self-contained
@@ -615,8 +615,8 @@ UNPARSEABLE_REASON = "unparseable"
 # How long the gate waits for one upload to leave `queued`/`processing`. Measured warm on this
 # machine, over three consecutive real runs of this gate: 2.6/2.7/2.8s from `POST /files` to
 # `status=ready` for the four-page PDF (an inline `ingest_file` of the same file is 2.3s of that,
-# and the worker's poll tick is most of the rest), and 1.4s every time to `status=failed` for the
-# unparseable one, which never reaches a model. The default is ~43x the slower of those: the
+# and the worker's poll tick is most of the rest), and ~0.1-2.5s, no model, to `status=failed`
+# for the unparseable one — one empty tick plus one poll. The default is ~43x the slower: the
 # headroom is for a cold cache, a loaded machine, and a corpus larger than the generated one, and
 # a file that is genuinely stuck is reported with the last status it held rather than waited out.
 INGEST_TIMEOUT_SECONDS = 120.0

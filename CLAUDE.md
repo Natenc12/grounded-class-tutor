@@ -74,15 +74,15 @@ It fails rather than skips when the secret is absent. The Slice 2 gate runs on a
 distinction worth keeping straight, because it is the only paid gate where "could it run there"
 and "does it" have different answers. It grounds on what it uploads, so a generated corpus was not
 a free inheritance from Slice 2; it was measured, and the questions hold. Which paid gates run on
-what cadence is a cost decision, not a capability one. Unlike the other two it starts its own
+what cadence is a cost decision, not a capability one. Unlike the other three it starts its own
 `uvicorn` and its own worker, so nothing needs to be running first — and `--launch-only` proves
 that pair comes up for free, which is the thing to run when the machine, not the product, is in
 doubt.
 **The Slice 1 gate (`ask_smoke.py`) cannot run in CI:** its questions are anchored to the dogfood
 corpus by file and page, and that corpus is gitignored. It stays local — `/ship`'s acceptance lane
 and `/land` run it. A green `CI` check still says nothing about any gate, and a green `live-gates`
-check says nothing about Slice 1; look for the label and the check before reading a PR as
-gate-clean.
+check says nothing about Slice 1 or Slice 3; look for the label and the check before reading a PR
+as gate-clean.
 The `db` fixture skips locally when Postgres is down but **hard-fails in CI**, so DB tests can't
 silently skip their way to green. Locally that judgement is still yours: `pytest -m db` reporting
 **skips means Postgres is down, not that the DB path passed.**

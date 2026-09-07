@@ -7,8 +7,10 @@ containing `[[[` is refused, too lax and the 500 comes back.
 
 THE MULTIPART PIN IS THE NET AND IT IS LOAD-BEARING. Nothing else in this repo uploads a
 MB-scale file over HTTP: before this file existed the largest UPLOAD payload in the api suite was
-`PDF_BYTES`, 54 bytes of file content inside a 368-byte multipart body, and all three paid smokes
-are library-level with no HTTP client in them. (Not the largest payload of any kind -
+`PDF_BYTES`, 54 bytes of file content inside a 368-byte multipart body, and the paid smokes that
+run for free in CI are library-level with no HTTP client in them. (The Slice 3 gate,
+`scripts/http_smoke.py`, IS an HTTP client and does upload multipart — but it is paid and wired
+into no workflow, so it is no net either.) (Not the largest payload of any kind -
 `test_ask_router.py` posts a 2,066-byte question body - but the upload path is the one this pin is
 about, and 54 bytes is what it had.) So a bound that accidentally
 applied to the streamed upload would leave every check on the board green while `POST /files`

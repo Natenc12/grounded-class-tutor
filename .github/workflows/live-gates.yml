@@ -5,11 +5,13 @@
 # was caught by a hand-run 35 minutes after the PR opened. A gate that only runs when a person
 # remembers it is not a gate.
 #
-# Two of the three run here. `smoke_slice0.py` needs no corpus. `ingest_smoke.py` checks the write
+# Two of the four run here. `smoke_slice0.py` needs no corpus. `ingest_smoke.py` checks the write
 # path and is content-agnostic, so it runs on a corpus `scripts/ci_corpus.py` generates on the
 # runner. `ask_smoke.py` does NOT run here: its questions are anchored to Nate's real course
 # materials by file and page, and those are gitignored. That gate stays local — /ship's acceptance
-# lane and /land run it — and CLAUDE.md says so.
+# lane and /land run it — and CLAUDE.md says so. `http_smoke.py`, the Slice 3 gate, does not run
+# here either — but unlike `ask_smoke.py` it COULD: it grounds on a corpus it generates. Whether it
+# should is a cost decision nobody has made.
 #
 # When it runs — never on a bare pull_request, so a fork cannot spend the key:
 #   - a PR carrying the `live-gate` label (/land applies it to each PR it is about to merge);

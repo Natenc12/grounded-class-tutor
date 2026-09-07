@@ -98,6 +98,26 @@ MAX_JSON_BODY_BYTES = 64 * 1024
 # ~15x under the shallowest break ever measured and 32x over the deepest legitimate body.
 MAX_JSON_BODY_DEPTH = 32
 
+# --- The error envelope's echo bound (issue #134) ---------------------------------------------
+# The most CHARACTERS of any ONE client-controlled string an error envelope will echo back
+# (`gct.api.errors._json_safe`). Past it the string is truncated and marked with its true
+# length; the envelope's SHAPE is untouched - every field a client reads is still there.
+#
+# It sits with the two bounds above because the three are only legible together: a bound on what
+# comes IN cannot bound what goes OUT. A body labelled `multipart/form-data` is exempt from
+# `MAX_JSON_BODY_BYTES` by design - that exemption is what lets a 100 MiB upload through - and
+# pydantic echoes such a body back WHOLE when it lands on a JSON route instead. Measured before
+# this bound existed: 2,000,000 bytes in, 2,000,215 bytes out (issue #134).
+#
+# PROVISIONAL in the shape `MAX_STAGE_BYTES` is: no ADR owns the NUMBER. What it must admit is
+# enough of a rejected value for a client to RECOGNISE which value was refused - the opening of a
+# question or a class name, not the whole of either; past it the client is TOLD the full length
+# rather than shown it. Counted in characters rather than bytes because that is what the values
+# it bounds are counted in (`routers/ask.py`'s `MAX_QUESTION_CHARS`); the wire cost is higher,
+# since `_SafeJSONResponse.render` escapes with `ensure_ascii=True` and one astral character
+# costs twelve bytes there, so the true ceiling per string is ~6 KiB and not 512 bytes.
+MAX_ERROR_ECHO_CHARS = 512
+
 # --- The V1 owner (ADR 0004) ----------------------------------------------------------------
 # V1 is ONE hardcoded user with no auth (ADR 0004; ADR 0002's tenancy clause as amended by it).
 # Every row the API writes and every scoped query it runs carries this owner_id, so V3 turns

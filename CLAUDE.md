@@ -192,19 +192,42 @@ The seams it draws, which Slice 3 wraps rather than rewrites:
 An open `slice-2` row does not mean the slice is unfinished: refinements to this machinery are picked
 up on their own merits, and the exit above does not wait on them.
 
-**Slice 3 — API adapter: CURRENT.** A thin FastAPI over the core — create a class, upload a file
-(stage + enqueue), read its status including the terminal reason, ask a question. Local file staging
-(ADR 0010). **No business logic:** the adapter validates, calls a library callable, and renders — the
-seam is library-callable vs. adapter (ADR 0009), not one endpoint per module. **Exit:** the full loop
-is drivable over HTTP; the status surface exposes actionable terminal reasons. See
-`design/roadmap.md` → *Slice 3*.
+**Slice 3 — API adapter: COMPLETE.** A thin FastAPI over the core — `POST /classes`, `POST /files`
+(stage + enqueue, ADR 0010), `GET /files/:id` (status including the terminal reason), `POST /ask`.
+**No business logic:** a handler validates, calls one library callable, and renders — the seam is
+library-callable vs. adapter (ADR 0009), not one endpoint per module. Exit met: the full loop is
+drivable over HTTP and the status surface exposes actionable terminal reasons — `scripts/http_smoke.py`
+drives it against the API and the worker as two real processes. Spec: `design/components/api.md`.
 
-Two contracts Slice 3 inherits and must not rediscover:
-- **The connection precondition.** Writers refuse a non-IDLE connection (`gct.db.require_idle`, ADR
-  0027). A handler that reads before it writes opens an implicit transaction on the read and the
-  writer raises — a per-request connection has to be built for this, not assumed.
-- **Refusal is a successful outcome.** The five grounder states (ADR 0014–0016) are returned, not
-  raised; rendering a refusal as a client error would be a lie about the student's materials.
+The seams it draws, which Slice 4 consumes rather than re-derives:
+- **One connection per request, autocommit** (`gct.api.deps.get_conn`), because every writer refuses a
+  non-IDLE connection (ADR 0027) and a handler that reads before it writes would otherwise raise.
+- **The owner is server-side.** `gct.api.deps.owner_id` is the one source of the V1 user (ADR 0004);
+  no route reads one from the request, and the request models forbid extra fields.
+- **One error envelope.** Every non-2xx is `{error: {kind, message, detail}}` — `kind` is what a client
+  switches on, `message` names the remedy. `body_too_large`/`body_too_nested` come from middleware
+  and so appear on every route.
+- **Refusal is a 200.** The four grounding states render as 200 bodies; only the transport-level ERROR
+  leaves as an envelope, 503 or 500 by its `kind`.
+
+**Slice 4 — Client: CURRENT.** A minimal React SPA — the five P0 surfaces (ADR 0012): create class,
+upload, ingest status, ask, view cited answer. Clean inline citation rendering (N11, the trust
+surface). SPA, not PWA; a single-purpose shell, not an app — no auth, no delete, no tap-to-source
+(V2/V3, named OUT by the ADR). The first front-end code in the repo: no tooling decision exists in
+`design/` yet, and the scaffold records one as an ADR. **Exit — V1 done:** upload → ingest → cited
+answer → refuses end-to-end in the UI. Demoable, not yet measured (ADR 0004). See
+`design/roadmap.md` → *Slice 4*.
+
+Two contracts Slice 4 inherits and must not rediscover:
+- **The rendering input is `POST /ask`'s 200 body, and nothing else.** `answer_prose` carries the
+  model's citations inline as `[S#]`; `citations[].label` resolves each to file + page/slide. Only
+  labels the server resolved are ever rendered as sources (citation spine ③, ADR 0015), and an answer
+  with `integrity.ok = false` must look different from a verified one.
+- **Refusal is a successful outcome, but it is not the only state.** The grounder's states (ADR
+  0014–0016) are returned, not raised. GROUNDED, PARTIAL, REFUSAL and INTEGRITY_FLAGGED arrive as
+  200 bodies — rendering a refusal as an error would be a lie about the student's materials. ERROR
+  is the exception and a client that assumes five 200s will not handle it: `provider_transient` is
+  a 503, the rest are 500s (`gct.api.routers.ask._ERROR_STATUS`).
 
 **Issue-level state is NOT recorded in this file.** Never write "#N is done" or "#N is next" here — it
 is wrong within the week, and this file is not the writer of that fact. Fetch it instead:

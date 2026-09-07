@@ -223,9 +223,11 @@ Two contracts Slice 4 inherits and must not rediscover:
   model's citations inline as `[S#]`; `citations[].label` resolves each to file + page/slide. Only
   labels the server resolved are ever rendered as sources (citation spine ③, ADR 0015), and an answer
   with `integrity.ok = false` must look different from a verified one.
-- **Refusal is a successful outcome.** The five grounder states (ADR 0014–0016) are returned, not
-  raised, and arrive as 200 bodies; rendering a refusal as an error would be a lie about the student's
-  materials.
+- **Refusal is a successful outcome, but it is not the only state.** The grounder's states (ADR
+  0014–0016) are returned, not raised. GROUNDED, PARTIAL, REFUSAL and INTEGRITY_FLAGGED arrive as
+  200 bodies — rendering a refusal as an error would be a lie about the student's materials. ERROR
+  is the exception and a client that assumes five 200s will not handle it: `provider_transient` is
+  a 503, the rest are 500s (`gct.api.routers.ask._ERROR_STATUS`).
 
 **Issue-level state is NOT recorded in this file.** Never write "#N is done" or "#N is next" here — it
 is wrong within the week, and this file is not the writer of that fact. Fetch it instead:

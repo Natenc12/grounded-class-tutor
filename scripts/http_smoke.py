@@ -615,9 +615,9 @@ UNPARSEABLE_REASON = "unparseable"
 # How long the gate waits for one upload to leave `queued`/`processing`. Measured warm on this
 # machine, over three consecutive real runs of this gate: 2.6/2.7/2.8s from `POST /files` to
 # `status=ready` for the four-page PDF (an inline `ingest_file` of the same file is 2.3s of that,
-# and the worker's poll tick is most of the rest), and ~0.1-2.5s, no model, to `status=failed`
-# for the unparseable one — one empty tick plus one poll. The default is ~43x the slower: the
-# headroom is for a cold cache, a loaded machine, and a corpus larger than the generated one, and
+# and the worker's poll tick is most of the rest), ~0.1-2.6s to `status=failed` for the unparseable
+# one — a `worker.DEFAULT_POLL_SECONDS` tick, a poll, two round trips. The default is ~43x the READY
+# maximum, not this one; headroom for a cold cache, a loaded machine, and a bigger corpus, and
 # a file that is genuinely stuck is reported with the last status it held rather than waited out.
 INGEST_TIMEOUT_SECONDS = 120.0
 # Gap between `GET /files/{id}` polls. The status surface is a single indexed row read, so this

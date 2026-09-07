@@ -1344,11 +1344,20 @@ def main(argv: Sequence[str] | None = None) -> int:
     (`test_the_real_pair_comes_up_and_never_reaches_a_paid_endpoint`). A full run is NOT free —
     it embeds one file and generates two answers, on the real models — which is the same money
     `scripts/ask_smoke.py` and `scripts/ingest_smoke.py` spend and the reason all three are gates
-    rather than tests. What neither pays for is somebody else's work: the worker claims whatever
-    `jobs` already holds, so a run against a database with queued files would ingest them too,
-    and `preflight` refuses to start against one (its docstring carries what that was measured to
-    do). Nothing on this path retries a paid call and no paid call sits inside a loop: the two
-    asks are issued once each and their verdicts are read, never re-requested.
+    rather than tests. Nothing on this path retries a paid call and no paid call sits inside a
+    loop: the two asks are issued once each and their verdicts are read, never re-requested.
+
+    WHAT IT MAY ALSO COST, WHICH `preflight` DOES NOT CLOSE. The worker this launches is the real
+    one and claims whatever `jobs` holds, so somebody else's file can be ingested — and billed
+    for — by a run that uploaded nothing. `preflight` refuses the common case: a database holding
+    work that is VISIBLE WHEN THE RUN STARTS (its docstring carries what that was measured to
+    do). That is a point-in-time snapshot, and the worker then runs for the whole gate, so work
+    that becomes claimable DURING the run is still taken — a lease lapsing under the reaper (ADR
+    0011), a concurrent worker releasing a job back to `queued`, or an upload arriving through a
+    second API process. Measured, not feared: a `processing` row whose lease expired seconds
+    after the check passed `preflight` clean, and the launched worker then reaped it, claimed it
+    and drove that file to `failed`. So a run costing only its own work is a property of the
+    database being scratch, not of this script; point `DATABASE_URL` at one nobody else writes.
 
     `argv` is taken rather than read from `sys.argv`, for the reason `scripts/worker.py:main`
     records: this module is loaded by path inside a pytest process.

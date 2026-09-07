@@ -1698,6 +1698,40 @@ def test_a_refusal_rendered_as_a_client_error_is_a_fault(corpus):
     assert any("successful outcome" in fault and "ADR 0016" in fault for fault in faults), faults
 
 
+def test_partial_passes_the_in_corpus_check_and_integrity_flagged_does_not(corpus):
+    """`CITED_STATES`' membership, pinned in BOTH directions, because it is a decided line.
+
+    PARTIAL is IN: it is a cited answer that named a gap (ADR 0014), and a gate that reddened on
+    it would be asserting a determinism the product does not promise - GROUNDED 20 runs out of
+    20 is a measurement, not a contract. INTEGRITY_FLAGGED is OUT: the answer is shown but not
+    presented as verified (ADR 0015), which is not a passing Slice 3 exit.
+
+    Both halves are asserted because either one alone is satisfied by a wrong constant: with only
+    the PARTIAL half, `("GROUNDED", "PARTIAL", "INTEGRITY_FLAGGED")` passes and an unverified
+    answer becomes a green gate; with only the INTEGRITY_FLAGGED half, `("GROUNDED",)` passes and
+    a working product reddens the day the model names a gap. Neither had a pin at all.
+    """
+    with _scripted_api(
+        uploads=[_READY_AT_ONCE, _UNPARSEABLE_AT_ONCE],
+        answers=[(200, _ready_answer(state="PARTIAL")), (200, _refused_answer())],
+    ) as api:
+        assert _run_gate(api, corpus) == []
+
+    flagged = {
+        **_ready_answer(state="INTEGRITY_FLAGGED"),
+        "integrity": {"ok": False, "reasons": []},
+    }
+    with _scripted_api(
+        uploads=[_READY_AT_ONCE, _UNPARSEABLE_AT_ONCE],
+        answers=[(200, flagged), (200, _refused_answer())],
+    ) as api:
+        faults = _run_gate(api, corpus)
+
+    assert any("INTEGRITY_FLAGGED" in fault and "cited answer is" in fault for fault in faults), (
+        faults
+    )
+
+
 def test_a_citation_naming_a_file_this_run_did_not_upload_is_a_fault(corpus):
     """A cited answer is only worth anything if the citation points into the student's own file.
 
@@ -1844,10 +1878,15 @@ def test_the_upload_and_the_ask_are_scoped_by_the_id_the_api_handed_out(corpus):
     ) as api:
         assert _run_gate(api, corpus) == []
 
-    # And the strictness is real rather than a flag nothing reads: an id this server never issued
-    # is refused. Without this, a `_form_refusal` that had stopped refusing would leave the pass
-    # above meaning nothing.
-    with _scripted_api(uploads=[], answers=[], strict=True) as api:
+    # And the strictness is real rather than a flag nothing reads. BOTH arms are exercised, over
+    # the same socket, because a one-armed guard is satisfied by a `_form_refusal` that stopped
+    # refusing on the other one: deleting only the file-part half of the shape check leaves this
+    # whole file green while `upload()` sending `part="upload"` is a 422 against the real route's
+    # parser on every run.
+    # (three `filenames`, because this server answers three POSTs below and the accepted one is
+    # the third; `uploads` stays empty because nothing here polls a status.)
+    with _scripted_api(uploads=[], answers=[], strict=True, filenames=(_CORPUS_NAME,) * 3) as api:
+        # arm 1 - the class id: an id this server never issued is a 404, so `upload` gives up.
         with pytest.raises(http_smoke.GateError) as refused:
             http_smoke.upload(
                 api.base_url,
@@ -1855,7 +1894,28 @@ def test_the_upload_and_the_ask_are_scoped_by_the_id_the_api_handed_out(corpus):
                 filename=_CORPUS_NAME,
                 content=b"%PDF-1.7\n",
             )
-    assert "did not accept" in str(refused.value)
+        assert "did not accept" in str(refused.value)
+
+        # arm 2 - the form's shape: the file part must be named `file`, which is the name
+        # `files.py:upload_file` declares. `multipart` is called directly rather than through
+        # `upload` because `upload` is the code under test and hardcodes the right name.
+        content_type, body = http_smoke.multipart(
+            {"class_id": _CLASS_ID}, part="upload", filename=_CORPUS_NAME, content=b"%PDF-1.7\n"
+        )
+        misnamed = http_smoke._call(
+            "POST", f"{api.base_url}/files", payload=body, content_type=content_type
+        )
+        assert misnamed.status == 422, misnamed.describe()
+
+        # ... and the same body with the part named `file` is taken, so what arm 2 pins is the
+        # NAME and not some other property of the request.
+        content_type, body = http_smoke.multipart(
+            {"class_id": _CLASS_ID}, part="file", filename=_CORPUS_NAME, content=b"%PDF-1.7\n"
+        )
+        accepted = http_smoke._call(
+            "POST", f"{api.base_url}/files", payload=body, content_type=content_type
+        )
+        assert accepted.status == 202, accepted.describe()
 
 
 def test_an_upload_the_api_did_not_accept_with_202_stops_the_run(corpus):

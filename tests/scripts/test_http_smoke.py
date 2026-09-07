@@ -56,7 +56,8 @@ import tempfile
 import threading
 import time
 import urllib.request
-from contextlib import contextmanager
+from contextlib import ExitStack, contextmanager
+from dataclasses import replace
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
 from types import SimpleNamespace
@@ -1495,9 +1496,46 @@ _READY_AT_ONCE = [_status("ready")]
 _UNPARSEABLE_AT_ONCE = [_status("failed", "unparseable", "a sentence naming the remedy")]
 
 
+_CLASS_ID = "class-1"
+
+
+def _form_refusal(payload: bytes) -> tuple[int, dict] | None:
+    """What the REAL `POST /files` would answer this multipart body, or None if it would take it.
+
+    `src/gct/api/routers/files.py:upload_file` reads `class_id` as a form FIELD and `file` as the
+    part, and a class id it never issued is a 404. The permissive stand-in below reads neither,
+    which is exactly what let two mutations of `upload()` - the form named `class`/`upload`, and
+    the class NAME threaded through as the id - survive this whole file.
+    """
+    text = payload.decode("utf-8", "replace")
+    field = re.search(r'name="class_id"\r\n\r\n(.*?)\r\n', text)
+    if field is None or 'name="file"; filename=' not in text:
+        return 422, {
+            "error": {"kind": "unprocessable_entity", "message": "the form is class_id + file"}
+        }
+    if field.group(1) != _CLASS_ID:
+        return 404, {"error": {"kind": "not_found", "message": f"no class {field.group(1)!r}"}}
+    return None
+
+
 @contextmanager
-def _scripted_api(*, uploads, answers, filenames=(_CORPUS_NAME, http_smoke.UNPARSEABLE_FILENAME)):
+def _scripted_api(
+    *,
+    uploads,
+    answers,
+    filenames=(_CORPUS_NAME, http_smoke.UNPARSEABLE_FILENAME),
+    strict=False,
+    upload_status=202,
+    ask_delay=0.0,
+):
     """An HTTP server that answers the ceremony's four routes from a script, and records the ask.
+
+    `strict` makes it read what it is sent rather than only what it is asked for: the form names
+    and the class id, as the real routes do. It is off by default because most tests here are
+    about a fault in an ANSWER and would only be made noisier by it.
+
+    `upload_status` and `ask_delay` stage the two things a stand-in otherwise cannot be: an
+    upload the API did not accept with 202, and an ask that takes longer than a poll tick.
 
     `uploads` is one status LIST per upload, in the order the ceremony uploads: each
     `GET /files/{id}` takes the next entry and the last one repeats, which is how a file that
@@ -1528,12 +1566,22 @@ def _scripted_api(*, uploads, answers, filenames=(_CORPUS_NAME, http_smoke.UNPAR
             payload = self.rfile.read(length)
             state.seen.append(f"POST {self.path}")
             if self.path == "/classes":
-                self._reply(201, {"class_id": "class-1", "name": json.loads(payload)["name"]})
+                self._reply(201, {"class_id": _CLASS_ID, "name": json.loads(payload)["name"]})
             elif self.path == "/files":
                 state.content_types.append(self.headers.get("Content-Type", ""))
+                refusal = _form_refusal(payload) if strict else None
+                if refusal is not None:
+                    self._reply(*refusal)
+                    return
                 nth = sum(1 for line in state.seen if line == "POST /files")
-                self._reply(202, {"file_id": f"file-{nth}", "filename": filenames[nth - 1]})
+                self._reply(
+                    upload_status, {"file_id": f"file-{nth}", "filename": filenames[nth - 1]}
+                )
             elif self.path == "/ask":
+                if strict and json.loads(payload).get("class_id") != _CLASS_ID:
+                    self._reply(404, {"error": {"kind": "not_found", "message": "no such class"}})
+                    return
+                time.sleep(ask_delay)
                 status, body = answers[sum(1 for line in state.seen if line == "POST /ask") - 1]
                 self._reply(status, body)
             else:
@@ -1730,10 +1778,16 @@ def test_a_terminal_reason_with_no_message_to_show_is_a_fault(corpus):
 
 
 def test_a_file_that_never_settles_is_reported_against_the_timeout_it_was_actually_given(corpus):
-    """A stall is bounded, and the number in the message is the one this run was given.
+    """A stall is bounded, the number in the message is the one this run was given, and the
+    wait between polls is real.
 
     Same defect `_await` was rebuilt to avoid one layer up: a message that interpolates the
     DEFAULT tells an operator who just typed `--ingest-timeout 0.3` that it waited 120 seconds.
+
+    The POLL COUNT is asserted here rather than in a test of its own because this is already the
+    only scenario that polls more than once. An interval of zero turns the gate into a hot loop
+    against the status route it is measuring - thousands of reads inside this same 0.3s - and
+    every other assertion in this test, the message and the elapsed time both, holds either way.
     """
     stuck = [_status("queued"), _status("processing")]
     with _scripted_api(uploads=[stuck], answers=[]) as api:
@@ -1745,6 +1799,8 @@ def test_a_file_that_never_settles_is_reported_against_the_timeout_it_was_actual
     assert "0.3s" in str(gate_error.value), str(gate_error.value)
     assert "'processing'" in str(gate_error.value)
     assert elapsed < 5, f"a 0.3s bound took {elapsed:.1f}s to report"
+    polls = [line for line in api.seen if line.startswith("GET ")]
+    assert len(polls) <= 6, f"a 0.3s bound took {len(polls)} status reads, so it never waited"
 
 
 def test_a_class_the_api_would_not_create_stops_the_run_instead_of_cascading(corpus):
@@ -1761,6 +1817,170 @@ def test_a_class_the_api_would_not_create_stops_the_run_instead_of_cascading(cor
 
     assert "POST /classes did not create the class" in str(gate_error.value)
     assert "not_found" in str(gate_error.value)
+
+
+# The faults and contracts a PERMISSIVE stand-in cannot tell apart. Everything above stages a
+# wrong ANSWER; the four tests below stage a wrong REQUEST - a form the real route would refuse,
+# a status the real route never sends, an ask that takes as long as a real one - which is the
+# half a server that answers whatever it is asked can never show.
+
+_SLOW_ASK_SECONDS = 0.8  # longer than STATUS_POLL_SECONDS, the interval an ask must not inherit
+_DISAMBIGUATED_NAME = "hydrology-lecture-01 (1).pdf"
+
+
+def test_the_upload_and_the_ask_are_scoped_by_the_id_the_api_handed_out(corpus):
+    """The loop's four requests are one conversation, and the class id is what ties them together.
+
+    Driven against a STRICT stand-in - one that reads `class_id` and `file` off the form the way
+    `files.py:upload_file` does, and 404s an id it never issued - because the permissive one
+    cannot see either half. Against it, `create_class` returning the class NAME, and a multipart
+    body naming its parts `class`/`upload`, both pass this whole file while being a 404 and a 422
+    against the real API on every run.
+    """
+    with _scripted_api(
+        uploads=[_READY_AT_ONCE, _UNPARSEABLE_AT_ONCE],
+        answers=[(200, _ready_answer()), (200, _refused_answer())],
+        strict=True,
+    ) as api:
+        assert _run_gate(api, corpus) == []
+
+    # And the strictness is real rather than a flag nothing reads: an id this server never issued
+    # is refused. Without this, a `_form_refusal` that had stopped refusing would leave the pass
+    # above meaning nothing.
+    with _scripted_api(uploads=[], answers=[], strict=True) as api:
+        with pytest.raises(http_smoke.GateError) as refused:
+            http_smoke.upload(
+                api.base_url,
+                class_id="an-id-nobody-issued",
+                filename=_CORPUS_NAME,
+                content=b"%PDF-1.7\n",
+            )
+    assert "did not accept" in str(refused.value)
+
+
+def test_an_upload_the_api_did_not_accept_with_202_stops_the_run(corpus):
+    """202 is the API's own contract - nothing is ingested yet - and it is asserted, not tolerated.
+
+    The body still carries `file_id` and `filename`, which is what makes this a check of the
+    STATUS: a refusal with an empty body raises out of `Reply.field` on the line below anyway, so
+    a well-formed non-202 is the only input that shows whether the status itself was read.
+    """
+    with _scripted_api(
+        uploads=[_READY_AT_ONCE, _UNPARSEABLE_AT_ONCE],
+        answers=[(200, _ready_answer()), (200, _refused_answer())],
+        upload_status=200,
+    ) as api:
+        with pytest.raises(http_smoke.GateError) as gate_error:
+            _run_gate(api, corpus)
+
+    assert "did not accept" in str(gate_error.value)
+    assert "200" in str(gate_error.value)
+
+
+def test_one_ask_may_take_longer_than_a_poll_tick(corpus):
+    """`POST /ask` is a real generation call, and the status poll's interval is not a budget for it.
+
+    The one test here whose stand-in is slow on purpose. A ceremony request that inherited
+    `STATUS_POLL_SECONDS` would time out on every paid run - a whole run is measured in seconds -
+    while this suite, whose server answers instantly, stayed green about it.
+    """
+    assert _SLOW_ASK_SECONDS > http_smoke.STATUS_POLL_SECONDS
+    with _scripted_api(
+        uploads=[_READY_AT_ONCE, _UNPARSEABLE_AT_ONCE],
+        answers=[(200, _ready_answer()), (200, _refused_answer())],
+        ask_delay=_SLOW_ASK_SECONDS,
+    ) as api:
+        assert _run_gate(api, corpus) == []
+
+
+def test_citations_are_compared_against_the_name_the_upload_echoed_back(corpus):
+    """The name a citation must match is the STORED one, not the path this run read off disk.
+
+    `stage` neither trims nor rewrites a name today, so on every real run the two are equal and
+    nothing can tell the comparison apart. This stages the day that stops being true - the API
+    echoes a disambiguated name and the answer cites it - because comparing against the local
+    path would then redden a product that was working, which is the failure `Uploaded` names.
+    """
+    cited = _ready_answer(
+        citations=[
+            {"label": "S1", "file": _DISAMBIGUATED_NAME, "page_or_slide": 3, "chunk_id": "c-1"}
+        ]
+    )
+    with _scripted_api(
+        uploads=[_READY_AT_ONCE, _UNPARSEABLE_AT_ONCE],
+        answers=[(200, cited), (200, _refused_answer())],
+        filenames=(_DISAMBIGUATED_NAME, http_smoke.UNPARSEABLE_FILENAME),
+    ) as api:
+        assert _run_gate(api, corpus) == []
+    assert _DISAMBIGUATED_NAME != corpus.name
+
+
+# The three predicate branches no whole-loop test can reach. Each is a real assertion of the exit
+# criterion that a scripted run returns before, or crashes on: a refusal is checked for its STATE
+# first and returns there, and a citation list that is `null` or a page that is `0` is not a body
+# any stand-in above is written to send.
+
+
+def test_a_refusal_that_still_carried_citations_is_a_fault():
+    """A refusal says these materials do not cover this; citing them anyway contradicts it.
+
+    Not reachable through the out-of-corpus arm of a scripted run: staging a refusal that cites
+    means staging `state=REFUSAL`, and the state check above it is what a whole-loop test trips
+    first - so the predicate is handed the body directly.
+    """
+    honest = http_smoke.Reply(200, _refused_answer())
+    assert http_smoke.refusal_faults(honest) == []
+
+    citing = http_smoke.Reply(
+        200, {**_refused_answer(), "citations": [{"label": "S1", "file": _CORPUS_NAME}]}
+    )
+    faults = http_smoke.refusal_faults(citing)
+    assert any("citation" in fault for fault in faults), faults
+
+
+def test_a_citation_with_no_page_and_a_citation_list_that_is_null_are_each_a_fault():
+    """Two edges of the in-corpus check, and both directions of each.
+
+    `page_or_slide` 0 is what a 1-based renderer produces from an off-by-one, and a label that
+    resolves to no page cites nothing a student can turn to - the citation spine failing at its
+    last hop. A `citations` of `null` is the other edge: the fault is found and then has to be
+    REPORTABLE, rather than becoming a `TypeError` out of the loop on the next line.
+    """
+    good = http_smoke.Reply(200, _ready_answer())
+    assert http_smoke.cited_answer_faults(good, filename=_CORPUS_NAME) == []
+
+    page_zero = http_smoke.Reply(
+        200,
+        _ready_answer(
+            citations=[{"label": "S1", "file": _CORPUS_NAME, "page_or_slide": 0, "chunk_id": "c"}]
+        ),
+    )
+    faults = http_smoke.cited_answer_faults(page_zero, filename=_CORPUS_NAME)
+    assert any("page_or_slide" in fault for fault in faults), faults
+
+    no_list = http_smoke.Reply(200, {**_ready_answer(), "citations": None})
+    faults = http_smoke.cited_answer_faults(no_list, filename=_CORPUS_NAME)
+    assert any("cited nothing" in fault for fault in faults), faults
+
+
+def test_a_terminal_reason_whose_message_is_only_whitespace_is_not_actionable():
+    """Blank space in front of a student is the same nothing an empty string is.
+
+    The whole-loop test above uses `""`, which a check that had lost its `.strip()` still catches.
+    Whitespace is the input that tells those two apart.
+    """
+    blank = http_smoke.Settled(
+        status="failed",
+        failed_reason=http_smoke.UNPARSEABLE_REASON,
+        message="   \n ",
+        path=("queued", "failed"),
+        seconds=1.0,
+    )
+    faults = http_smoke.terminal_failure_faults(blank)
+    assert any("no message" in fault for fault in faults), faults
+
+    actionable = replace(blank, message="We could not read any text out of this file.")
+    assert http_smoke.terminal_failure_faults(actionable) == []
 
 
 # --------------------------------------------------------------------------------------------
@@ -1915,3 +2135,141 @@ def test_the_generated_corpus_is_one_readable_pdf_the_gate_can_upload():
         assert corpus.suffix == ".pdf"
         assert parse_file(corpus), "the corpus this gate uploads must have text to index"
     assert not corpus.exists(), "the generated corpus outlived the block that owns it"
+
+
+# --------------------------------------------------------------------------------------------
+# The transport, the flags' own defaults, and the entry point that has to report what it found
+# --------------------------------------------------------------------------------------------
+
+# The gate's PASS sentence, quoted once. Two tests below assert it is present and absent, and a
+# sentence spelled out in each of them would be two more writers for a string `main` owns.
+_GATE_PASS_SENTENCE = "the whole loop is drivable over HTTP"
+
+
+def test_a_body_that_is_not_json_comes_back_as_text_rather_than_raising():
+    """A proxy's HTML error page is exactly what a fault message has to be able to quote.
+
+    The decoder's whole reason for existing. `POST /ask` answering with a stack-trace page is a
+    finding about the product, and a `JSONDecodeError` out of the decoder would replace that
+    finding with a traceback from the standard library - the wrong half of the story.
+    """
+    assert http_smoke._decode(b'{"state": "REFUSAL"}') == {"state": "REFUSAL"}
+    assert http_smoke._decode(b"<html>502 Bad Gateway</html>") == "<html>502 Bad Gateway</html>"
+
+
+def test_a_transport_that_never_connects_is_a_gate_error_not_a_stdlib_traceback():
+    """Nothing listening is a FAIL line naming the request, not a `URLError` out of `urllib`.
+
+    `main` catches `GateError`; it does not catch `URLError`. A transport failure that stopped
+    being converted here would leave the gate with no verdict at all - a traceback, and whatever
+    exit status the interpreter chose, in place of the one line saying which request died.
+    """
+    sock = http_smoke._reserve_listener()
+    port = sock.getsockname()[1]
+    sock.close()
+
+    url = f"http://{http_smoke.LOOPBACK}:{port}/health"
+    with pytest.raises(http_smoke.GateError) as gate_error:
+        http_smoke._call("GET", url)
+
+    assert "never completed" in str(gate_error.value)
+    assert f"GET {url}" in str(gate_error.value)
+
+
+def test_the_ingest_bound_is_its_own_default_and_not_the_launch_readiness_one():
+    """Two timeouts, two different jobs, and the flags must not quietly come to share a number.
+
+    `--ready-timeout` bounds how long a CHILD may take to become observable. `--ingest-timeout`
+    bounds one upload's trip to `ready` or `failed`, which includes an embedding call and a
+    worker poll tick. They are different numbers for different reasons and nothing else reads
+    either default back off the parser.
+    """
+    parsed = http_smoke._parse([])
+    assert parsed.ingest_timeout == http_smoke.INGEST_TIMEOUT_SECONDS
+    assert parsed.ready_timeout == http_smoke.READY_TIMEOUT_SECONDS
+    assert http_smoke.INGEST_TIMEOUT_SECONDS != http_smoke.READY_TIMEOUT_SECONDS
+
+
+def test_the_corpus_the_caller_named_is_the_one_uploaded_and_a_typo_is_refused(tmp_path):
+    """`--corpus` decides what gets uploaded, and a path that is not there costs a message.
+
+    Both directions, because each is the other's failure. A guard that refused the file it found
+    would turn every valid `--corpus` into exit 2; one that took the generated corpus when a path
+    WAS given would upload the wrong file and ask the operator's question of a corpus that cannot
+    answer it - a red gate, blamed on the product. `_parse`'s own rule (`--corpus` requires
+    `--question`) is pinned separately; this is the existence check that runs after it.
+    """
+    named = tmp_path / "lecture.pdf"
+    named.write_bytes(b"%PDF-1.7\n")
+
+    with ExitStack() as resources:
+        assert http_smoke._corpus(SimpleNamespace(corpus=str(named)), resources) == named
+
+    with ExitStack() as resources:
+        with pytest.raises(http_smoke.SetupError) as refusal:
+            http_smoke._corpus(SimpleNamespace(corpus=str(tmp_path / "typo.pdf")), resources)
+    assert "is not a file" in str(refusal.value)
+
+
+def test_a_fault_the_ceremony_found_is_what_the_run_exits_with(
+    monkeypatch, restore_sigterm, stub_children, corpus, capsys
+):
+    """The gate's two halves joined: what `run_gate` decided is what the run reports.
+
+    Every other test of the entry point passes `--launch-only`, which takes the branch where the
+    ceremony never runs - so the line that assigns the verdict is executed by none of them, and
+    `run_gate`'s eleven fault tests say nothing about whether anything reads the list they check.
+
+    BOTH directions, because a one-sided check is satisfied by a `main` that can only ever print
+    PASS: with a fault it must exit `EXIT_FAILED` and say what the fault was, and with none it
+    must print the gate's own PASS sentence rather than `--launch-only`'s weaker one. That
+    `run_gate` was CALLED is asserted too - a `main` that skipped it would report a green gate
+    having uploaded nothing and asked nothing.
+    """
+    monkeypatch.setattr(http_smoke, "preflight", lambda: None)
+    argv = ["--corpus", str(corpus), "--question", "what is residence time?"]
+    called: list[str] = []
+
+    def _one_fault(*_args, **_kwargs):
+        called.append("run_gate")
+        return ["the in-corpus answer cited nothing"]
+
+    monkeypatch.setattr(http_smoke, "run_gate", _one_fault)
+    assert http_smoke.main(argv) == http_smoke.EXIT_FAILED
+    red = capsys.readouterr()
+    assert called == ["run_gate"], "the run reported a verdict without driving the ceremony"
+    assert "the in-corpus answer cited nothing" in red.err
+    assert _GATE_PASS_SENTENCE not in red.out
+
+    monkeypatch.setattr(http_smoke, "run_gate", lambda *args, **kwargs: [])
+    assert http_smoke.main(argv) == http_smoke.EXIT_OK
+    assert _GATE_PASS_SENTENCE in capsys.readouterr().out
+
+
+def test_a_ceremony_failure_is_a_failure_and_never_a_setup_verdict(
+    monkeypatch, restore_sigterm, stub_children, corpus, capsys
+):
+    """A step that could not continue is a verdict about the product, and exit 2 is not that.
+
+    `SetupError` means "this machine is not staged" and a caller branches on it, so a `GateError`
+    reported as SETUP sends someone to check their Postgres over a loop that broke. The other
+    direction is worse: a `GateError` that escaped `main`'s handler gives a traceback and no FAIL
+    line at all. Both are one edit from the shipped code and neither is visible to a run with
+    `--launch-only`, which never enters the ceremony that raises.
+    """
+    monkeypatch.setattr(http_smoke, "preflight", lambda: None)
+
+    def _stops_short(*_args, **_kwargs):
+        raise http_smoke.GateError("POST /classes did not create the class: 500 boom")
+
+    monkeypatch.setattr(http_smoke, "run_gate", _stops_short)
+    code = http_smoke.main(["--corpus", str(corpus), "--question", "what is residence time?"])
+
+    printed = capsys.readouterr()
+    assert code == http_smoke.EXIT_FAILED
+    assert code != http_smoke.EXIT_SETUP
+    # A line-wise check: a failed run also prints where it kept the child logs, and that line
+    # comes first.
+    assert any(line.startswith("FAIL") for line in printed.err.splitlines()), printed.err
+    assert "SETUP" not in printed.err
+    assert _GATE_PASS_SENTENCE not in printed.out

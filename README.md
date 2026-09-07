@@ -18,8 +18,12 @@ the bars it does not clear, are [ADR 0026](design/decisions/0026-spike-pass-1-ve
 **Slice 2 — Real write path: complete** — upload becomes a real job: queued → processing →
 ready/failed, at-least-once, reaper-safe, with no partially-indexed file ever visible.
 
-**Slice 3 — API adapter: current.** A thin HTTP layer over the core — create a class, upload, poll
-status, ask. No business logic in the adapter.
+**Slice 3 — API adapter: complete** — a thin HTTP layer over the core: create a class, upload, poll
+status, ask. No business logic in the adapter; the whole loop is driven over HTTP by
+`scripts/http_smoke.py`.
+
+**Slice 4 — Client: current.** A minimal React SPA — the five P0 surfaces, with citations rendered
+inline. The first front-end code in the repo.
 
 [The ready frontier](https://github.com/Natenc12/grounded-class-tutor/issues?q=is%3Aopen+label%3Aready)
 tracks what's ready to pick up — the board is the single writer for that, so this file doesn't

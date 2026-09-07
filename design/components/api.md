@@ -238,7 +238,8 @@ and the schema's NOT NULL) while `StagingError`'s were already written for a stu
 component owns a bound, so a cap in the adapter would refuse names `create_class` keeps accepting
 — unlike `too_long` for files, which the route can refuse honestly because ADR 0029 and
 `gct.config.MAX_INGEST_WORDS` own the number. It belongs to the first surface that has a display
-problem (Slice 4's class list), beside a constant.
+problem, beside a constant — and none of V1's five client surfaces lists classes (ADR 0012), so in
+V1 it stays unowned.
 
 The verbatim-storage contract the echoed `name` leans on is pinned from this side rather than
 trusted: a name with surrounding whitespace is created, and the row is read back on a second
@@ -336,8 +337,8 @@ a test asserts both the behaviour and its absence from the source.
 ## Open / deferred (out of this spec)
 - Connection pooling — V2, with the Supabase move (ADR 0006).
 - Authentication — V3 (ADR 0004); replaces `owner_id` with the authenticated principal.
-- The HTTP exit smoke's ceremony — create a class, upload, poll to `ready`, ask — which drives
-  this adapter end to end (#109, its last PR). What it attaches inside is shipped:
-  `scripts/http_smoke.py` launches `uvicorn gct.api.app:app` and `scripts/worker.py` as separate
-  OS processes (ADR 0011, PM-3 addendum), proves each is up, and tears both down; the worker's
-  CLI it drives is `scripts/worker.py`'s own.
+- The HTTP exit smoke, `scripts/http_smoke.py` — a peer caller, not part of this spec. It
+  launches `uvicorn gct.api.app:app` and `scripts/worker.py` as separate OS processes (ADR 0011,
+  PM-3 addendum), proves each is up, drives the loop — create a class, upload, poll to `ready`, a
+  cited answer, a refusal, a `failed` reason surfaced — and tears both down. Its own docstring is
+  the writer of how; the worker's CLI it drives is `scripts/worker.py`'s own.

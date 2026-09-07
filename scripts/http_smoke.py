@@ -579,12 +579,13 @@ def launched(
 GENERATED_CORPUS_ARGV = ("--pdfs", "1", "--pptx", "0", "--pages", "4")
 
 # The two questions, anchored to the corpus above and to nothing else — which is exactly why
-# `--corpus` cannot be given without `--question` (`_require_a_question_for_a_corpus`). The
-# in-corpus one names a fact that appears in one paragraph and nowhere else ("about nine days" in
-# the atmosphere), so an answer that grounds has to have retrieved that page. The out-of-corpus
-# one is a real question about a subject the corpus does not mention: `retrieve` has NO relevance
-# floor in V1, so it still returns k chunks and the REFUSAL is the grounder's decision about what
-# those chunks support (ADR 0016) — which is the half of the product this gate exists to prove.
+# `--corpus` cannot be given without `--question`
+# (`_refuse_a_corpus_with_no_question_anchored_to_it`). The in-corpus one names a fact that
+# appears in one paragraph and nowhere else ("about nine days" in the atmosphere), so an answer
+# that grounds has to have retrieved that page. The out-of-corpus one is a real question about a
+# subject the corpus does not mention: `retrieve` has NO relevance floor in V1, so it still
+# returns k chunks and the REFUSAL is the grounder's decision about what those chunks support
+# (ADR 0016) — which is the half of the product this gate exists to prove.
 DEFAULT_QUESTION = (
     "What is residence time in the water cycle, and how long is it in the atmosphere?"
 )
@@ -1056,10 +1057,12 @@ def run_gate(
 
     THE ORDER IS A DECISION. The unreadable file is uploaded LAST, after both asks, on one
     single-lane worker. Uploading it first or alongside would interleave two files' status lines
-    in the output a reader only ever reads when something failed, for a saving of about a second
-    — the terminal path never reaches a model and was measured at 0.6s. Both files go to the SAME
-    class, because that is what a student's class looks like and because it puts one more thing
-    under test: a failed file must not change what the ready one answers.
+    in the output a reader only ever reads when something failed, and would save only the
+    terminal path's own duration — which never reaches a model. That duration is measured where
+    `INGEST_TIMEOUT_SECONDS` is defined and is not restated here: one measurement, one writer.
+    Both files go to the SAME class, because that is what a student's class looks like and
+    because it puts one more thing under test: a failed file must not change what the ready one
+    answers.
 
     A file that never reaches `ready` skips the asks rather than failing them. `answer()` renders
     an empty retrieval as the canned refusal with no generation call (ADR 0016), so asking anyway

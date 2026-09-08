@@ -204,9 +204,11 @@ The seams it draws, which Slice 4 consumes rather than re-derives:
   non-IDLE connection (ADR 0027) and a handler that reads before it writes would otherwise raise.
 - **The owner is server-side.** `gct.api.deps.owner_id` is the one source of the V1 user (ADR 0004);
   no route reads one from the request, and the request models forbid extra fields.
-- **One error envelope.** Every non-2xx is `{error: {kind, message, detail}}` — `kind` is what a client
-  switches on, `message` names the remedy. `body_too_large`/`body_too_nested` come from middleware
-  and so appear on every route.
+- **One error envelope.** Every non-2xx the app produces is `{error: {kind, message, detail}}` —
+  `kind` is what a client switches on, `message` names the remedy. `body_too_large`/`body_too_nested`
+  come from middleware and so appear on every route. Two non-2xx responses sit outside it — a
+  bodyless 307 to the canonical path, and a request the HTTP server itself rejects before the app
+  sees it — see api.md's error-envelope section.
 - **Refusal is a 200.** The four grounding states render as 200 bodies; only the transport-level ERROR
   leaves as an envelope, 503 or 500 by its `kind`.
 

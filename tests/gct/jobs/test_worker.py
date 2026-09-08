@@ -1942,7 +1942,7 @@ def test_a_zombie_worker_unwinding_after_a_reap_writes_nothing_and_blames_nobody
 
     It does not, and the guard that stops it is `_settle`'s `state='processing' AND
     lease_token = ours`. That refusal is already driven on a real reap-and-re-claim by
-    `test_release_refuses_a_job_another_worker_now_holds` (tests/gct/jobs/test_queue.py:845) -
+    `test_release_refuses_a_job_another_worker_now_holds` (`tests/gct/jobs/test_queue.py`) -
     cited, not duplicated. What is unproven until here is what `process_one` DOES with the
     `False`: report it, write nothing, and let the interrupt out.
 

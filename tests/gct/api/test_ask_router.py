@@ -828,3 +828,16 @@ def test_a_forwarded_provider_message_is_not_logged_twice(api, db_other, caplog)
 
     assert response.status_code == 503
     assert [r for r in caplog.records if r.name == "gct.api.routers.ask"] == []
+
+
+def test_the_200_schema_advertises_only_the_four_grounding_states(offline_app):
+    """`AskResponse`'s docstring says ERROR is never a 2xx here; the PUBLISHED SCHEMA is where a
+    generated client learns that (#140's typed API client). A bare `GrounderState` annotation
+    puts ERROR in the 200's enum, so the client types a branch that cannot arrive."""
+    schema = offline_app.openapi()["components"]["schemas"]["AskResponse"]
+    assert schema["properties"]["state"]["enum"] == [
+        "GROUNDED",
+        "PARTIAL",
+        "REFUSAL",
+        "INTEGRITY_FLAGGED",
+    ]

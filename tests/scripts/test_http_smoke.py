@@ -2197,6 +2197,31 @@ def test_the_generated_corpus_is_one_readable_pdf_the_gate_can_upload():
     assert not corpus.exists(), "the generated corpus outlived the block that owns it"
 
 
+def test_the_default_questions_are_anchored_to_the_generated_corpus():
+    """The two default questions are checked against the corpus's actual TEXT, not just wired up.
+
+    Nothing else offline can: `_scripted_api` answers by request COUNT, never by what the question
+    says, so every other test here passes whatever the constants hold. The one place their wording
+    meets reality is the paid run - which means an edit to either (a copy-paste, a rebase resolved
+    wrong, a "let's ask something more interesting") would first surface as a gate failure that
+    looks like a product regression: a real refusal, or a real wrong citation, on a run someone
+    chose to pay for.
+
+    Both directions, because the pair is a pair: the in-corpus question has to name a fact the
+    corpus states, and the out-of-corpus one has to name a subject it does not mention. Free -
+    `reportlab` writes the PDF and the real parser reads it back; no network, no database, no
+    model. `_refuse_a_corpus_with_no_question_anchored_to_it` is the runtime half of this same
+    fact, for a corpus the caller supplies; this is the half for the one the gate generates.
+    """
+    with http_smoke.generated_corpus() as corpus:
+        text = " ".join(unit.text for unit in parse_file(corpus)).lower()
+
+    assert "residence time" in http_smoke.DEFAULT_QUESTION.lower()
+    assert "residence time" in text, "the in-corpus question asks about something the corpus omits"
+    assert "revolution" in http_smoke.DEFAULT_OUT_OF_CORPUS_QUESTION.lower()
+    assert "revolution" not in text, "the out-of-corpus question is answerable from the corpus"
+
+
 # --------------------------------------------------------------------------------------------
 # The transport, the flags' own defaults, and the entry point that has to report what it found
 # --------------------------------------------------------------------------------------------

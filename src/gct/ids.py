@@ -22,7 +22,9 @@ case, and moving the code out from under that prose would leave the prose descri
 that is no longer there. They are the shape this module was extracted from, so the two remaining
 copies of the exception set are visible rather than hidden - which is the honest cost of scoping
 this to the sites #126 names. (`ingest_file`'s `class_id` guard, added by #126, does go through
-`canonical_uuid`.)
+`canonical_uuid`.) Those two are the whole list: the `job_id` and `lease_token` boundaries of
+`gct.jobs.queue`'s settle verbs were outside #126's scope and are not exceptions to it - they take
+`require_canonical_uuid` here, like every other id-taking boundary in the library.
 """
 
 from __future__ import annotations

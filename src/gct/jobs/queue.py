@@ -28,6 +28,7 @@ from pathlib import Path
 import psycopg
 
 from gct.db import require_idle
+from gct.ids import require_canonical_uuid
 
 
 @dataclass(frozen=True)
@@ -109,7 +110,11 @@ def enqueue(
     EVERY id-taking boundary in the library takes - `class_exists`, `retrieve`, `index_file` and
     `ingest_file` for a caller's `class_id`, `get_file_status` for a `file_id` (#126: two sites
     bound raw, two caught too little of what the parser raises; all four now go through
-    `gct.ids`). This function keeps its own copy of that parse, and `gct.ids`'s docstring is the
+    `gct.ids`), and this module's own settle verbs - `complete`, `fail`, `release` and
+    `renew_lease` - for a `job_id` and a `lease_token`, strictly, because those two reach a
+    caller out of `claim`'s `Job`. That last set was the census's own blind spot: the sentence
+    claimed the whole library while four boundaries in the file it is written in still bound
+    raw. This function keeps its own copy of that parse, and `gct.ids`'s docstring is the
     writer of why.
 
     `get_file_status` is the writer of WHY - which spellings `uuid.UUID` accepts that Postgres's
@@ -356,6 +361,23 @@ def _settle(
       - LookupError - no such `job_id`. A programming error: the caller believes something about
                 a job that does not exist, and `orphan_note` says what that belief was.
     """
+    # #126's rule, applied to the ids this module's settle verbs take: an id bound into a
+    # `%(...)s::uuid` cast is canonicalised or refused at its own boundary, never handed raw.
+    # STRICT (`require_canonical_uuid`), by the criterion `gct.ids` states - both ids come back
+    # out of `claim`'s `Job`, i.e. out of the database, where they are canonical by construction,
+    # so any other spelling is an upstream bug worth hearing about rather than quietly converting.
+    job_id = require_canonical_uuid(
+        job_id,
+        fn=verb,
+        param="job_id",
+        remedy="Pass `job.job_id` from the `Job` `claim` returned.",
+    )
+    lease_token = require_canonical_uuid(
+        lease_token,
+        fn=verb,
+        param="lease_token",
+        remedy="Pass `job.lease_token` from the `Job` `claim` returned.",
+    )
     require_idle(conn, verb)
     with conn.transaction():
         cursor = conn.execute(
@@ -551,6 +573,18 @@ def renew_lease(
     never borrows the worker's, which is inside `ingest_file`'s transaction for the whole window a
     beat could land in (`worker._LeaseHeartbeat`).
     """
+    job_id = require_canonical_uuid(
+        job_id,
+        fn="renew_lease",
+        param="job_id",
+        remedy="Pass `job.job_id` from the `Job` `claim` returned.",
+    )
+    lease_token = require_canonical_uuid(
+        lease_token,
+        fn="renew_lease",
+        param="lease_token",
+        remedy="Pass `job.lease_token` from the `Job` `claim` returned.",
+    )
     require_idle(conn, "renew_lease")
     with conn.transaction():
         cursor = conn.execute(

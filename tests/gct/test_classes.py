@@ -290,6 +290,27 @@ def test_create_class_stores_the_unusual_names_postgres_can_hold(db, db_other):
         assert _rows(db_other, owner_id, name) == [(owner_id, name)], f"{name!r} was not stored"
 
 
+def test_validate_name_returns_the_accepted_name_unchanged():
+    """`validate_name` promises "REJECT, NEVER NORMALIZE" and RETURNS the name. Nothing else
+    asserts the return value, so `return name.strip()` is invisible until a caller binds it."""
+    for name in ("Bio 101", "  padded  ", "\t Mixed \n", "Bio 101 \N{DNA DOUBLE HELIX}"):
+        assert validate_name(name) == name, f"{name!r} came back normalized"
+
+
+@pytest.mark.parametrize("bad", [None, 123, b"Bio 101"])
+def test_a_non_string_name_is_a_class_name_error_not_an_attribute_error(bad):
+    """A validator may raise ONE class, whatever it is handed - `validate_filename` guards
+    `isinstance` for exactly that reason and this is the same job. Without the guard `.strip()`
+    escapes as a bare `AttributeError`, which names no remedy and which an adapter switching on
+    `ClassNameError.reason` renders as a 500. The route is not the exposure: pydantic answers 422
+    before the library sees a non-string, so what this pins is the library seam every non-route
+    caller uses."""
+    with pytest.raises(ClassNameError) as exc:
+        validate_name(bad)
+    assert exc.value.reason == "blank", "a non-string got a reason no adapter renders"
+    assert "the value is stored verbatim" in exc.value.remedy
+
+
 def test_the_name_rules_do_not_shadow_each_other(db, db_other):
     """Which reason each input gets — the assertion that catches one check swallowing another.
 

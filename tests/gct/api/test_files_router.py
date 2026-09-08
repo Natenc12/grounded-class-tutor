@@ -407,7 +407,7 @@ def test_every_terminal_reason_renders_actionably_and_is_a_200(
 
 
 def _accepted_suffixes(func) -> set[str]:
-    """Every file-extension literal in `func`'s source, read off its AST rather than its text.
+    """Every file-extension literal in the MODULE `func` lives in, read off its AST, not its text.
 
     A regex only ever sees the comparison form it was written against. This scrape started as
     `suffix == "(\\.[a-z0-9]+)"` over the source text, and a falsifier added a third parser the
@@ -418,11 +418,11 @@ def _accepted_suffixes(func) -> set[str]:
     key, a set, either side of the comparison.
 
     The shape filter - a dot, then lowercase alphanumerics - is the WHOLE filter. Nothing is
-    excluded, not even the docstring: every suffix-shaped literal inside a dispatch function is
-    either a type it routes or a claim about the types it routes, and both belong in this
-    answer. An exclusion list would reintroduce the same blindness one level down, because it
-    would drop a real suffix without saying so. Today this returns `{.pdf, .pptx}`, which is
-    the dispatch and nothing else.
+    excluded, not even the docstrings: every suffix-shaped literal in a parser module is either
+    a type it routes or a claim about the types it routes, and both belong in this answer. An
+    exclusion list would reintroduce the same blindness one level down, because it would drop a
+    real suffix without saying so. Measured on today's `gct.ingest.parse`: the module-wide
+    scrape returns `{.pdf, .pptx}`, which is the dispatch and nothing else.
 
     UNBOUNDED IN LENGTH, and a length cap here gets it wrong in BOTH directions. This filter
     started as `{1,5}` while the sentence it is compared against is scraped with an unbounded
@@ -431,13 +431,20 @@ def _accepted_suffixes(func) -> set[str]:
     `.markdown` on the dispatch and not in the sentence was green - which is precisely the drift
     this exists to catch; and the same suffix added correctly to BOTH sides went red, because
     only one side could see it. A guard that admits the wrong edit and blocks the right one is
-    worse than the regex it replaced. The bound bought nothing either: `parse_file` holds no
-    dot-shaped literal but the two it dispatches on, so both spellings return `{.pdf, .pptx}`
-    on today's source.
+    worse than the regex it replaced. The bound bought nothing either: `gct.ingest.parse` holds
+    no dot-shaped literal but the two the dispatch routes, so both spellings return
+    `{.pdf, .pptx}` on today's source.
     """
+    # The MODULE's source, not the function's. `inspect.getsource(func)` sees only what is
+    # spelled inside the `def`, so a dispatch that reads its suffixes from a module-level
+    # constant - `elif suffix in _DOCX_SUFFIXES:` - returns `{.pdf, .pptx}` and this guard goes
+    # green while `parse_file` accepts a third type. Measured: that mutant passes the whole
+    # suite against the function-scoped scrape and turns this test red against the module-scoped
+    # one. Widening it can only produce a FALSE RED (a suffix literal in `parse.py` that the
+    # dispatch does not route), which is loud, in place of a false green, which is silent.
     return {
         node.value
-        for node in ast.walk(ast.parse(inspect.getsource(func)))
+        for node in ast.walk(ast.parse(inspect.getsource(inspect.getmodule(func))))
         if isinstance(node, ast.Constant)
         and isinstance(node.value, str)
         and re.fullmatch(r"\.[a-z0-9]+", node.value)

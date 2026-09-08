@@ -326,7 +326,9 @@ def test_an_integrity_flagged_answer_is_200_and_ships_its_reasons(api, db_other)
 # --- ERROR: the envelope, and the kind -> status split ----------------------------------------
 
 
-def test_a_transient_generation_failure_is_503_and_never_echoes_the_providers_words(api, db_other):
+def test_a_transient_generation_failure_is_503_and_never_echoes_the_providers_words(
+    api, db_other, caplog
+):
     """`provider_transient` is the one kind where trying again can work, and 503 is the status
     that says so. The message is the ROUTE's, not the library's, for the same reason the terminal
     test below gives: `answer()` builds this kind's sentence around `str(err)` from the provider
@@ -335,12 +337,19 @@ def test_a_transient_generation_failure_is_503_and_never_echoes_the_providers_wo
 
     The vendor assertion is the load-bearing half. Pinning the status and kind alone passes just
     as well against a route that forwards, which is how the leak survived the original suite.
+
+    The log assertion is the other half of the substitution's promise: the library's whole
+    sentence - step, retry count AND the vendor's words - goes to the WARNING log, which is
+    where the route's message tells the operator to look. Without it a route that withheld
+    the message from the client and recorded it nowhere passed this test (the land run's
+    falsifier measured exactly that mutant surviving).
     """
     _seed(db_other, api, texts=["Motion requires a mover."])
     vendor = "Rate limit reached in organization org-A1b2C3d4"
     generator = _providers(api, ScriptedGeneration(TransientGenerationError(vendor)))
 
-    response = _ask(api)
+    with caplog.at_level(logging.WARNING, logger="gct.api.routers.ask"):
+        response = _ask(api)
 
     assert response.status_code == 503
     error = response.json()["error"]
@@ -349,6 +358,10 @@ def test_a_transient_generation_failure_is_503_and_never_echoes_the_providers_wo
     assert error["message"] == ask_router._ERROR_MESSAGE_OVERRIDE[ERROR_KIND_PROVIDER_TRANSIENT]
     assert error["detail"] is None
     assert len(generator.calls) == 2, "503 was returned without spending the retry budget"
+    logged = [r.getMessage() for r in caplog.records]
+    assert any("generation failed" in m and vendor in m for m in logged), (
+        "the library's sentence was withheld from the client and recorded nowhere"
+    )
 
 
 def test_a_transient_query_embedding_failure_is_also_503(api, db_other, caplog):

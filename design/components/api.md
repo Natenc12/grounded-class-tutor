@@ -97,13 +97,19 @@ that passes neither gets the OpenAI providers (ADR 0005/0007 defaults).
   requires of the stager.
 
 ### The error envelope (`gct.api.errors`, `gct.api.schemas.ErrorEnvelope`)
-Every non-2xx response body is exactly:
+Every 4xx and 5xx response body the APP produces is exactly (two non-2xx responses this does not
+cover: a bodyless 307 to the canonical path — FastAPI's `redirect_slashes` answers `/classes/`
+before routing — and a request the HTTP server rejects before an ASGI scope exists, such as a raw
+undecodable byte in the request line, which gets uvicorn's own `text/plain` 400 and never reaches
+these handlers; no browser or HTTP client can send the latter, a hand-written socket can):
 ```
 { "error": { "kind": str, "message": str, "detail": any | null } }
 ```
 - `kind` — a stable machine token a client switches on. Framework-level kinds this component
-  emits: `validation` (422, `detail` = pydantic's per-field list), `http` (the framework's own
-  404/405), `internal` (500 — the exception text is **not** echoed; it belongs in the server log),
+  emits: `validation` (422, `detail` = pydantic's per-field list), `http` (every
+  `StarletteHTTPException`, status untouched — the router's own 404/405, and ALSO the 400 starlette's
+  own parsers raise: an undecodable body, a multipart with no boundary, or more than 1000 form
+  fields), `internal` (500 — the exception text is **not** echoed; it belongs in the server log),
   and the two the body bound refuses with, `body_too_large` (413) and `body_too_nested` (400).
   Routes mint their own domain kinds.
 - **Those last two are the component's and appear on EVERY route,** which is what makes them worth
@@ -178,6 +184,7 @@ reached Postgres, and closed — not merely that the process is up.
 | `OPENAI_API_KEY` empty, real providers requested | startup refused, remedy named | `create_app` lifespan |
 | Uncaught exception in a handler | 500 `internal` envelope; traceback to the server log only | `errors.install` |
 | Unknown path / method | 404 / 405 `http` envelope | `errors.install` |
+| Body starlette's own parser cannot read (bad UTF-8, no multipart boundary, >1000 form fields) | 400 `http` envelope, starlette's own sentence | `errors.install` |
 | Request fails validation | 422 `validation` envelope, field list in `detail` | `errors.install` |
 | JSON body over the byte or depth bound | 413 `body_too_large` / 400 `body_too_nested`, the bound named in `message`; parser never runs | `limits.install` |
 | Multipart upload declaring an oversize `content-length` | 413 `body_too_large`, parser never runs | `limits.install` (interim — a chunked or lying request skips it) |
@@ -195,12 +202,16 @@ reached Postgres, and closed — not merely that the process is up.
 - The worker is a separate process (ADR 0011 PM-3); nothing in the API's loop ingests.
 
 ## Testing contract (`tests/gct/api/conftest.py`)
-The TestClient fixture **does not inject the `db` fixture into `get_conn`** — `db` is not
-autocommit, so that test fails `require_idle` while production works. The app builds its own
-connection per request as shipped; the FIXTURE overrides only `owner_id`, with `db`'s unique
+The TestClient fixture does not override `get_conn` — *The connection contract* above owns that
+rule, its reason and its one exception. The app builds its own connection per request as shipped;
+the FIXTURE overrides only `owner_id`, with `db`'s unique
 per-test owner, so every row a handler writes lands under an owner `db`'s teardown already
 deletes. Read-back of anything WRITTEN goes through `db_other` (CLAUDE.md). Providers are
-stubs; no api test takes a `live_*` fixture or constructs a real client.
+stubs, and no api test takes a `live_*` fixture. Exactly one test CONSTRUCTS a real provider
+client without calling it — `test_injecting_one_provider_still_requires_the_key_and_builds_the_other`
+asserts the lifespan builds the half that was not injected — which is the inline-construction edge
+CLAUDE.md names as the one the derived `live` marker cannot see. It stays free because
+construction sends nothing; a new api test that builds a client must justify itself here.
 
 ---
 
@@ -265,7 +276,8 @@ Router mounted at `/files`; models and status map live beside it in
 `src/gct/api/routers/files.py`, which owns every sentence this section does not restate.
 
 `POST /files` takes multipart `file` + form `class_id`. It parses `class_id` ONCE at the top —
-Python's uuid parser accepts spellings Postgres's `::uuid` cast refuses — then checks ownership
+the parse is what PRODUCES the 400 in the route's own words, and since #121 it is no longer
+what stands between a spelling and `enqueue`'s `::uuid` cast — then checks ownership
 with `class_exists` BEFORE `stage(...)`, so a refusal leaves nothing on disk, and finishes with
 `enqueue(conn, path=, owner_id=, class_id=)`. **202 Accepted** `{file_id, filename}`: accepted,
 not created, because nothing has been parsed or indexed yet and `file_id` is what the student

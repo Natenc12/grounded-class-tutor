@@ -72,10 +72,16 @@ STAGING_DIR = Path(os.environ.get("GCT_STAGING_DIR", "data/staging")).resolve()
 # enforced in ONE place (`gct.api.limits`, in front of every route) and never per-router.
 #
 # They sit BESIDE `MAX_STAGE_BYTES` because the three numbers are only legible together: a
-# multipart upload is EXEMPT from the byte bound below, and it is exempt precisely because
-# `MAX_STAGE_BYTES` already owns that path and bounds it while STREAMING. Split them across two
-# modules and the next editor to lower one cannot see that the other is the reason this one has a
-# deliberate hole in it.
+# multipart upload is EXEMPT from the byte bound below, and it is exempt because `MAX_STAGE_BYTES`
+# owns that path. Split them across two modules and the next editor to lower one cannot see that
+# the other is the reason this one has a deliberate hole in it.
+#
+# WHAT `MAX_STAGE_BYTES` DOES NOT BOUND, since the exemption is often read as "so the upload is
+# bounded": it bounds what the STAGING DIR holds and what gets queued, not what a client can make
+# the server write. Starlette's multipart parser spools the whole part to the OS temp directory
+# before `routers/files.py` is entered, so `stage` refuses a file that is already on disk in full.
+# `gct.api.limits.BodyLimit` refuses a multipart request whose DECLARED `content-length` exceeds
+# this number, in front of that parser - an interim bound that a chunked or lying request skips.
 #
 # Both are PROVISIONAL in the shape `MAX_STAGE_BYTES` is: no ADR owns either NUMBER yet, so what
 # each must admit is written down instead of an argument for its exact value.

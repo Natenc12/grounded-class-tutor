@@ -138,10 +138,24 @@ the request is refused with the envelope above — 413 `body_too_large`, 400 `bo
 the message names the bound it exceeded.
 
 **The multipart exemption is a design constraint, not an optimisation.** On `POST /files` the
-uploaded file IS the request body and `gct.staging.stage` already bounds it while streaming
-(`MAX_STAGE_BYTES`, ADR 0010). A single raw body-size check would apply to that stream and refuse
-every real course upload, so a `multipart/form-data` request is passed through with the same
-`receive` callable it arrived with. The residue: that label also takes a body off this bound on a
+uploaded file IS the request body and `gct.staging.stage` already bounds it at `MAX_STAGE_BYTES`
+(ADR 0010). A single raw body-size check would apply to that stream and refuse every real course
+upload, so a `multipart/form-data` request is passed through with the same `receive` callable it
+arrived with.
+
+**What `MAX_STAGE_BYTES` bounds, and what it does not.** It bounds what the staging dir holds and
+what gets queued — not what a client can make the server write. FastAPI resolves the `UploadFile`
+parameter by running starlette's `MultiPartParser` to completion *before* the handler body runs,
+and that parser writes the part into a `SpooledTemporaryFile` that rolls to the OS temp directory
+past 1 MiB. So `stage`'s refusal reads one byte past the bound of a file already on disk in full:
+measured, a 105 MiB upload arrives at `stage` as a temp file of 110,100,480 bytes and is then
+refused 413. `BodyLimit` therefore also refuses a multipart request whose **declared**
+`content-length` exceeds `MAX_STAGE_BYTES` plus a small multipart-framing allowance, before a byte
+is read. **That is an interim bound, not an authoritative one:** a chunked request carries no
+`content-length` and a client controls the value it does send, so both cases fall straight through
+to the parser and the disk write happens anyway. The authoritative version counts bytes as they
+arrive through a pass-through `receive` wrapper, which would retire the identity pin #125 shipped
+(`test_a_multipart_request_keeps_the_very_same_receive_callable`) and is filed separately. The residue: that label also takes a body off this bound on a
 JSON route, where pydantic then refuses it 422 — smaller than the unbounded state that preceded
 the module, and recorded in `limits.py` rather than silently. What that 422 COSTS is bounded on
 the way out instead, by the envelope's echo bound above (#134).
@@ -166,7 +180,8 @@ reached Postgres, and closed — not merely that the process is up.
 | Unknown path / method | 404 / 405 `http` envelope | `errors.install` |
 | Request fails validation | 422 `validation` envelope, field list in `detail` | `errors.install` |
 | JSON body over the byte or depth bound | 413 `body_too_large` / 400 `body_too_nested`, the bound named in `message`; parser never runs | `limits.install` |
-| Multipart upload of any size | passed through unbounded by this component; bounded while streaming by `stage` | `gct.staging` (`MAX_STAGE_BYTES`, ADR 0010) |
+| Multipart upload declaring an oversize `content-length` | 413 `body_too_large`, parser never runs | `limits.install` (interim — a chunked or lying request skips it) |
+| Multipart upload of any other size | passed through by this component; `stage` bounds what the staging dir holds, **after** the parser has spooled the whole part to the OS temp dir | `gct.staging` (`MAX_STAGE_BYTES`, ADR 0010) |
 
 ## Invariants
 - One connection per request, autocommit, closed on exit, and no test FIXTURE overrides it —

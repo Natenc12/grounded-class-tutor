@@ -156,9 +156,18 @@ def stage(
     Bound: refused with `too_large` the moment the byte count EXCEEDS `max_bytes` - `max_bytes`
     itself is admitted - by asking the upload for at most `max_bytes - written + 1` bytes per
     read, so the refusal reads one byte past the bound and not a chunk past it, and never the
-    rest of the upload. Nothing is truncated: a refused upload leaves NO file behind, because a
-    truncated file that later parsed would index a lecture with its last pages missing and cite
-    it with a straight face.
+    rest of the upload. THAT BOUNDS WHAT THIS FUNCTION READS AND WRITES, NOT WHAT THE CALLER
+    ALREADY HOLDS. Over HTTP the caller is `routers/files.py`, and starlette's multipart parser
+    has already spooled the whole part into a `SpooledTemporaryFile` - rolled to the OS temp
+    directory past 1 MiB - before the route is entered, so an oversized upload is on disk in full
+    by the time this refuses it. Measured: a 105 MiB upload reaches this function as a temp file
+    of 110,100,480 bytes. `gct.api.limits.BodyLimit` refuses a DECLARED oversize length in front
+    of that parser - a partial bound a chunked or lying request skips, not a replacement for this
+    one.
+
+    Nothing is truncated: a refused upload leaves NO file behind, because a truncated file that
+    later parsed would index a lecture with its last pages missing and cite it with a straight
+    face.
 
     Durability, and why this order:
       1. bytes stream in `CHUNK_BYTES` reads to `<slot>/.part` - a temp name in the SAME

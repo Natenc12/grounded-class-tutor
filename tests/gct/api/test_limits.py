@@ -13,8 +13,10 @@ run for free in CI are library-level with no HTTP client in them. (The Slice 3 g
 into no workflow, so it is no net either.) (Not the largest payload of any kind -
 `test_ask_router.py` posts a 2,066-byte question body - but the upload path is the one this pin is
 about, and 54 bytes is what it had.) So a bound that accidentally
-applied to the streamed upload would leave every check on the board green while `POST /files`
-refused every real course file. `test_a_corpus_scale_multipart_upload_is_still_accepted` is what
+applied to the upload's BYTES would leave every check on the board green while `POST /files`
+refused every real course file. (The `content-length` pre-check beside it reads a header, not the
+body, which is why it can coexist with that pin.)
+`test_a_corpus_scale_multipart_upload_is_still_accepted` is what
 catches that, and it is why the payload is SYNTHETIC: the dogfood corpus is gitignored, and a pin
 that skips in CI is not a net (CLAUDE.md).
 
@@ -39,6 +41,8 @@ from starlette.responses import PlainTextResponse
 from gct.api import errors, limits
 from gct.api.errors import ApiError
 from gct.api.limits import (
+    _STATUS_TOO_LARGE,
+    KIND_TOO_LARGE,
     BodyLimit,
     _to_utf8,
     is_multipart,
@@ -47,7 +51,7 @@ from gct.api.limits import (
 )
 from gct.api.routers import files as files_router
 from gct.api.routers.ask import MAX_QUESTION_CHARS
-from gct.config import MAX_JSON_BODY_BYTES, MAX_JSON_BODY_DEPTH
+from gct.config import MAX_JSON_BODY_BYTES, MAX_JSON_BODY_DEPTH, MAX_STAGE_BYTES
 from gct.staging import stage
 
 JSON = {"content-type": "application/json"}
@@ -444,10 +448,14 @@ def _scope(content_type: str) -> dict:
 def test_a_multipart_request_keeps_the_very_same_receive_callable() -> None:
     """The upload stream is handed on UNTOUCHED - the same object, not a copy or a wrapper.
 
-    `gct.staging.stage` reads the upload in 1 MiB reads through this callable, so anything that
-    buffered or re-wrapped it would put a 100 MiB file in memory. Object identity is the
-    strongest available statement that it did not, and it is what a refactor to
-    `BaseHTTPMiddleware` would break instantly.
+    Object identity is the strongest available statement that this module did not buffer the
+    upload, and it is what a refactor to `BaseHTTPMiddleware` would break instantly. The
+    `content-length` pre-check beside it does not weaken this: it reads a HEADER and refuses or
+    returns, so on the accepted path nothing here has touched `receive` at all.
+
+    NOT a statement that no wrapper could be correct - a pass-through counter buffers one chunk,
+    not the file - and this pin is what an authoritative byte-counting bound would have to
+    retire deliberately.
     """
     captured: dict = {}
 
@@ -477,6 +485,112 @@ def test_a_multipart_request_keeps_the_very_same_receive_callable() -> None:
         [{"type": "http.request", "body": b"{}", "more_body": False}],
     )
     assert captured["receive"] is not receive
+
+
+def test_a_multipart_body_declaring_an_oversize_length_is_refused_before_a_byte_is_read() -> None:
+    """The interim upload bound: `content-length` over the ceiling is a 413 in front of the
+    parser, and NOTHING downstream runs.
+
+    Why the bound exists at all: FastAPI resolves `routers/files.py`'s `UploadFile` by running
+    starlette's multipart parser to completion BEFORE the handler body, into a
+    `SpooledTemporaryFile` that rolls to the OS temp directory past 1 MiB - so `stage`'s
+    `MAX_STAGE_BYTES` refusal reads one byte past the bound of a file already written in full.
+    Measured before this check existed: a 105 MiB upload reached `stage` as a 110,100,480-byte
+    temp file.
+
+    Both halves of "before" are asserted, because the status alone would pass against a check
+    that refused after draining: `receive` is never awaited (zero bytes read), and the inner app
+    is never entered (so no parser, no handler, no `stage`).
+    """
+    drained: list[bytes] = []
+    entered: list[bool] = []
+
+    async def inner(scope, receive, send) -> None:
+        entered.append(True)
+        await PlainTextResponse("ok")(scope, receive, send)
+
+    async def receive() -> dict:
+        drained.append(b"X")
+        return {"type": "http.request", "body": b"X", "more_body": False}
+
+    sent: list[dict] = []
+
+    async def send(message: dict) -> None:
+        sent.append(message)
+
+    scope = _scope("multipart/form-data; boundary=x")
+    over = MAX_STAGE_BYTES + 64 * 1024 * 1024
+    scope["headers"] = [*scope["headers"], (b"content-length", str(over).encode())]
+
+    asyncio.run(BodyLimit(inner)(scope, receive, send))
+
+    assert entered == [], "the parser and the handler ran on a body already known to be too big"
+    assert drained == [], "the body was read before it was refused"
+    assert sent[0]["status"] == _STATUS_TOO_LARGE
+    assert json.loads(sent[1]["body"])["error"]["kind"] == KIND_TOO_LARGE
+
+
+def test_a_multipart_body_declaring_a_legal_length_is_passed_straight_through() -> None:
+    """The other arm, without which the test above passes against a middleware that refuses
+    every multipart request. A corpus-scale declaration is admitted untouched - and the ceiling
+    is `MAX_STAGE_BYTES` plus framing, not a number this module invented, so lowering the stager
+    lowers this too.
+    """
+    captured: dict = {}
+
+    async def inner(scope, receive, send) -> None:
+        captured["receive"] = receive
+        await PlainTextResponse("ok")(scope, receive, send)
+
+    async def receive() -> dict:
+        return {"type": "http.request", "body": b"", "more_body": False}
+
+    async def send(message: dict) -> None:
+        pass
+
+    middleware = BodyLimit(inner)
+    assert middleware.max_upload_bytes > MAX_STAGE_BYTES
+    scope = _scope("multipart/form-data; boundary=x")
+    scope["headers"] = [
+        *scope["headers"],
+        (b"content-length", str(middleware.max_upload_bytes).encode()),
+    ]
+
+    asyncio.run(middleware(scope, receive, send))
+
+    assert captured["receive"] is receive
+
+
+@pytest.mark.parametrize("header", [None, b"not-a-number"])
+def test_the_upload_bound_is_skipped_when_the_length_is_absent_or_unparseable(header) -> None:
+    """WHAT THIS BOUND IS NOT. It reads a client-supplied header, so a chunked request (no
+    `content-length` at all) and a garbage value both fall straight through to the parser, and
+    so does a small declaration attached to a large body. It narrows the window; it does not
+    close it, and no doc may say otherwise.
+
+    Pinned rather than left implicit because the failure is silent in the other direction too:
+    a `_declared_length` that raised or returned 0 on a malformed header would refuse or admit
+    on the strength of a parse error.
+    """
+    entered: list[bool] = []
+
+    async def inner(scope, receive, send) -> None:
+        entered.append(True)
+        await PlainTextResponse("ok")(scope, receive, send)
+
+    async def receive() -> dict:
+        return {"type": "http.request", "body": b"", "more_body": False}
+
+    async def send(message: dict) -> None:
+        pass
+
+    scope = _scope("multipart/form-data; boundary=x")
+    if header is not None:
+        scope["headers"] = [*scope["headers"], (b"content-length", header)]
+
+    asyncio.run(BodyLimit(inner)(scope, receive, send))
+
+    assert entered == [True]
 
 
 def test_a_buffered_body_is_replayed_with_its_chunk_boundaries_intact() -> None:

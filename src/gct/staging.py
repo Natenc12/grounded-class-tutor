@@ -49,6 +49,25 @@ _MAX_FILENAME_BYTES = 255
 
 _FORBIDDEN = ("/", "\\", "\x00")
 
+# The most of a client-supplied name a refusal quotes back. `errors._json_safe` bounds every
+# envelope string at `MAX_ERROR_ECHO_CHARS` by keeping the HEAD, and the head of a `bad_filename`
+# message is the client's own name while the remedy is its TAIL - so a name long enough to fill
+# the bound deletes the remedy and leaves the student a 400 that says only what they sent. 200
+# control bytes `repr` to 800 characters, which is enough on its own; #135 closed the SIZE half of
+# this and the shape half is what stayed. Capping the echo instead of teaching `_bounded` to keep
+# a tail is the smaller change: the tail form would alter every truncated string in every
+# envelope, and this one is the only message whose meaning lives at the end.
+_ECHO_CHARS = 60
+
+
+def _short(filename: str) -> str:
+    """`repr(filename)`, capped, so the remedy that follows it always survives the envelope bound.
+
+    Not a normalization: this is the ECHO in an error message, never a value anything stores.
+    """
+    shown = repr(filename)
+    return shown if len(shown) <= _ECHO_CHARS else shown[:_ECHO_CHARS] + "...'"
+
 
 class Readable(Protocol):
     """The whole contract `stage` needs from an upload: `read(n)` returning at most `n` bytes,
@@ -115,19 +134,19 @@ def validate_filename(filename: str) -> str:
     except UnicodeEncodeError:
         raise StagingError(
             "bad_filename",
-            f"filename {filename!r} is not valid UTF-8",
+            f"filename {_short(filename)} is not valid UTF-8",
             remedy="rename the file using ordinary characters and upload it again",
         ) from None
     if any(ch in filename for ch in _FORBIDDEN):
         raise StagingError(
             "bad_filename",
-            f"filename {filename!r} contains a path separator or NUL",
+            f"filename {_short(filename)} contains a path separator or NUL",
             remedy="send the file's basename only (lecture-3.pdf, not ../lecture-3.pdf)",
         )
     if filename.strip(".") == "":
         raise StagingError(
             "bad_filename",
-            f"filename {filename!r} is a directory reference, not a file name",
+            f"filename {_short(filename)} is a directory reference, not a file name",
             remedy="name the file (for example lecture-3.pdf) and upload it again",
         )
     if len(encoded) > _MAX_FILENAME_BYTES:
@@ -178,7 +197,10 @@ def stage(
       3. rename `.part` to `filename` - so a path that exists is, by construction, complete: the
          worker (or a spike re-running chunking, ADR 0010) can never open a half-written file;
       4. `fsync` the directory - the rename itself is directory metadata, and without this a
-         crash can roll it back after `enqueue` has committed the ref.
+         crash can roll it back after `enqueue` has committed the ref. Twice: the slot, then
+         the root, because the slot's own entry is metadata of the ROOT, and a committed
+         `staging_ref` pointing at a directory that never existed is the same loss one level
+         up. `test_durability_order_is_fsync_file_then_rename_then_fsync_dir` pins both.
     Any failure before step 3 - the bound, a `read` that raises, a full disk - removes the
     partial AND the slot directory before re-raising, so the staging dir only ever holds
     complete uploads.
@@ -221,6 +243,7 @@ def stage(
 
     os.replace(part, final)
     _fsync_dir(slot)
+    _fsync_dir(root)
     return str(final)
 
 

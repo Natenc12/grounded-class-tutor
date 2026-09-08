@@ -128,8 +128,8 @@ these handlers; no browser or HTTP client can send the latter, a hand-written so
   choice. **Which status a given failure maps to is each route issue's decision**, not this spec's.
 - `kind`/`message` is the vocabulary `GrounderError` already uses (`grounder.md` §Interface),
   which is why `POST /ask` forwards a Grounder `ERROR`'s own `kind` into this envelope rather than
-  minting a second one — see that route's section for the `kind` → status split and the one
-  message it substitutes. **A refusal is never an envelope:** the four *grounding* states are 200
+  minting a second one — see that route's section for the `kind` → status split and the
+  messages it substitutes. **A refusal is never an envelope:** the four *grounding* states are 200
   bodies (ADR 0016), and only the fifth, transport-level `ERROR`, leaves this way.
 
 ### The request-body bound (`gct.api.limits`) — **#125**
@@ -144,10 +144,24 @@ the request is refused with the envelope above — 413 `body_too_large`, 400 `bo
 the message names the bound it exceeded.
 
 **The multipart exemption is a design constraint, not an optimisation.** On `POST /files` the
-uploaded file IS the request body and `gct.staging.stage` already bounds it while streaming
-(`MAX_STAGE_BYTES`, ADR 0010). A single raw body-size check would apply to that stream and refuse
-every real course upload, so a `multipart/form-data` request is passed through with the same
-`receive` callable it arrived with. The residue: that label also takes a body off this bound on a
+uploaded file IS the request body and `gct.staging.stage` already bounds it at `MAX_STAGE_BYTES`
+(ADR 0010). A single raw body-size check would apply to that stream and refuse every real course
+upload, so a `multipart/form-data` request is passed through with the same `receive` callable it
+arrived with.
+
+**What `MAX_STAGE_BYTES` bounds, and what it does not.** It bounds what the staging dir holds and
+what gets queued — not what a client can make the server write. FastAPI resolves the `UploadFile`
+parameter by running starlette's `MultiPartParser` to completion *before* the handler body runs,
+and that parser writes the part into a `SpooledTemporaryFile` that rolls to the OS temp directory
+past 1 MiB. So `stage`'s refusal reads one byte past the bound of a file already on disk in full:
+measured, a 105 MiB upload arrives at `stage` as a temp file of 110,100,480 bytes and is then
+refused 413. `BodyLimit` therefore also refuses a multipart request whose **declared**
+`content-length` exceeds `MAX_STAGE_BYTES` plus a small multipart-framing allowance, before a byte
+is read. **That is an interim bound, not an authoritative one:** a chunked request carries no
+`content-length` and a client controls the value it does send, so both cases fall straight through
+to the parser and the disk write happens anyway. The authoritative version counts bytes as they
+arrive through a pass-through `receive` wrapper, which would retire the identity pin #125 shipped
+(`test_a_multipart_request_keeps_the_very_same_receive_callable`) and is filed separately. The residue: that label also takes a body off this bound on a
 JSON route, where pydantic then refuses it 422 — smaller than the unbounded state that preceded
 the module, and recorded in `limits.py` rather than silently. What that 422 COSTS is bounded on
 the way out instead, by the envelope's echo bound above (#134).
@@ -173,7 +187,8 @@ reached Postgres, and closed — not merely that the process is up.
 | Body starlette's own parser cannot read (bad UTF-8, no multipart boundary, >1000 form fields) | 400 `http` envelope, starlette's own sentence | `errors.install` |
 | Request fails validation | 422 `validation` envelope, field list in `detail` | `errors.install` |
 | JSON body over the byte or depth bound | 413 `body_too_large` / 400 `body_too_nested`, the bound named in `message`; parser never runs | `limits.install` |
-| Multipart upload of any size | passed through unbounded by this component; bounded while streaming by `stage` | `gct.staging` (`MAX_STAGE_BYTES`, ADR 0010) |
+| Multipart upload declaring an oversize `content-length` | 413 `body_too_large`, parser never runs | `limits.install` (interim — a chunked or lying request skips it) |
+| Multipart upload of any other size | passed through by this component; `stage` bounds what the staging dir holds, **after** the parser has spooled the whole part to the OS temp dir | `gct.staging` (`MAX_STAGE_BYTES`, ADR 0010) |
 
 ## Invariants
 - One connection per request, autocommit, closed on exit, and no test FIXTURE overrides it —
@@ -266,8 +281,12 @@ what stands between a spelling and `enqueue`'s `::uuid` cast — then checks own
 with `class_exists` BEFORE `stage(...)`, so a refusal leaves nothing on disk, and finishes with
 `enqueue(conn, path=, owner_id=, class_id=)`. **202 Accepted** `{file_id, filename}`: accepted,
 not created, because nothing has been parsed or indexed yet and `file_id` is what the student
-polls. Refusals are `400` (`bad_class_id`, `bad_filename`), `413` (`too_large`), `404`
-(`class_not_found`).
+polls. Refusals are `400` (`bad_class_id`, `bad_filename`), `413`, `404` (`class_not_found`).
+The 413 has two writers, and which one a client meets depends on what it sent: a request that
+*declares* an oversize `content-length` — every browser `fetch`, `requests`, `httpx` and
+`curl -F` does — is refused `body_too_large` by the middleware before the parser runs (see
+*The error envelope*), so that is the kind a normal client switches on; `too_large` from
+`stage` is what a chunked or under-declaring upload gets, one byte past the cap.
 
 `GET /files/{file_id}` renders `get_file_status` as **200** `{filename, status, failed_reason,
 message}` for every status *including* `failed` — no `file_id`, since the caller supplied it.
@@ -318,13 +337,20 @@ never the guard. ERROR leaves as the shared `ErrorEnvelope` rather than a 200 bo
 choosing the HTTP rendering is the route's decision, not the ADR's.
 
 **The error `message` is the library's, except where the library did not write it.** `kind` is
-always the library's token, adopted verbatim. `provider_terminal`'s message is built from a raw
-provider exception (`grounder/answer.py`), so the route substitutes its own sentence rather than
-forwarding vendor text — the same thing `errors._unhandled` refuses to do — and an unknown kind is
-substituted for the same reason. **A substituted sentence is written to the server log**, at the
-site that substitutes it and only there: `ApiError` is handled, so nothing re-raises for uvicorn
-to log the way an uncaught exception does, and the route's own sentence tells the operator to
-look in that log. The two forwarding kinds are not logged — the client was already told.
+always the library's token, adopted verbatim. **Both provider kinds are substituted**, because both
+messages are built by interpolating a raw provider exception and neither has been read here:
+`provider_terminal`'s in `grounder/answer.py`, and `provider_transient`'s one layer lower — the
+OpenAI provider raises `Transient{Embedding,Generation}Error(str(err))` and the library sentence
+that wraps it (`"query embedding failed: …"`, `"generation failed after N attempts: …"`) carries
+that vendor string along. A real 429 body names the operator's organization id, model and quota
+figures, and `create_app` has no auth (ADR 0004), so the route forwards neither — the same thing
+`errors._unhandled` refuses to do. An unknown kind is substituted for the same reason.
+**A substituted sentence is written to the server log**, at the site that substitutes it and only
+there: `ApiError` is handled, so nothing re-raises for uvicorn to log the way an uncaught exception
+does, and the route's own sentence tells the operator to look in that log. That log line is the
+whole library message, so the retry count and the failing step the transient sentence used to carry
+on the wire are still recorded. `embedding_mismatch` is the one forwarding kind left and is not
+logged — the client was already told.
 **Rejected requests** - never a refusal, which is a 200 - are
 `400` (`bad_class_id`), `404` (`class_not_found`), `422` (blank, missing, or over-long
 `question`, through the shared validation envelope).

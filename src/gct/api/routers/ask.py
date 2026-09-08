@@ -37,6 +37,7 @@ from __future__ import annotations
 
 import logging
 import uuid
+from typing import Literal
 
 from fastapi import APIRouter
 from pydantic import BaseModel, ConfigDict, Field, field_validator
@@ -259,7 +260,12 @@ class AskResponse(BaseModel):
     caller supplied both, so echoing them adds nothing it does not already hold.
     """
 
-    state: GrounderState
+    state: Literal[
+        GrounderState.GROUNDED,
+        GrounderState.PARTIAL,
+        GrounderState.REFUSAL,
+        GrounderState.INTEGRITY_FLAGGED,
+    ]
     answer_prose: str | None
     citations: list[CitationOut]
     coverage: CoverageOut

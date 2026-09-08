@@ -1167,3 +1167,66 @@ def test_renew_lease_refuses_a_lease_that_is_no_longer_ours(db, db_other, tmp_pa
         )
         is False
     ), "a beat on a vanished job must be a routine `stop beating`, not an exception in a thread"
+
+
+# THE FOUR VERBS THAT TAKE IDS FROM A CALLER RATHER THAN FROM A QUERY, and the two ids each of
+# them takes. Parametrized as data so a fifth verb cannot be added without a row here: the guard
+# these pin is `require_canonical_uuid` at every id-taking boundary (#126), and the settle verbs
+# were the set that sentence claimed and did not cover.
+_SETTLE_VERBS = {
+    "complete": lambda conn, **ids: complete(conn, **ids),
+    "fail": lambda conn, **ids: fail(conn, error="boom", **ids),
+    "release": lambda conn, **ids: release(conn, error="boom", **ids),
+    "renew_lease": lambda conn, **ids: renew_lease(conn, lease_seconds=3600, **ids),
+}
+
+# STRICT, so this is not the "spellings Postgres refuses" set `enqueue` is parametrized over: two
+# of these three cast cleanly and are still refused here. That is the point of the strict shape -
+# both ids come back out of `claim`'s `Job`, so any other spelling is an upstream bug (`gct.ids`).
+_NOT_CANONICAL = {
+    "urn": lambda u: u.urn,
+    "braced": lambda u: f"{{{u}}}",
+    "hex32": lambda u: u.hex,
+    "already_parsed": lambda u: u,  # a `uuid.UUID` passed instead of `str(...)`
+}
+
+
+@pytest.mark.parametrize("verb", sorted(_SETTLE_VERBS))
+@pytest.mark.parametrize("param", ["job_id", "lease_token"])
+@pytest.mark.parametrize("spelling", sorted(_NOT_CANONICAL))
+def test_the_settle_verbs_refuse_a_non_canonical_id_and_leave_the_connection_alone(
+    db, db_other, tmp_path, verb, param, spelling
+):
+    """A remedy-naming `ValueError`, not an opaque `InvalidTextRepresentation` out of the cast.
+
+    Both ids are bound into `%(...)s::uuid`, so before the guard a `urn:uuid:` spelling reached
+    Postgres and came back as a driver error naming a type, not an action. The remedy names what
+    to pass - the `Job` `claim` returned - because a caller holding some other spelling has no
+    other way to get the right one.
+
+    The three assertions after the raise are the measurement behind "refused early costs nothing":
+    the refusal happens in front of `require_idle` and the `conn.transaction()` block, so the
+    connection is still IDLE, still answering, and the job it names is untouched. Read through
+    `db_other` for that last one - `db`'s own connection would show the same row either way.
+    """
+    conn, owner_id, class_id = db
+    file_id = enqueue(conn, path=_lecture(tmp_path), owner_id=owner_id, class_id=class_id)
+    conn.commit()
+    job = claim(conn, lease_seconds=3600)
+    assert job is not None
+    conn.commit()
+
+    ids = {"job_id": job.job_id, "lease_token": job.lease_token}
+    ids[param] = _NOT_CANONICAL[spelling](uuid.UUID(ids[param]))
+
+    expected = rf"{verb}\(\) requires a canonical uuid {param}"
+    with pytest.raises(ValueError, match=expected) as caught:
+        _SETTLE_VERBS[verb](conn, **ids)
+
+    assert "claim" in str(caught.value), "the refusal does not name what to pass instead"
+    assert conn.info.transaction_status == psycopg.pq.TransactionStatus.IDLE
+    assert conn.execute("select 1").fetchone() == (1,), "the refusal cost the caller its connection"
+    conn.rollback()
+    assert db_other.execute(
+        "select state from jobs where file_id = %s::uuid", (file_id,)
+    ).fetchone() == ("processing",), "a refused settle still wrote the job it named"

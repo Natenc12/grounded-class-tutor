@@ -73,13 +73,19 @@ def validate_name(name: str) -> str:
     leaves the connection exactly as it found it.
 
     Refused:
+      - not a `str` at all (`None`, `123`, `b'Bio 101'`) - reported as `blank`, because there is
+        equally nothing to display. It shares the reason token deliberately: widening
+        `CLASS_NAME_REASONS` would make every adapter switching on it render a case that means
+        the same thing to a student. `validate_filename` guards this for the reason it states in
+        as many words - any other exception out of a validator renders a bad request as a 500 -
+        and this is the same job, so it takes the same guard.
       - blank: `''`, `'   '`, `'\t\n'`. `not null` is not `not blank`, and a class with an
         invisible name is unusable on every surface that lists classes.
       - not encodable as UTF-8 (an unpaired surrogate such as `'\ud800'`) - psycopg cannot put
         the value on the wire, and no `text` column can hold it.
       - a NUL (0x00) anywhere - Postgres `text` cannot contain one, whatever the encoding.
 
-    THE THREE SETS ARE DISJOINT, so no check shadows another and the order below is not
+    THE THREE STRING SETS ARE DISJOINT, so no check shadows another and the order below is not
     load-bearing: NUL and a surrogate are not whitespace, so a string containing either is never
     blank, and a whitespace-only string always encodes. `test_the_name_rules_do_not_shadow_each
     _other` asserts the reason each input gets rather than trusting that.
@@ -89,7 +95,7 @@ def validate_name(name: str) -> str:
     would be this module inventing a rule about display that no component owns (see
     `gct.api.routers.classes` on why there is no length cap either).
     """
-    if not name.strip():
+    if not isinstance(name, str) or not name.strip():
         raise ClassNameError(
             "blank",
             f"create_class() refuses a blank name ({name!r}): `classes.name` is what every "
@@ -154,7 +160,7 @@ def create_class(conn: psycopg.Connection, *, owner_id: str, name: str) -> str:
     # transaction opens, so a refused call writes nothing either way - what the order decides is
     # WHICH error a doubly-invalid call gets, and it must be the same answer every writer gives.
     require_idle(conn, "create_class")
-    validate_name(name)
+    name = validate_name(name)
 
     with conn.transaction():
         row = conn.execute(

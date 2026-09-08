@@ -16,6 +16,7 @@ from pathlib import Path
 
 import pytest
 
+from gct.config import MAX_ERROR_ECHO_CHARS
 from gct.jobs.queue import enqueue
 from gct.staging import CHUNK_BYTES, StagingError, stage, validate_filename
 
@@ -155,6 +156,36 @@ def test_bad_filenames_are_refused_and_nothing_is_written(tmp_path, bad):
     assert _slots(tmp_path) == []
 
 
+# The three refusals that quote the name back. `bad_filename` with no filename and the byte-cap
+# refusal quote nothing, so they cannot lose their remedy this way.
+@pytest.mark.parametrize(
+    "bad",
+    [
+        "\x01" * 400 + "/x.pdf",  # control bytes: each `repr`s to four characters
+        "\u00e9" * 200 + "/x.pdf",
+        "." * 400,  # the directory-reference refusal
+        "\udcff" * 400 + ".pdf",  # the not-UTF-8 refusal
+    ],
+)
+def test_a_long_refused_filename_still_carries_its_remedy(tmp_path, bad):
+    """The remedy is the TAIL of `str(exc)` and `gct.api.errors` bounds an echoed string by
+    keeping its HEAD, so a name long enough to fill the bound on its own deletes the advice and
+    the student gets a 400 quoting only what they sent. Pinned against `MAX_ERROR_ECHO_CHARS`
+    rather than through the router: the bound is what the message has to fit under, and the
+    router is one of the callers of that fact, not the writer of it.
+
+    Two-sided: the short-name cases above assert the remedy is present at all, and this asserts
+    that no input can push it past the bound - 400 control characters `repr` to 1,600."""
+    with pytest.raises(StagingError) as info:
+        stage(_RecordingReader(b"%PDF-1.4"), filename=bad, staging_dir=tmp_path)
+    message = str(info.value)
+    assert info.value.remedy in message
+    assert len(message) <= MAX_ERROR_ECHO_CHARS, (
+        f"the refusal is {len(message)} chars; anything over {MAX_ERROR_ECHO_CHARS} is truncated "
+        "from the tail, which is where the remedy is"
+    )
+
+
 @pytest.mark.parametrize(
     "good",
     [
@@ -233,10 +264,11 @@ def test_durability_order_is_fsync_file_then_rename_then_fsync_dir(tmp_path, mon
     monkeypatch.setattr(os, "fsync", fsync)
     monkeypatch.setattr(os, "replace", replace)
     ref = stage(_RecordingReader(b"q" * 10), filename="lecture.pdf", staging_dir=tmp_path)
-    assert events == ["fsync:file", "rename", "fsync:dir"]
-    # WHICH directory: the slot the rename happened in, not the staging root above it.
-    assert dir_inodes == [Path(ref).parent.stat().st_ino]
-    assert dir_inodes != [tmp_path.stat().st_ino]
+    assert events == ["fsync:file", "rename", "fsync:dir", "fsync:dir"]
+    # WHICH directories, in order: the slot the rename happened in, THEN the staging root the
+    # slot itself was created in - the slot's own directory entry is metadata of the root, and a
+    # crash that loses it loses the file behind a ref `enqueue` has already committed.
+    assert dir_inodes == [Path(ref).parent.stat().st_ino, tmp_path.stat().st_ino]
 
 
 def test_no_part_file_remains_after_success(tmp_path):

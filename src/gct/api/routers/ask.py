@@ -93,20 +93,31 @@ _UNKNOWN_ERROR_STATUS = 500
 # WHAT THE CLIENT READS INSTEAD OF `error.message`, for the kinds whose message is not ours to
 # forward. Everything not listed here forwards `GrounderError.message` verbatim, which is the
 # designed shape: `schemas.ErrorBody` documents the `kind`/`message` pair as the `GrounderError`
-# vocabulary, and for `embedding_mismatch` and `provider_transient` that message is prose THIS
-# REPO wrote (`retrieve.EmbeddingModelMismatchError`, `ask._retrieval_error`, `answer._error`),
-# naming the remedy where there is one.
+# vocabulary, and for `embedding_mismatch` that message is prose THIS REPO wrote
+# (`retrieve.EmbeddingModelMismatchError`, rendered by `ask._retrieval_error`), naming the remedy.
 #
-# `provider_terminal` is the exception, and it is not a style call. Its message is built as
-# `f"{type(err).__name__}: {err}"` over a RAW provider exception (`grounder/answer.py`, the broad
-# `except` around `generate()`) - by construction the one kind whose text nobody here has read.
-# OpenAI's own 401 body quotes back the key prefix it rejected. Forwarding it would do precisely
-# what `errors._unhandled` refuses to do, in its own words: ship "psycopg's DSN-bearing messages
-# and provider errors to the browser". The library's sentence is not lost: it is WRITTEN TO THE
-# SERVER LOG at the substitution site below, which is where a provider's own error text belongs
-# and the only place the sentences here promise the operator will find it. Withholding it from
-# the client and never recording it anywhere would make that promise false.
+# BOTH provider kinds are overridden, and neither is a style call: each one's message is built by
+# interpolating a RAW provider exception, so by construction nobody here has read its text.
+#   - `provider_terminal`: `f"{type(err).__name__}: {err}"` in `grounder/answer.py`, the broad
+#     `except` around `generate()`. OpenAI's own 401 body quotes back the key prefix it rejected.
+#   - `provider_transient`: the interpolation is one layer lower, which is why it reads like repo
+#     prose and was forwarded for a while. `providers/openai_provider.py` raises
+#     `Transient{Embedding,Generation}Error(str(err))` over the vendor exception, and the sentence
+#     that wraps it (`ask._retrieval_error`'s "query embedding failed: ...",
+#     `answer._error`'s "generation failed after N attempts: ...") carries that string along. A
+#     real 429 body names the operator's organization id, model and quota figures; `create_app`
+#     has no auth (ADR 0004 defers it to V3), so forwarding it hands those to any caller.
+# Forwarding either would do precisely what `errors._unhandled` refuses to do, in its own words:
+# ship "psycopg's DSN-bearing messages and provider errors to the browser". The library's sentence
+# is not lost: it is WRITTEN TO THE SERVER LOG at the substitution site below, which is where a
+# provider's own error text belongs and the only place the sentences here promise the operator
+# will find it. Withholding it from the client and never recording it anywhere would make that
+# promise false. The retry count and the failing STEP that the transient sentence carried on the
+# wire survive there too - the log line is the whole library message, unchanged.
 _ERROR_MESSAGE_OVERRIDE = {
+    ERROR_KIND_PROVIDER_TRANSIENT: "We could not reach the service that answers questions, or it "
+    "asked us to slow down. Nothing is wrong with your question or your materials - try again in "
+    "a moment. Whoever runs this instance can find the provider's own words in the server log.",
     ERROR_KIND_PROVIDER_TERMINAL: "We could not generate an answer: the service behind it "
     "refused the request outright. That is a configuration problem on this server, not "
     "something about your question or your materials, and retrying will not change it. "
@@ -363,9 +374,11 @@ def ask_question(
             # HANDLED exception - `errors._api_error` renders it and returns - so nothing
             # re-raises afterwards the way an uncaught exception does, and without this line the
             # two sentences above would tell an operator to read a log nothing was written to.
-            # The identity test, not `!=`, is what keeps this exact: the two forwarding kinds
-            # pass `result.error.message` through unchanged and log nothing, and a substitution
-            # that happened to be equal to it would still be a substitution.
+            # The identity test, not `!=`, is what keeps this exact: a forwarding kind passes
+            # `result.error.message` through unchanged and logs nothing, and a substitution that
+            # happened to be equal to it would still be a substitution. `embedding_mismatch` is
+            # the one such kind left - both provider kinds are substituted above - so a WARNING
+            # here now means a provider spoke, not that any ERROR reached a client.
             logger.warning(
                 "POST /ask returned %s for a %s error; the message withheld from the client "
                 "was: %s",

@@ -122,8 +122,8 @@ Every non-2xx response body is exactly:
   choice. **Which status a given failure maps to is each route issue's decision**, not this spec's.
 - `kind`/`message` is the vocabulary `GrounderError` already uses (`grounder.md` §Interface),
   which is why `POST /ask` forwards a Grounder `ERROR`'s own `kind` into this envelope rather than
-  minting a second one — see that route's section for the `kind` → status split and the one
-  message it substitutes. **A refusal is never an envelope:** the four *grounding* states are 200
+  minting a second one — see that route's section for the `kind` → status split and the
+  messages it substitutes. **A refusal is never an envelope:** the four *grounding* states are 200
   bodies (ADR 0016), and only the fifth, transport-level `ERROR`, leaves this way.
 
 ### The request-body bound (`gct.api.limits`) — **#125**
@@ -269,8 +269,12 @@ Python's uuid parser accepts spellings Postgres's `::uuid` cast refuses — then
 with `class_exists` BEFORE `stage(...)`, so a refusal leaves nothing on disk, and finishes with
 `enqueue(conn, path=, owner_id=, class_id=)`. **202 Accepted** `{file_id, filename}`: accepted,
 not created, because nothing has been parsed or indexed yet and `file_id` is what the student
-polls. Refusals are `400` (`bad_class_id`, `bad_filename`), `413` (`too_large`), `404`
-(`class_not_found`).
+polls. Refusals are `400` (`bad_class_id`, `bad_filename`), `413`, `404` (`class_not_found`).
+The 413 has two writers, and which one a client meets depends on what it sent: a request that
+*declares* an oversize `content-length` — every browser `fetch`, `requests`, `httpx` and
+`curl -F` does — is refused `body_too_large` by the middleware before the parser runs (see
+*The error envelope*), so that is the kind a normal client switches on; `too_large` from
+`stage` is what a chunked or under-declaring upload gets, one byte past the cap.
 
 `GET /files/{file_id}` renders `get_file_status` as **200** `{filename, status, failed_reason,
 message}` for every status *including* `failed` — no `file_id`, since the caller supplied it.

@@ -306,13 +306,20 @@ never the guard. ERROR leaves as the shared `ErrorEnvelope` rather than a 200 bo
 choosing the HTTP rendering is the route's decision, not the ADR's.
 
 **The error `message` is the library's, except where the library did not write it.** `kind` is
-always the library's token, adopted verbatim. `provider_terminal`'s message is built from a raw
-provider exception (`grounder/answer.py`), so the route substitutes its own sentence rather than
-forwarding vendor text — the same thing `errors._unhandled` refuses to do — and an unknown kind is
-substituted for the same reason. **A substituted sentence is written to the server log**, at the
-site that substitutes it and only there: `ApiError` is handled, so nothing re-raises for uvicorn
-to log the way an uncaught exception does, and the route's own sentence tells the operator to
-look in that log. The two forwarding kinds are not logged — the client was already told.
+always the library's token, adopted verbatim. **Both provider kinds are substituted**, because both
+messages are built by interpolating a raw provider exception and neither has been read here:
+`provider_terminal`'s in `grounder/answer.py`, and `provider_transient`'s one layer lower — the
+OpenAI provider raises `Transient{Embedding,Generation}Error(str(err))` and the library sentence
+that wraps it (`"query embedding failed: …"`, `"generation failed after N attempts: …"`) carries
+that vendor string along. A real 429 body names the operator's organization id, model and quota
+figures, and `create_app` has no auth (ADR 0004), so the route forwards neither — the same thing
+`errors._unhandled` refuses to do. An unknown kind is substituted for the same reason.
+**A substituted sentence is written to the server log**, at the site that substitutes it and only
+there: `ApiError` is handled, so nothing re-raises for uvicorn to log the way an uncaught exception
+does, and the route's own sentence tells the operator to look in that log. That log line is the
+whole library message, so the retry count and the failing step the transient sentence used to carry
+on the wire are still recorded. `embedding_mismatch` is the one forwarding kind left and is not
+logged — the client was already told.
 **Rejected requests** - never a refusal, which is a 200 - are
 `400` (`bad_class_id`), `404` (`class_not_found`), `422` (blank, missing, or over-long
 `question`, through the shared validation envelope).

@@ -188,7 +188,10 @@ def stage(
       3. rename `.part` to `filename` - so a path that exists is, by construction, complete: the
          worker (or a spike re-running chunking, ADR 0010) can never open a half-written file;
       4. `fsync` the directory - the rename itself is directory metadata, and without this a
-         crash can roll it back after `enqueue` has committed the ref.
+         crash can roll it back after `enqueue` has committed the ref. Twice: the slot, then
+         the root, because the slot's own entry is metadata of the ROOT, and a committed
+         `staging_ref` pointing at a directory that never existed is the same loss one level
+         up. `test_durability_order_is_fsync_file_then_rename_then_fsync_dir` pins both.
     Any failure before step 3 - the bound, a `read` that raises, a full disk - removes the
     partial AND the slot directory before re-raising, so the staging dir only ever holds
     complete uploads.

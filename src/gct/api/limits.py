@@ -29,6 +29,15 @@ every real course upload. So a multipart request is passed through with the SAME
 callable object it arrived with: not a copy, not a wrapper, the same object, which is the
 strongest available statement that this module did not touch the upload stream.
 
+WHAT THAT EXEMPTION COSTS, MEASURED, because the sentence above used to be read as "so the upload
+is bounded" and it is not. FastAPI resolves `routers/files.py`'s `UploadFile` parameter by running
+`starlette.formparsers.MultiPartParser` TO COMPLETION before the handler body runs, into a
+`SpooledTemporaryFile` that rolls to the OS temp directory past 1 MiB. `stage` is therefore handed
+a file that is already fully written: a 105 MiB upload reaches it as a 110,100,480-byte temp file
+and is then refused 413. `MAX_STAGE_BYTES` bounds what the STAGING DIR holds and what gets queued;
+it never bounded what the process writes. The `content-length` pre-check below is this module's
+INTERIM answer - see it for what it does and does not catch.
+
 Exempted by CONTENT-TYPE, not by a path list. A path list goes stale the day a route is added -
 it would have to be edited by an issue that has no reason to look here - whereas the content type
 is the request's own declaration of which parser it is headed for.
@@ -41,8 +50,8 @@ is no way past a route. It is, however, a way OUT of the byte bound below: such 
 counted here at all, and reaches pydantic at whatever size the client sent, exactly as every body
 on every route did before this module existed. Closing that would mean putting an in-memory byte
 check on multipart requests, which is the one thing this module must not do - `POST /files` is
-multipart and `MAX_STAGE_BYTES` owns its size, streaming (ADR 0010). So the residue is smaller
-than what was there before and is recorded on the PR rather than fixed here. The refuser is
+multipart and `MAX_STAGE_BYTES` owns its size (ADR 0010). So the residue is smaller than what was
+there before and is recorded on the PR rather than fixed here. The refuser is
 PYDANTIC, not a form parser - FastAPI chooses its parser
 from the route's declared parameter, so a route taking a model is handed the raw bytes and
 `starlette.formparsers.MultiPartParser` is never constructed (measured with a spy on it: zero
@@ -63,10 +72,12 @@ which keeps the envelope's one writer and reaches the client with the status and
 below. `test_limits.py` pins it.
 
 REJECTED, and why:
-  - **A `content-length` pre-check.** It would refuse an oversized body without buffering a byte,
-    but it cannot be the authoritative check - a chunked request carries no such header and a
-    client controls the value - so it would be a second, weaker copy of the rule below, and the
-    streaming check already bounds memory at the limit plus one chunk.
+  - **A `content-length` pre-check ON THE JSON PATH.** It would refuse an oversized body without
+    buffering a byte, but it cannot be the authoritative check - a chunked request carries no such
+    header and a client controls the value - so it would be a second, weaker copy of the rule
+    below, and the streaming check already bounds memory at the limit plus one chunk. NOTE that
+    this argument does not transfer to the MULTIPART path, where it is not rejected and is in
+    fact what `__call__` does: there is no rule below it there, so a weak bound beats none.
   - **A method allowlist** (bound only POST/PUT/PATCH). A body-less GET costs one `receive()` of
     an empty message, and a list of methods is a thing that goes stale.
   - **Refusing a non-UTF-8 body outright** (400) rather than normalising it for the scan. Shorter,
@@ -85,12 +96,18 @@ from fastapi import FastAPI
 from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
 from gct.api.errors import envelope
-from gct.config import MAX_JSON_BODY_BYTES, MAX_JSON_BODY_DEPTH
+from gct.config import MAX_JSON_BODY_BYTES, MAX_JSON_BODY_DEPTH, MAX_STAGE_BYTES
 
 # The two refusals this module mints. Tokens, not sentences - a client switches on these
 # (`schemas.ErrorBody`), and the prose below is what a human reads.
 KIND_TOO_LARGE = "body_too_large"
 KIND_TOO_NESTED = "body_too_nested"
+
+# Headroom over `MAX_STAGE_BYTES` for the multipart framing around the file itself: boundaries,
+# per-part headers, the `class_id` field. A declared length is the WHOLE request, so comparing it
+# to the stager's per-FILE bound without this would refuse an upload of exactly `MAX_STAGE_BYTES`
+# that `stage` would have accepted.
+_MULTIPART_OVERHEAD_BYTES = 8 * 1024
 
 # The statuses, and why each is not 422. `routers/files.py`'s `_STAGING_STATUS` is the precedent
 # this follows: 422 is FastAPI's own request-validation status and its body already carries
@@ -204,6 +221,17 @@ def scan_depth(body: bytes, *, limit: int) -> int:
     return deepest
 
 
+def _declared_length(scope: Scope) -> int | None:
+    """The request's `content-length` as an int, or None when absent or unparseable."""
+    for key, value in scope.get("headers", []):
+        if key == b"content-length":
+            try:
+                return int(value)
+            except ValueError:
+                return None
+    return None
+
+
 def _content_type(scope: Scope) -> str | None:
     """The raw `content-type` header, or `None`. ASGI header names arrive lower-cased already,
     but the VALUE is the client's and may be any casing (`APPLICATION/JSON` was measured to reach
@@ -224,7 +252,8 @@ def _parsed_type(content_type: str) -> email.message.Message:
 
 
 def is_multipart(content_type: str | None) -> bool:
-    """True for the streamed upload path, which this module must not touch at all."""
+    """True for the multipart upload path, whose BODY this module must not read - it checks the
+    declared length and hands the stream on untouched either way."""
     if not content_type:
         return False
     return _parsed_type(content_type).get_content_type() == "multipart/form-data"
@@ -289,7 +318,8 @@ def _replay(messages: list[Message]) -> Receive:
 
 
 class BodyLimit:
-    """Bound every request body that is not a streamed multipart upload.
+    """Bound every request body: by size and nesting if it will be parsed as JSON, by its
+    declared `content-length` alone if it is a multipart upload.
 
     Pure ASGI rather than `BaseHTTPMiddleware`, for three reasons that all point the same way: it
     is the only form in which the exempt path can be handed the SAME `receive` object (the
@@ -305,10 +335,12 @@ class BodyLimit:
         *,
         max_bytes: int = MAX_JSON_BODY_BYTES,
         max_depth: int = MAX_JSON_BODY_DEPTH,
+        max_upload_bytes: int = MAX_STAGE_BYTES + _MULTIPART_OVERHEAD_BYTES,
     ) -> None:
         self.app = app
         self.max_bytes = max_bytes
         self.max_depth = max_depth
+        self.max_upload_bytes = max_upload_bytes
 
     async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
         if scope["type"] != "http":
@@ -317,8 +349,37 @@ class BodyLimit:
 
         content_type = _content_type(scope)
         if is_multipart(content_type):
-            # THE SAME `receive`, not a wrapper around it. `stage` streams the upload through
-            # this object; anything else here would put the whole file in memory.
+            # Starlette's multipart parser drains this body into a SpooledTemporaryFile BEFORE
+            # the handler runs, so `stage`'s MAX_STAGE_BYTES cannot bound what the process
+            # writes - only what reaches the staging dir. A DECLARED length over the bound is
+            # refused here, before a byte is read.
+            #
+            # AN INTERIM BOUND, AND EXACTLY THIS INTERIM. It is skipped in two cases and both are
+            # a client's to choose: a chunked request carries no `content-length` at all, and a
+            # declared value can simply lie - either way the body falls through to the parser and
+            # the full spool to disk happens as before. So this narrows the window; it does not
+            # close it. What closes it is counting bytes as they arrive through a pass-through
+            # `receive` wrapper, which would retire the identity pin below and is filed on its
+            # own. Do not read this check as "multipart uploads are bounded".
+            #
+            # It is not the "second, weaker copy of the rule below" the module docstring rejects
+            # for the JSON path: on multipart there is no rule below it, so a weak bound beats
+            # none.
+            declared = _declared_length(scope)
+            if declared is not None and declared > self.max_upload_bytes:
+                await self._refuse(
+                    scope,
+                    receive,
+                    send,
+                    status=_STATUS_TOO_LARGE,
+                    kind=KIND_TOO_LARGE,
+                    message=(
+                        f"upload is larger than the {self.max_upload_bytes}-byte limit for a "
+                        f"multipart request. Split the file or shrink it, then upload again."
+                    ),
+                )
+                return
+            # THE SAME `receive`, not a wrapper around it: nothing here reads the body.
             await self.app(scope, receive, send)
             return
 

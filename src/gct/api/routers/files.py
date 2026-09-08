@@ -113,7 +113,11 @@ def upload_file(
       - the filename is unusable -> 400 `bad_filename`; the upload exceeds the byte cap -> 413
         `too_large`. Both come from `stage`, both are REQUEST-time (no `files` row exists, so
         there is nothing for a `failed_reason` to hang on - `gct.staging`'s module docstring), and
-        both carry the library's own sentence, which already names the remedy.
+        both carry the library's own sentence, which already names the remedy. A client that
+        DECLARES an oversize `content-length` never reaches `stage`: `limits.BodyLimit` refuses
+        it 413 `body_too_large` in front of the multipart parser, so `too_large` here is the
+        chunked or under-declaring path - api.md's `POST /files` section says which client
+        meets which.
 
     ONE ACCEPTED LEAK, RECORDED RATHER THAN SWEPT UP: if `enqueue` raises after `stage` returned -
     the database is unreachable, or the class was deleted in the window between the check and the

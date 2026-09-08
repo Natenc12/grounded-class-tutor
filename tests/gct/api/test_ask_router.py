@@ -326,44 +326,57 @@ def test_an_integrity_flagged_answer_is_200_and_ships_its_reasons(api, db_other)
 # --- ERROR: the envelope, and the kind -> status split ----------------------------------------
 
 
-def test_a_transient_generation_failure_is_503_carrying_the_librarys_own_sentence(api, db_other):
+def test_a_transient_generation_failure_is_503_and_never_echoes_the_providers_words(api, db_other):
     """`provider_transient` is the one kind where trying again can work, and 503 is the status
-    that says so. The message is `answer()`'s, forwarded verbatim: it is prose this repo wrote,
-    and `ErrorBody` documents the kind/message pair as exactly the `GrounderError` vocabulary.
+    that says so. The message is the ROUTE's, not the library's, for the same reason the terminal
+    test below gives: `answer()` builds this kind's sentence around `str(err)` from the provider
+    (`providers/openai_provider.py` raises `TransientGenerationError(str(err))`), so a real 429
+    body - organization id, model, quota figures - would ride out on the wire if it forwarded.
 
-    This is the OTHER side of `_ERROR_MESSAGE_OVERRIDE` from the terminal test below - one kind
-    forwards, one substitutes, and pinning only the substitution would pass against a route that
-    substituted for everything.
+    The vendor assertion is the load-bearing half. Pinning the status and kind alone passes just
+    as well against a route that forwards, which is how the leak survived the original suite.
     """
     _seed(db_other, api, texts=["Motion requires a mover."])
-    generator = _providers(api, ScriptedGeneration(TransientGenerationError("429 rate limited")))
+    vendor = "Rate limit reached in organization org-A1b2C3d4"
+    generator = _providers(api, ScriptedGeneration(TransientGenerationError(vendor)))
 
     response = _ask(api)
 
     assert response.status_code == 503
     error = response.json()["error"]
     assert error["kind"] == ERROR_KIND_PROVIDER_TRANSIENT
-    assert "generation failed after" in error["message"]
+    assert vendor not in response.text, "the provider's own error text reached the client"
+    assert error["message"] == ask_router._ERROR_MESSAGE_OVERRIDE[ERROR_KIND_PROVIDER_TRANSIENT]
     assert error["detail"] is None
     assert len(generator.calls) == 2, "503 was returned without spending the retry budget"
 
 
-def test_a_transient_query_embedding_failure_is_also_503(api, db_other):
+def test_a_transient_query_embedding_failure_is_also_503(api, db_other, caplog):
     """The retrieval half of the same kind - `ask()`'s own conversion at the Retriever seam, not
-    the Grounder's. Same kind, so the same status: a client backs off either way.
+    the Grounder's. Same kind, so the same status and the same substituted sentence: neither half
+    of this kind may forward, and a fix applied to the generation path alone would leave this one
+    leaking.
 
     The message names the STEP (`query embedding failed`), which is the distinction `ask()` put
-    there for telemetry; it survives to the wire because this kind forwards.
+    there for telemetry. It is asserted in the LOG, not on the wire: the substitution moved the
+    library's whole sentence there, so the telemetry survives without the vendor text riding with
+    it.
     """
     _seed(db_other, api, texts=["Motion requires a mover."])
-    generator = _providers(api, embedder=FixedEmbeddings(raises=TransientEmbeddingError("timeout")))
+    vendor = "Rate limit reached in organization org-A1b2C3d4"
+    generator = _providers(api, embedder=FixedEmbeddings(raises=TransientEmbeddingError(vendor)))
 
-    response = _ask(api)
+    with caplog.at_level(logging.WARNING, logger="gct.api.routers.ask"):
+        response = _ask(api)
 
     assert response.status_code == 503
     error = response.json()["error"]
     assert error["kind"] == ERROR_KIND_PROVIDER_TRANSIENT
-    assert "query embedding failed" in error["message"]
+    assert vendor not in response.text, "the provider's own error text reached the client"
+    assert error["message"] == ask_router._ERROR_MESSAGE_OVERRIDE[ERROR_KIND_PROVIDER_TRANSIENT]
+    assert any("query embedding failed" in r.getMessage() for r in caplog.records), (
+        "the step distinction did not survive the substitution - it is telemetry now, not prose"
+    )
     assert generator.calls == [], "the query embed failed and a generation was still paid for"
 
 
@@ -814,17 +827,21 @@ def test_a_withheld_provider_message_is_written_to_the_server_log(api, db_other,
 def test_a_forwarded_provider_message_is_not_logged_twice(api, db_other, caplog):
     """The other arm, and the reason the log line is conditional rather than unconditional.
 
-    `provider_transient` forwards the library's sentence to the client verbatim, so it is already
-    where the operator and the student can both read it. Logging it again would put a WARNING in
-    the server log for an ordinary rate-limit the client was told about and can retry, and a log
-    that warns on the routine case is one nobody reads on the case that matters. Pinned because
-    the test above passes just as well against a route that logs unconditionally.
+    `embedding_mismatch` is the one kind left that forwards: `retrieve` writes that sentence and
+    it names the remedy, so the client already has it. Logging it again would put a WARNING in the
+    server log for a condition the client was told about in full, and a log that warns on the
+    routine case is one nobody reads on the case that matters. Pinned because the test above
+    passes just as well against a route that logs unconditionally.
+
+    This arm used to be driven by `provider_transient`, which now substitutes and therefore logs;
+    a forwarding kind is what this test needs, so it moved to the kind that still is one.
     """
-    _seed(db_other, api, texts=["Motion requires a mover."])
-    _providers(api, ScriptedGeneration(TransientGenerationError("429 rate limited")))
+    _seed(db_other, api, texts=["Motion."], model_id="text-embedding-3-large")
+    _providers(api)
 
     with caplog.at_level(logging.WARNING, logger="gct.api.routers.ask"):
         response = _ask(api)
 
-    assert response.status_code == 503
+    assert response.status_code == 500
+    assert "Re-index" in response.json()["error"]["message"]
     assert [r for r in caplog.records if r.name == "gct.api.routers.ask"] == []

@@ -128,12 +128,13 @@ MAX_ERROR_ECHO_CHARS = 512
 # The most BYTES of serialised `detail` an error envelope will carry (`gct.api.errors`). Past it
 # the TAIL of the list is dropped and ONE marker entry saying how many went is appended.
 #
-# WHAT HAPPENS TO A SURVIVING ENTRY IS NOT WRITTEN HERE. `_detail_marker`'s docstring is the one
-# writer of that contract, and this comment is where a third copy of it said "untouched" — a word
-# `_bounded` makes false, since it may already have truncated a string inside a kept entry. That
-# copy outlived the correction of the other two by using a DIFFERENT WORD from the one the census
-# swept for, which is the concrete form CLAUDE.md's rule takes: a comment may name what the code
-# must do, and restating the contract makes this file a second writer of it.
+# WHAT HAPPENS TO A SURVIVING ENTRY IS NOT WRITTEN HERE. That contract has two writers on purpose,
+# the way every client-facing contract in this adapter does — `_detail_marker`'s docstring for the
+# code and api.md's error-envelope section for the spec — and this comment was a THIRD, saying
+# "untouched": a word `_bounded` makes false, since it may already have truncated a string inside a
+# kept entry. It outlived the correction of the other two by using a DIFFERENT WORD from the one
+# the census swept for. That is the concrete form of CLAUDE.md's rule: a comment may name what the
+# code must do, and restating the contract adds a writer nobody will sweep.
 #
 # It sits beside the bound above because the two are one mechanism split across two axes, and
 # neither covers the other's: `MAX_ERROR_ECHO_CHARS` bounds each VALUE, this bounds the SHAPE's

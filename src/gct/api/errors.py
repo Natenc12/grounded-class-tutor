@@ -175,9 +175,15 @@ def _detail_marker(dropped: int) -> dict[str, Any]:
 
     THE CONTRACT A CLIENT MAY RELY ON: at most one entry per envelope has
     `type == "gct.detail_truncated"`, it is always the LAST, `ctx.dropped` is how many pydantic
-    entries were removed, and every OTHER entry in the list is pydantic's own, unmodified. The
-    count is machine-readable in `ctx` rather than only in the sentence because `ctx` is
-    pydantic's own key for an entry's structured extras, so reading it needs no parser.
+    entries were removed, and every OTHER entry is pydantic's own entry, byte-for-byte what the
+    SAME entry would be in an envelope that never hit this cap. That is the honest form of the
+    sentence, and "unmodified" was not: `_bounded` may already have truncated a string inside a
+    surviving entry, marked with its true length, exactly as it does when no cap fires (#134). The
+    cap adds no modification of its own - it keeps entries or drops them - which is the claim a
+    client can act on, and `test_a_surviving_entry_is_what_an_uncapped_envelope_would_have_shown`
+    is the one that runs it. The count is machine-readable in `ctx` rather than only in the
+    sentence because `ctx` is pydantic's own key for an entry's structured extras, so reading it
+    needs no parser.
 
     Unlike `_bounded`'s marker, this one is authentic and a client cannot forge it: that marker
     lives in a truncated string the client supplied, while `type` is a key the client never

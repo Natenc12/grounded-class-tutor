@@ -137,8 +137,11 @@ these handlers; no browser or HTTP client can send the latter, a hand-written so
   `loc` = `["detail"]` — pydantic roots every request-validation path at a request part (`body`,
   `query`, …), never at `detail`, so it names the response's own `detail` rather than anything the
   client sent. Path LENGTH does not distinguish it: a body that is missing or is not an object
-  gets a one-element `["body"]`. Every other entry in the list is
-  pydantic's, unmodified. Entries are dropped whole, never trimmed: a shortened `loc` would point
+  gets a one-element `["body"]`. Every other entry in the list is pydantic's own entry, exactly as
+  it would appear in an envelope that never hit this cap — which is not the same as *unmodified*:
+  a string inside it may already have been truncated and marked by `MAX_ERROR_ECHO_CHARS` above,
+  and that happens with or without the cap. The cap only keeps entries or drops them; it never
+  reaches inside one. Entries are dropped whole, never trimmed: a shortened `loc` would point
   at a field nobody sent. If not even the first entry fits, `detail` is the marker alone.
 - `message` — for a human; names the remedy where one exists.
 - Routes raise **`ApiError(status_code, kind, message, detail=None)`**; the status is the raiser's

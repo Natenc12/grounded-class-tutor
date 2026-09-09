@@ -857,8 +857,9 @@ def test_the_reserve_holds_at_a_dropped_count_wider_than_any_request_can_reach()
     TWO THINGS HAVE TO LINE UP, which is why neither the sweep nor a bare large count sees it.
     The DROPPED count must have more digits than the reserve was computed at - dropped is
     `len(detail) - kept`, 160 entries are kept at this cap, so 100,100 entries drop 99,940, still
-    five digits and still correctly reserved. (The second falsification pass named 100,100 and was
-    one boundary off; 100,200 is where dropped turns six digits.) And the packing must be TIGHT:
+    five digits and still correctly reserved. (The second falsification pass named 100,100; the
+    boundary is 100,160, where dropped is exactly 100,000 - 100,159 drops 99,999. Re-measured in
+    `/land`, which had it 40 too high.) And the packing must be TIGHT:
     the reserve carries a spare byte for the comma, so a one-byte shortfall is invisible unless
     the kept entries fill the budget exactly.
 

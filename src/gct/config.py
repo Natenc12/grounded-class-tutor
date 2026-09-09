@@ -126,8 +126,14 @@ MAX_ERROR_ECHO_CHARS = 512
 
 # --- The error envelope's detail bound (issue #137) -------------------------------------------
 # The most BYTES of serialised `detail` an error envelope will carry (`gct.api.errors`). Past it
-# the TAIL of the list is dropped and ONE marker entry saying how many went is appended; every
-# surviving entry is pydantic's own, untouched.
+# the TAIL of the list is dropped and ONE marker entry saying how many went is appended.
+#
+# WHAT HAPPENS TO A SURVIVING ENTRY IS NOT WRITTEN HERE. `_detail_marker`'s docstring is the one
+# writer of that contract, and this comment is where a third copy of it said "untouched" — a word
+# `_bounded` makes false, since it may already have truncated a string inside a kept entry. That
+# copy outlived the correction of the other two by using a DIFFERENT WORD from the one the census
+# swept for, which is the concrete form CLAUDE.md's rule takes: a comment may name what the code
+# must do, and restating the contract makes this file a second writer of it.
 #
 # It sits beside the bound above because the two are one mechanism split across two axes, and
 # neither covers the other's: `MAX_ERROR_ECHO_CHARS` bounds each VALUE, this bounds the SHAPE's

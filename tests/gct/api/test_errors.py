@@ -753,8 +753,9 @@ def test_a_surviving_entry_is_what_an_uncapped_envelope_would_have_shown() -> No
     are identical across the two responses, and that the first really is truncated in both, so the
     test is not green by comparing two untouched entries.
 
-    EVERY SURVIVOR, not `detail[0]`. Checking one entry of 166 leaves a cap that reached inside
-    any of the other 165 completely invisible, which is what the second falsification pass found:
+    EVERY SURVIVOR, not `detail[0]`. Checking one entry of 160 leaves a cap that reached inside
+    any of the other 159 completely invisible, which is what the second falsification pass found
+    (its "166" was the PR body's estimate; the measured survivor count for this body is 160):
     the sentence was pinned for one entry and claimed for the list. The uncapped side is the SAME
     REQUEST rendered with the cap lifted, so the two lists are entry-for-entry comparable over the
     whole surviving head rather than over a shorter request that happens to share a first entry."""
@@ -872,7 +873,17 @@ def test_the_reserve_holds_at_a_dropped_count_wider_than_any_request_can_reach()
 
     LATENT, NOT LIVE. A body under `MAX_JSON_BODY_BYTES` yields at most ~6,950 entries, so no
     client reaches six digits. It is pinned because `_capped_detail`'s docstring states the
-    guarantee over the list it is HANDED, not over the lists a request can build."""
+    guarantee over the list it is HANDED, not over the lists a request can build.
+
+    HOW FAR THIS PIN REACHES, said plainly because the figures above are not constants. Every one
+    of them - 160 kept, the boundary at 100,160 - is measured at `MAX_ERROR_DETAIL_BYTES` = 16 KiB
+    and at this entry width. The constant is declared PROVISIONAL, and a retune moves them: 119
+    kept at 12 KiB, 200 at 20 KiB. The assertions guard themselves against that (`len(str(dropped))
+    == 6` fails loudly and says to raise the count); the prose cannot, so it names what it was
+    measured at. And the pin is at ONE list length, so a clamp ABOVE 100,400 survives it -
+    `min(len(detail), 9_999_999)` is green here and is wrong by 2 bytes at 10^8 entries, which is
+    the same family one decade up. Pinning every decade of an unreachable count is not worth a
+    test; knowing that is what this paragraph is for."""
 
     def _entry(index: int, pad: int = 0) -> dict:
         return {**_fake_entry(index), "loc": ["body", "k" + "y" * pad + f"{index:06d}"]}

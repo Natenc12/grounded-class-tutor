@@ -1185,20 +1185,90 @@ def test_the_files_census_counts_what_the_real_table_holds(db):
     # WHAT THE SAMPLE IS COMPARED AGAINST, and it is not the planted row. The census returns three
     # of N, so "the row I just inserted is in there" is only true when the table is nearly empty -
     # green on a fresh lane and on CI, red on a dev machine where `.env` names the dogfood
-    # database, and the failure reads as a bug in the SQL rather than as a busy table. Pinning it
-    # to the plant with an artificially old `created_at` does not fix that; it just moves the
-    # breaking point to a row older still, and leaves the ORDER - the thing the whole device rests
-    # on - unpinned, so `order by ... desc` would sample the newest three and no test would say so.
-    # The expectation is therefore the ordering rule written out INDEPENDENTLY here. It holds
-    # whatever the table contains, and it disagrees with any change to the constant's `order by`.
+    # database, and the failure reads as a bug in the SQL rather than as a busy table. The
+    # expectation is therefore the ordering rule written out INDEPENDENTLY here, which holds
+    # whatever the table contains.
+    #
+    # The DEVICE is right and its population is not: over a table this test leaves holding one
+    # planted row, every candidate ordering agrees, so a rewritten `order by` passes here. That is
+    # what `test_the_census_ordering_is_the_one_the_constant_names` is for - it plants a table
+    # whose rows disagree under each rewrite. Both are needed: this one proves the rule is run
+    # against the real schema, that one proves the rule is the rule.
     expected = conn.execute(
-        "select file_id::text, filename, status from files "
-        "order by (status in ('ready', 'failed')), created_at, file_id limit 3"
+        "select file_id::text, filename, status from files order by created_at, file_id limit 3"
     ).fetchall()
     assert sample == [tuple(row) for row in expected], (
         f"the census did not return the three rows its ordering rule names. got {sample}, "
         f"expected {expected}"
     )
+
+
+def test_the_census_ordering_is_the_one_the_constant_names(db):
+    """`order by created_at, file_id`, over a table whose rows DISAGREE under every rewrite of it.
+
+    The test above compares the census against the ordering rule written out independently, which
+    is the right device and cannot fire over the table it plants: with one row in `files`, every
+    candidate ordering returns that row, so dropping the clause, reversing it, or sorting by
+    something else all stay green. Four such rewrites were mutated in this ticket's verification
+    round and all four survived the whole suite. The population, not the device, was the gap.
+
+    So this plants five rows chosen to make the sample DIFFERENT under each rewrite, and asserts
+    the exact list. `created_at` is set explicitly and far in the past so these are the five oldest
+    whatever else the database holds - the assertion is about this test's rows on any machine, not
+    about a pristine table. `file_id` is set explicitly for the same reason: a random uuid cannot
+    be arranged to disagree with age on purpose, and disagreeing on purpose is the whole point.
+
+    What each rewrite returns instead, which is why the plant is shaped this way:
+
+      - `order by file_id` (the clause deleted)        -> [0002, 0003, 0004], drops the oldest row
+      - `order by (status in ('ready','failed')), ...` -> [0002, 0003, 0004], the dropped bucket
+      - `order by created_at desc, file_id`            -> [0005, 0004, 0002], the newest three
+      - `order by created_at` (tiebreak deleted)       -> the 01-02 pair in insertion order, 0003
+                                                         before 0002, which is what it was given
+    """
+    conn, owner_id, class_id = db
+    plant = [
+        # (file_id suffix, created_at, status)   - inserted in an order that is neither the
+        # expected order nor the file_id order, so heap order cannot accidentally be right.
+        ("0009", "2000-01-01", "ready"),
+        ("0003", "2000-01-02", "processing"),
+        ("0002", "2000-01-02", "processing"),
+        ("0004", "2000-01-03", "queued"),
+        ("0005", "2000-01-04", "processing"),
+    ]
+    for suffix, created_at, status in plant:
+        conn.execute(
+            "insert into files (file_id, owner_id, class_id, filename, status, created_at) "
+            "values (%s::uuid, %s, %s::uuid, %s, %s, %s::timestamptz)",
+            (
+                f"00000000-0000-4000-8000-00000000{suffix}",
+                owner_id,
+                class_id,
+                f"plant-{suffix}.pdf",
+                status,
+                created_at,
+            ),
+        )
+
+    present, sample = http_smoke.existing_files(conn)
+
+    expected = [
+        ("00000000-0000-4000-8000-000000000009", "plant-0009.pdf", "ready"),
+        ("00000000-0000-4000-8000-000000000002", "plant-0002.pdf", "processing"),
+        ("00000000-0000-4000-8000-000000000003", "plant-0003.pdf", "processing"),
+    ]
+    assert sample == expected, (
+        "the census did not return the three rows `order by created_at, file_id` names over a "
+        f"table built to distinguish the orderings. got {sample}, expected {expected}"
+    )
+    assert present >= len(plant), (
+        f"the census counted {present} rows over a table this test put {len(plant)} into"
+    )
+
+    # And the count is the verdict, not the sample: the refusal fires on a table whose three named
+    # rows are all `ready`, because ANY non-empty `files` is refused. The docstring says the sample
+    # is illustration; this is that sentence executed.
+    assert present > len(sample), "the plant no longer exceeds the sample, so nothing is truncated"
 
 
 def test_the_claimable_query_counts_exactly_the_rows_the_real_worker_would_take(db):
@@ -1306,9 +1376,17 @@ def test_preflight_refuses_the_real_database_once_a_file_is_in_it(db, monkeypatc
     conn, owner_id, class_id = db
     monkeypatch.setattr("gct.api.app.require_openai_key", lambda: None)
 
+    # `created_at` is set explicitly and far in the past, so this row is the OLDEST in `files`
+    # whatever else the database holds and the census's `order by created_at, file_id` therefore
+    # names it. Without that this assertion is a bet on a nearly-empty table: green on a fresh
+    # lane and on CI, red on a dev machine where `.env` names the dogfood database, failing as
+    # though the SQL were wrong. The sample is illustration and not triage (see the constant's
+    # comment in `scripts/http_smoke.py`), so a test that wants a SPECIFIC row named has to put
+    # it where the ordering will find it rather than assume the ordering favours it.
     file_id = conn.execute(
-        "insert into files (owner_id, class_id, filename, status) "
-        "values (%s, %s::uuid, %s, 'processing') returning file_id::text",
+        "insert into files (owner_id, class_id, filename, status, created_at) "
+        "values (%s, %s::uuid, %s, 'processing', '2000-01-01'::timestamptz) "
+        "returning file_id::text",
         (owner_id, class_id, "someone-elses-upload.pdf"),
     ).fetchone()[0]
     conn.execute(
@@ -1332,18 +1410,17 @@ def test_preflight_refuses_the_real_database_once_a_file_is_in_it(db, monkeypatc
     message = str(err.value)
     assert "--dedicated-database" in message, "the refusal did not name the way out"
 
-    # The planted row is the only NON-TERMINAL one this test creates, and a live row is named
-    # before any settled one, so it is in the sample whatever else the table holds - up to two
-    # other live rows, which the `db` fixture's own database does not leave behind. That ordering
-    # is why this assertion is safe; asserting it against the three OLDEST rows was not, and
-    # naming three finished files while hiding the one that can still cost money behind
-    # "(and N more)" is the failure it also fixes.
+    # The planted row is the oldest in `files` by construction, so `order by created_at, file_id`
+    # names it first and this assertion holds on a busy table as well as an empty one.
     assert file_id in message and "someone-elses-upload.pdf" in message, (
-        "the refusal did not name the live file that is actually in the database. Got: " + message
+        "the refusal did not name the file that is actually in the database. Got: " + message
     )
 
-    # And the flag really is the way out: the same database, the same row, and the census is not
-    # asked. Nothing else about the run changed, so a flag that did nothing would fail here.
+    # And the flag SKIPS THE CENSUS - which is all it does, and deliberately not the same sentence
+    # as "the flag is the way out of this refusal". `preflight`'s docstring says the opposite about
+    # this exact database: a row somebody else put here is the case where declaring the database
+    # dedicated buys back the hazard #138 closed. What is asserted is the mechanism (same database,
+    # same row, census not asked, so a flag that did nothing would fail here), never a licence.
     http_smoke.preflight(dedicated_database=True)
 
 

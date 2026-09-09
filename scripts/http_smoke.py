@@ -79,7 +79,7 @@ script-local is the CEREMONY — the order of the steps and what counts as a pas
 Usage:
     uv run python scripts/http_smoke.py
     uv run python scripts/http_smoke.py --launch-only
-    uv run python scripts/http_smoke.py --dedicated-database
+    uv run python scripts/http_smoke.py --dedicated-database   # only if nothing else writes there
     uv run python scripts/http_smoke.py --ready-timeout 90 --ingest-timeout 300
     uv run python scripts/http_smoke.py --corpus my-lecture.pdf --question "What is a watershed?"
     uv run python scripts/http_smoke.py -- --poll 0.5 --lease 60
@@ -179,21 +179,31 @@ _WORK_THE_WORKER_WOULD_CLAIM = """
 
 # Whether this database holds anything at all, which is a different question from the one above
 # and the reason #138 exists. The predicate above asks what is claimable NOW; this one asks
-# whether there is anything here that could BECOME claimable, and `jobs.file_id references
-# files(file_id)` (0001_init.sql, no cascade) makes an empty `files` the whole answer: no file,
-# no job, nothing for the reaper or a release to hand the launched worker.
+# whether there is anything here that could BECOME claimable. WHY AN EMPTY `files` SETTLES THAT
+# QUESTION rests on two mechanisms and `preflight`'s docstring is their writer — the foreign key
+# on its own is not the proof, and was falsified as one in this ticket's verification round.
 #
-# THE ORDER IS PART OF THE MESSAGE, not a tidiness choice. The refusal names three rows and counts
-# the rest, so which three it names is what an operator actually reads. Sorting by age alone put
-# three finished `ready` files in front of the one `processing` row that could still cost money,
-# hiding the hazard behind "(and 1 more)" — measured in this ticket's verification round.
-# `status in ('ready', 'failed')` is FALSE for the rows that can still move, and false sorts
-# first, so a live row is always named ahead of a settled one. `file_id` last so the sample is
-# deterministic under equal timestamps instead of order-undefined, which no test could pin.
+# THE SAMPLE IS ILLUSTRATION, NEVER TRIAGE, and the wording says so. The refusal fires on ANY
+# non-empty `files` — the count is the verdict — so which three rows it happens to name changes
+# nothing about whether the run is refused, only what the operator sees first. The message reads
+# "for example" for exactly that reason: a reader who clears the named rows and re-runs is refused
+# again, and should not have been led to think otherwise.
+#
+# A "live rows first" bucket (`order by (status in ('ready', 'failed')), …`) was tried here and
+# dropped, because it promised something it cannot deliver. `files.status` is not a proxy for "can
+# still move": `index_file` flips `files.status` to `ready` INSIDE the index transaction
+# (`src/gct/ingest/index.py`) and `process_one` settles the job only afterwards, so a kill between
+# them leaves a `ready` file over a job still `processing` under a lease — sorted into the settled
+# bucket, exactly backwards. And four live rows push a fifth past `limit 3` whatever the bucket
+# does. Both were driven, not argued.
+#
+# `created_at, file_id`: oldest first because a stable sample is reproducible between runs, and
+# `file_id` last so equal timestamps are deterministic instead of order-undefined. Determinism is
+# the only thing this clause promises, which is why it is the only thing pinned.
 _FILES_THIS_RUN_DID_NOT_PUT_HERE = """
     select count(*) over () as present, file_id::text, filename, status
     from files
-    order by (status in ('ready', 'failed')), created_at, file_id
+    order by created_at, file_id
     limit 3
 """
 
@@ -384,6 +394,11 @@ def preflight(*, dedicated_database: bool = False) -> None:
     # somebody's files is refused whether or not any of them happens to be claimable at this
     # instant, so the message a reader gets names the real condition — "this database is not
     # yours" — instead of a symptom that may not even be showing yet.
+    #
+    # "for example" is doing work: the COUNT is the verdict and the rows are illustration. An
+    # operator who reads the three named rows as the ones to clear will clear them and be refused
+    # again, so the message must not imply the sample was selected for hazard. It is not; see the
+    # constant's own comment for the ordering that was tried and dropped.
     if present:
         rows = "; ".join(
             f"{file_id} ({status}) {filename!r}" for file_id, filename, status in files_sample
@@ -391,13 +406,14 @@ def preflight(*, dedicated_database: bool = False) -> None:
         more = "" if present <= len(files_sample) else f" (and {present - len(files_sample)} more)"
         raise SetupError(
             f"the database `DATABASE_URL` names is not this run's to use: `files` already holds "
-            f"{present} row(s) — {rows}{more}. This smoke launches the REAL worker, which claims "
-            "from the whole `jobs` table (ADR 0011) and cannot be told which files belong to this "
-            "run, so any of those rows that becomes claimable while the gate runs — a lease "
-            "lapsing under the reaper, a job released back to `queued`, a retry — is ingested and "
-            "billed to a run that uploaded nothing. Point `DATABASE_URL` at an empty database, or "
-            "re-create this one (`dropdb` + `createdb`, then `uv run python scripts/migrate.py`); "
-            "a previous full run of this smoke leaves its own rows behind and is refused here too. "
+            f"{present} row(s), for example: {rows}{more}. This smoke launches the REAL worker, "
+            "which claims from the whole `jobs` table (ADR 0011) and cannot be told which files "
+            "belong to this run, so any of those rows that becomes claimable while the gate runs "
+            "— a lease lapsing under the reaper, a job released back to `queued`, a retry — is "
+            "ingested and billed to a run that uploaded nothing. Point `DATABASE_URL` at an "
+            "empty database, or re-create this one (`dropdb` + `createdb`, then "
+            "`uv run python scripts/migrate.py`); a previous full run of this smoke leaves its "
+            "own rows behind and is refused here too. "
             "Pass `--dedicated-database` only if nothing but this run writes to it."
         )
 
@@ -1468,8 +1484,9 @@ def main(argv: Sequence[str] | None = None) -> int:
     one and claims whatever `jobs` holds, so somebody else's file can be ingested — and billed
     for — by a run that uploaded nothing. `preflight` refuses a database whose `files` table is
     not empty, which is not a narrower version of the old queue check but a different question:
-    an empty `files` means an empty `jobs` (foreign key, no cascade), so nothing that exists can
-    be reaped, released or retried into this worker's reach for the length of the gate. What no
+    nothing that exists can be reaped, released or retried into this worker's reach for the length
+    of the gate. That conclusion needs two mechanisms and not just the foreign key — the absolute
+    reading of it was falsified here — and `preflight`'s docstring is the writer of both. What no
     check closes is a row that ARRIVES mid-run — a second API process, another `enqueue` — and
     `--dedicated-database` swaps the evidence for the operator's word that there is no such
     writer. So a run costing only its own work is still a property of the database being nobody

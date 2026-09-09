@@ -60,12 +60,15 @@ die, with its exit status and the tail of its own log, instead of consuming the 
 reporting a hang. That is the difference between a harness that tells you what broke and one that
 tells you it waited.
 
-IT REFUSES A DATABASE THAT ALREADY HAS WORK IN IT, and that is a cost guard rather than tidiness.
-The worker this launches is the real one: it polls `jobs` in whatever `DATABASE_URL` names and
-claims anything it finds there, so a run that uploads nothing still ingests — and bills for —
-somebody else's queued file. `preflight` refuses that up front (see its docstring for what was
-measured). Everything this harness itself enqueues happens after both children are up, so the
-guard never sees a file the run is responsible for.
+IT REFUSES A DATABASE IT DOES NOT OWN, and that is a cost guard rather than tidiness. The worker
+this launches is the real one: it polls `jobs` in whatever `DATABASE_URL` names and claims
+anything it finds there, so a run that uploads nothing still ingests — and bills for — somebody
+else's file. `preflight` refuses up front unless `files` is empty (`--dedicated-database` is the
+operator's word in place of that evidence), because a queue that is merely empty AT THE INSTANT OF
+THE CHECK is not the same promise: a lease lapsing a second later hands that job straight to this
+harness's worker, which is what #138 measured. Its docstring is the writer of what the check does
+and does not cover. Everything this harness itself enqueues happens after both children are up, so
+the guard never sees a file the run is responsible for.
 
 A THIN PEER CALLER STILL (ADR 0009), and the ceremony is where that is worth restating. It makes
 no product judgement of its own: what a cited answer IS, what a refusal is, and what a terminal
@@ -76,6 +79,7 @@ script-local is the CEREMONY — the order of the steps and what counts as a pas
 Usage:
     uv run python scripts/http_smoke.py
     uv run python scripts/http_smoke.py --launch-only
+    uv run python scripts/http_smoke.py --dedicated-database
     uv run python scripts/http_smoke.py --ready-timeout 90 --ingest-timeout 300
     uv run python scripts/http_smoke.py --corpus my-lecture.pdf --question "What is a watershed?"
     uv run python scripts/http_smoke.py -- --poll 0.5 --lease 60
@@ -173,6 +177,18 @@ _WORK_THE_WORKER_WOULD_CLAIM = """
     limit 3
 """
 
+# Whether this database holds anything at all, which is a different question from the one above
+# and the reason #138 exists. The predicate above asks what is claimable NOW; this one asks
+# whether there is anything here that could BECOME claimable, and `jobs.file_id references
+# files(file_id)` (0001_init.sql, no cascade) makes an empty `files` the whole answer: no file,
+# no job, nothing for the reaper or a release to hand the launched worker.
+_FILES_THIS_RUN_DID_NOT_PUT_HERE = """
+    select count(*) over () as present, file_id::text, filename, status
+    from files
+    order by created_at
+    limit 3
+"""
+
 
 class SetupError(RuntimeError):
     """The run was never stageable — refused before anything was launched.
@@ -240,9 +256,32 @@ def repo_root() -> Path:
     return Path(__file__).resolve().parent.parent
 
 
-def preflight() -> None:
+def preflight(*, dedicated_database: bool = False) -> None:
     """Refuse, up front and with the remedy, the conditions that otherwise arrive as a hang — or
     as a bill.
+
+    WHAT A CLEAN RETURN GUARANTEES, EXACTLY — and the list is here because the version #138 was
+    filed against did not have one, so a reader took a point-in-time queue check for a promise
+    about the whole run. When this returns:
+
+      - the API's own key requirement is satisfied, Postgres is reachable, and `files` and `jobs`
+        exist, so neither child dies at startup for a reason about this machine;
+      - `files` HELD NOTHING when it looked, unless `--dedicated-database` said not to ask.
+        `jobs.file_id references files(file_id)` with no cascade (`0001_init.sql`), so an empty
+        `files` means an empty `jobs` — there was no row anywhere in this database for the reaper
+        to release, for a concurrent worker to hand back, or for a retry to revive into the
+        launched worker's reach;
+      - nothing was claimable at that instant.
+
+    WHAT IT DOES NOT GUARANTEE, and no version of this check can. It cannot stop a row that
+    ARRIVES after it looks: a second API process, another `enqueue`, or a person at a psql prompt
+    can put a `queued` job here a second later, and the launched worker will take it, because
+    that worker claims from the whole table by design (ADR 0011) and cannot be told which files
+    are this run's. "This run costs only its own work" is therefore a property of the database
+    being nobody else's. An empty `files` is EVIDENCE of that; `--dedicated-database` is only the
+    operator's word for it, and passing it drops the evidence and leaves the queue check alone —
+    which #138 measured to be blind to exactly the case that matters, a `processing` row whose
+    lease lapses one second after the check passed.
 
     The first two are checked HERE rather than left to the children because of where they land
     otherwise. A missing key makes uvicorn exit during startup and an unreachable database makes
@@ -255,12 +294,12 @@ def preflight() -> None:
     variable, and what it is for" is a second writer for the fact, and this one would be checked
     from a script nobody edits when the rule changes.
 
-    THE THIRD REFUSAL IS WHAT MAKES THE COST CLAIM STRUCTURAL RATHER THAN CONDITIONAL, and it is
-    the one to read before deleting anything here. Neither child issues an API call while starting
-    — that is measured, and it is why a launch is free — but the worker is a REAL worker, and
-    `gct.jobs.worker.run` polls `jobs` in whatever database `DATABASE_URL` names and claims
-    whatever is there. Without this check a harness that uploads nothing still ingests other
-    people's files. Measured on a lane database holding one queued PDF:
+    WHAT THE LAST TWO REFUSALS COST IF THEY ARE DELETED, and it is a cost guard rather than
+    tidiness. Neither child issues an API call while starting — that is measured, and it is why a
+    launch is free — but the worker is a REAL worker, and `gct.jobs.worker.run` polls `jobs` in
+    whatever database `DATABASE_URL` names and claims whatever is there. Without these checks a
+    harness that uploads nothing still ingests other people's files. Measured on a lane database
+    holding one queued PDF:
 
       - a 25s hold against a recording endpoint drew 12 `POST /v1/embeddings` — billable against a
         real key, from a run that enqueued nothing;
@@ -271,10 +310,19 @@ def preflight() -> None:
     A bare `uv run python scripts/http_smoke.py` reads `.env`, which on a dev machine is the
     dogfood database, so "don't run it there" was the whole protection. Now it refuses.
 
-    ORDERING, FOR WHOEVER ADDS THE CEREMONY (#109 PR 3): this runs ONCE, before either child
-    exists, and the ceremony's own upload happens after `launched()` has yielded. A file this run
-    enqueues can therefore never be seen by this check — the guard does not block the smoke's own
-    work, only work that was already waiting when it started.
+    EMPTINESS RATHER THAN A SHARPER PREDICATE, deliberately. "No file is in a state that could
+    still move" would let the smoke run against a database of finished work, and it would be one
+    more predicate to keep in step with the job state machine — the queue check is already a
+    predicate that got that wrong, which is the whole of #138. "Nothing is here" needs no
+    maintenance and cannot be subtly incomplete. The price is real and is paid on purpose: a full
+    run uploads a file and leaves it behind, so a SECOND full run against the same database is
+    refused until it is re-created or declared. `--launch-only` uploads nothing and so repeats
+    freely, which is what makes it the one to run when the machine, not the product, is in doubt.
+
+    ORDERING, FOR THE CEREMONY (#109 PR 3): this runs ONCE, before either child exists, and the
+    ceremony's own upload happens after `launched()` has yielded. A file this run enqueues can
+    therefore never be seen by this check — the guard does not block the smoke's own work, only
+    work that was here before it started.
     """
     from gct.api.app import require_openai_key  # imported here: only a real run needs fastapi
     from gct.db import connect
@@ -300,15 +348,37 @@ def preflight() -> None:
                 "in `DATABASE_URL`. Run `uv run python scripts/migrate.py` first. (Left unchecked "
                 "this surfaces as a worker that starts cleanly and dies on its first claim.)"
             )
-        waiting, sample = claimable_jobs(conn)
+        present, files_sample = (0, []) if dedicated_database else existing_files(conn)
+        waiting, jobs_sample = claimable_jobs(conn)
     finally:
         conn.close()
 
+    # Ownership first, and the order is the point rather than an accident. A database holding
+    # somebody's files is refused whether or not any of them happens to be claimable at this
+    # instant, so the message a reader gets names the real condition — "this database is not
+    # yours" — instead of a symptom that may not even be showing yet.
+    if present:
+        rows = "; ".join(
+            f"{file_id} ({status}) {filename!r}" for file_id, filename, status in files_sample
+        )
+        more = "" if present <= len(files_sample) else f" (and {present - len(files_sample)} more)"
+        raise SetupError(
+            f"the database `DATABASE_URL` names is not this run's to use: `files` already holds "
+            f"{present} row(s) — {rows}{more}. This smoke launches the REAL worker, which claims "
+            "from the whole `jobs` table (ADR 0011) and cannot be told which files belong to this "
+            "run, so any of those rows that becomes claimable while the gate runs — a lease "
+            "lapsing under the reaper, a job released back to `queued`, a retry — is ingested and "
+            "billed to a run that uploaded nothing. Point `DATABASE_URL` at an empty database, or "
+            "re-create this one (`dropdb` + `createdb`, then `uv run python scripts/migrate.py`); "
+            "a previous full run of this smoke leaves its own rows behind and is refused here too. "
+            "Pass `--dedicated-database` only if nothing but this run writes to it."
+        )
+
     if waiting:
         rows = "; ".join(
-            f"job {job_id} ({state}) for file {file_id}" for job_id, file_id, state in sample
+            f"job {job_id} ({state}) for file {file_id}" for job_id, file_id, state in jobs_sample
         )
-        more = "" if waiting <= len(sample) else f" (and {waiting - len(sample)} more)"
+        more = "" if waiting <= len(jobs_sample) else f" (and {waiting - len(jobs_sample)} more)"
         raise SetupError(
             f"{waiting} job(s) in the database `DATABASE_URL` names are waiting to be claimed: "
             f"{rows}{more}. This smoke launches the REAL worker, which would claim them and "
@@ -317,6 +387,18 @@ def preflight() -> None:
             "finish them (`uv run python scripts/worker.py`), or point `DATABASE_URL` at a "
             "scratch database."
         )
+
+
+def existing_files(conn: psycopg.Connection) -> tuple[int, list[tuple[str, str, str]]]:
+    """How many files this database already holds, and up to three of them, oldest first.
+
+    Split out for the same reason `claimable_jobs` is: SQL that is only ever executed behind a
+    fake connection is SQL nobody has run against the real tables, and `filename` is a column
+    name this file would otherwise never spell out loud.
+    """
+    rows = conn.execute(_FILES_THIS_RUN_DID_NOT_PUT_HERE).fetchall()
+    present = rows[0][0] if rows else 0
+    return present, [(file_id, filename, status) for _, file_id, filename, status in rows]
 
 
 def claimable_jobs(conn: psycopg.Connection) -> tuple[int, list[tuple[str, str, str]]]:
@@ -1208,6 +1290,14 @@ def _build_parser() -> argparse.ArgumentParser:
         "the generated corpus does not mention)",
     )
     parser.add_argument(
+        "--dedicated-database",
+        action="store_true",
+        help="declare that nothing but this run writes to the database `DATABASE_URL` names, and "
+        "skip the empty-`files` requirement. A FLAG rather than an env var on purpose: an "
+        "exported variable defeats the guard on every later run silently, and this is a promise "
+        "that has to be made again each time it is true. The queue check still runs",
+    )
+    parser.add_argument(
         "--launch-only",
         action="store_true",
         help="bring both children up, prove they are up, tear them down, and run NO ceremony. "
@@ -1347,17 +1437,16 @@ def main(argv: Sequence[str] | None = None) -> int:
     rather than tests. Nothing on this path retries a paid call and no paid call sits inside a
     loop: the two asks are issued once each and their verdicts are read, never re-requested.
 
-    WHAT IT MAY ALSO COST, WHICH `preflight` DOES NOT CLOSE. The worker this launches is the real
+    WHAT IT MAY ALSO COST, AND WHAT `preflight` NOW CLOSES. The worker this launches is the real
     one and claims whatever `jobs` holds, so somebody else's file can be ingested — and billed
-    for — by a run that uploaded nothing. `preflight` refuses the common case: a database holding
-    work that is VISIBLE WHEN THE RUN STARTS (its docstring carries what that was measured to
-    do). That is a point-in-time snapshot, and the worker then runs for the whole gate, so work
-    that becomes claimable DURING the run is still taken — a lease lapsing under the reaper (ADR
-    0011), a concurrent worker releasing a job back to `queued`, or an upload arriving through a
-    second API process. Measured, not feared: a `processing` row whose lease expired seconds
-    after the check passed `preflight` clean, and the launched worker then reaped it, claimed it
-    and drove that file to `failed`. So a run costing only its own work is a property of the
-    database being scratch, not of this script; point `DATABASE_URL` at one nobody else writes.
+    for — by a run that uploaded nothing. `preflight` refuses a database whose `files` table is
+    not empty, which is not a narrower version of the old queue check but a different question:
+    an empty `files` means an empty `jobs` (foreign key, no cascade), so nothing that exists can
+    be reaped, released or retried into this worker's reach for the length of the gate. What no
+    check closes is a row that ARRIVES mid-run — a second API process, another `enqueue` — and
+    `--dedicated-database` swaps the evidence for the operator's word that there is no such
+    writer. So a run costing only its own work is still a property of the database being nobody
+    else's; the difference is that the harness now refuses rather than assumes it (#138).
 
     `argv` is taken rather than read from `sys.argv`, for the reason `scripts/worker.py:main`
     records: this module is loaded by path inside a pytest process.
@@ -1365,7 +1454,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     args = _parse(argv)
     signal.signal(signal.SIGTERM, _interrupt)
     try:
-        preflight()
+        preflight(dedicated_database=args.dedicated_database)
     except SetupError as err:
         print(f"SETUP — {err}", file=sys.stderr)
         return EXIT_SETUP

@@ -123,6 +123,21 @@ these handlers; no browser or HTTP client can send the latter, a hand-written so
   the same envelope it always did. It is needed because a bound on what comes IN cannot bound what
   goes OUT: the multipart exemption below takes a body off the request bound, and the 422 was
   otherwise the size of the request (#134).
+- **A list-valued `detail` is bounded as a WHOLE at `MAX_ERROR_DETAIL_BYTES`** (`gct.config`,
+  provisional in the same shape): past it the TAIL of the list is dropped and one marker entry is
+  appended. A bound on the SHAPE's total size, alongside the bound on each VALUE above — and the
+  per-string one cannot stand in for it, because an `extra="forbid"` model emits one entry per
+  unexpected key and the *client* picks how many keys to send, so every string can sit far under
+  512 characters while the list grows without limit. Measured on `main`: a 65,347-byte body, legal
+  under `MAX_JSON_BODY_BYTES`, bought a 547,133-byte response (#137).
+- **The marker is the one entry the adapter adds to a `detail` list**, and a client can rely on
+  three things about it: its `type` is `gct.detail_truncated` (a namespaced token, so it cannot
+  collide with a pydantic error type), it is the LAST entry, and `ctx.dropped` is how many
+  pydantic entries were removed. It carries `type`/`loc`/`msg`/`input` like any entry, with
+  `loc` = `["detail"]` — a one-element path, where a body field's is always two, so it names the
+  response's own `detail` rather than a field the client sent. Every other entry in the list is
+  pydantic's, unmodified. Entries are dropped whole, never trimmed: a shortened `loc` would point
+  at a field nobody sent. If not even the first entry fits, `detail` is the marker alone.
 - `message` — for a human; names the remedy where one exists.
 - Routes raise **`ApiError(status_code, kind, message, detail=None)`**; the status is the raiser's
   choice. **Which status a given failure maps to is each route issue's decision**, not this spec's.

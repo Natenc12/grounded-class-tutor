@@ -213,10 +213,12 @@ def _open_fds() -> int:
 class _FakeConn:
     """Answers `preflight`'s queries in order, and records whether it was closed.
 
-    IN ORDER means three of them on the stageable path, and the order is part of what these tests
-    pin: `to_regclass` for the schema, then the `files` census (#138), then the claimable-jobs
-    predicate. A test staging only the first two is a test whose subject is refused before the
-    third query is ever issued.
+    IN ORDER means `to_regclass` for the schema, then the `files` census (#138), then the
+    claimable-jobs predicate - three on the default path, and TWO under `--dedicated-database`,
+    which skips the census. A stub given too few answers raises `IndexError` out of `execute`
+    rather than mis-answering, so the count is pinned by construction; a stub whose answers are
+    in the WRONG order is what `test_a_database_that_is_both_occupied_and_busy_is_refused_as_
+    occupied` catches.
 
     A stand-in rather than a real connection because the conditions being staged - a half-applied
     schema, a queue with rows in it - are either impossible or destructive to arrange on the
@@ -993,6 +995,16 @@ def test_preflight_refuses_a_database_that_already_has_work_the_worker_would_cla
     assert "scripts/worker.py" in message, "the remedy was not named"
     assert conn.closed
 
+    # The not-truncated arm, for the reason the census test records: this message counts and
+    # truncates by the same rule, and a one-sided pin says nothing about the boundary.
+    exact = _FakeConn([("files", "jobs")], [], [(1, "job-a", "file-a", "queued")])
+    monkeypatch.setattr("gct.db.connect", lambda: exact)
+    with pytest.raises(http_smoke.SetupError) as err:
+        http_smoke.preflight()
+    assert "more)" not in str(err.value), (
+        "one job was waiting and one was named, so nothing was truncated. Got: " + str(err.value)
+    )
+
 
 def test_preflight_returns_when_the_database_holds_nothing_at_all(monkeypatch, stageable):
     """The other direction, which is the one that runs every time the harness is used.
@@ -1047,6 +1059,19 @@ def test_preflight_refuses_a_database_holding_files_this_run_did_not_put_there(
     )
     assert conn.closed
 
+    # The other arm of the same clause. `present <= len(sample)` is a condition, and a test that
+    # only ever sees it truncate would be satisfied by a message that always says "and N more" -
+    # over a single row that reads "and 0 more" and sends the operator looking for rows that are
+    # not there. A controlled count is the only place this can be asserted; the `db`-marked test
+    # cannot, because it does not own what else is in the table.
+    exact = _FakeConn([("files", "jobs")], [(1, "file-a", "lecture-01.pdf", "ready")], [])
+    monkeypatch.setattr("gct.db.connect", lambda: exact)
+    with pytest.raises(http_smoke.SetupError) as err:
+        http_smoke.preflight()
+    assert "more)" not in str(err.value), (
+        "one row was present and one was named, so nothing was truncated. Got: " + str(err.value)
+    )
+
 
 def test_the_dedicated_database_flag_skips_the_census_and_nothing_else(monkeypatch, stageable):
     """Both arms, because a flag is a condition and a one-sided pin says nothing about it.
@@ -1100,7 +1125,7 @@ def test_a_database_that_is_both_occupied_and_busy_is_refused_as_occupied(monkey
     )
 
 
-def test_the_census_is_off_by_default_and_only_the_flag_turns_it_off(monkeypatch, stub_children):
+def test_the_census_is_on_by_default_and_only_the_flag_turns_it_off(monkeypatch, stub_children):
     """`main` hands the operator's answer to `preflight`, and the default answer is "ask".
 
     Two failures this catches, and they are opposite. A default of `True` disables the guard for
@@ -1137,9 +1162,14 @@ def test_the_files_census_counts_what_the_real_table_holds(db):
     conn, owner_id, class_id = db
     before, _ = http_smoke.existing_files(conn)
 
+    # `created_at = 'epoch'` so the planted row is the OLDEST, and therefore inside the census's
+    # `order by created_at limit 3` window whatever else the database holds. Without it this test
+    # is green on a fresh lane and on CI and red on a dev machine, where `.env` names the dogfood
+    # database - three older rows are enough to push the plant out of the sample, and the failure
+    # reads as a bug in the census SQL rather than as a busy table.
     file_id = conn.execute(
-        "insert into files (owner_id, class_id, filename, status) "
-        "values (%s, %s::uuid, %s, 'processing') returning file_id::text",
+        "insert into files (owner_id, class_id, filename, status, created_at) "
+        "values (%s, %s::uuid, %s, 'processing', 'epoch') returning file_id::text",
         (owner_id, class_id, "lecture-01.pdf"),
     ).fetchone()[0]
     conn.execute(
@@ -1217,9 +1247,11 @@ def test_preflight_refuses_the_real_database_once_a_job_is_waiting_in_it(db, mon
         "values (%s, %s::uuid, %s, 'queued') returning file_id::text",
         (owner_id, class_id, "someone-elses-upload.pdf"),
     ).fetchone()[0]
+    # Same window, same reason - the claimable predicate orders by `jobs.created_at` and takes
+    # three. This one predates #138 and was fragile in the same way.
     job_id = conn.execute(
-        "insert into jobs (file_id, owner_id, class_id, state) "
-        "values (%s::uuid, %s, %s::uuid, 'queued') returning job_id::text",
+        "insert into jobs (file_id, owner_id, class_id, state, created_at) "
+        "values (%s::uuid, %s, %s::uuid, 'queued', 'epoch') returning job_id::text",
         (file_id, owner_id, class_id),
     ).fetchone()[0]
     conn.commit()
@@ -1233,10 +1265,6 @@ def test_preflight_refuses_the_real_database_once_a_job_is_waiting_in_it(db, mon
     message = str(err.value)
     assert job_id in message, (
         "the refusal did not name the job that is actually in the database. Got: " + message
-    )
-    assert "more)" not in message, (
-        "one job was waiting and one was named, so nothing was truncated; the same off-by-one "
-        f"the count of named rows guards against. Got: {message}"
     )
 
 
@@ -1257,9 +1285,12 @@ def test_preflight_refuses_the_real_database_once_a_file_is_in_it(db, monkeypatc
     conn, owner_id, class_id = db
     monkeypatch.setattr("gct.api.app.require_openai_key", lambda: None)
 
+    # `created_at = 'epoch'` for the reason the census test above records: the sample is the three
+    # OLDEST rows, so a plant with a current timestamp is invisible on any database that already
+    # holds three.
     file_id = conn.execute(
-        "insert into files (owner_id, class_id, filename, status) "
-        "values (%s, %s::uuid, %s, 'processing') returning file_id::text",
+        "insert into files (owner_id, class_id, filename, status, created_at) "
+        "values (%s, %s::uuid, %s, 'processing', 'epoch') returning file_id::text",
         (owner_id, class_id, "someone-elses-upload.pdf"),
     ).fetchone()[0]
     conn.execute(
@@ -1285,10 +1316,6 @@ def test_preflight_refuses_the_real_database_once_a_file_is_in_it(db, monkeypatc
         "the refusal did not name the file that is actually in the database. Got: " + message
     )
     assert "--dedicated-database" in message, "the refusal did not name the way out"
-    assert "more)" not in message, (
-        "one row was present and one was named, so nothing was truncated; a refusal that says "
-        f"'and 0 more' sends the operator looking for rows that are not there. Got: {message}"
-    )
 
     # And the flag really is the way out: the same database, the same row, and the census is not
     # asked. Nothing else about the run changed, so a flag that did nothing would fail here.

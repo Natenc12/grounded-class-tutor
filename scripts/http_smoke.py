@@ -317,7 +317,11 @@ def preflight(*, dedicated_database: bool = False) -> None:
     maintenance and cannot be subtly incomplete. The price is real and is paid on purpose: a full
     run uploads a file and leaves it behind, so a SECOND full run against the same database is
     refused until it is re-created or declared. `--launch-only` uploads nothing and so repeats
-    freely, which is what makes it the one to run when the machine, not the product, is in doubt.
+    freely against a database this check accepts — but on a dev machine, where `.env` names the
+    dogfood database, it is now refused before either child launches, so
+    `--launch-only --dedicated-database` is the pair to run when the machine, not the product, is
+    in doubt. The queue check still runs underneath that flag, which is what keeps the pairing
+    honest rather than a way of turning the guard off.
 
     ORDERING, FOR THE CEREMONY (#109 PR 3): this runs ONCE, before either child exists, and the
     ceremony's own upload happens after `launched()` has yielded. A file this run enqueues can

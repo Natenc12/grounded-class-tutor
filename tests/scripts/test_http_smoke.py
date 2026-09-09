@@ -1230,8 +1230,13 @@ def test_preflight_refuses_the_real_database_once_a_job_is_waiting_in_it(db, mon
     # ratifying the wrong refusal.
     with pytest.raises(http_smoke.SetupError) as err:
         http_smoke.preflight(dedicated_database=True)
-    assert job_id in str(err.value), (
-        "the refusal did not name the job that is actually in the database. Got: " + str(err.value)
+    message = str(err.value)
+    assert job_id in message, (
+        "the refusal did not name the job that is actually in the database. Got: " + message
+    )
+    assert "more)" not in message, (
+        "one job was waiting and one was named, so nothing was truncated; the same off-by-one "
+        f"the count of named rows guards against. Got: {message}"
     )
 
 
@@ -1280,6 +1285,10 @@ def test_preflight_refuses_the_real_database_once_a_file_is_in_it(db, monkeypatc
         "the refusal did not name the file that is actually in the database. Got: " + message
     )
     assert "--dedicated-database" in message, "the refusal did not name the way out"
+    assert "more)" not in message, (
+        "one row was present and one was named, so nothing was truncated; a refusal that says "
+        f"'and 0 more' sends the operator looking for rows that are not there. Got: {message}"
+    )
 
     # And the flag really is the way out: the same database, the same row, and the census is not
     # asked. Nothing else about the run changed, so a flag that did nothing would fail here.

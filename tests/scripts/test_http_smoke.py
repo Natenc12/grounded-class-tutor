@@ -1204,7 +1204,7 @@ def test_the_files_census_counts_what_the_real_table_holds(db):
 
 
 def test_the_census_ordering_is_the_one_the_constant_names(db):
-    """`order by created_at, file_id`, over a table whose rows DISAGREE under every rewrite of it.
+    """`order by created_at, file_id`, over a table whose rows DISAGREE under three rewrites of it.
 
     The test above compares the census against the ordering rule written out independently, which
     is the right device and cannot fire over the table it plants: with one row in `files`, every
@@ -1212,24 +1212,40 @@ def test_the_census_ordering_is_the_one_the_constant_names(db):
     something else all stay green. Four such rewrites were mutated in this ticket's verification
     round and all four survived the whole suite. The population, not the device, was the gap.
 
-    So this plants five rows chosen to make the sample DIFFERENT under each rewrite, and asserts
-    the exact list. `created_at` is set explicitly and far in the past so these are the five oldest
-    whatever else the database holds - the assertion is about this test's rows on any machine, not
-    about a pristine table. `file_id` is set explicitly for the same reason: a random uuid cannot
-    be arranged to disagree with age on purpose, and disagreeing on purpose is the whole point.
+    So this plants five rows chosen to make the sample DIFFERENT under each of the three rewrites
+    that change which rows come back, and asserts the exact list. `created_at` is set explicitly
+    and far in the past so these are the five oldest whatever else the database holds - the
+    assertion is about this test's rows on any machine, not about a pristine table. `file_id` is
+    set explicitly for the same reason: a random uuid cannot be arranged to disagree with age on
+    purpose, and disagreeing on purpose is the whole point.
 
     What each rewrite returns instead, which is why the plant is shaped this way:
 
       - `order by file_id` (the clause deleted)        -> [0002, 0003, 0004], drops the oldest row
       - `order by (status in ('ready','failed')), ...` -> [0002, 0003, 0004], the dropped bucket
       - `order by created_at desc, file_id`            -> [0005, 0004, 0002], the newest three
-      - `order by created_at` (tiebreak deleted)       -> the 01-02 pair in insertion order, 0003
-                                                         before 0002, which is what it was given
+
+    WHAT THIS TEST DOES NOT PIN, stated because a reader deleting a clause deserves to know which
+    half of it is guarded. Those three rewrites change which ROWS come back, so any population with
+    distinct keys catches them and this one does, deterministically. **Deleting the `file_id`
+    tiebreak is NOT pinned**, and cannot be by any test that only controls the table's CONTENTS.
+    Removing it changes nothing except how a TIE is resolved, Postgres's sort is unstable, and an
+    unstable sort falls out in scan order - physical order, which no portable test owns. `/land`'s
+    falsifier demonstrated the mutant going GREEN by building a heap state (insert/delete churn,
+    then `vacuum`) that put the plant physically ahead of the rest, and a second device - forcing
+    new row versions with a no-op `update` - was built here and killed the mutant on three heap
+    shapes and not on a fourth. Over most tables, including a churned one re-measured in `/land`,
+    this test does kill it; over some it does not, and a device that kills SOMETIMES reads as a pin
+    and is worse than none. So neither device is here, and this paragraph is instead.
+
+    That is a proportionate gap rather than a hole. The tiebreak buys DETERMINISM of a sample that
+    is illustration and not triage (see the constant's comment in `scripts/http_smoke.py`), so
+    losing it silently costs an operator nothing they act on - unlike the three rewrites above,
+    which change which rows are named at all.
     """
     conn, owner_id, class_id = db
     plant = [
-        # (file_id suffix, created_at, status)   - inserted in an order that is neither the
-        # expected order nor the file_id order, so heap order cannot accidentally be right.
+        # (file_id suffix, created_at, status)
         ("0009", "2000-01-01", "ready"),
         ("0003", "2000-01-02", "processing"),
         ("0002", "2000-01-02", "processing"),
@@ -1408,7 +1424,7 @@ def test_preflight_refuses_the_real_database_once_a_file_is_in_it(db, monkeypatc
     with pytest.raises(http_smoke.SetupError) as err:
         http_smoke.preflight()
     message = str(err.value)
-    assert "--dedicated-database" in message, "the refusal did not name the way out"
+    assert "--dedicated-database" in message, "the refusal did not name the flag at all"
 
     # The planted row is the oldest in `files` by construction, so `order by created_at, file_id`
     # names it first and this assertion holds on a busy table as well as an empty one.

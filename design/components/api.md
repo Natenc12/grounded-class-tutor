@@ -133,11 +133,13 @@ these handlers; no browser or HTTP client can send the latter, a hand-written so
 - **The marker is the one entry the adapter adds to a `detail` list**, and a client can rely on
   three things about it: its `type` is `gct.detail_truncated` (a namespaced token, so it cannot
   collide with a pydantic error type), it is the LAST entry, and `ctx.dropped` is how many
-  pydantic entries were removed. It carries `type`/`loc`/`msg`/`input` like any entry, with
-  `loc` = `["detail"]` — pydantic roots every request-validation path at a request part (`body`,
-  `query`, …), never at `detail`, so it names the response's own `detail` rather than anything the
-  client sent. Path LENGTH does not distinguish it: a body that is missing or is not an object
-  gets a one-element `["body"]`. Every other entry in the list is pydantic's own entry, exactly as
+  pydantic entries were removed. It carries `type`/`loc`/`msg`/`input` — the four keys every entry
+  has — plus `ctx`, with `loc` = `["detail"]`: pydantic roots every request-validation path at a
+  request part (`body`, `query`, …), never at `detail`, so it names the response's own `detail`
+  rather than anything the client sent. **`type` is the only discriminator.** Neither the key set
+  nor the path LENGTH distinguishes the marker: a real `value_error` (a raising validator) or
+  `string_too_long` entry carries `ctx` too, and a body that is missing or is not an object gets a
+  one-element `["body"]`. Every other entry in the list is pydantic's own entry, exactly as
   it would appear in an envelope that never hit this cap — which is not the same as *unmodified*:
   a string inside it may already have been truncated and marked by `MAX_ERROR_ECHO_CHARS` above,
   and that happens with or without the cap. The cap only keeps entries or drops them; it never

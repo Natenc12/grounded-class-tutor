@@ -457,14 +457,35 @@ def test_the_marker_carries_the_keys_a_client_iterating_detail_reads(probe: Test
     `entry["loc"]` / `entry["msg"]` must work), and it must not IMPERSONATE a pydantic entry (a
     client switching on `type` or reading a field path must not mistake it for one).
 
-    The key set is compared against a REAL entry rather than against `ENTRY_KEYS` alone, so the
-    claim stays true of whatever pydantic and FastAPI actually emit here - today that is four keys
-    and no `url`, because FastAPI builds the list with `include_url=False`."""
-    real = probe.post("/probe", json={"name": "ok", "k": 1}).json()["error"]["detail"][0]
+    The key set is compared against REAL entries rather than against `ENTRY_KEYS` alone, so the
+    claim stays true of whatever pydantic and FastAPI actually emit here.
+
+    TWO SAMPLES, and the second is the point. Sampling only `extra_forbidden` is what let this
+    docstring say for four commits that `type`/`loc`/`msg`/`input` were "the whole set here, not a
+    subset" - false, and unfalsifiable from one sample. A RAISING VALIDATOR produces `value_error`
+    and pydantic attaches `ctx`; so does a `Field(max_length=...)`. Both live on the real
+    `AskRequest`, so this is a shape a client meets. What the entries agree on is the FLOOR (the
+    four), which is the property the marker has to match; what varies above it is why the marker
+    must be discriminated on `type` and never on its keys. `url` is absent from both, because
+    FastAPI builds the list with `include_url=False`."""
+    forbidden = probe.post("/probe", json={"name": "ok", "k": 1}).json()["error"]["detail"][0]
+    raised = probe.post("/probe", json={"name": "   "}).json()["error"]["detail"][0]
     marker = _capped_detail([_fake_entry(i) for i in range(1_000)])[-1]
 
-    assert set(real) == ENTRY_KEYS, "the entry shape this marker has to match"
-    assert set(marker) >= set(real)
+    assert forbidden["type"] == "extra_forbidden" and raised["type"] == "value_error", (
+        f"the two shapes this test exists to compare. got {forbidden['type']}, {raised['type']}"
+    )
+    assert set(forbidden) == ENTRY_KEYS, "the entry shape this marker has to match"
+    assert set(raised) == ENTRY_KEYS | {"ctx"}, (
+        "a raising validator's entry carries `ctx`, so the four keys are a FLOOR and not the "
+        f"whole set - the sentence this test exists to keep honest. got {sorted(raised)}"
+    )
+    assert "url" not in forbidden and "url" not in raised, (
+        "FastAPI stopped passing include_url=False; the marker now omits a key real entries have"
+    )
+    assert set(marker) >= set(forbidden) and set(marker) >= set(raised), (
+        f"the marker must not MISS a key a real entry has. got {sorted(marker)}"
+    )
     assert marker["input"] is None
     assert marker["loc"] == ["detail"], (
         "rooted at the response's own detail, never at a request part"
@@ -727,20 +748,153 @@ def test_a_surviving_entry_is_what_an_uncapped_envelope_would_have_shown() -> No
     surviving entry, and a client reading that sentence would take the marked 512-character echo
     for something the cap did to it.
 
-    What is true is the comparison this makes: the surviving entry is byte-for-byte the entry the
-    SAME request produces when the cap never fires. Both halves are asserted - that the entry is
-    identical across the two responses, and that it really is truncated in both, so the test is
-    not green by comparing two untouched entries."""
+    What is true is the comparison this makes: a surviving entry is byte-for-byte the entry the
+    SAME request produces when the cap never fires. Both halves are asserted - that the entries
+    are identical across the two responses, and that the first really is truncated in both, so the
+    test is not green by comparing two untouched entries.
+
+    EVERY SURVIVOR, not `detail[0]`. Checking one entry of 166 leaves a cap that reached inside
+    any of the other 165 completely invisible, which is what the second falsification pass found:
+    the sentence was pinned for one entry and claimed for the list. The uncapped side is the SAME
+    REQUEST rendered with the cap lifted, so the two lists are entry-for-entry comparable over the
+    whole surviving head rather than over a shorter request that happens to share a first entry."""
     oversized = "V" * 5_000
-    capped = _post_probe({"name": "x", "k0": oversized, **{f"k{i}": 1 for i in range(1, 900)}})
-    uncapped = _post_probe({"name": "x", "k0": oversized})
+    body = {"name": "x", "k0": oversized, **{f"k{i}": 1 for i in range(1, 900)}}
+    capped = _post_probe(body)
+    with pytest.MonkeyPatch.context() as lifted:
+        lifted.setattr(errors, "MAX_ERROR_DETAIL_BYTES", 64 * 1024 * 1024)
+        uncapped = _post_probe(body)
 
     assert capped[-1]["type"] == _DETAIL_TRUNCATED, "the cap has to have fired"
     assert _DETAIL_TRUNCATED not in _serialise(uncapped), "and not fired here"
-    assert capped[0] == uncapped[0]
+    survivors = capped[:-1]
+    assert len(survivors) > 100, (
+        f"only {len(survivors)} entries survived, so 'every survivor' is barely a claim"
+    )
+    assert survivors == uncapped[: len(survivors)], (
+        "a surviving entry differs from what the same request produces uncapped, so the cap "
+        "reached inside one. First disagreement: "
+        + next(
+            (
+                f"index {i}: {a!r} != {b!r}"
+                for i, (a, b) in enumerate(zip(survivors, uncapped, strict=False))
+                if a != b
+            ),
+            f"none pairwise; the uncapped list is {len(uncapped)} long against "
+            f"{len(survivors)} survivors",
+        )
+    )
     assert capped[0]["loc"] == ["body", "k0"]
     assert capped[0]["input"] == _bounded(oversized), "#134's bound, not the cap's doing"
     assert capped[0]["input"].endswith(f"{MARKER}5000 chars]")
+
+
+def test_the_cap_measures_with_the_serialiser_that_renders_not_one_of_its_own() -> None:
+    """The THIRD way measurement and wire can diverge, and the one the two pins beside this miss.
+
+    `test_the_bytes_that_ship_are_the_bytes_the_cap_measured` catches a change to `render`'s
+    settings (the identity) and a change to `_serialise` itself (the ASCII oracle). Neither sees
+    `_capped_detail` MEASURING with its own `json.dumps` while `render` keeps using `_serialise` -
+    the exact drift `_serialise` was extracted to prevent. With `ensure_ascii=False` on the
+    measuring side, 1,176 tests stayed green while a legal request shipped `detail` 2,265 bytes
+    (13.8%) over the cap, because a multi-byte character counts as one there and as six on the
+    wire.
+
+    WHY THIS SHAPE. The other test carries ONE non-ASCII entry, so that drift is a few bytes and
+    disappears inside its `+ 512` envelope allowance. Here EVERY entry carries non-ASCII, so the
+    drift scales with the list, and the quantity asserted is the shipped `detail` itself - parsed
+    back off the wire and re-measured - rather than the whole body against a slack figure. The
+    guarantee is about serialised `detail`, so that is what is measured.
+    """
+
+    def _entry(index: int) -> dict:
+        return {**_fake_entry(index), "msg": "Extra inputs are not permitted — naïve café ✓"}
+
+    def _unicode_chars(value) -> int:
+        """What a measurement that forgot `ensure_ascii=True` would count."""
+        return len(json.dumps(value, ensure_ascii=False, allow_nan=False, separators=(",", ":")))
+
+    # TWO POPULATIONS, because `_capped_detail` measures in two places and one list cannot reach
+    # both. The long list drives the per-entry `cost` inside the loop. The STRADDLING list is over
+    # the cap in the bytes that ship and under it in unicode characters, which is the only shape
+    # the early `return detail` can get wrong - and a mutant that changed only the early return
+    # and the reserve survived the long list on its own.
+    for label, detail in (("long", [_entry(i) for i in range(5_000)]), ("straddling", None)):
+        if detail is None:
+            detail = [_entry(0)]
+            while _unicode_chars(detail) <= MAX_ERROR_DETAIL_BYTES:
+                detail.append(_entry(len(detail)))
+            detail.pop()
+            assert _unicode_chars(detail) <= MAX_ERROR_DETAIL_BYTES < len(_serialise(detail)), (
+                "this list no longer straddles the two measurements, so the early-return arm is "
+                f"not being exercised: {_unicode_chars(detail)} chars, "
+                f"{len(_serialise(detail))} bytes"
+            )
+
+        body = envelope(400, "kind", "message", detail=detail).body
+        shipped = json.loads(body)["error"]["detail"]
+
+        assert shipped[-1]["type"] == _DETAIL_TRUNCATED, f"[{label}] the cap has to have fired"
+        assert len(_serialise(shipped)) <= MAX_ERROR_DETAIL_BYTES, (
+            f"[{label}] the `detail` that reached the wire is over the cap, so the cap counted "
+            f"something other than what shipped. {len(_serialise(shipped))} > "
+            f"{MAX_ERROR_DETAIL_BYTES}"
+        )
+        assert body.decode("utf-8").isascii(), (
+            f"[{label}] the wire is not ASCII, so `_capped_detail`'s character count is no "
+            "longer a byte count"
+        )
+        assert "\\u2014" in body.decode("utf-8"), (
+            f"[{label}] the non-ASCII this test turns on is really there"
+        )
+
+
+def test_the_reserve_holds_at_a_dropped_count_wider_than_any_request_can_reach() -> None:
+    """`reserve` is `_detail_marker(len(detail))` and the count is spelled in DECIMAL, so any
+    rewrite that computes it at a CAPPED count is one byte short past that count.
+    `_detail_marker(9999)` was caught by the width sweep; `min(len(detail), 99_999)` was not.
+
+    TWO THINGS HAVE TO LINE UP, which is why neither the sweep nor a bare large count sees it.
+    The DROPPED count must have more digits than the reserve was computed at - dropped is
+    `len(detail) - kept`, 160 entries are kept at this cap, so 100,100 entries drop 99,940, still
+    five digits and still correctly reserved. (The second falsification pass named 100,100 and was
+    one boundary off; 100,200 is where dropped turns six digits.) And the packing must be TIGHT:
+    the reserve carries a spare byte for the comma, so a one-byte shortfall is invisible unless
+    the kept entries fill the budget exactly.
+
+    So the width is not swept, it is COMPUTED - the same device as
+    `test_an_entry_that_exactly_fills_the_space_the_cap_left_is_kept`, one axis over. A first run
+    measures the headroom a real pack leaves; widening one entry by that plus one is what makes
+    `used` land on the budget rather than short of it. Under the shipped code the result is inside
+    the cap; under `min(len(detail), 99_999)` it is 16,385 - one byte over, from a list no legal
+    request can produce.
+
+    LATENT, NOT LIVE. A body under `MAX_JSON_BODY_BYTES` yields at most ~6,950 entries, so no
+    client reaches six digits. It is pinned because `_capped_detail`'s docstring states the
+    guarantee over the list it is HANDED, not over the lists a request can build."""
+
+    def _entry(index: int, pad: int = 0) -> dict:
+        return {**_fake_entry(index), "loc": ["body", "k" + "y" * pad + f"{index:06d}"]}
+
+    detail = [_entry(i) for i in range(100_400)]
+    probe = _capped_detail(detail)
+    dropped = probe[-1]["ctx"]["dropped"]
+
+    assert len(str(dropped)) == 6, (
+        f"{dropped} dropped is not the six-digit count this test exists to reserve for; the cap "
+        "or the entry width moved, so raise the count until it is"
+    )
+    headroom = MAX_ERROR_DETAIL_BYTES - len(_serialise(probe))
+    assert 0 <= headroom < 32, f"the probe left {headroom} bytes, which is not a tight pack"
+
+    tight = _capped_detail([_entry(0, headroom + 1), *detail[1:]])
+
+    assert tight[-1]["type"] == _DETAIL_TRUNCATED, "the cap has to have fired"
+    assert len(str(tight[-1]["ctx"]["dropped"])) == 6, "still a six-digit dropped count"
+    assert len(_serialise(tight)) <= MAX_ERROR_DETAIL_BYTES, (
+        f"a six-digit dropped count overran the reserve: {len(_serialise(tight))} > "
+        f"{MAX_ERROR_DETAIL_BYTES}"
+    )
 
 
 def test_the_bytes_that_ship_are_the_bytes_the_cap_measured() -> None:

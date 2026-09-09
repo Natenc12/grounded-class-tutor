@@ -155,12 +155,19 @@ def _serialise(value: Any) -> str:
 def _detail_marker(dropped: int) -> dict[str, Any]:
     """The ONE entry `_capped_detail` adds, saying how many it dropped.
 
-    It sits in a list a client iterates, so it carries exactly the four keys every pydantic entry
-    has - `type`, `loc`, `msg`, `input` - and a naive `entry["loc"]` / `entry["msg"]` reads it
-    without special-casing. Four is the whole set here, not a subset: FastAPI builds the list with
-    `include_url=False` (`fastapi/_compat/v2.py`), so no entry in this adapter carries pydantic's
-    `url` - and inventing one would both add a key no real entry has and point at the docs for a
-    pydantic error type this is not.
+    It sits in a list a client iterates, so it carries the four keys EVERY pydantic entry has -
+    `type`, `loc`, `msg`, `input` - and a naive `entry["loc"]` / `entry["msg"]` reads it without
+    special-casing. Four is the floor, NOT the whole set, and the earlier claim that it was is the
+    fourth contract sentence in this docstring to be written from what the code intends and then
+    falsified by running it. Measured over five real 422s from this adapter's own route models:
+    `extra_forbidden`, `missing` and `string_type` carry those four, while `value_error` (a
+    raising `@field_validator`, which the real `AskRequest` has) and `string_too_long` (a
+    `Field(max_length=...)`, which it also has) carry `ctx` as well. So the marker's own five keys
+    are a SUPERSET of the four and a match for the richest real entry - which means the key set
+    distinguishes nothing, and a client must discriminate on `type`, never on shape. The one thing
+    no entry here carries is pydantic's `url`: FastAPI builds the list with `include_url=False`
+    (`fastapi/_compat/v2.py`), and inventing one would add a key no real entry has and point at
+    the docs for a pydantic error type this is not.
 
     It does NOT impersonate a pydantic entry, which is the opposite hazard:
       - `type` is namespaced (`gct.` + a name), and no pydantic error type contains a dot - so

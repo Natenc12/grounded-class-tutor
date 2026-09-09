@@ -449,7 +449,9 @@ def test_the_marker_carries_the_keys_a_client_iterating_detail_reads(probe: Test
     assert set(real) == ENTRY_KEYS, "the entry shape this marker has to match"
     assert set(marker) >= set(real)
     assert marker["input"] is None
-    assert marker["loc"] == ["detail"], "one element - a body field's path is always two"
+    assert marker["loc"] == ["detail"], (
+        "rooted at the response's own detail, never at a request part"
+    )
     assert "." in marker["type"], "namespaced, so it cannot collide with a pydantic error type"
 
 
@@ -576,3 +578,120 @@ def test_a_real_rejected_class_body_still_comes_back_whole(api) -> None:
         ["body", "ownerId"],
     ]
     assert _DETAIL_TRUNCATED not in response.text
+
+
+def test_a_routes_list_detail_is_capped_only_after_its_leaves_are_renderable() -> None:
+    """ORDER: `_capped_detail` MEASURES with `allow_nan=False`, so it has to run after
+    `_json_safe` has turned the leaves it cannot serialise into strings. A route's own list
+    `detail` is the only path that reaches `render` without `_validation`'s pass, so it is the
+    one place the order is observable - and reversing it raises inside the handler, which is the
+    500 this module exists to stop."""
+    for value, rendered in (
+        (float("nan"), "nan"),
+        (float("inf"), "inf"),
+        (b"\xff\xfe", "��"),
+    ):
+        body = json.loads(envelope(400, "kind", "message", detail=[{"input": value}]).body)
+        assert body["error"]["detail"] == [{"input": rendered}]
+
+
+@pytest.mark.parametrize("count", [500, 5_000])
+def test_the_cap_is_exact_at_every_entry_width(count: int) -> None:
+    """The reserve/budget arithmetic is exact, and an off-by-one in it is only visible at the
+    entry widths where the budget runs out ON an entry boundary rather than mid-entry. Sweeping
+    the width walks every residue instead of landing on one by luck: dropping the `+ 1` from
+    `reserve`, or a bracket from `budget`, both return 16,385 bytes at some width in here and are
+    invisible at the width `_fake_entry` happens to have. (The padding floors at the entry's own
+    natural width, so the low end of the sweep repeats the narrowest entry - harmless, and the
+    residues that matter are all walked above it.)
+
+    This pins that the cap is never EXCEEDED. That the space left under it is actually used is a
+    separate property and a separate test - see the exact-fit one below, which is what a `>=`
+    slip in the fill condition fails."""
+    for width in range(34, 200):
+        entry = {"type": "extra_forbidden", "loc": ["body", "k"], "msg": "", "input": ""}
+        entry["msg"] = "m" * (width - len(_serialise(entry)))
+        capped = _capped_detail([entry for _ in range(count)])
+
+        assert capped[-1]["type"] == _DETAIL_TRUNCATED
+        assert len(_serialise(capped)) <= MAX_ERROR_DETAIL_BYTES, f"width={width}"
+        assert len(capped) > 1, f"width={width}: a cut, not a wipe"
+
+
+def test_an_entry_that_exactly_fills_the_space_the_cap_left_is_kept() -> None:
+    """MAXIMALITY: the cap has to be a BOUND, not an arbitrary early stop. `>` weakened to `>=`
+    in the fill condition keeps one fewer entry than fits, and every size assertion in this file
+    stays green under it - keeping too few is still under the cap.
+
+    So this measures the slack a real run left and then hands the same run an entry sized to fill
+    it EXACTLY, which is the one input where `>` and `>=` disagree. Nothing here re-derives the
+    implementation's budget: the slack is read off a rendered list, and the only arithmetic is
+    JSON's own - one byte for the comma that joins the entry to the ones before it.
+
+    The list length is held constant across the two runs so the reserve is identical, and the
+    dropped count stays four digits either side, so the marker cannot change width underneath the
+    measurement."""
+    base = {"type": "extra_forbidden", "loc": ["body", "k"], "msg": "", "input": ""}
+    floor = len(_serialise(base))
+
+    for width in range(floor, floor + 200):
+        entries = [{**base, "msg": "m" * (width - floor)} for _ in range(2_000)]
+        capped = _capped_detail(entries)
+        kept = len(capped) - 1
+        slack = MAX_ERROR_DETAIL_BYTES - len(_serialise(capped))
+        if slack - 1 < floor:  # no room at this width to build an entry that exactly fills it
+            continue
+
+        exact = {**base, "msg": "m" * (slack - 1 - floor)}
+        assert len(_serialise(exact)) == slack - 1
+        assert 1_000 <= len(entries) - kept <= 9_999, "the marker stays four digits wide"
+
+        filled = _capped_detail([*entries[:kept], exact, *entries[kept:-1]])
+        assert filled[kept] == exact, f"width={width}: the space it left went unused"
+        assert len(_serialise(filled)) <= MAX_ERROR_DETAIL_BYTES
+        assert len(_serialise(filled)) == MAX_ERROR_DETAIL_BYTES, "and it is filled to the byte"
+        return
+
+    raise AssertionError("no width in the sweep left room for an exact-fit entry")
+
+
+def test_a_detail_that_is_not_a_list_is_passed_through_even_when_it_is_huge() -> None:
+    """The shape guard in `render` is load-bearing, not tidiness: `_capped_detail` ITERATES its
+    argument, so an over-cap dict reaching it would come back rewritten as a list of its keys -
+    every value gone, and the client told its `detail` was truncated when it was mangled.
+
+    No route emits a non-list `detail` today (no `ApiError` raise or `envelope` call in `src/gct/`
+    passes one at all), so this pins the scope decision rather than a live path. The string case
+    is the same guard from the other side: it is bounded by `MAX_ERROR_ECHO_CHARS` (#134) and
+    never by this cap, so what it must NOT acquire is the marker."""
+    mapping = {f"k{i}": i for i in range(5_000)}
+    assert len(_serialise(mapping)) > MAX_ERROR_DETAIL_BYTES, "the dict has to be over the cap"
+    rendered = json.loads(envelope(400, "kind", "message", detail=mapping).body)["error"]["detail"]
+    assert rendered == mapping
+
+    long_text = "x" * (MAX_ERROR_DETAIL_BYTES * 2)
+    response = envelope(400, "kind", "message", detail=long_text)
+    rendered = json.loads(response.body)["error"]["detail"]
+    assert rendered == _bounded(long_text)
+    assert _DETAIL_TRUNCATED not in response.body.decode()
+
+
+def test_a_real_entrys_loc_is_never_rooted_at_detail(probe: TestClient) -> None:
+    """The marker's discriminator, executed rather than asserted in prose. Its `loc` is
+    `["detail"]`, and what makes that unambiguous is the ROOT, not the length: all three requests
+    below produce a real entry whose `loc` is ONE element, `["body"]`. A client told to look for a
+    one-element path would read "you sent no body at all" as "some of your errors were
+    truncated"."""
+    for body, kwargs in (
+        ("an absent body", {}),
+        ("a bare string body", {"content": b'"hello"'}),
+        ("a list body", {"content": b"[1,2]"}),
+    ):
+        response = probe.post("/probe", headers={"content-type": "application/json"}, **kwargs)
+        detail = response.json()["error"]["detail"]
+
+        assert response.status_code == 422, body
+        assert detail, body
+        assert any(entry["loc"] == ["body"] for entry in detail), f"{body}: {detail}"
+        assert all(entry["loc"][0] != "detail" for entry in detail), body
+        assert all(entry["loc"][0] == "body" for entry in detail), body

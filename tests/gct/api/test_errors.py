@@ -53,6 +53,23 @@ def _fake_entry(index: int) -> dict:
     }
 
 
+def _post_probe(body: dict) -> list:
+    """One `POST /probe` with a JSON body, returning the 422's `detail`. Its own app rather than
+    the `probe` fixture so a module-level test can use it too; wired exactly as `create_app`
+    wires one, and `test_errors`'s probe route model."""
+    app = FastAPI()
+    errors.install(app)
+    limits.install(app)
+
+    @app.post("/probe")
+    def _probe(body: _Body) -> dict:
+        return {"length": len(body.name)}
+
+    response = TestClient(app, raise_server_exceptions=False).post("/probe", json=body)
+    assert response.status_code == 422, response.text
+    return response.json()["error"]["detail"]
+
+
 def _amplifier_body(keys: int) -> bytes:
     """The ticket's own request: a VALID `name`, plus `keys` unexpected keys. Every entry it
     produces is ~100 bytes, so the list is long rather than any one entry being large - measured
@@ -595,7 +612,7 @@ def test_a_routes_list_detail_is_capped_only_after_its_leaves_are_renderable() -
         assert body["error"]["detail"] == [{"input": rendered}]
 
 
-@pytest.mark.parametrize("count", [500, 5_000])
+@pytest.mark.parametrize("count", [500, 5_000, 12_345])
 def test_the_cap_is_exact_at_every_entry_width(count: int) -> None:
     """The reserve/budget arithmetic is exact, and an off-by-one in it is only visible at the
     entry widths where the budget runs out ON an entry boundary rather than mid-entry. Sweeping
@@ -604,6 +621,13 @@ def test_the_cap_is_exact_at_every_entry_width(count: int) -> None:
     invisible at the width `_fake_entry` happens to have. (The padding floors at the entry's own
     natural width, so the low end of the sweep repeats the narrowest entry - harmless, and the
     residues that matter are all walked above it.)
+
+    TWO AXES, because `reserve` depends on the marker and the marker spells the dropped count out
+    in DECIMAL. Each count is here to walk one width of that number, against every entry width:
+    500 drops a three-digit count, 5,000 a four-digit one, 12,345 a five-digit one. Sweeping width
+    alone left a fourth slip alive - `reserve` computed at a hardcoded `_detail_marker(9999)` -
+    which is correct up to 9,999 dropped and one byte short past it, and returned 16,385 bytes at
+    count=12,345, width=117 with the rest of the file green.
 
     This pins that the cap is never EXCEEDED. That the space left under it is actually used is a
     separate property and a separate test - see the exact-fit one below, which is what a `>=`
@@ -695,3 +719,49 @@ def test_a_real_entrys_loc_is_never_rooted_at_detail(probe: TestClient) -> None:
         assert any(entry["loc"] == ["body"] for entry in detail), f"{body}: {detail}"
         assert all(entry["loc"][0] != "detail" for entry in detail), body
         assert all(entry["loc"][0] == "body" for entry in detail), body
+
+
+def test_a_surviving_entry_is_what_an_uncapped_envelope_would_have_shown() -> None:
+    """The contract sentence, executed. "Every other entry is pydantic's own, UNMODIFIED" was
+    false over real HTTP: `MAX_ERROR_ECHO_CHARS` may already have truncated a string inside a
+    surviving entry, and a client reading that sentence would take the marked 512-character echo
+    for something the cap did to it.
+
+    What is true is the comparison this makes: the surviving entry is byte-for-byte the entry the
+    SAME request produces when the cap never fires. Both halves are asserted - that the entry is
+    identical across the two responses, and that it really is truncated in both, so the test is
+    not green by comparing two untouched entries."""
+    oversized = "V" * 5_000
+    capped = _post_probe({"name": "x", "k0": oversized, **{f"k{i}": 1 for i in range(1, 900)}})
+    uncapped = _post_probe({"name": "x", "k0": oversized})
+
+    assert capped[-1]["type"] == _DETAIL_TRUNCATED, "the cap has to have fired"
+    assert _DETAIL_TRUNCATED not in _serialise(uncapped), "and not fired here"
+    assert capped[0] == uncapped[0]
+    assert capped[0]["loc"] == ["body", "k0"]
+    assert capped[0]["input"] == _bounded(oversized), "#134's bound, not the cap's doing"
+    assert capped[0]["input"].endswith(f"{MARKER}5000 chars]")
+
+
+def test_the_bytes_that_ship_are_the_bytes_the_cap_measured() -> None:
+    """`_serialise` exists so "the size the cap counts and the size that reaches the wire cannot
+    drift apart" - its own docstring. Nothing ran that. Rendering with `json.dumps`'s DEFAULT
+    separators instead of the compact ones leaves the whole suite green while the wire carries
+    17,964 bytes for the ticket's own request, `detail` 1,496 bytes (9.1%) OVER the cap, with
+    `_capped_detail` still counting 16,375 the whole time.
+
+    Three assertions, because each alone is weak. The IDENTITY says the body is exactly what
+    `_serialise` would produce, so no render setting can differ from the one the cap measures
+    with. It cannot see a change to `_serialise` ITSELF - that mutates the measuring stick and the
+    measured together - so the ASCII assertion is the independent oracle beside it: the non-ASCII
+    entry ships as `\\uXXXX` escapes or the wire is not ASCII, and `_capped_detail` counts
+    CHARACTERS where the cap is in BYTES, which is only the same number while that holds. The SIZE
+    says the shipped bytes are inside the cap plus the envelope's own frame, measured on the wire
+    rather than on the value `_capped_detail` returned - the quantity the guarantee is about."""
+    detail = [{**_fake_entry(0), "msg": "Café — naïve ✓"}, *[_fake_entry(i) for i in range(5_000)]]
+    body = envelope(400, "kind", "message", detail=detail).body
+
+    assert body == _serialise(json.loads(body)).encode("utf-8")
+    assert body.decode("utf-8").isascii(), "the wire is ASCII, so a character IS a byte"
+    assert len(body) <= MAX_ERROR_DETAIL_BYTES + 512, "the envelope's frame is ~80 bytes"
+    assert json.loads(body)["error"]["detail"][-1]["type"] == _DETAIL_TRUNCATED

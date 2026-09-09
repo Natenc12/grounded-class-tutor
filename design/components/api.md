@@ -134,8 +134,10 @@ these handlers; no browser or HTTP client can send the latter, a hand-written so
   three things about it: its `type` is `gct.detail_truncated` (a namespaced token, so it cannot
   collide with a pydantic error type), it is the LAST entry, and `ctx.dropped` is how many
   pydantic entries were removed. It carries `type`/`loc`/`msg`/`input` like any entry, with
-  `loc` = `["detail"]` — a one-element path, where a body field's is always two, so it names the
-  response's own `detail` rather than a field the client sent. Every other entry in the list is
+  `loc` = `["detail"]` — pydantic roots every request-validation path at a request part (`body`,
+  `query`, …), never at `detail`, so it names the response's own `detail` rather than anything the
+  client sent. Path LENGTH does not distinguish it: a body that is missing or is not an object
+  gets a one-element `["body"]`. Every other entry in the list is
   pydantic's, unmodified. Entries are dropped whole, never trimmed: a shortened `loc` would point
   at a field nobody sent. If not even the first entry fits, `detail` is the marker alone.
 - `message` — for a human; names the remedy where one exists.

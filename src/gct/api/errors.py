@@ -165,10 +165,11 @@ def _detail_marker(dropped: int) -> dict[str, Any]:
     It does NOT impersonate a pydantic entry, which is the opposite hazard:
       - `type` is namespaced (`gct.` + a name), and no pydantic error type contains a dot - so
         the discriminator cannot collide with one this or any later pydantic version emits.
-      - `loc` is `["detail"]`: a ONE-element path, where every request-validation loc pydantic
-        produces is rooted at a request part (`body`, `query`, ...) and a body field's path is
-        therefore two elements. So it names the response's own `detail`, not a field the client
-        sent, and no client can read it as one.
+      - `loc` is `["detail"]`: pydantic roots every request-validation loc at a request part
+        (`body`, `query`, ...) and never at `detail`, so no client can read this as something it
+        sent. The ROOT is the discriminator, not the length - a missing or non-object body gets a
+        one-element `["body"]`, so length distinguishes nothing
+        (`test_a_real_entrys_loc_is_never_rooted_at_detail`).
       - `input` is `null`: there is no rejected value here, and the client sent nothing that
         corresponds to this entry.
 
@@ -217,12 +218,17 @@ def _capped_detail(detail: list[Any]) -> list[Any]:
     is needed to prove it.
 
     WHAT THE GUARANTEE IS, at values of the cap a future retune could pick. Serialised `detail`
-    is <= the cap exactly, for every cap at or above `len(_serialise(marker)) + 2` - the marker
-    alone plus its brackets, ~200 bytes. Below that the result is the marker alone and EXCEEDS
-    the cap, because a list has no equivalent of `_bounded`'s final clamp: truncating a string
-    mid-character still yields a string, while truncating a JSON array mid-token yields something
-    no client can parse. Exceeding a cap nobody can honour by ~200 bytes is the honest failure;
-    emitting invalid JSON is not. At 16 KiB the reserve is ~1% of the budget.
+    is <= the cap exactly, for every cap at or above `len(_serialise(_detail_marker(len(detail))))
+    + 2` - the marker for this list's own count, plus its brackets. That floor is a FUNCTION OF
+    THE LIST, not a constant, because the marker spells the count out in decimal: measured at the
+    shipped cap, 211 bytes for a single-digit count and 217 at a thousand entries. (It moves with
+    the cap too, by the same few bytes - the marker's sentence names the cap.) A fixed "~200" was
+    wrong in the direction that matters, since a floor quoted too low reads as a guarantee that
+    holds where it does not. Below it the result is the marker alone and
+    EXCEEDS the cap, because a list has no equivalent of `_bounded`'s final clamp: truncating a
+    string mid-character still yields a string, while truncating a JSON array mid-token yields
+    something no client can parse. Exceeding a cap nobody can honour, by the marker, is the honest
+    failure; emitting invalid JSON is not. At 16 KiB the reserve is ~1% of the budget.
 
     WHEN THE FIRST ENTRY ALONE IS OVER THE CAP, `detail` becomes the marker and nothing else -
     measured at 54,333 bytes for one entry echoing a whole 65 KB body. Keeping it anyway was

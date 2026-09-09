@@ -49,7 +49,7 @@ uv run python scripts/ingest_smoke.py   # Slice 2 exit gate — SPENDS MONEY
 uv run python scripts/worker.py         # the poll worker — a SEPARATE process, never in the API loop (ADR 0011)
 uv run uvicorn gct.api.app:app          # the Slice 3 API — its own process; refuses to start without OPENAI_API_KEY
 uv run python scripts/http_smoke.py     # Slice 3 exit gate — launches API + worker itself; SPENDS MONEY
-uv run python scripts/http_smoke.py --launch-only --dedicated-database   # ...the same launch, no ceremony, no cost
+uv run python scripts/http_smoke.py --launch-only   # ...the same launch, no ceremony, no cost
 uv run pytest tests/ -q                 # full suite
 uv run pytest -m db -q                  # just the Postgres-backed tests (DB must be up)
 uv run pytest -m "not live" -q          # exactly what CI runs
@@ -77,9 +77,12 @@ a free inheritance from Slice 2; it was measured, and the questions hold. Which 
 what cadence is a cost decision, not a capability one. Unlike the other three it starts its own
 `uvicorn` and its own worker, so nothing needs to be running first — and `--launch-only` proves
 that pair comes up for free, which is the thing to run when the machine, not the product, is in
-doubt. Both forms first refuse a database they do not own (#138): `files` must be empty, or
-`--dedicated-database` declares that nothing else writes there. On a dev machine `.env` names the
-dogfood database, so the free check is `--launch-only --dedicated-database`.
+doubt. **Both forms first refuse a database they do not own (#138)**, and on a dev machine that
+means the dogfood database `.env` points at: `files` must be empty, so point `DATABASE_URL` at a
+scratch database before either. `--dedicated-database` skips that check and is a statement that
+nothing else writes to the database — true of a scratch one, false of the dogfood one, and using
+it to get past a refusal there re-opens exactly the hazard #138 closed (measured: a foreign job
+reaped and claimed inside a `--launch-only` launch window).
 **The Slice 1 gate (`ask_smoke.py`) cannot run in CI:** its questions are anchored to the dogfood
 corpus by file and page, and that corpus is gitignored. It stays local — `/ship`'s acceptance lane
 and `/land` run it. A green `CI` check still says nothing about any gate, and a green `live-gates`

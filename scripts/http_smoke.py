@@ -182,10 +182,18 @@ _WORK_THE_WORKER_WOULD_CLAIM = """
 # whether there is anything here that could BECOME claimable, and `jobs.file_id references
 # files(file_id)` (0001_init.sql, no cascade) makes an empty `files` the whole answer: no file,
 # no job, nothing for the reaper or a release to hand the launched worker.
+#
+# THE ORDER IS PART OF THE MESSAGE, not a tidiness choice. The refusal names three rows and counts
+# the rest, so which three it names is what an operator actually reads. Sorting by age alone put
+# three finished `ready` files in front of the one `processing` row that could still cost money,
+# hiding the hazard behind "(and 1 more)" — measured in this ticket's verification round.
+# `status in ('ready', 'failed')` is FALSE for the rows that can still move, and false sorts
+# first, so a live row is always named ahead of a settled one. `file_id` last so the sample is
+# deterministic under equal timestamps instead of order-undefined, which no test could pin.
 _FILES_THIS_RUN_DID_NOT_PUT_HERE = """
     select count(*) over () as present, file_id::text, filename, status
     from files
-    order by created_at
+    order by (status in ('ready', 'failed')), created_at, file_id
     limit 3
 """
 
@@ -266,12 +274,21 @@ def preflight(*, dedicated_database: bool = False) -> None:
 
       - the API's own key requirement is satisfied, Postgres is reachable, and `files` and `jobs`
         exist, so neither child dies at startup for a reason about this machine;
-      - `files` HELD NOTHING when it looked, unless `--dedicated-database` said not to ask.
-        `jobs.file_id references files(file_id)` with no cascade (`0001_init.sql`), so an empty
-        `files` means an empty `jobs` — there was no row anywhere in this database for the reaper
-        to release, for a concurrent worker to hand back, or for a retry to revive into the
-        launched worker's reach;
+      - `files` HELD NOTHING when it looked, unless `--dedicated-database` said not to ask;
       - nothing was claimable at that instant.
+
+    WHY AN EMPTY `files` IS THE STRONGER FACT — stated as the two mechanisms it rests on rather
+    than as an absolute, because the absolute was written first and falsified in this ticket's own
+    verification round. `jobs.file_id references files(file_id)` with no cascade
+    (`0001_init.sql`) normally makes an empty `files` an empty `jobs`, and that is the everyday
+    argument. It is not a proof: `set session_replication_role = replica` — what
+    `pg_restore --disable-triggers` does — suspends the constraint, and a `jobs` row can outlive
+    its file. What holds even then is the second mechanism, inside the claim itself:
+    `gct.jobs.queue.claim` inner-joins `files` (`join files f using (file_id)`), so a job whose
+    file is gone is reclaimable but never claimable. Between them the conclusion survives — an
+    empty `files` leaves the launched worker nothing it can take — but a reader deleting this
+    check needs the mechanism, not the slogan, because the slogan is what fails the moment
+    somebody restores a dump.
 
     WHAT IT DOES NOT GUARANTEE, and no version of this check can. It cannot stop a row that
     ARRIVES after it looks: a second API process, another `enqueue`, or a person at a psql prompt
@@ -317,11 +334,17 @@ def preflight(*, dedicated_database: bool = False) -> None:
     maintenance and cannot be subtly incomplete. The price is real and is paid on purpose: a full
     run uploads a file and leaves it behind, so a SECOND full run against the same database is
     refused until it is re-created or declared. `--launch-only` uploads nothing and so repeats
-    freely against a database this check accepts — but on a dev machine, where `.env` names the
-    dogfood database, it is now refused before either child launches, so
-    `--launch-only --dedicated-database` is the pair to run when the machine, not the product, is
-    in doubt. The queue check still runs underneath that flag, which is what keeps the pairing
-    honest rather than a way of turning the guard off.
+    freely against a database this check accepts — which on a dev machine is NOT the one `.env`
+    names, and the remedy there is a scratch `DATABASE_URL`, not the flag.
+
+    `--dedicated-database` IS NOT THE WAY PAST A REFUSAL ON A DATABASE YOU DO NOT OWN, and the
+    temptation is worth naming because it is the shortest thing to type when a launch is refused.
+    Measured in this ticket's verification round, with the flag and a foreign `processing` job
+    whose lease lapsed inside the ~2.3s launch window: the launched worker reaped it, claimed it,
+    and left it `queued` with `attempts` 0 → 1 — one retry of the ADR 0011 budget spent on
+    somebody else's file, by a `--launch-only` run that uploaded nothing. The flag is a statement
+    that nothing else writes here. Where that statement is false it buys back exactly the hazard
+    #138 is about.
 
     ORDERING, FOR THE CEREMONY (#109 PR 3): this runs ONCE, before either child exists, and the
     ceremony's own upload happens after `launched()` has yielded. A file this run enqueues can

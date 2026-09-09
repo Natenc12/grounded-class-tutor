@@ -1162,14 +1162,9 @@ def test_the_files_census_counts_what_the_real_table_holds(db):
     conn, owner_id, class_id = db
     before, _ = http_smoke.existing_files(conn)
 
-    # `created_at = 'epoch'` so the planted row is the OLDEST, and therefore inside the census's
-    # `order by created_at limit 3` window whatever else the database holds. Without it this test
-    # is green on a fresh lane and on CI and red on a dev machine, where `.env` names the dogfood
-    # database - three older rows are enough to push the plant out of the sample, and the failure
-    # reads as a bug in the census SQL rather than as a busy table.
     file_id = conn.execute(
-        "insert into files (owner_id, class_id, filename, status, created_at) "
-        "values (%s, %s::uuid, %s, 'processing', 'epoch') returning file_id::text",
+        "insert into files (owner_id, class_id, filename, status) "
+        "values (%s, %s::uuid, %s, 'processing') returning file_id::text",
         (owner_id, class_id, "lecture-01.pdf"),
     ).fetchone()[0]
     conn.execute(
@@ -1180,13 +1175,29 @@ def test_the_files_census_counts_what_the_real_table_holds(db):
 
     present, sample = http_smoke.existing_files(conn)
     waiting, _ = http_smoke.claimable_jobs(conn)
+
     assert present == before + 1, f"the census missed the row it was pointed at (got {present})"
-    assert (file_id, "lecture-01.pdf", "processing") in sample, (
-        f"the census named the row wrongly: {sample}"
-    )
     assert waiting == 0, (
         "the claimable predicate saw this row, so the two checks are not asking different "
         "questions and #138's guard adds nothing"
+    )
+
+    # WHAT THE SAMPLE IS COMPARED AGAINST, and it is not the planted row. The census returns three
+    # of N, so "the row I just inserted is in there" is only true when the table is nearly empty -
+    # green on a fresh lane and on CI, red on a dev machine where `.env` names the dogfood
+    # database, and the failure reads as a bug in the SQL rather than as a busy table. Pinning it
+    # to the plant with an artificially old `created_at` does not fix that; it just moves the
+    # breaking point to a row older still, and leaves the ORDER - the thing the whole device rests
+    # on - unpinned, so `order by ... desc` would sample the newest three and no test would say so.
+    # The expectation is therefore the ordering rule written out INDEPENDENTLY here. It holds
+    # whatever the table contains, and it disagrees with any change to the constant's `order by`.
+    expected = conn.execute(
+        "select file_id::text, filename, status from files "
+        "order by (status in ('ready', 'failed')), created_at, file_id limit 3"
+    ).fetchall()
+    assert sample == [tuple(row) for row in expected], (
+        f"the census did not return the three rows its ordering rule names. got {sample}, "
+        f"expected {expected}"
     )
 
 
@@ -1247,11 +1258,9 @@ def test_preflight_refuses_the_real_database_once_a_job_is_waiting_in_it(db, mon
         "values (%s, %s::uuid, %s, 'queued') returning file_id::text",
         (owner_id, class_id, "someone-elses-upload.pdf"),
     ).fetchone()[0]
-    # Same window, same reason - the claimable predicate orders by `jobs.created_at` and takes
-    # three. This one predates #138 and was fragile in the same way.
     job_id = conn.execute(
-        "insert into jobs (file_id, owner_id, class_id, state, created_at) "
-        "values (%s::uuid, %s, %s::uuid, 'queued', 'epoch') returning job_id::text",
+        "insert into jobs (file_id, owner_id, class_id, state) "
+        "values (%s::uuid, %s, %s::uuid, 'queued') returning job_id::text",
         (file_id, owner_id, class_id),
     ).fetchone()[0]
     conn.commit()
@@ -1263,6 +1272,18 @@ def test_preflight_refuses_the_real_database_once_a_job_is_waiting_in_it(db, mon
     with pytest.raises(http_smoke.SetupError) as err:
         http_smoke.preflight(dedicated_database=True)
     message = str(err.value)
+    # Named against the predicate's OWN ordering rule, written out independently, for the reason
+    # `test_the_files_census_counts_what_the_real_table_holds` records: "the row I just inserted"
+    # is only in the sample when the table is nearly empty. This predicate predates #138 and has
+    # no tiebreak, so the comparison is by membership rather than by sequence.
+    named = [
+        row[0]
+        for row in conn.execute(
+            "select job_id::text from jobs where state = 'queued' "
+            "or (state = 'processing' and leased_until < now()) order by created_at limit 3"
+        ).fetchall()
+    ]
+    assert job_id in named, "the plant is not in the window this predicate samples; test is stale"
     assert job_id in message, (
         "the refusal did not name the job that is actually in the database. Got: " + message
     )
@@ -1285,12 +1306,9 @@ def test_preflight_refuses_the_real_database_once_a_file_is_in_it(db, monkeypatc
     conn, owner_id, class_id = db
     monkeypatch.setattr("gct.api.app.require_openai_key", lambda: None)
 
-    # `created_at = 'epoch'` for the reason the census test above records: the sample is the three
-    # OLDEST rows, so a plant with a current timestamp is invisible on any database that already
-    # holds three.
     file_id = conn.execute(
-        "insert into files (owner_id, class_id, filename, status, created_at) "
-        "values (%s, %s::uuid, %s, 'processing', 'epoch') returning file_id::text",
+        "insert into files (owner_id, class_id, filename, status) "
+        "values (%s, %s::uuid, %s, 'processing') returning file_id::text",
         (owner_id, class_id, "someone-elses-upload.pdf"),
     ).fetchone()[0]
     conn.execute(
@@ -1312,10 +1330,17 @@ def test_preflight_refuses_the_real_database_once_a_file_is_in_it(db, monkeypatc
     with pytest.raises(http_smoke.SetupError) as err:
         http_smoke.preflight()
     message = str(err.value)
-    assert file_id in message and "someone-elses-upload.pdf" in message, (
-        "the refusal did not name the file that is actually in the database. Got: " + message
-    )
     assert "--dedicated-database" in message, "the refusal did not name the way out"
+
+    # The planted row is the only NON-TERMINAL one this test creates, and a live row is named
+    # before any settled one, so it is in the sample whatever else the table holds - up to two
+    # other live rows, which the `db` fixture's own database does not leave behind. That ordering
+    # is why this assertion is safe; asserting it against the three OLDEST rows was not, and
+    # naming three finished files while hiding the one that can still cost money behind
+    # "(and N more)" is the failure it also fixes.
+    assert file_id in message and "someone-elses-upload.pdf" in message, (
+        "the refusal did not name the live file that is actually in the database. Got: " + message
+    )
 
     # And the flag really is the way out: the same database, the same row, and the census is not
     # asked. Nothing else about the run changed, so a flag that did nothing would fail here.

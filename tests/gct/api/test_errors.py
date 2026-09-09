@@ -28,11 +28,37 @@ from fastapi.testclient import TestClient
 from pydantic import BaseModel, ConfigDict, field_validator
 
 from gct.api import errors, limits
-from gct.api.errors import _bounded, _json_safe, envelope
-from gct.config import MAX_ERROR_ECHO_CHARS
+from gct.api.errors import (
+    _DETAIL_TRUNCATED,
+    _bounded,
+    _capped_detail,
+    _json_safe,
+    _serialise,
+    envelope,
+)
+from gct.config import MAX_ERROR_DETAIL_BYTES, MAX_ERROR_ECHO_CHARS
 
 ENTRY_KEYS = {"type", "loc", "msg", "input"}
 MARKER = "...[truncated from "
+
+
+def _fake_entry(index: int) -> dict:
+    """One pydantic-shaped `extra_forbidden` entry, of a length that does not depend on `index`
+    (six padded digits), so a list of them has an exactly computable serialised size."""
+    return {
+        "type": "extra_forbidden",
+        "loc": ["body", f"k{index:06d}"],
+        "msg": "Extra inputs are not permitted",
+        "input": 1,
+    }
+
+
+def _amplifier_body(keys: int) -> bytes:
+    """The ticket's own request: a VALID `name`, plus `keys` unexpected keys. Every entry it
+    produces is ~100 bytes, so the list is long rather than any one entry being large - measured
+    on `main` at 5,537 keys: 65,347 bytes in, 547,133 out (issue #137)."""
+    body = {"name": "x", **{f"k{i}": 1 for i in range(keys)}}
+    return json.dumps(body).encode()
 
 
 # --------------------------------------------------------------------------------------------
@@ -314,3 +340,239 @@ def test_a_real_rejected_class_name_is_still_echoed_whole(api) -> None:
     entry = response.json()["error"]["detail"][0]
     assert entry["loc"] == ["body", "name"]
     assert entry["input"] == {"nome": "Philosophy 101"}
+
+
+# --------------------------------------------------------------------------------------------
+# The detail bound (issue #137) - the same three layers, one axis over
+# --------------------------------------------------------------------------------------------
+#
+# `MAX_ERROR_ECHO_CHARS` bounds each VALUE and cannot see this: an `extra="forbid"` model emits
+# one entry per unexpected key, the CLIENT picks how many keys to send, and every string in the
+# result is far under 512 characters. So the bound here is on the SHAPE's total size, and the
+# tests come in the same pairs #134's do - a size assertion is green for code that returns
+# nothing, so each one is asserted beside what must NOT have been touched.
+
+
+def test_a_detail_list_under_the_cap_is_the_same_list_object() -> None:
+    """The direction every size assertion below is blind to. Identity, not equality: an ordinary
+    422 must come back as the list pydantic built, not a copy the cap rebuilt."""
+    detail = [_fake_entry(0), _fake_entry(1)]
+    assert _capped_detail(detail) is detail
+
+
+def test_the_longest_list_that_fits_is_untouched_and_one_entry_more_is_marked() -> None:
+    """The boundary, from both sides, computed rather than guessed: `k` is the largest number of
+    fixed-size entries whose serialised list fits, so `k` must survive whole and `k + 1` must
+    not. A cap that never fires fails the second half; one that fires early fails the first."""
+    size = len(_serialise(_fake_entry(0)))
+    fits = [_fake_entry(i) for i in range((MAX_ERROR_DETAIL_BYTES - 1) // (size + 1))]
+    over = [*fits, _fake_entry(len(fits))]
+
+    assert len(_serialise(fits)) <= MAX_ERROR_DETAIL_BYTES < len(_serialise(over))
+    assert _capped_detail(fits) is fits
+
+    capped = _capped_detail(over)
+    assert capped[-1]["type"] == _DETAIL_TRUNCATED
+    assert len(_serialise(capped)) <= MAX_ERROR_DETAIL_BYTES
+
+
+@pytest.mark.parametrize("count", [200, 1_000, 5_537, 20_000])
+def test_the_cap_holds_and_the_dropped_count_is_exact(count: int) -> None:
+    """The two halves of the contract, at four lengths: serialised `detail` is inside the cap,
+    and `kept + dropped` accounts for every entry pydantic produced - an off-by-one in the count
+    is a lie about how many fields the client got told about."""
+    detail = [_fake_entry(i) for i in range(count)]
+    capped = _capped_detail(detail)
+
+    assert len(_serialise(capped)) <= MAX_ERROR_DETAIL_BYTES
+    marker = capped[-1]
+    assert marker["type"] == _DETAIL_TRUNCATED
+    assert len(capped) - 1 + marker["ctx"]["dropped"] == count
+    assert str(marker["ctx"]["dropped"]) in marker["msg"]
+    assert 0 < len(capped) - 1 < count, "a cut, not a wipe and not a no-op"
+
+
+def test_the_surviving_entries_are_the_head_of_the_list_unmodified() -> None:
+    """The entries are pydantic's own objects, in order, with `loc` intact. A cap that rebuilt or
+    reordered entries - or that trimmed the nested `loc` list to save bytes - would corrupt the
+    field path, which is worse than the amplification this exists to remove."""
+    detail = [_fake_entry(i) for i in range(5_000)]
+    capped = _capped_detail(detail)
+    kept = capped[:-1]
+
+    assert all(kept[i] is detail[i] for i in range(len(kept)))
+    assert [entry["loc"] for entry in kept] == [["body", f"k{i:06d}"] for i in range(len(kept))]
+
+
+def test_an_entry_whose_loc_is_long_is_dropped_whole_rather_than_shortened() -> None:
+    """`loc` is a list INSIDE an entry, and the cap must not reach it. One entry with a 4,000-part
+    path is over the cap on its own: the honest outcome is that it is gone, not that it came back
+    with a shorter path pointing at a field the client never sent."""
+    entry = {
+        "type": "missing",
+        "loc": ["body", *[f"p{i}" for i in range(4_000)]],
+        "msg": "",
+        "input": None,
+    }
+    capped = _capped_detail([entry, _fake_entry(0)])
+
+    assert capped == [_detail_marker_shape(2)]
+    assert len(_serialise(capped)) <= MAX_ERROR_DETAIL_BYTES
+
+
+def _detail_marker_shape(dropped: int) -> dict:
+    """The marker as a test expectation - built here rather than imported from `errors`, so an
+    accidental change to its shape is a failure rather than a rewritten expectation."""
+    return {
+        "type": "gct.detail_truncated",
+        "loc": ["detail"],
+        "msg": (
+            f"{dropped} more validation error(s) are not shown: the detail list exceeded "
+            f"{MAX_ERROR_DETAIL_BYTES} bytes. Send a smaller request to see them all."
+        ),
+        "input": None,
+        "ctx": {"dropped": dropped},
+    }
+
+
+def test_the_marker_carries_the_keys_a_client_iterating_detail_reads(probe: TestClient) -> None:
+    """The shape contract, both hazards at once: it must not MISS a key every entry has (a naive
+    `entry["loc"]` / `entry["msg"]` must work), and it must not IMPERSONATE a pydantic entry (a
+    client switching on `type` or reading a field path must not mistake it for one).
+
+    The key set is compared against a REAL entry rather than against `ENTRY_KEYS` alone, so the
+    claim stays true of whatever pydantic and FastAPI actually emit here - today that is four keys
+    and no `url`, because FastAPI builds the list with `include_url=False`."""
+    real = probe.post("/probe", json={"name": "ok", "k": 1}).json()["error"]["detail"][0]
+    marker = _capped_detail([_fake_entry(i) for i in range(1_000)])[-1]
+
+    assert set(real) == ENTRY_KEYS, "the entry shape this marker has to match"
+    assert set(marker) >= set(real)
+    assert marker["input"] is None
+    assert marker["loc"] == ["detail"], "one element - a body field's path is always two"
+    assert "." in marker["type"], "namespaced, so it cannot collide with a pydantic error type"
+
+
+def test_only_one_marker_is_ever_added_and_it_is_last() -> None:
+    """The contract a client relies on to find it. Re-capping an already-capped list is the
+    adversarial case: the cap must not stack a second marker on top of the first."""
+    once = _capped_detail([_fake_entry(i) for i in range(5_000)])
+    twice = _capped_detail(once)
+
+    assert twice is once, "the capped list is already inside the cap"
+    assert [entry["type"] for entry in once].count(_DETAIL_TRUNCATED) == 1
+    assert once[-1]["type"] == _DETAIL_TRUNCATED
+
+
+def test_the_cap_degrades_to_the_marker_alone_below_the_marker_s_own_size(monkeypatch) -> None:
+    """`MAX_ERROR_DETAIL_BYTES` is PROVISIONAL, so the values that make the guarantee exact are
+    exactly the ones a future retune may change. Two of them: at a cap the marker fits inside,
+    the bound holds; below that the result is the marker alone and exceeds the cap - a list has
+    no equivalent of `_bounded`'s final clamp, because a JSON array cut mid-token is unparseable.
+    Both halves are asserted, since a cap that emitted an EMPTY list would satisfy the size."""
+    detail = [_fake_entry(i) for i in range(50)]
+
+    monkeypatch.setattr(errors, "MAX_ERROR_DETAIL_BYTES", 400)
+    assert len(_serialise(_capped_detail(detail))) <= 400
+
+    monkeypatch.setattr(errors, "MAX_ERROR_DETAIL_BYTES", 10)
+    floor = _capped_detail(detail)
+    assert len(floor) == 1 and floor[0]["ctx"]["dropped"] == 50
+    assert json.loads(_serialise(floor)) == floor, "still valid JSON, over the cap by the marker"
+
+
+# --- the render, over a probe route ---------------------------------------------------------
+
+
+def test_the_issue_s_own_5537_key_request_no_longer_amplifies(probe: TestClient) -> None:
+    """The ticket's measurement: 65,347 bytes in bought 547,133 out. The ceiling asserted here is
+    ABSOLUTE (32 KiB), not derived from the cap, so raising `MAX_ERROR_DETAIL_BYTES` to a number
+    that lets the amplifier back through fails this test rather than moving with it."""
+    body = _amplifier_body(5_537)
+    response = probe.post("/probe", content=body, headers={"content-type": "application/json"})
+
+    assert len(body) == 65_347, "the ticket's request, byte for byte"
+    assert response.status_code == 422
+    assert len(response.content) < 32 * 1024
+    assert len(response.content) < len(body), "no amplification at all, let alone 8.4x"
+
+    detail = response.json()["error"]["detail"]
+    assert len(detail) - 1 + detail[-1]["ctx"]["dropped"] == 5_537
+    assert 100 < len(detail) - 1 < 300, "~160 entries survive at the shipped cap"
+    assert [entry["loc"] for entry in detail[:-1]] == [
+        ["body", f"k{i}"] for i in range(len(detail) - 1)
+    ]
+
+
+def test_an_ordinary_422_is_returned_whole_with_no_marker(probe: TestClient) -> None:
+    """The other direction, at an absolute size a real client actually sends: three unexpected
+    keys come back as three entries, byte for byte, with nothing appended. A cap tuned small
+    enough to catch the amplifier by mangling ordinary 422s fails here."""
+    response = probe.post("/probe", json={"name": "ok", "owner_id": "me", "k": 1, "extra": True})
+
+    assert response.status_code == 422
+    detail = response.json()["error"]["detail"]
+    assert [entry["loc"] for entry in detail] == [
+        ["body", "owner_id"],
+        ["body", "k"],
+        ["body", "extra"],
+    ]
+    assert all(entry["type"] == "extra_forbidden" for entry in detail)
+    assert _DETAIL_TRUNCATED not in _serialise(detail)
+
+
+def test_a_routes_own_list_detail_is_bounded_by_the_same_render(probe: TestClient) -> None:
+    """SCOPE: the bound is on the ENVELOPE, not on the 422. `render` is the one place that sees a
+    finished envelope, so a route that grows a list-valued `detail` later is covered without
+    knowing this exists - which is the reason the issue put it here rather than in `_validation`.
+    """
+    huge = envelope(
+        400, "some_future_kind", "a message", detail=[_fake_entry(i) for i in range(5_000)]
+    )
+    body = json.loads(huge.body)
+
+    assert body["error"]["kind"] == "some_future_kind"
+    assert len(_serialise(body["error"]["detail"])) <= MAX_ERROR_DETAIL_BYTES
+    assert body["error"]["detail"][-1]["type"] == _DETAIL_TRUNCATED
+
+
+def test_a_detail_that_is_not_a_list_is_left_alone() -> None:
+    """The cap matches on SHAPE, so the envelopes whose `detail` is a dict, a string or absent
+    are untouched by it - including the 413 the body bound emits on every route."""
+    for detail in (None, {"limit_bytes": 65_536}, "a sentence"):
+        body = json.loads(envelope(400, "kind", "message", detail=detail).body)
+        assert body["error"]["detail"] == detail
+
+
+# --- acceptance, on the real route ----------------------------------------------------------
+
+
+def test_the_amplifier_is_gone_on_classes(api) -> None:
+    """The ticket measured `POST /classes`; `NewClass` is `extra="forbid"` for its own reasons
+    (`routers/classes.py`), and this pins that the fix reaches the real route and not just the
+    probe."""
+    body = _amplifier_body(5_537)
+    response = api.client.post(
+        "/classes", content=body, headers={"content-type": "application/json"}
+    )
+
+    assert response.status_code == 422
+    assert len(response.content) < 32 * 1024
+    detail = response.json()["error"]["detail"]
+    assert len(detail) - 1 + detail[-1]["ctx"]["dropped"] == 5_537
+    assert detail[0]["loc"] == ["body", "k0"]
+
+
+def test_a_real_rejected_class_body_still_comes_back_whole(api) -> None:
+    """The other direction on the real route: an ordinary typo still gets every entry, and the
+    marker is nowhere in the response."""
+    response = api.client.post("/classes", json={"nome": "Philosophy 101", "ownerId": "me"})
+
+    assert response.status_code == 422
+    detail = response.json()["error"]["detail"]
+    assert [entry["loc"] for entry in detail] == [
+        ["body", "name"],
+        ["body", "nome"],
+        ["body", "ownerId"],
+    ]
+    assert _DETAIL_TRUNCATED not in response.text

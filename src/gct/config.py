@@ -124,6 +124,35 @@ MAX_JSON_BODY_DEPTH = 32
 # costs twelve bytes there, so the true ceiling per string is ~6 KiB and not 512 bytes.
 MAX_ERROR_ECHO_CHARS = 512
 
+# --- The error envelope's detail bound (issue #137) -------------------------------------------
+# The most BYTES of serialised `detail` an error envelope will carry (`gct.api.errors`). Past it
+# the TAIL of the list is dropped and ONE marker entry saying how many went is appended.
+#
+# WHAT HAPPENS TO A SURVIVING ENTRY IS NOT WRITTEN HERE. That contract has two writers on purpose,
+# the way every client-facing contract in this adapter does — `_detail_marker`'s docstring for the
+# code and api.md's error-envelope section for the spec — and this comment was a THIRD, saying
+# "untouched": a word `_bounded` makes false, since it may already have truncated a string inside a
+# kept entry. It outlived the correction of the other two by using a DIFFERENT WORD from the one
+# the census swept for. That is the concrete form of CLAUDE.md's rule: a comment may name what the
+# code must do, and restating the contract adds a writer nobody will sweep.
+#
+# It sits beside the bound above because the two are one mechanism split across two axes, and
+# neither covers the other's: `MAX_ERROR_ECHO_CHARS` bounds each VALUE, this bounds the SHAPE's
+# total size. An `extra="forbid"` model emits one `detail` entry per unexpected key and the CLIENT
+# picks how many keys it sends, so every string can sit far under 512 characters while the list
+# itself is unbounded in length. Measured on `main`: a 65,347-byte body - legal under
+# `MAX_JSON_BODY_BYTES` - bought a 547,133-byte response, ~9x the bytes of each key it echoed
+# (issue #137).
+#
+# PROVISIONAL in the shape `MAX_STAGE_BYTES` is: no ADR owns the NUMBER. What it must admit is
+# every legitimate malformed request this adapter can produce, which is a handful of entries - one
+# per field of the body that was wrong, and the largest request model here has three. At ~100
+# bytes per pydantic entry, 16 KiB admits ~160 of them, so the headroom over anything a client
+# sends by mistake is two orders of magnitude. Counted in bytes rather than in entries because an
+# entry is not a fixed size: a single entry echoing a whole rejected body was measured at 54,333
+# bytes, and a bound on the COUNT would have let that one through untouched.
+MAX_ERROR_DETAIL_BYTES = 16 * 1024
+
 # --- The V1 owner (ADR 0004) ----------------------------------------------------------------
 # V1 is ONE hardcoded user with no auth (ADR 0004; ADR 0002's tenancy clause as amended by it).
 # Every row the API writes and every scoped query it runs carries this owner_id, so V3 turns

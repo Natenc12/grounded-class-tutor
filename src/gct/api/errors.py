@@ -28,13 +28,17 @@ from fastapi.responses import JSONResponse
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from gct.api.schemas import ErrorBody, ErrorEnvelope
-from gct.config import MAX_ERROR_ECHO_CHARS
+from gct.config import MAX_ERROR_DETAIL_BYTES, MAX_ERROR_ECHO_CHARS
 
 # The three kinds this module emits itself. Routes mint their own (a domain token per failure
 # they render); these are the framework-level ones no route raises.
 KIND_VALIDATION = "validation"
 KIND_HTTP = "http"
 KIND_INTERNAL = "internal"
+
+# The `type` of the one entry this module ever ADDS to a `detail` list (`_detail_marker`). A
+# `detail` entry is otherwise always pydantic's; this is the token that says which is which.
+_DETAIL_TRUNCATED = "gct.detail_truncated"
 
 
 class ApiError(Exception):
@@ -131,6 +135,137 @@ def _json_safe(value: Any) -> Any:
     return value
 
 
+def _serialise(value: Any) -> str:
+    """The one writer of this response's JSON settings.
+
+    `render` renders with these and `_capped_detail` MEASURES with them, so the size the cap
+    counts and the size that reaches the wire cannot drift apart. `ensure_ascii=True` also makes
+    a character a byte here - the output is ASCII by construction - so `len()` is the byte count
+    without an encode per entry.
+
+    `allow_nan`, `indent` and `separators` are starlette 1.6.0's own values, restated because
+    overriding `render` means restating all of them. `allow_nan=False` is why a non-finite float
+    is a hazard at all, and it is NOT new here - starlette 1.6.0 already passes it, so a plain
+    `JSONResponse` 500s on `NaN` the same way. `ensure_ascii` is the one deliberate change; see
+    `_SafeJSONResponse` for the surrogate it exists for.
+    """
+    return json.dumps(value, ensure_ascii=True, allow_nan=False, indent=None, separators=(",", ":"))
+
+
+def _detail_marker(dropped: int) -> dict[str, Any]:
+    """The ONE entry `_capped_detail` adds, saying how many it dropped.
+
+    It sits in a list a client iterates, so it carries the four keys EVERY pydantic entry has -
+    `type`, `loc`, `msg`, `input` - and a naive `entry["loc"]` / `entry["msg"]` reads it without
+    special-casing. Four is the floor, NOT the whole set, and the earlier claim that it was is the
+    fourth contract sentence in this docstring to be written from what the code intends and then
+    falsified by running it. Measured over five real 422s from this adapter's own route models:
+    `extra_forbidden`, `missing` and `string_type` carry those four, while `value_error` (a
+    raising `@field_validator`, which the real `AskRequest` has) and `string_too_long` (a
+    `Field(max_length=...)`, which it also has) carry `ctx` as well. So the marker's own five keys
+    are a SUPERSET of the four and a match for the richest real entry - which means the key set
+    distinguishes nothing, and a client must discriminate on `type`, never on shape. The one thing
+    no entry here carries is pydantic's `url`: FastAPI builds the list with `include_url=False`
+    (`fastapi/_compat/v2.py`), and inventing one would add a key no real entry has and point at
+    the docs for a pydantic error type this is not.
+
+    It does NOT impersonate a pydantic entry, which is the opposite hazard:
+      - `type` is namespaced (`gct.` + a name), and no pydantic error type contains a dot - so
+        the discriminator cannot collide with one this or any later pydantic version emits.
+      - `loc` is `["detail"]`: pydantic roots every request-validation loc at a request part
+        (`body`, `query`, ...) and never at `detail`, so no client can read this as something it
+        sent. The ROOT is the discriminator, not the length - a missing or non-object body gets a
+        one-element `["body"]`, so length distinguishes nothing
+        (`test_a_real_entrys_loc_is_never_rooted_at_detail`).
+      - `input` is `null`: there is no rejected value here, and the client sent nothing that
+        corresponds to this entry.
+
+    THE CONTRACT A CLIENT MAY RELY ON: at most one entry per envelope has
+    `type == "gct.detail_truncated"`, it is always the LAST, `ctx.dropped` is how many pydantic
+    entries were removed, and every OTHER entry is pydantic's own entry, byte-for-byte what the
+    SAME entry would be in an envelope that never hit this cap. That is the honest form of the
+    sentence, and "unmodified" was not: `_bounded` may already have truncated a string inside a
+    surviving entry, marked with its true length, exactly as it does when no cap fires (#134). The
+    cap adds no modification of its own - it keeps entries or drops them - which is the claim a
+    client can act on, and `test_a_surviving_entry_is_what_an_uncapped_envelope_would_have_shown`
+    is the one that runs it. The count is machine-readable in `ctx` rather than only in the
+    sentence because `ctx` is pydantic's own key for an entry's structured extras, so reading it
+    needs no parser.
+
+    Unlike `_bounded`'s marker, this one is authentic and a client cannot forge it: that marker
+    lives in a truncated string the client supplied, while `type` is a key the client never
+    controls - pydantic mints it from its own catalogue, and a raising validator becomes
+    `value_error`, never this.
+    """
+    return {
+        "type": _DETAIL_TRUNCATED,
+        "loc": ["detail"],
+        "msg": (
+            f"{dropped} more validation error(s) are not shown: the detail list exceeded "
+            f"{MAX_ERROR_DETAIL_BYTES} bytes. Send a smaller request to see them all."
+        ),
+        "input": None,
+        "ctx": {"dropped": dropped},
+    }
+
+
+def _capped_detail(detail: list[Any]) -> list[Any]:
+    """Bound the whole `detail` LIST at `MAX_ERROR_DETAIL_BYTES`, dropping the tail.
+
+    The bound `_bounded` gives is per-STRING and cannot see this one: an `extra="forbid"` model
+    emits one entry per unexpected key, the client chooses how many keys to send, and every
+    string in the result is far under 512 characters (issue #137 - `config.py` carries what the
+    number must admit). An entry is kept or dropped WHOLE and its contents are never walked, so
+    nothing here can shorten a `loc` - corrupting a field path would be worse than the
+    amplification this exists to remove.
+
+    THE TAIL, not the count: `api.md` documents `detail` as pydantic's per-field list, so cutting
+    entry #161 silently would tell a client its request was fine in a field that was not. The
+    marker is what makes the cut honest, and it is why this cannot be a plain slice.
+
+    THE MARKER'S OWN BYTES ARE THE CIRCULARITY: how many entries fit depends on how long the
+    marker is, which depends on how many were dropped, which depends on how many fit. Broken with
+    a RESERVE that needs no second pass and no fixed point - the marker for `len(detail)` dropped,
+    the largest count that can occur, since a decimal count's length is non-decreasing in the
+    count. So the marker finally written is never longer than the space held for it, and no loop
+    is needed to prove it.
+
+    WHAT THE GUARANTEE IS, at values of the cap a future retune could pick. Serialised `detail`
+    is <= the cap exactly, for every cap at or above `len(_serialise(_detail_marker(len(detail))))
+    + 2` - the marker for this list's own count, plus its brackets. That floor is a FUNCTION OF
+    THE LIST, not a constant, because the marker spells the count out in decimal: measured at the
+    shipped cap, 211 bytes for a single-digit count and 217 at a thousand entries. (It moves with
+    the cap too, by the same few bytes - the marker's sentence names the cap.) A fixed "~200" was
+    wrong in the direction that matters, since a floor quoted too low reads as a guarantee that
+    holds where it does not. Below it the result is the marker alone and
+    EXCEEDS the cap, because a list has no equivalent of `_bounded`'s final clamp: truncating a
+    string mid-character still yields a string, while truncating a JSON array mid-token yields
+    something no client can parse. Exceeding a cap nobody can honour, by the marker, is the honest
+    failure; emitting invalid JSON is not. At 16 KiB the reserve is ~1% of the budget.
+
+    WHEN THE FIRST ENTRY ALONE IS OVER THE CAP, `detail` becomes the marker and nothing else -
+    measured at 54,333 bytes for one entry echoing a whole 65 KB body. Keeping it anyway was
+    REJECTED: it voids the bound in exactly the case the bound exists for, and it re-opens a
+    response the size of the request, which is #134's finding one axis over. Nothing legitimate
+    reaches it - every string is already bounded at `MAX_ERROR_ECHO_CHARS`, so a 16 KiB entry
+    takes a body with hundreds of keys - and a client that hits it is still told the kind, the
+    message and the count, which is the remedy it needs.
+    """
+    if len(_serialise(detail)) <= MAX_ERROR_DETAIL_BYTES:
+        return detail
+    reserve = len(_serialise(_detail_marker(len(detail)))) + 1  # the marker, and its comma
+    budget = MAX_ERROR_DETAIL_BYTES - 2 - reserve  # the two brackets
+    kept: list[Any] = []
+    used = 0
+    for entry in detail:
+        cost = len(_serialise(entry)) + (1 if kept else 0)
+        if used + cost > budget:
+            break
+        used += cost
+        kept.append(entry)
+    return [*kept, _detail_marker(len(detail) - len(kept))]
+
+
 class _SafeJSONResponse(JSONResponse):
     """Starlette's JSONResponse, hardened against the ways rendering an envelope can go wrong.
 
@@ -153,20 +288,23 @@ class _SafeJSONResponse(JSONResponse):
     the only deliberate change below. `jsonable_encoder` in `_validation` does not reach it: that
     fixes a non-serialisable `ctx`, and a surrogate survives it as a perfectly good `str`.
 
-    `allow_nan`, `indent` and `separators` are starlette 1.6.0's own values, restated because
-    overriding `render` means restating all of them. `allow_nan=False` is why a non-finite float
-    is a hazard at all, and it is NOT new here - starlette 1.6.0 already passes it, so a plain
-    `JSONResponse` 500s on `NaN` the same way.
+    The settings live in `_serialise`, which measures as well as renders - see it.
+
+    ONE hazard is a property of neither a leaf nor this render but of the finished ENVELOPE, and
+    it is bounded here for that reason: **a `detail` list the client sized** (issue #137). This
+    is the only place that sees an envelope after every handler and every bound has run, so a
+    route that grows a list-valued `detail` later is caught without knowing this exists.
+    `_capped_detail` carries the mechanism. The ORDER is load-bearing: it runs AFTER `_json_safe`,
+    because that is what bounds each string, and measuring an entry before it would drop entries
+    that fit once bounded - and would measure a `NaN` that `allow_nan=False` is about to raise on.
     """
 
     def render(self, content: Any) -> bytes:
-        return json.dumps(
-            _json_safe(content),
-            ensure_ascii=True,
-            allow_nan=False,
-            indent=None,
-            separators=(",", ":"),
-        ).encode("utf-8")
+        body = _json_safe(content)
+        error = body.get("error") if isinstance(body, dict) else None
+        if isinstance(error, dict) and isinstance(error.get("detail"), list):
+            error["detail"] = _capped_detail(error["detail"])
+        return _serialise(body).encode("utf-8")
 
 
 def envelope(status_code: int, kind: str, message: str, detail: Any | None = None) -> JSONResponse:

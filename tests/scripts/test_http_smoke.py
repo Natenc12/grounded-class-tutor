@@ -1229,12 +1229,16 @@ def test_the_census_ordering_is_the_one_the_constant_names(db):
     half of it is guarded. Those three rewrites change which ROWS come back, so any population with
     distinct keys catches them and this one does, deterministically. **Deleting the `file_id`
     tiebreak is NOT pinned**, and cannot be by any test that only controls the table's CONTENTS.
-    Removing it changes nothing except how a TIE is resolved, Postgres's sort is unstable, and an
-    unstable sort falls out in scan order - physical order, which no portable test owns. `/land`'s
-    falsifier demonstrated the mutant going GREEN by building a heap state (insert/delete churn,
-    then `vacuum`) that put the plant physically ahead of the rest, and a second device - forcing
-    new row versions with a no-op `update` - was built here and killed the mutant on three heap
-    shapes and not on a fourth. Over most tables, including a churned one re-measured in `/land`,
+    Removing it changes nothing except how a TIE is resolved, and a tie's order is decided by two
+    things no test that plants rows owns: where the heap put the rows (scan order, which
+    insert/delete churn and `vacuum` move), and what the Sort then does with equal keys. Measured
+    here on Postgres 17 with rows inserted in reverse: up to six tied rows the sort keeps scan
+    order; from seven it does not (7, 6, 5 scan out as 6, 5, 7, and 400 rows scanning 1..6 sort
+    out as 2..6, 1). `/land`'s falsifier demonstrated the mutant going GREEN by building a heap
+    state (insert/delete churn, then `vacuum`) in which the mutant's sample matched the expected
+    list, and a second device - forcing new row versions with a no-op `update` - was built here
+    and killed the mutant on three heap shapes and not on a fourth. Over most tables, including a
+    churned one re-measured in `/land`,
     this test does kill it; over some it does not, and a device that kills SOMETIMES reads as a pin
     and is worse than none. So neither device is here, and this paragraph is instead.
 

@@ -1214,10 +1214,11 @@ def test_the_census_ordering_is_the_one_the_constant_names(db):
 
     So this plants five rows chosen to make the sample DIFFERENT under each of the three rewrites
     that change which rows come back, and asserts the exact list. `created_at` is set explicitly
-    and far in the past so these are the five oldest whatever else the database holds - the
-    assertion is about this test's rows on any machine, not about a pristine table. `file_id` is
-    set explicitly for the same reason: a random uuid cannot be arranged to disagree with age on
-    purpose, and disagreeing on purpose is the whole point.
+    and far in the past so these are the five oldest on any machine where no row was hand-dated
+    before 2000 - `files.created_at` defaults to `now()`, so the assertion is about this test's
+    rows, not about a pristine table, and a row planted with an older date does break it.
+    `file_id` is set explicitly for the same reason: a random uuid cannot be arranged to disagree
+    with age on purpose, and disagreeing on purpose is the whole point.
 
     What each rewrite returns instead, which is why the plant is shaped this way:
 
@@ -1231,14 +1232,16 @@ def test_the_census_ordering_is_the_one_the_constant_names(db):
     tiebreak is NOT pinned**, and cannot be by any test that only controls the table's CONTENTS.
     Removing it changes nothing except how a TIE is resolved, and a tie's order is decided by two
     things no test that plants rows owns: where the heap put the rows (scan order, which
-    insert/delete churn and `vacuum` move), and what the Sort then does with equal keys. Measured
-    here on Postgres 17 with rows inserted in reverse: up to six tied rows the sort keeps scan
-    order; from seven it does not (7, 6, 5 scan out as 6, 5, 7, and 400 rows scanning 1..6 sort
-    out as 2..6, 1). `/land`'s falsifier demonstrated the mutant going GREEN by building a heap
-    state (insert/delete churn, then `vacuum`) in which the mutant's sample matched the expected
-    list, and a second device - forcing new row versions with a no-op `update` - was built here
-    and killed the mutant on three heap shapes and not on a fourth. Over most tables, including a
-    churned one re-measured in `/land`,
+    insert/delete churn and `vacuum` move), and what the Sort then does with equal keys - which
+    turns on how many rows the Sort is FED, not on how many are tied. Measured here on Postgres 17
+    under the census's `limit 3`: fed six rows or fewer, the Sort keeps a tie in scan order; fed
+    seven or more, it does not (7, 6, 5 scan out as 6, 5, 7, and two tied rows behind five newer
+    ones come out swapped). With no `limit` it kept scan order at every size tried, up to 400.
+    `/land`'s falsifier demonstrated the mutant going GREEN by building a heap state
+    (insert/delete churn, then `vacuum`) in which the plant's five rows scanned ahead of three
+    thousand others - both owners at once - and a second device - forcing new row versions with a
+    no-op `update` - was built here and killed the mutant on three heap shapes and not on a
+    fourth. Over most tables, including a churned one re-measured in `/land`,
     this test does kill it; over some it does not, and a device that kills SOMETIMES reads as a pin
     and is worse than none. So neither device is here, and this paragraph is instead.
 

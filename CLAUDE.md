@@ -77,7 +77,12 @@ a free inheritance from Slice 2; it was measured, and the questions hold. Which 
 what cadence is a cost decision, not a capability one. Unlike the other three it starts its own
 `uvicorn` and its own worker, so nothing needs to be running first — and `--launch-only` proves
 that pair comes up for free, which is the thing to run when the machine, not the product, is in
-doubt.
+doubt. **Both forms first refuse a database they do not own (#138)**, and on a dev machine that
+means the dogfood database `.env` points at: `files` must be empty, so point `DATABASE_URL` at a
+scratch database before either. `--dedicated-database` skips that check and is a statement that
+nothing else writes to the database — true of a scratch one, false of the dogfood one, and using
+it to get past a refusal there re-opens exactly the hazard #138 closed (measured: a foreign job
+reaped and claimed inside a `--launch-only` launch window).
 **The Slice 1 gate (`ask_smoke.py`) cannot run in CI:** its questions are anchored to the dogfood
 corpus by file and page, and that corpus is gitignored. It stays local — `/ship`'s acceptance lane
 and `/land` run it. A green `CI` check still says nothing about any gate, and a green `live-gates`

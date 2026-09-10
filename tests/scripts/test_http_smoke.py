@@ -67,6 +67,7 @@ import pytest
 from fastapi import FastAPI, File, Form, UploadFile
 from fastapi.testclient import TestClient
 
+from gct.db import connect
 from gct.ingest.parse import ParseError, parse_file
 from gct.jobs import worker as worker_lib
 
@@ -212,6 +213,13 @@ def _open_fds() -> int:
 class _FakeConn:
     """Answers `preflight`'s queries in order, and records whether it was closed.
 
+    IN ORDER means `to_regclass` for the schema, then the `files` census (#138), then the
+    claimable-jobs predicate - three on the default path, and TWO under `--dedicated-database`,
+    which skips the census. A stub given too few answers raises `IndexError` out of `execute`
+    rather than mis-answering, so the count is pinned by construction; a stub whose answers are
+    in the WRONG order is what `test_a_database_that_is_both_occupied_and_busy_is_refused_as_
+    occupied` catches.
+
     A stand-in rather than a real connection because the conditions being staged - a half-applied
     schema, a queue with rows in it - are either impossible or destructive to arrange on the
     machine's own database. The SQL those queries actually contain is executed against the real
@@ -220,9 +228,14 @@ class _FakeConn:
 
     def __init__(self, *answers: list):
         self._answers = list(answers)
+        self.statements: list[str] = []
         self.closed = False
 
     def execute(self, _sql, *_args, **_kwargs):
+        # Kept because "which queries ran" is itself a contract here: `--dedicated-database` is
+        # supposed to SKIP the census, and a stub that only answered questions could not tell
+        # that from a census that ran and was ignored.
+        self.statements.append(_sql)
         rows = self._answers.pop(0)
         return SimpleNamespace(fetchone=lambda: rows[0] if rows else None, fetchall=lambda: rows)
 
@@ -929,7 +942,9 @@ def test_preflight_refuses_a_schema_that_is_missing_either_table(
     starts a worker that connects cleanly and then dies on its first claim, minutes later, with
     the failure attributed to the queue rather than to the migration.
     """
-    conn = _FakeConn([regclass], [])
+    # Three answers, though the refusing cases never reach the last two: a missing table raises
+    # inside the same `try`, so the census and the queue predicate are never issued.
+    conn = _FakeConn([regclass], [], [])
     monkeypatch.setattr("gct.db.connect", lambda: conn)
 
     if refused:
@@ -961,7 +976,11 @@ def test_preflight_refuses_a_database_that_already_has_work_the_worker_would_cla
         (5, "job-b", "file-b", "processing"),
         (5, "job-c", "file-c", "queued"),
     ]
-    conn = _FakeConn([("files", "jobs")], waiting)
+    # An EMPTY `files` census, so the run reaches the queue check at all. That pairing cannot
+    # happen against the real schema - `jobs.file_id` references `files(file_id)` - and staging
+    # it here is deliberate: it isolates this predicate from the one in front of it, which is the
+    # only way to tell "the queue check refused" from "the census refused first".
+    conn = _FakeConn([("files", "jobs")], [], waiting)
     monkeypatch.setattr("gct.db.connect", lambda: conn)
 
     with pytest.raises(http_smoke.SetupError) as err:
@@ -976,18 +995,303 @@ def test_preflight_refuses_a_database_that_already_has_work_the_worker_would_cla
     assert "scripts/worker.py" in message, "the remedy was not named"
     assert conn.closed
 
+    # The not-truncated arm, for the reason the census test records: this message counts and
+    # truncates by the same rule, and a one-sided pin says nothing about the boundary.
+    exact = _FakeConn([("files", "jobs")], [], [(1, "job-a", "file-a", "queued")])
+    monkeypatch.setattr("gct.db.connect", lambda: exact)
+    with pytest.raises(http_smoke.SetupError) as err:
+        http_smoke.preflight()
+    assert "more)" not in str(err.value), (
+        "one job was waiting and one was named, so nothing was truncated. Got: " + str(err.value)
+    )
 
-def test_preflight_returns_when_the_queue_is_empty(monkeypatch, stageable):
+
+def test_preflight_returns_when_the_database_holds_nothing_at_all(monkeypatch, stageable):
     """The other direction, which is the one that runs every time the harness is used.
 
     A guard that refused unconditionally would be indistinguishable from a broken script, and a
-    guard only ever tested in its refusing direction is how that ships.
+    guard only ever tested in its refusing direction is how that ships. Both predicates return
+    empty here, because on a real database they are not independent: no file means no job.
     """
-    conn = _FakeConn([("files", "jobs")], [])
+    conn = _FakeConn([("files", "jobs")], [], [])
     monkeypatch.setattr("gct.db.connect", lambda: conn)
 
     http_smoke.preflight()
     assert conn.closed
+
+
+def test_preflight_refuses_a_database_holding_files_this_run_did_not_put_there(
+    monkeypatch, stageable
+):
+    """The #138 guard, in the words an operator has to act on.
+
+    The queue check in front of this one asks what is claimable AT THIS INSTANT, which is a
+    promise about a moment and not about the run. This one asks whether the database holds
+    anything at all, and `jobs.file_id references files(file_id)` is what makes that the stronger
+    question: no file, no job, so nothing can be reaped, released or retried into the launched
+    worker's reach for the whole length of the gate.
+
+    The message is asserted, not just the raise. This refusal blocks a run - including the second
+    run of a smoke that legitimately left its own file behind - so it has to name which rows
+    blocked it and every way out, or the operator's only move is to delete the check.
+    """
+    present = [
+        (4, "file-a", "lecture-01.pdf", "ready"),
+        (4, "file-b", "lecture-02.pdf", "processing"),
+        (4, "file-c", "slides.pptx", "queued"),
+    ]
+    # No claimable jobs at all, which is the whole point: the old guard passes this database and
+    # this one does not. A test staging waiting jobs too could not tell the two apart.
+    conn = _FakeConn([("files", "jobs")], present, [])
+    monkeypatch.setattr("gct.db.connect", lambda: conn)
+
+    with pytest.raises(http_smoke.SetupError) as err:
+        http_smoke.preflight()
+
+    message = str(err.value)
+    assert "file-a" in message and "lecture-01.pdf" in message, "the refusal did not name the rows"
+    assert "1 more" in message, (
+        "four rows were present and three were named; a refusal that quietly truncates leaves an "
+        f"operator clearing what they can see. Got: {message}"
+    )
+    assert "--dedicated-database" in message and "migrate.py" in message, (
+        f"the refusal named neither way out. Got: {message}"
+    )
+    assert conn.closed
+
+    # The other arm of the same clause. `present <= len(sample)` is a condition, and a test that
+    # only ever sees it truncate would be satisfied by a message that always says "and N more" -
+    # over a single row that reads "and 0 more" and sends the operator looking for rows that are
+    # not there. A controlled count is the only place this can be asserted; the `db`-marked test
+    # cannot, because it does not own what else is in the table.
+    exact = _FakeConn([("files", "jobs")], [(1, "file-a", "lecture-01.pdf", "ready")], [])
+    monkeypatch.setattr("gct.db.connect", lambda: exact)
+    with pytest.raises(http_smoke.SetupError) as err:
+        http_smoke.preflight()
+    assert "more)" not in str(err.value), (
+        "one row was present and one was named, so nothing was truncated. Got: " + str(err.value)
+    )
+
+
+def test_the_dedicated_database_flag_skips_the_census_and_nothing_else(monkeypatch, stageable):
+    """Both arms, because a flag is a condition and a one-sided pin says nothing about it.
+
+    The same non-empty database twice. With the flag the census is not consulted, so the run is
+    stageable; with the flag AND a job waiting, the queue check still refuses - the declaration is
+    the operator's word about who ELSE writes here, not a licence to run over live work.
+    """
+    # TWO answers, not three: under the flag the census is never issued, so a third would sit
+    # unconsumed and the queue predicate would read the census's rows. That is asserted below
+    # rather than left to the arithmetic.
+    passes = _FakeConn([("files", "jobs")], [])
+    monkeypatch.setattr("gct.db.connect", lambda: passes)
+    http_smoke.preflight(dedicated_database=True)
+    assert passes.closed
+    assert not any("from files" in sql for sql in passes.statements), (
+        "the flag was supposed to skip the census, but `files` was queried anyway: "
+        f"{passes.statements}"
+    )
+
+    waiting = [(1, "job-a", "file-a", "queued")]
+    refuses = _FakeConn([("files", "jobs")], waiting)
+    monkeypatch.setattr("gct.db.connect", lambda: refuses)
+    with pytest.raises(http_smoke.SetupError) as err:
+        http_smoke.preflight(dedicated_database=True)
+    assert "job-a" in str(err.value), (
+        "the flag silenced the queue check too, which it must not: " + str(err.value)
+    )
+
+
+def test_a_database_that_is_both_occupied_and_busy_is_refused_as_occupied(monkeypatch, stageable):
+    """Which refusal an operator sees when both conditions hold, and the order is deliberate.
+
+    `files` holding rows is the structural fact - it is true for the whole run - while a waiting
+    job is a symptom that may not be showing yet. Naming the symptom first sends the operator to
+    drain a queue, after which the run is refused a second time for the reason that was true all
+    along.
+    """
+    conn = _FakeConn(
+        [("files", "jobs")],
+        [(1, "file-a", "lecture-01.pdf", "queued")],
+        [(1, "job-a", "file-a", "queued")],
+    )
+    monkeypatch.setattr("gct.db.connect", lambda: conn)
+
+    with pytest.raises(http_smoke.SetupError) as err:
+        http_smoke.preflight()
+    assert "not this run's to use" in str(err.value), (
+        "the queue check refused first, so the operator is told to drain rather than to move: "
+        + str(err.value)
+    )
+
+
+def test_the_census_is_on_by_default_and_only_the_flag_turns_it_off(monkeypatch, stub_children):
+    """`main` hands the operator's answer to `preflight`, and the default answer is "ask".
+
+    Two failures this catches, and they are opposite. A default of `True` disables the guard for
+    every caller who never heard of the flag - which is every existing caller, including the
+    Slice 3 gate. A `main` that calls `preflight()` with no argument at all makes the flag
+    unreachable: it would parse, print in `--help`, and do nothing.
+    """
+    assert http_smoke._parse([]).dedicated_database is False, (
+        "the default declares the database dedicated, which disables the #138 guard for every "
+        "caller who does not pass the flag"
+    )
+
+    seen: list[bool] = []
+    monkeypatch.setattr(
+        http_smoke, "preflight", lambda *, dedicated_database: seen.append(dedicated_database)
+    )
+    monkeypatch.setattr(http_smoke.signal, "signal", lambda *_: None)
+
+    http_smoke.main(["--launch-only"])
+    http_smoke.main(["--launch-only", "--dedicated-database"])
+    assert seen == [False, True], (
+        f"`main` did not pass the operator's own answer through to the check. Got: {seen}"
+    )
+
+
+def test_the_files_census_counts_what_the_real_table_holds(db):
+    """The census SQL against the real schema, in the two states the stubs cannot check.
+
+    The stubbed tests above would ratify a typo in `filename` or `file_id` forever - the fake
+    connection answers whatever it was handed, whatever the statement said. And the state that
+    matters for #138 is one no stub can represent honestly: a `processing` file whose job holds
+    an UNEXPIRED lease, which the claimable predicate scores at zero and this one at one.
+    """
+    conn, owner_id, class_id = db
+    before, _ = http_smoke.existing_files(conn)
+
+    file_id = conn.execute(
+        "insert into files (owner_id, class_id, filename, status) "
+        "values (%s, %s::uuid, %s, 'processing') returning file_id::text",
+        (owner_id, class_id, "lecture-01.pdf"),
+    ).fetchone()[0]
+    conn.execute(
+        "insert into jobs (file_id, owner_id, class_id, state, leased_until) "
+        "values (%s::uuid, %s, %s::uuid, 'processing', now() + interval '1 hour')",
+        (file_id, owner_id, class_id),
+    )
+
+    present, sample = http_smoke.existing_files(conn)
+    waiting, _ = http_smoke.claimable_jobs(conn)
+
+    assert present == before + 1, f"the census missed the row it was pointed at (got {present})"
+    assert waiting == 0, (
+        "the claimable predicate saw this row, so the two checks are not asking different "
+        "questions and #138's guard adds nothing"
+    )
+
+    # WHAT THE SAMPLE IS COMPARED AGAINST, and it is not the planted row. The census returns three
+    # of N, so "the row I just inserted is in there" is only true when the table is nearly empty -
+    # green on a fresh lane and on CI, red on a dev machine where `.env` names the dogfood
+    # database, and the failure reads as a bug in the SQL rather than as a busy table. The
+    # expectation is therefore the ordering rule written out INDEPENDENTLY here, which holds
+    # whatever the table contains.
+    #
+    # The DEVICE is right and its population is not: over a table this test leaves holding one
+    # planted row, every candidate ordering agrees, so a rewritten `order by` passes here. That is
+    # what `test_the_census_ordering_is_the_one_the_constant_names` is for - it plants a table
+    # whose rows disagree under each rewrite. Both are needed: this one proves the rule is run
+    # against the real schema, that one proves the rule is the rule.
+    expected = conn.execute(
+        "select file_id::text, filename, status from files order by created_at, file_id limit 3"
+    ).fetchall()
+    assert sample == [tuple(row) for row in expected], (
+        f"the census did not return the three rows its ordering rule names. got {sample}, "
+        f"expected {expected}"
+    )
+
+
+def test_the_census_ordering_is_the_one_the_constant_names(db):
+    """`order by created_at, file_id`, over a table whose rows DISAGREE under three rewrites of it.
+
+    The test above compares the census against the ordering rule written out independently, which
+    is the right device and cannot fire over the table it plants: with one row in `files`, every
+    candidate ordering returns that row, so dropping the clause, reversing it, or sorting by
+    something else all stay green. Four such rewrites were mutated in this ticket's verification
+    round and all four survived the whole suite. The population, not the device, was the gap.
+
+    So this plants five rows chosen to make the sample DIFFERENT under each of the three rewrites
+    that change which rows come back, and asserts the exact list. `created_at` is set explicitly
+    and far in the past so these are the five oldest on any machine where no row was hand-dated
+    before 2000 - `files.created_at` defaults to `now()`, so the assertion is about this test's
+    rows, not about a pristine table, and a row planted with an older date does break it.
+    `file_id` is set explicitly for the same reason: a random uuid cannot be arranged to disagree
+    with age on purpose, and disagreeing on purpose is the whole point.
+
+    What each rewrite returns instead, which is why the plant is shaped this way:
+
+      - `order by file_id` (the clause deleted)        -> [0002, 0003, 0004], drops the oldest row
+      - `order by (status in ('ready','failed')), ...` -> [0002, 0003, 0004], the dropped bucket
+      - `order by created_at desc, file_id`            -> [0005, 0004, 0002], the newest three
+
+    WHAT THIS TEST DOES NOT PIN, stated because a reader deleting a clause deserves to know which
+    half of it is guarded. Those three rewrites change which ROWS come back, so any population with
+    distinct keys catches them and this one does, deterministically. **Deleting the `file_id`
+    tiebreak is NOT pinned**, and cannot be by any test that only controls the table's CONTENTS.
+    Removing it changes nothing except how a TIE is resolved, and a tie's order is decided by two
+    things no test that plants rows owns: where the heap put the rows (scan order, which
+    insert/delete churn and `vacuum` move), and what the Sort then does with equal keys - which
+    turns on how many rows the Sort is FED, not on how many are tied. Measured here on Postgres 17
+    under the census's `limit 3`: fed six rows or fewer, the Sort keeps a tie in scan order; fed
+    seven or more, it does not (7, 6, 5 scan out as 6, 5, 7, and two tied rows behind five newer
+    ones come out swapped). With no `limit` it kept scan order at every size tried, up to 400.
+    `/land`'s falsifier demonstrated the mutant going GREEN by building a heap state
+    (insert/delete churn, then `vacuum`) in which the plant's five rows scanned ahead of three
+    thousand others - both owners at once - and a second device - forcing new row versions with a
+    no-op `update` - was built here and killed the mutant on three heap shapes and not on a
+    fourth. Over most tables, including a churned one re-measured in `/land`,
+    this test does kill it; over some it does not, and a device that kills SOMETIMES reads as a pin
+    and is worse than none. So neither device is here, and this paragraph is instead.
+
+    That is a proportionate gap rather than a hole. The tiebreak buys DETERMINISM of a sample that
+    is illustration and not triage (see the constant's comment in `scripts/http_smoke.py`), so
+    losing it silently costs an operator nothing they act on - unlike the three rewrites above,
+    which change which rows are named at all.
+    """
+    conn, owner_id, class_id = db
+    plant = [
+        # (file_id suffix, created_at, status)
+        ("0009", "2000-01-01", "ready"),
+        ("0003", "2000-01-02", "processing"),
+        ("0002", "2000-01-02", "processing"),
+        ("0004", "2000-01-03", "queued"),
+        ("0005", "2000-01-04", "processing"),
+    ]
+    for suffix, created_at, status in plant:
+        conn.execute(
+            "insert into files (file_id, owner_id, class_id, filename, status, created_at) "
+            "values (%s::uuid, %s, %s::uuid, %s, %s, %s::timestamptz)",
+            (
+                f"00000000-0000-4000-8000-00000000{suffix}",
+                owner_id,
+                class_id,
+                f"plant-{suffix}.pdf",
+                status,
+                created_at,
+            ),
+        )
+
+    present, sample = http_smoke.existing_files(conn)
+
+    expected = [
+        ("00000000-0000-4000-8000-000000000009", "plant-0009.pdf", "ready"),
+        ("00000000-0000-4000-8000-000000000002", "plant-0002.pdf", "processing"),
+        ("00000000-0000-4000-8000-000000000003", "plant-0003.pdf", "processing"),
+    ]
+    assert sample == expected, (
+        "the census did not return the three rows `order by created_at, file_id` names over a "
+        f"table built to distinguish the orderings. got {sample}, expected {expected}"
+    )
+    assert present >= len(plant), (
+        f"the census counted {present} rows over a table this test put {len(plant)} into"
+    )
+
+    # And the count is the verdict, not the sample: the refusal fires on a table whose three named
+    # rows are all `ready`, because ANY non-empty `files` is refused. The docstring says the sample
+    # is illustration; this is that sentence executed.
+    assert present > len(sample), "the plant no longer exceeds the sample, so nothing is truncated"
 
 
 def test_the_claimable_query_counts_exactly_the_rows_the_real_worker_would_take(db):
@@ -1054,11 +1358,93 @@ def test_preflight_refuses_the_real_database_once_a_job_is_waiting_in_it(db, mon
     ).fetchone()[0]
     conn.commit()
 
+    # `dedicated_database=True` is what makes this test about the QUEUE predicate. Without it the
+    # census in front refuses first - the file this test had to insert to satisfy the foreign key
+    # is itself a row the harness now declines to run over - and the assertion below would be
+    # ratifying the wrong refusal.
+    with pytest.raises(http_smoke.SetupError) as err:
+        http_smoke.preflight(dedicated_database=True)
+    message = str(err.value)
+    # Named against the predicate's OWN ordering rule, written out independently, for the reason
+    # `test_the_files_census_counts_what_the_real_table_holds` records: "the row I just inserted"
+    # is only in the sample when the table is nearly empty. This predicate predates #138 and has
+    # no tiebreak, so the comparison is by membership rather than by sequence.
+    named = [
+        row[0]
+        for row in conn.execute(
+            "select job_id::text from jobs where state = 'queued' "
+            "or (state = 'processing' and leased_until < now()) order by created_at limit 3"
+        ).fetchall()
+    ]
+    assert job_id in named, "the plant is not in the window this predicate samples; test is stale"
+    assert job_id in message, (
+        "the refusal did not name the job that is actually in the database. Got: " + message
+    )
+
+
+def test_preflight_refuses_the_real_database_once_a_file_is_in_it(db, monkeypatch):
+    """The #138 guard, end to end, over a real row and a SECOND connection.
+
+    The companion to the test above and the one that matters for #138, because the row it plants
+    is invisible to the queue predicate BY CONSTRUCTION: `processing` with a lease that has not
+    expired matches neither `state = 'queued'` nor `leased_until < now()`. On `main` at `b13e147`
+    that state passed `preflight` clean and the launched worker then reaped the lapsed lease and
+    claimed the file. Here the census sees it, because the census asks a question about the
+    database rather than about the queue.
+
+    `preflight` opens its own connection through `gct.db.connect`, so the row this test commits is
+    read back by a connection that is not the one that wrote it - the refusal is proof the work
+    was published, not just computed.
+    """
+    conn, owner_id, class_id = db
+    monkeypatch.setattr("gct.api.app.require_openai_key", lambda: None)
+
+    # `created_at` is set explicitly and far in the past, so this row is the OLDEST in `files`
+    # whatever else the database holds and the census's `order by created_at, file_id` therefore
+    # names it. Without that this assertion is a bet on a nearly-empty table: green on a fresh
+    # lane and on CI, red on a dev machine where `.env` names the dogfood database, failing as
+    # though the SQL were wrong. The sample is illustration and not triage (see the constant's
+    # comment in `scripts/http_smoke.py`), so a test that wants a SPECIFIC row named has to put
+    # it where the ordering will find it rather than assume the ordering favours it.
+    file_id = conn.execute(
+        "insert into files (owner_id, class_id, filename, status, created_at) "
+        "values (%s, %s::uuid, %s, 'processing', '2000-01-01'::timestamptz) "
+        "returning file_id::text",
+        (owner_id, class_id, "someone-elses-upload.pdf"),
+    ).fetchone()[0]
+    conn.execute(
+        "insert into jobs (file_id, owner_id, class_id, state, leased_until) "
+        "values (%s::uuid, %s, %s::uuid, 'processing', now() + interval '1 hour')",
+        (file_id, owner_id, class_id),
+    )
+    conn.commit()
+
+    # The predicate that used to be the whole guard, over exactly this row, on its own connection:
+    # it sees nothing. That is the defect, asserted rather than described.
+    with connect() as other:
+        waiting, _ = http_smoke.claimable_jobs(other)
+    assert waiting == 0, (
+        "the planted lease was already expired, so this test is no longer staging the state #138 "
+        f"is about. Got waiting={waiting}"
+    )
+
     with pytest.raises(http_smoke.SetupError) as err:
         http_smoke.preflight()
-    assert job_id in str(err.value), (
-        "the refusal did not name the job that is actually in the database. Got: " + str(err.value)
+    message = str(err.value)
+    assert "--dedicated-database" in message, "the refusal did not name the flag at all"
+
+    # The planted row is the oldest in `files` by construction, so `order by created_at, file_id`
+    # names it first and this assertion holds on a busy table as well as an empty one.
+    assert file_id in message and "someone-elses-upload.pdf" in message, (
+        "the refusal did not name the file that is actually in the database. Got: " + message
     )
+
+    # And the flag SKIPS THE CENSUS - which is all it does, and deliberately not the same sentence
+    # as "the flag is the way out of this refusal". `preflight`'s docstring says the opposite about
+    # this exact database: a row somebody else put here is the case where declaring the database
+    # dedicated buys back the hazard #138 closed. What is asserted is the mechanism (same database,
+    # same row, census not asked, so a flag that did nothing would fail here), never a licence.
+    http_smoke.preflight(dedicated_database=True)
 
 
 def test_the_script_itself_exits_2_when_the_machine_is_not_stageable():
@@ -1246,7 +1632,7 @@ def test_main_reports_an_unstageable_machine_as_setup_and_a_failed_launch_as_fai
     it as the smoke failing sends someone to debug the wrong thing.
     """
 
-    def _refuse():
+    def _refuse(**_):
         raise http_smoke.SetupError("no Postgres here")
 
     monkeypatch.setattr(http_smoke, "preflight", _refuse)
@@ -1257,7 +1643,7 @@ def test_main_reports_an_unstageable_machine_as_setup_and_a_failed_launch_as_fai
     assert setup_code != 0, "a machine that could not be staged reported success to its caller"
     assert "SETUP" in capsys.readouterr().err
 
-    monkeypatch.setattr(http_smoke, "preflight", lambda: None)
+    monkeypatch.setattr(http_smoke, "preflight", lambda **_: None)
 
     @contextmanager
     def _fails_to_launch(**_kwargs):
@@ -1279,7 +1665,7 @@ def test_an_interrupted_run_is_a_failure_and_never_a_pass(monkeypatch, restore_s
     same as the run having succeeded: exiting 0 here would report a smoke that never finished as
     a green gate, to a CI step or an operator who reads the number rather than the sentence.
     """
-    monkeypatch.setattr(http_smoke, "preflight", lambda: None)
+    monkeypatch.setattr(http_smoke, "preflight", lambda **_: None)
 
     @contextmanager
     def _interrupted(**_kwargs):
@@ -1304,7 +1690,7 @@ def test_main_installs_the_handler_that_makes_a_killed_harness_tear_its_children
     interpreter actually installed, so the real `signal.signal` runs here and the fixture hands
     the disposition back.
     """
-    monkeypatch.setattr(http_smoke, "preflight", lambda: None)
+    monkeypatch.setattr(http_smoke, "preflight", lambda **_: None)
     assert http_smoke.main(["--launch-only"]) == http_smoke.EXIT_OK
     assert signal.getsignal(signal.SIGTERM) is http_smoke._interrupt
 
@@ -1317,7 +1703,7 @@ def test_main_reports_a_child_that_stopped_any_other_way_as_a_failure(monkeypatc
     as killed-by-SIGTERM. Anything else means something went wrong on the way out, and a smoke
     that printed PASS over it would be reporting a teardown it did not get.
     """
-    monkeypatch.setattr(http_smoke, "preflight", lambda: None)
+    monkeypatch.setattr(http_smoke, "preflight", lambda **_: None)
     sock = http_smoke._reserve_listener()
     port = sock.getsockname()[1]
     sock.close()
@@ -2172,7 +2558,7 @@ def test_launch_only_uploads_nothing_asks_nothing_and_says_it_is_not_the_gate(
     `--launch-only` ran none of it, rather than a reading of a flag. What it must not do is print
     a PASS a tired operator files as the exit gate.
     """
-    monkeypatch.setattr(http_smoke, "preflight", lambda: None)
+    monkeypatch.setattr(http_smoke, "preflight", lambda **_: None)
 
     assert http_smoke.main(["--launch-only"]) == http_smoke.EXIT_OK
 
@@ -2311,7 +2697,7 @@ def test_a_fault_the_ceremony_found_is_what_the_run_exits_with(
     `run_gate` was CALLED is asserted too - a `main` that skipped it would report a green gate
     having uploaded nothing and asked nothing.
     """
-    monkeypatch.setattr(http_smoke, "preflight", lambda: None)
+    monkeypatch.setattr(http_smoke, "preflight", lambda **_: None)
     argv = ["--corpus", str(corpus), "--question", "what is residence time?"]
     called: list[str] = []
 
@@ -2342,7 +2728,7 @@ def test_a_ceremony_failure_is_a_failure_and_never_a_setup_verdict(
     line at all. Both are one edit from the shipped code and neither is visible to a run with
     `--launch-only`, which never enters the ceremony that raises.
     """
-    monkeypatch.setattr(http_smoke, "preflight", lambda: None)
+    monkeypatch.setattr(http_smoke, "preflight", lambda **_: None)
 
     def _stops_short(*_args, **_kwargs):
         raise http_smoke.GateError("POST /classes did not create the class: 500 boom")

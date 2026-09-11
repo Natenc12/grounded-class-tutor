@@ -407,6 +407,34 @@ describe('the shared reply parser, on every route', () => {
     },
   );
 
+  it('writes exactly these words for the failures it names itself', async () => {
+    const hint = ' If the file is large, it may be over the upload size limit: try a smaller file.';
+    const words: [() => Response | Promise<Response>, string][] = [
+      [
+        () => Promise.reject(new TypeError('fetch failed')),
+        "The connection to the tutor's server failed before it answered. Check that the server is running and that you are online, then try again.",
+      ],
+      [
+        () => new Response('', { status: 502 }),
+        "The tutor's API did not answer; a server in front of it replied instead (HTTP 502). Check that the API is running, then try again.",
+      ],
+      [
+        () => new Response('<html></html>', { status: 200 }),
+        "The server's reply (HTTP 200) is not one this page understands, so it cannot be shown. Reload the page and try again; if it keeps happening, the page and the API may be out of step.",
+      ],
+      [
+        () => new Response('nope', { status: 404 }),
+        "The server's reply (HTTP 404) is not one this page understands, so it cannot be shown. Reload the page and try again; if it keeps happening, the page and the API may be out of step.",
+      ],
+    ];
+    for (const [respond, message] of words) {
+      const create = expectFailure(await client(respond).api.createClass('x'));
+      expect(create.error.message).toBe(message);
+      const upload = expectFailure(await client(respond).api.uploadFile(CLASS_ID, PDF()));
+      expect(upload.error.message).toBe(message + hint);
+    }
+  });
+
   it('keeps the status of a reply it cannot read', async () => {
     const result = expectFailure(
       await client(() => new Response('nope', { status: 404 })).api.createClass('x'),

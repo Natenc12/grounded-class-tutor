@@ -196,14 +196,19 @@ function failure(status: number | null, kind: string, message: string): ApiResul
   return { ok: false, status, error: { kind, message, detail: null } };
 }
 
-// `value` as one URL path segment, or null when no spelling of it survives as one. `''` would
-// leave `/files/`, a trailing slash. `.` and `..` are dot segments the URL parser removes before
-// the request goes out (`/files/..` is `/`), and percent-encoding them does not help: `%2e` is a
-// dot segment too. `encodeURIComponent` leaves dots alone and encodes every `%`, so `.` and `..`
-// are the only dot segments it can produce. A lone surrogate has no UTF-8 encoding, and
-// `encodeURIComponent` throws on it. Anything else - whitespace included - is sent, and the API's
-// own `bad_file_id` is the answer about whether it is an id.
+// `value` as one URL path segment, or null when no spelling of it reaches the API as one. `''`
+// would leave `/files/`, a trailing slash. `.` and `..` are dot segments the URL parser removes
+// before the request goes out (`/files/..` is `/`), and percent-encoding them does not help: `%2e`
+// is a dot segment too. `encodeURIComponent` leaves dots alone and encodes every `%`, so `.` and
+// `..` are the only dot segments it can produce. A lone surrogate has no UTF-8 encoding, and
+// `encodeURIComponent` throws on it. A `/` is encoded `%2F`, but uvicorn decodes the path before
+// Starlette routes it, so on arrival it splits the id: measured, `a/b` gets the router's 404, and
+// `../` gets a 307 to `/files/..`, which fetch follows to `/`. Anything else is sent, and the
+// API's own `bad_file_id` is the answer about whether it is an id.
 function pathSegment(value: string): string | null {
+  if (value.includes('/')) {
+    return null;
+  }
   let encoded: string;
   try {
     encoded = encodeURIComponent(value);

@@ -233,8 +233,8 @@ describe('GET /files/{file_id}', () => {
 
   it('percent-encodes the id, so it cannot change the path', async () => {
     const { api, calls } = client(() => envelope(400, 'bad_file_id', 'not a uuid'));
-    await api.getFileStatus('a/b?c#d e');
-    expect(only(calls).url).toBe('/files/a%2Fb%3Fc%23d%20e');
+    await api.getFileStatus('a?c#d e;f');
+    expect(only(calls).url).toBe('/files/a%3Fc%23d%20e%3Bf');
   });
 
   it.each([
@@ -242,6 +242,13 @@ describe('GET /files/{file_id}', () => {
     ['".", which the URL parser turns into /files/', '.'],
     ['"..", which the URL parser turns into /', '..'],
     ['a lone surrogate, which encodeURIComponent throws on', '\ud800'],
+    // uvicorn decodes %2F before routing, so any "/" splits the id on arrival.
+    ['"a/b", which the API routes as two segments', 'a/b'],
+    ['"../", which the API redirects to /files/.. and fetch then follows to /', '../'],
+    ['"./", which the API redirects to /files', './'],
+    ['a lone "/"', '/'],
+    ['"//"', '//'],
+    ['a uuid with "/" appended', '00000000-0000-4000-8000-000000000000/'],
   ])('resolves - never throws - and sends nothing for an id that is %s', async (_, id) => {
     const { api, calls } = client(() => json(200, {}));
     const result = expectFailure(await api.getFileStatus(id));
@@ -260,6 +267,12 @@ describe('GET /files/{file_id}', () => {
     ['.x', '/files/.x'],
     [' ', '/files/%20'],
     ['%2e', '/files/%252e'],
+    ['a%2Fb', '/files/a%252Fb'],
+    ['a\\b', '/files/a%5Cb'],
+    ['a;b', '/files/a%3Bb'],
+    ['a?b', '/files/a%3Fb'],
+    ['a#b', '/files/a%23b'],
+    ['a\u0000b', '/files/a%00b'],
     ['\ud83d\ude00', '/files/%F0%9F%98%80'],
   ])('sends the id %j, whose path is still one segment: %s', async (id, path) => {
     // Whitespace is SENT: the API's own 400 bad_file_id is the answer about whether it is an id.

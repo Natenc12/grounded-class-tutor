@@ -145,7 +145,8 @@ async function request<T>(
   try {
     text = await response.text();
   } catch {
-    return failure(response.status, CLIENT_KINDS.network, networkMessage(hint));
+    // No size hint after a 2xx: the status line already said the body was accepted.
+    return failure(response.status, CLIENT_KINDS.network, networkMessage(response.ok ? '' : hint));
   }
   const body = parseJson(text);
 

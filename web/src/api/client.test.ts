@@ -440,7 +440,13 @@ describe('the shared reply parser, on every route', () => {
         "The connection to the tutor's server failed before an answer arrived. If the server is not running or you are offline, fix that and try again.";
       const words: [() => Response | Promise<Response>, string][] = [
         [() => Promise.reject(new TypeError('fetch failed')), network + hint],
+        // A body that breaks off: after a non-2xx status the body may have been refused, so the
+        // hint stays; after a 2xx the status line already said it was accepted, so it goes.
         [brokenBody(502), network + hint],
+        [brokenBody(413), network + hint],
+        [brokenBody(200), network],
+        [brokenBody(201), network],
+        [brokenBody(202), network],
         [
           () => new Response('', { status: 502 }),
           "A server in front of the tutor's API replied instead of the API (HTTP 502). If the API is not running, start it and try again." +

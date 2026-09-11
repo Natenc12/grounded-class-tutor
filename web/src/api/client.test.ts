@@ -138,6 +138,15 @@ describe('construction', () => {
       expect(kind).toMatch(/^client\.[a-z_]+$/);
     }
   });
+
+  it('mints exactly these kind strings - the literals a surface will switch on', () => {
+    expect(CLIENT_KINDS).toStrictEqual({
+      network: 'client.network_error',
+      apiUnreachable: 'client.api_unreachable',
+      badResponse: 'client.bad_response',
+      unsendableFileId: 'client.unsendable_file_id',
+    });
+  });
 });
 
 describe('POST /classes', () => {

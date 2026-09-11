@@ -1,7 +1,8 @@
 import { createServer as createHttpServer, type IncomingMessage, type Server } from 'node:http';
 import type { AddressInfo } from 'node:net';
+import { fileURLToPath } from 'node:url';
 
-import { createServer, type ViteDevServer } from 'vite';
+import { createServer, loadConfigFromFile, type ViteDevServer } from 'vite';
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
 
 import {
@@ -107,10 +108,21 @@ describe('apiProxy', () => {
       vi.unstubAllEnvs();
     });
 
-    // The config is re-imported after each stub: it reads the environment when it is evaluated.
+    // Loaded by Vite's own config loader - what `vite` and `npm run dev` run - not imported
+    // through Vitest, whose module graph gives the config an `import.meta.env` that mirrors the
+    // process environment. Vite's loader does not, so a config that read `import.meta.env` would
+    // pass an import-based test and still ignore GCT_API_TARGET under `vite`.
     const loadConfig = async () => {
-      vi.resetModules();
-      return (await import('./vite.config.ts')).default;
+      const loaded = await loadConfigFromFile(
+        { command: 'serve', mode: 'development' },
+        fileURLToPath(new URL('./vite.config.ts', import.meta.url)),
+        undefined,
+        'silent',
+      );
+      if (loaded === null) {
+        throw new Error('Vite found no config at web/vite.config.ts');
+      }
+      return loaded.config;
     };
 
     it('forwards to GCT_API_TARGET from the environment when it is set', async () => {

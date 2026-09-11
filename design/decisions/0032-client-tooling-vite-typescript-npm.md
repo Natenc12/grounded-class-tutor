@@ -1,4 +1,4 @@
-# 0033. V1 client tooling — Vite, TypeScript, npm; the dev server proxies the API
+# 0032. V1 client tooling — Vite, TypeScript, npm; the dev server proxies the API
 
 - **Date:** 2026-09-11
 - **Status:** accepted (decided by Nate, 2026-09-11; type generation, the proxy's shape and the

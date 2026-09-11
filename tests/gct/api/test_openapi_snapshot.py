@@ -1,4 +1,4 @@
-"""The web client's committed OpenAPI snapshot is the API's live schema (issue #140, ADR 0033).
+"""The web client's committed OpenAPI snapshot is the API's live schema (issue #140, ADR 0032).
 
 `web/openapi.json` is what the client's TypeScript types are generated from, so it is a derived
 copy of the routers' pydantic models - and a copy with no pin drifts. This file is the half of

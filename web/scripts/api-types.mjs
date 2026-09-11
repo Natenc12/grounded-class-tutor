@@ -1,5 +1,5 @@
 // The TypeScript types for the API's published schema, and the one writer of how they are made
-// (ADR 0033). `src/api/schema.gen.ts` is this module's output for `openapi.json`, the committed
+// (ADR 0032). `src/api/schema.gen.ts` is this module's output for `openapi.json`, the committed
 // snapshot `scripts/openapi_snapshot.py` writes from the live app.
 //
 // Two callers: `scripts/refresh-api-types.mjs` (run by `npm run api:refresh`) writes the file,

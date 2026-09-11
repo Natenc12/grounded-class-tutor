@@ -13,7 +13,7 @@ import {
 } from './dev-proxy.ts';
 
 describe('apiTarget', () => {
-  it('reads the variable ADR 0033 documents, by that name', () => {
+  it('reads the variable ADR 0032 documents, by that name', () => {
     expect(API_TARGET_ENV).toBe('GCT_API_TARGET');
   });
 

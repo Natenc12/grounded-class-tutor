@@ -1,4 +1,4 @@
-"""The committed snapshot of the API's published OpenAPI schema, and its one writer (ADR 0033).
+"""The committed snapshot of the API's published OpenAPI schema, and its one writer (ADR 0032).
 
 `web/openapi.json` is what the client's TypeScript types are generated from
 (`web/scripts/api-types.mjs`). It is `app.openapi()` with the prose taken out: FastAPI copies

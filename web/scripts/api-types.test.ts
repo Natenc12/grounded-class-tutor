@@ -1,4 +1,4 @@
-// The generated half of the drift pin (ADR 0033): the committed TypeScript is exactly what the
+// The generated half of the drift pin (ADR 0032): the committed TypeScript is exactly what the
 // generator makes from the committed snapshot. The other half - the snapshot vs the live API -
 // is tests/gct/api/test_openapi_snapshot.py, which CI runs.
 import { execFile } from 'node:child_process';

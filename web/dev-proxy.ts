@@ -1,4 +1,4 @@
-// The dev-time origin (ADR 0033): the Vite dev server forwards the API's own paths to uvicorn, so
+// The dev-time origin (ADR 0032): the Vite dev server forwards the API's own paths to uvicorn, so
 // the page and the API share one origin and `src/gct/api` needs no CORS middleware.
 import type { ProxyOptions } from 'vite';
 

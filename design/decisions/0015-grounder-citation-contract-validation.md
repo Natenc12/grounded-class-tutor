@@ -73,10 +73,44 @@ confusable — this is a hard requirement on the answer surface, extending N11.
   refusal (degenerate — empty prose), and **integrity-flagged** (validation failed after retry).
   The integrity-flagged state is **new** relative to ADR 0012's five P0 surfaces — treat it as a
   *state-variant of the existing answer surface*, not a sixth screen; reconcile with 0012 and note
-  the N11 extension (verified-vs-flagged must be visually distinct). **Open — tracked in #49**, to be
-  settled before the Slice 4 client lands.
+  the N11 extension (verified-vs-flagged must be visually distinct). **Settled 2026-09-11 (#49)** —
+  see *Answer-surface treatment* below.
 - Adds a small deterministic validation + retry loop to the Grounder — spec it as part of the
   component design; emit validation-failure counts as spike telemetry.
 - Still open for the Grounder spec: the remaining runtime failure modes — **empty retrieval** (no
   chunks handed in → degenerate refusal path) and **provider error/timeout** bubbling from the thin
-  generation interface (0013).
+  generation interface (0013). **Closed by ADR 0016.**
+
+## Answer-surface treatment
+
+- **Date:** 2026-09-11 (#49), ratified by Nate
+
+What each of the answer's five outcomes shows. It settles the item *Consequences* left open above
+and changes no claim this ADR or ADR 0012 makes: every row is a variant of 0012's answer surface,
+not a new surface. The input is `POST /ask`'s 200 body (`AskResponse` in `src/gct/api/routers/ask.py`)
+for the first four rows, and the shared error envelope for ERROR.
+
+| Outcome | What it means | What the screen shows |
+|---|---|---|
+| GROUNDED | Every claim is cited and every citation checked out. | The answer, with each [S#] rendered as a small chip naming file and page/slide. A quiet "Verified" mark. |
+| PARTIAL | The materials cover some of the question, not all of it. | The answer plus a notice above it: "Your materials only cover part of this." Amber, not red. |
+| REFUSAL | The materials do not cover it. A correct, honest result, not a failure. | No answer text. A calm, plain statement: "Your materials don't cover this question." Never styled as an error. |
+| INTEGRITY_FLAGGED | An answer was produced, but its citations failed validation twice (ADR 0015). | The answer is shown, but under a prominent warning band; the citation chips are marked unverified; integrity.reasons are listed in full. Impossible to mistake for GROUNDED at a glance. |
+| ERROR (envelope) | Transport-level: provider down or a server fault (ADR 0016). | An error box carrying the envelope's `message` (the remedy). provider_transient (503) offers "try again"; a 500 says it is not the student's fault. |
+
+The table is the ratified text, verbatim. Its *What it means* column is plain language, and in three
+places the payload is narrower or wider than the words:
+
+- **GROUNDED's "checked out" is the ③ ladder above, and no more.** That ladder is V1-structural, so a
+  GROUNDED answer can still carry a sentence with no `[S#]`. The "Verified" mark claims what the
+  ladder checked; any wording attached to it must not claim per-claim or semantic support.
+- **INTEGRITY_FLAGGED means the last attempt the budget allowed failed the ladder.** An earlier one
+  may have failed it too, or been spent on a transient provider error (the shared budget, ADR 0016);
+  and the ladder fails on a bad coverage marker even when every citation is valid. `citations[]`
+  holds only labels the server resolved, so a dangling `[S#]` left in the prose is never rendered as
+  a source; its reason is already in `integrity.reasons`. `answer_prose` can be null, or carry no
+  labels at all; the band and the reasons still show.
+- **ERROR covers the 5xx envelopes.** The ERROR state leaves `/ask` as a 503 or a 500 by its `kind`
+  (`_ERROR_STATUS`, same file), and any other server fault is a 500. A 4xx envelope from `/ask` — a
+  malformed request, an unknown class — says the request was wrong, not the server; it is not an
+  answer outcome and is outside this table.

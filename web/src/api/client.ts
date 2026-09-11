@@ -41,9 +41,9 @@ export const CLIENT_KINDS = {
 } as const;
 
 // Appended to every client-minted message on `POST /files`. Measured through the Vite dev proxy:
-// an upload over the API's size bound gets the API's own 413 `body_too_large` most of the time,
-// but a fetch rejection some of the time (the proxy resets the connection while the body is
-// still being sent). So "the server is down" must never be the only reading an upload is given.
+// an upload over the API's size bound gets either the API's own 413 `body_too_large` or, from
+// run to run, a fetch rejection - the proxy resets the connection while the body is still being
+// sent. So "the server is down" must never be the only reading an upload is given.
 const UPLOAD_HINT =
   ' If the file is large, it may be over the upload size limit: try a smaller file.';
 

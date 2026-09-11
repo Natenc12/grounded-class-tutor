@@ -5,7 +5,8 @@ import globals from 'globals';
 import tseslint from 'typescript-eslint';
 
 export default defineConfig([
-  globalIgnores(['dist']),
+  // `schema.gen.ts` is generated; its pin is a byte comparison, not a lint.
+  globalIgnores(['dist', 'src/api/schema.gen.ts']),
   {
     files: ['**/*.{ts,tsx}'],
     extends: [

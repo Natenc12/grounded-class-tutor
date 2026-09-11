@@ -13,7 +13,8 @@
     "lint": "eslint .",
     "format": "prettier --write .",
     "format:check": "prettier --check .",
-    "test": "vitest run"
+    "test": "vitest run",
+    "api:refresh": "uv run python scripts/openapi_snapshot.py && node scripts/refresh-api-types.mjs"
   },
   "dependencies": {
     "react": "^19.3.0",

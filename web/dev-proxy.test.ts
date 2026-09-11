@@ -2,7 +2,7 @@ import { createServer as createHttpServer, type IncomingMessage, type Server } f
 import type { AddressInfo } from 'node:net';
 
 import { createServer, type ViteDevServer } from 'vite';
-import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
 
 import {
   API_PATH_PATTERN,
@@ -11,9 +11,12 @@ import {
   apiProxy,
   apiTarget,
 } from './dev-proxy.ts';
-import config from './vite.config.ts';
 
 describe('apiTarget', () => {
+  it('reads the variable ADR 0033 documents, by that name', () => {
+    expect(API_TARGET_ENV).toBe('GCT_API_TARGET');
+  });
+
   it('is uvicorn on the IPv4 loopback when the variable is unset', () => {
     expect(apiTarget(undefined)).toBe('http://127.0.0.1:8000');
     expect(DEFAULT_API_TARGET).toBe('http://127.0.0.1:8000');
@@ -27,22 +30,36 @@ describe('apiTarget', () => {
     expect(apiTarget(value)).toBe(origin);
   });
 
+  const NOT_A_URL = 'is not a URL';
+  const NOT_HTTP = 'is not an http or https URL';
+  const NOT_AN_ORIGIN = 'has more than an origin (a path, query, fragment or login)';
+
   it.each([
-    ['empty', '', 'is not a URL'],
-    ['no scheme', '127.0.0.1:8001', 'is not a URL'],
-    ['a host read as a scheme', 'localhost:8001', 'is not an http or https URL'],
-    ['garbage', 'not a url', 'is not a URL'],
-    ['another scheme', 'ftp://127.0.0.1:8001', 'is not an http or https URL'],
-    ['a websocket', 'ws://127.0.0.1:8001', 'is not an http or https URL'],
-    ['a path', 'http://127.0.0.1:8001/api', 'has more than an origin'],
-    ['a query', 'http://127.0.0.1:8001/?x=1', 'has more than an origin'],
-    ['a fragment', 'http://127.0.0.1:8001/#x', 'has more than an origin'],
-    ['a login', 'http://user:pw@127.0.0.1:8001', 'has more than an origin'],
-  ])('refuses %s, naming the variable and the remedy', (_, value, problem) => {
-    expect(() => apiTarget(value)).toThrow(problem);
-    expect(() => apiTarget(value)).toThrow(`${API_TARGET_ENV}=${JSON.stringify(value)}`);
-    expect(() => apiTarget(value)).toThrow("Set it to the API's origin only");
-  });
+    ['empty', '', NOT_A_URL],
+    ['no scheme', '127.0.0.1:8001', NOT_A_URL],
+    ['a host read as a scheme', 'localhost:8001', NOT_HTTP],
+    ['garbage', 'not a url', NOT_A_URL],
+    ['another scheme', 'ftp://127.0.0.1:8001', NOT_HTTP],
+    ['a websocket', 'ws://127.0.0.1:8001', NOT_HTTP],
+    ['a path', 'http://127.0.0.1:8001/api', NOT_AN_ORIGIN],
+    ['a query', 'http://127.0.0.1:8001/?x=1', NOT_AN_ORIGIN],
+    ['a fragment', 'http://127.0.0.1:8001/#x', NOT_AN_ORIGIN],
+    ['a login', 'http://user:pw@127.0.0.1:8001', NOT_AN_ORIGIN],
+  ])(
+    'refuses %s with the whole sentence: the variable, the problem, the remedy',
+    (_, value, problem) => {
+      let message = '';
+      try {
+        apiTarget(value);
+      } catch (err) {
+        message = (err as Error).message;
+      }
+      expect(message).toBe(
+        `GCT_API_TARGET=${JSON.stringify(value)} ${problem}. Set it to the API's origin only, ` +
+          'for example GCT_API_TARGET=http://127.0.0.1:8001, or unset it to use http://127.0.0.1:8000.',
+      );
+    },
+  );
 });
 
 describe('API_PATH_PATTERN', () => {
@@ -85,8 +102,30 @@ describe('apiProxy', () => {
     );
   });
 
-  it('is what vite.config.ts installs', () => {
-    expect(config.server?.proxy).toStrictEqual(apiProxy(process.env));
+  describe('as vite.config.ts installs it', () => {
+    afterEach(() => {
+      vi.unstubAllEnvs();
+    });
+
+    // The config is re-imported after each stub: it reads the environment when it is evaluated.
+    const loadConfig = async () => {
+      vi.resetModules();
+      return (await import('./vite.config.ts')).default;
+    };
+
+    it('forwards to GCT_API_TARGET from the environment when it is set', async () => {
+      vi.stubEnv('GCT_API_TARGET', 'http://127.0.0.1:8001');
+      expect((await loadConfig()).server?.proxy).toStrictEqual({
+        [API_PATH_PATTERN]: { target: 'http://127.0.0.1:8001' },
+      });
+    });
+
+    it('forwards to the default when GCT_API_TARGET is unset', async () => {
+      vi.stubEnv('GCT_API_TARGET', undefined);
+      expect((await loadConfig()).server?.proxy).toStrictEqual({
+        [API_PATH_PATTERN]: { target: 'http://127.0.0.1:8000' },
+      });
+    });
   });
 });
 

@@ -86,8 +86,9 @@ confusable — this is a hard requirement on the answer surface, extending N11.
 - **Date:** 2026-09-11 (#49), ratified by Nate
 
 What each of the answer's five outcomes shows. It settles the item *Consequences* left open above
-and changes no claim this ADR or ADR 0012 makes: every row is a variant of 0012's answer surface,
-not a new surface. The input is `POST /ask`'s 200 body (`AskResponse` in `src/gct/api/routers/ask.py`)
+and changes no claim this ADR or ADR 0012 makes: no row is a new surface. GROUNDED and REFUSAL are
+the answer and refusal surfaces 0012 lists; PARTIAL, INTEGRITY_FLAGGED and ERROR are variants of its
+answer surface. The input is `POST /ask`'s 200 body (`AskResponse` in `src/gct/api/routers/ask.py`)
 for the first four rows, and the shared error envelope for ERROR.
 
 | Outcome | What it means | What the screen shows |
@@ -104,9 +105,10 @@ places the payload is narrower or wider than the words:
 - **GROUNDED's "checked out" is the ③ ladder above, and no more.** That ladder is V1-structural, so a
   GROUNDED answer can still carry a sentence with no `[S#]`. The "Verified" mark claims what the
   ladder checked; any wording attached to it must not claim per-claim or semantic support.
-- **INTEGRITY_FLAGGED means the last attempt the budget allowed failed the ladder.** An earlier one
-  may have failed it too, or been spent on a transient provider error (the shared budget, ADR 0016);
-  and the ladder fails on a bad coverage marker even when every citation is valid. `citations[]`
+- **INTEGRITY_FLAGGED means the last attempt the budget allowed failed validation** (*Failure
+  handling* above). An earlier one may have failed it too, or been spent on a transient provider
+  error (the shared budget, ADR 0016); and step 2 also fails a bad coverage marker, even when every
+  citation is valid. `citations[]`
   holds only labels the server resolved, so a dangling `[S#]` left in the prose is never rendered as
   a source; its reason is already in `integrity.reasons`. `answer_prose` can be null, or carry no
   labels at all; the band and the reasons still show.

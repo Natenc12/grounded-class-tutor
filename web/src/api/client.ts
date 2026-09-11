@@ -36,8 +36,8 @@ export const CLIENT_KINDS = {
   apiUnreachable: 'client.api_unreachable',
   /** Any other reply the contract does not describe - a non-envelope 4xx, a 2xx that is not a JSON object. */
   badResponse: 'client.bad_response',
-  /** `getFileStatus('')`: there is no id, and `/files/` would be a trailing slash. Nothing is sent. */
-  missingFileId: 'client.missing_file_id',
+  /** A file id no URL path can carry (see `pathSegment`). Nothing is sent. */
+  unsendableFileId: 'client.unsendable_file_id',
 } as const;
 
 // Appended to every failure the client names itself on a route that SENDS A BODY, except a 2xx
@@ -110,19 +110,17 @@ export function createApiClient(options: ApiClientOptions = {}): ApiClient {
     },
 
     getFileStatus: (fileId) => {
-      if (fileId === '') {
+      const segment = pathSegment(fileId);
+      if (segment === null) {
         return Promise.resolve(
           failure(
             null,
-            CLIENT_KINDS.missingFileId,
-            'There is no file id to look up, so nothing was sent. Upload the file again to get one.',
+            CLIENT_KINDS.unsendableFileId,
+            `The file id ${JSON.stringify(fileId)} cannot be sent as part of a web address, so nothing was sent. Use the file id returned when the file was uploaded.`,
           ),
         );
       }
-      const path = ('/files/{file_id}' satisfies ApiPath).replace(
-        '{file_id}',
-        encodeURIComponent(fileId),
-      );
+      const path = ('/files/{file_id}' satisfies ApiPath).replace('{file_id}', segment);
       return send<FileStatusResponse>(path, { method: 'GET' });
     },
 
@@ -195,6 +193,23 @@ function badResponseMessage(status: number, hint: string): string {
 
 function failure(status: number | null, kind: string, message: string): ApiResult<never> {
   return { ok: false, status, error: { kind, message, detail: null } };
+}
+
+// `value` as one URL path segment, or null when no spelling of it survives as one. `''` would
+// leave `/files/`, a trailing slash. `.` and `..` are dot segments the URL parser removes before
+// the request goes out (`/files/..` is `/`), and percent-encoding them does not help: `%2e` is a
+// dot segment too. `encodeURIComponent` leaves dots alone and encodes every `%`, so `.` and `..`
+// are the only dot segments it can produce. A lone surrogate has no UTF-8 encoding, and
+// `encodeURIComponent` throws on it. Anything else - whitespace included - is sent, and the API's
+// own `bad_file_id` is the answer about whether it is an id.
+function pathSegment(value: string): string | null {
+  let encoded: string;
+  try {
+    encoded = encodeURIComponent(value);
+  } catch {
+    return null;
+  }
+  return encoded === '' || encoded === '.' || encoded === '..' ? null : encoded;
 }
 
 /** The parsed body, or `undefined` when the text is not JSON (an empty body included). */

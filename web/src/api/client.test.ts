@@ -237,15 +237,38 @@ describe('GET /files/{file_id}', () => {
     expect(only(calls).url).toBe('/files/a%2Fb%3Fc%23d%20e');
   });
 
-  it('sends nothing for an empty id, which would be a trailing slash, and says so', async () => {
+  it.each([
+    ['empty, which would be the /files/ trailing slash', ''],
+    ['".", which the URL parser turns into /files/', '.'],
+    ['"..", which the URL parser turns into /', '..'],
+    ['a lone surrogate, which encodeURIComponent throws on', '\ud800'],
+  ])('resolves - never throws - and sends nothing for an id that is %s', async (_, id) => {
     const { api, calls } = client(() => json(200, {}));
-    const result = expectFailure(await api.getFileStatus(''));
+    const result = expectFailure(await api.getFileStatus(id));
     expect(calls).toHaveLength(0);
     expect(result.status).toBeNull();
-    expect(result.error.kind).toBe(CLIENT_KINDS.missingFileId);
-    expect(result.error.message).toMatch(/nothing was sent/);
-    await api.getFileStatus('x');
-    expect(only(calls).url).toBe('/files/x');
+    expect(result.error).toStrictEqual({
+      kind: CLIENT_KINDS.unsendableFileId,
+      message: `The file id ${JSON.stringify(id)} cannot be sent as part of a web address, so nothing was sent. Use the file id returned when the file was uploaded.`,
+      detail: null,
+    });
+  });
+
+  it.each([
+    ['x', '/files/x'],
+    ['...', '/files/...'],
+    ['.x', '/files/.x'],
+    [' ', '/files/%20'],
+    ['%2e', '/files/%252e'],
+    ['\ud83d\ude00', '/files/%F0%9F%98%80'],
+  ])('sends the id %j, whose path is still one segment: %s', async (id, path) => {
+    // Whitespace is SENT: the API's own 400 bad_file_id is the answer about whether it is an id.
+    const { api, calls } = client(() => envelope(400, 'bad_file_id', 'not a uuid'));
+    await api.getFileStatus(id);
+    const call = only(calls);
+    expect(call.url).toBe(path);
+    // What fetch will request is that same path: the URL parser leaves the segment alone.
+    expect(new URL(call.url, 'http://127.0.0.1').pathname).toBe(path);
   });
 
   it('returns 404 file_not_found as an error', async () => {

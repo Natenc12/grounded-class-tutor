@@ -57,6 +57,25 @@ function expectFailure<T>(result: ApiResult<T>) {
 const PDF = () =>
   new File([new Uint8Array([37, 80, 68, 70])], 'Lecture 1.pdf', { type: 'application/pdf' });
 
+// The size remedy each route's own failure messages end with - the routes that send a body.
+const SIZE_HINT: Record<string, string> = {
+  createClass: ' If you sent a lot of text, it may be over the request size limit: send less.',
+  uploadFile: ' If the file is large, it may be over the upload size limit: try a smaller file.',
+  getFileStatus: '',
+  ask: ' If you sent a lot of text, it may be over the request size limit: send less.',
+};
+
+// A reply whose status line arrives and whose body then breaks off.
+const brokenBody = (status: number) => () =>
+  new Response(
+    new ReadableStream({
+      start(controller) {
+        controller.error(new Error('connection reset'));
+      },
+    }),
+    { status },
+  );
+
 // One call per route, so a rule about EVERY route is checked on every route.
 const ROUTES: [string, (api: ApiClient) => Promise<ApiResult<unknown>>][] = [
   ['createClass', (api) => api.createClass('Bio 101')],
@@ -184,25 +203,6 @@ describe('POST /files', () => {
     const { api } = client(() => envelope(404, 'class_not_found', 'No such class.'));
     const result = expectFailure(await api.uploadFile(CLASS_ID, PDF()));
     expect([result.status, result.error.kind]).toStrictEqual([404, 'class_not_found']);
-  });
-
-  it('names the size limit in every message it writes itself - and only for an upload', async () => {
-    const cases: [string, () => Response | Promise<Response>][] = [
-      ['a network failure', () => Promise.reject(new TypeError('fetch failed'))],
-      ['a proxy 502', () => new Response('', { status: 502 })],
-      [
-        'a non-envelope 413',
-        () => new Response('<h1>413 Request Entity Too Large</h1>', { status: 413 }),
-      ],
-    ];
-    for (const [, respond] of cases) {
-      const upload = expectFailure(await client(respond).api.uploadFile(CLASS_ID, PDF()));
-      expect(upload.error.message).toContain('over the upload size limit');
-      const create = expectFailure(await client(respond).api.createClass('x'));
-      expect(create.error.message).not.toContain('size limit');
-      // The same failure, the same kind: the hint changes the words, not the switch.
-      expect(upload.error.kind).toBe(create.error.kind);
-    }
   });
 
   it("passes the API's own 413 through untouched - the hint is only for replies it could not read", async () => {
@@ -341,21 +341,12 @@ describe('the shared reply parser, on every route', () => {
     const result = expectFailure(await call(api));
     expect(result.status).toBeNull();
     expect(result.error.kind).toBe(CLIENT_KINDS.network);
-    expect(result.error.message).toMatch(/Check that the server is running/);
+    expect(result.error.message).toMatch(/If the server is not running or you are offline/);
     expect(result.error.detail).toBeNull();
   });
 
   it.each(ROUTES)('%s: a reply whose body breaks off is a network failure', async (_, call) => {
-    const broken = () =>
-      new Response(
-        new ReadableStream({
-          start(controller) {
-            controller.error(new Error('connection reset'));
-          },
-        }),
-        { status: 200 },
-      );
-    const result = expectFailure(await call(client(broken).api));
+    const result = expectFailure(await call(client(brokenBody(200)).api));
     expect(result.status).toBe(200);
     expect(result.error.kind).toBe(CLIENT_KINDS.network);
   });
@@ -369,7 +360,7 @@ describe('the shared reply parser, on every route', () => {
         expect(result.status).toBe(status);
         expect(result.error.kind).toBe(CLIENT_KINDS.apiUnreachable);
         expect(result.error.message).toContain(`HTTP ${status}`);
-        expect(result.error.message).toMatch(/Check that the API is running/);
+        expect(result.error.message).toMatch(/If the API is not running, start it/);
       }
     },
   );
@@ -407,33 +398,44 @@ describe('the shared reply parser, on every route', () => {
     },
   );
 
-  it('writes exactly these words for the failures it names itself', async () => {
-    const hint = ' If the file is large, it may be over the upload size limit: try a smaller file.';
-    const words: [() => Response | Promise<Response>, string][] = [
-      [
-        () => Promise.reject(new TypeError('fetch failed')),
-        "The connection to the tutor's server failed before it answered. Check that the server is running and that you are online, then try again.",
-      ],
-      [
-        () => new Response('', { status: 502 }),
-        "The tutor's API did not answer; a server in front of it replied instead (HTTP 502). Check that the API is running, then try again.",
-      ],
-      [
-        () => new Response('<html></html>', { status: 200 }),
-        "The server's reply (HTTP 200) is not one this page understands, so it cannot be shown. Reload the page and try again; if it keeps happening, the page and the API may be out of step.",
-      ],
-      [
-        () => new Response('nope', { status: 404 }),
-        "The server's reply (HTTP 404) is not one this page understands, so it cannot be shown. Reload the page and try again; if it keeps happening, the page and the API may be out of step.",
-      ],
-    ];
-    for (const [respond, message] of words) {
-      const create = expectFailure(await client(respond).api.createClass('x'));
-      expect(create.error.message).toBe(message);
-      const upload = expectFailure(await client(respond).api.uploadFile(CLASS_ID, PDF()));
-      expect(upload.error.message).toBe(message + hint);
-    }
+  it('names the size remedy on exactly the three routes that send a body', () => {
+    const hinted = Object.entries(SIZE_HINT).filter(([, hint]) => hint.includes('size limit'));
+    expect(hinted.map(([name]) => name)).toStrictEqual(['createClass', 'uploadFile', 'ask']);
+    expect(SIZE_HINT.getFileStatus).toBe('');
   });
+
+  it.each(ROUTES)(
+    '%s: writes exactly these words for the failures it names itself',
+    async (name, call) => {
+      // Every no-envelope failure on a route that sends a body might be that body being too big,
+      // so the size remedy follows the connection remedy - except after a 2xx, which did not
+      // refuse the body. GET sends none, so it never gets one.
+      const hint = SIZE_HINT[name] ?? 'unknown route';
+      const cannotRead = (status: number) =>
+        `The server's reply (HTTP ${status}) is not one this page understands, so it cannot be shown. Reload the page and try again; if it keeps happening, the page and the API may be out of step.`;
+      const network =
+        "The connection to the tutor's server failed before an answer arrived. If the server is not running or you are offline, fix that and try again.";
+      const words: [() => Response | Promise<Response>, string][] = [
+        [() => Promise.reject(new TypeError('fetch failed')), network + hint],
+        [brokenBody(502), network + hint],
+        [
+          () => new Response('', { status: 502 }),
+          "A server in front of the tutor's API replied instead of the API (HTTP 502). If the API is not running, start it and try again." +
+            hint,
+        ],
+        [
+          () => new Response('<h1>413 Request Entity Too Large</h1>', { status: 413 }),
+          cannotRead(413) + hint,
+        ],
+        [() => new Response('nope', { status: 404 }), cannotRead(404) + hint],
+        [() => new Response('<html></html>', { status: 200 }), cannotRead(200)],
+      ];
+      for (const [respond, message] of words) {
+        const result = expectFailure(await call(client(respond).api));
+        expect(result.error.message).toBe(message);
+      }
+    },
+  );
 
   it('keeps the status of a reply it cannot read', async () => {
     const result = expectFailure(

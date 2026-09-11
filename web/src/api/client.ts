@@ -40,12 +40,15 @@ export const CLIENT_KINDS = {
   missingFileId: 'client.missing_file_id',
 } as const;
 
-// Appended to every client-minted message on `POST /files`. Measured through the Vite dev proxy:
-// an upload over the API's size bound gets either the API's own 413 `body_too_large` or, from
-// run to run, a fetch rejection - the proxy resets the connection while the body is still being
-// sent. So "the server is down" must never be the only reading an upload is given.
+// Appended to every failure the client names itself on a route that SENDS A BODY, except a 2xx
+// reply (a 2xx means the body was not refused). Measured through the Vite dev proxy: a body over
+// the API's size bound - an upload, or JSON - gets either the API's own 413 `body_too_large` or,
+// from run to run, a connection reset or a bare 502, because uvicorn answers and closes while the
+// proxy is still sending the body. The client cannot tell that from an API that is down, so it
+// names both remedies and asserts neither cause. GET sends no body and gets no hint.
 const UPLOAD_HINT =
   ' If the file is large, it may be over the upload size limit: try a smaller file.';
+const JSON_HINT = ' If you sent a lot of text, it may be over the request size limit: send less.';
 
 export interface ApiClientOptions {
   /** Prepended to every path; no trailing slash. Default `''`: same origin, so a page goes through the dev proxy. */
@@ -80,11 +83,15 @@ export function createApiClient(options: ApiClientOptions = {}): ApiClient {
     request<T>(fetchImpl, baseUrl + path, init, hint);
 
   const sendJson = <T>(path: ApiPath, body: NewClass | AskRequest) =>
-    send<T>(path, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(body),
-    });
+    send<T>(
+      path,
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+      },
+      JSON_HINT,
+    );
 
   return {
     createClass: (name) => sendJson<ClassCreated>('/classes', { name } satisfies NewClass),
@@ -150,10 +157,11 @@ async function request<T>(
       // `types.ts` is generated from, and a snapshot test pins the two together.
       return { ok: true, status: response.status, data: body as T };
     }
+    // No size hint: a 2xx means whatever answered did not refuse the body.
     return failure(
       response.status,
       CLIENT_KINDS.badResponse,
-      badResponseMessage(response.status, hint),
+      badResponseMessage(response.status, ''),
     );
   }
   const error = parseEnvelope(body);
@@ -162,12 +170,12 @@ async function request<T>(
   }
   // Every 5xx the app produces is an envelope (api.md, *The error envelope*), so a 5xx without
   // one was written by something in front of it - the dev proxy answers 502 with an empty body
-  // when uvicorn is not there.
+  // when uvicorn is not there, and also when it loses the API's reply to an oversize body.
   if (response.status >= 500) {
     return failure(
       response.status,
       CLIENT_KINDS.apiUnreachable,
-      `The tutor's API did not answer; a server in front of it replied instead (HTTP ${response.status}). Check that the API is running, then try again.${hint}`,
+      `A server in front of the tutor's API replied instead of the API (HTTP ${response.status}). If the API is not running, start it and try again.${hint}`,
     );
   }
   return failure(
@@ -178,7 +186,7 @@ async function request<T>(
 }
 
 function networkMessage(hint: string): string {
-  return `The connection to the tutor's server failed before it answered. Check that the server is running and that you are online, then try again.${hint}`;
+  return `The connection to the tutor's server failed before an answer arrived. If the server is not running or you are offline, fix that and try again.${hint}`;
 }
 
 function badResponseMessage(status: number, hint: string): string {

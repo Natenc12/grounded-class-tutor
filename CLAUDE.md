@@ -34,6 +34,7 @@ the product. Full design lives in `design/` — start with `design/START-HERE.md
 |---|---|
 | `src/gct/` | the library — the product |
 | `scripts/` | thin peer callers (`migrate.py`, `worker.py`, and the per-slice exit smokes) |
+| `web/` | the Slice 4 client — its own `package.json`, never imported by `src/` (ADR 0032) |
 | `tests/gct/` | the test suite |
 | `design/` | current truth: ADRs, component specs, data model |
 | `.claude/skills/roadmap-to-issues/` | the one in-repo skill — projects a roadmap slice into issues |
@@ -55,6 +56,8 @@ uv run pytest -m db -q                  # just the Postgres-backed tests (DB mus
 uv run pytest -m "not live" -q          # exactly what CI runs
 uv run ruff check                       # lint — no paths, to match CI (it covers scripts/ too)
 uv run ruff format                      # formatting — writes; CI gates the same run as `--check`
+cd web && npm ci && npm run typecheck && npm run lint && npm run format:check && npm test && npm run build
+                                        # the client's gate (ADR 0032) — local only, CI does not run it yet
 ```
 A bare `uv sync` doesn't just skip the dev tools, it **uninstalls** them: `pytest`/`ruff`/`reportlab`
 live in `[project.optional-dependencies].dev`, so the next two commands stop working.
@@ -229,8 +232,10 @@ The seams it draws, which Slice 4 consumes rather than re-derives:
 **Slice 4 — Client: CURRENT.** A minimal React SPA — the five P0 surfaces (ADR 0012): create class,
 upload, ingest status, ask, view cited answer. Clean inline citation rendering (N11, the trust
 surface). SPA, not PWA; a single-purpose shell, not an app — no auth, no delete, no tap-to-source
-(V2/V3, named OUT by the ADR). The first front-end code in the repo: no tooling decision exists in
-`design/` yet, and the scaffold records one as an ADR. **Exit — V1 done:** upload → ingest → cited
+(V2/V3, named OUT by the ADR). The first front-end code in the repo: its tooling — Vite, TypeScript,
+npm, the dev server proxying uvicorn — is ADR 0032. `web/` is self-contained and its checks are a
+local gate only; CI does not run them yet (a Node job is a separate chore, per that ADR). **Exit — V1
+done:** upload → ingest → cited
 answer → refuses end-to-end in the UI. Demoable, not yet measured (ADR 0004). See
 `design/roadmap.md` → *Slice 4*.
 

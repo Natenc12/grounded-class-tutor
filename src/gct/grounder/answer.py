@@ -48,9 +48,10 @@ from gct.retriever.retrieve import RetrievedChunk
 # sequence - separate budgets would multiply into a latency blowout (N5) for no robustness gain.
 MAX_GENERATION_ATTEMPTS = 2
 
-# `error.kind` values. Clients switch on `state`, not on `kind` - both of these render as the
-# same "couldn't generate an answer right now, try again" surface. `kind` exists so telemetry can
-# tell a flaky provider (retried, still failed) from a misconfigured one (never worth retrying).
+# `error.kind` values. A library caller switches on `state`; over HTTP the kind also picks the
+# status and what the screen says (`gct.api.routers.ask._ERROR_STATUS`; ADR 0015 ->
+# *Answer-surface treatment*): a flaky provider (retried, still failed) is a 503 worth trying
+# again, a misconfigured one (never worth retrying) is a 500 that is not the student's fault.
 ERROR_KIND_PROVIDER_TRANSIENT = "provider_transient"
 ERROR_KIND_PROVIDER_TERMINAL = "provider_terminal"
 

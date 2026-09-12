@@ -42,6 +42,25 @@ MARKER="$HOME/.gct-cloud-bootstrapped"
 DB=grounded_class_tutor
 log() { printf '[gct] %s\n' "$*"; }
 
+# --------------------------------------------------------------------- git identity
+# Before the marker short-circuit, because a container that was bootstrapped yesterday
+# still needs this today. The cloud agent stamps commits with the Claude account's
+# address, which GitHub does not link to the repository owner; a squash merge of such
+# a branch then writes a Co-authored-by trailer for a person who does not exist (#151,
+# #152 on main carry one). Pin the linked address, repo-local, only when the stamp is
+# that one - a collaborator's own identity is left alone. `git var` resolves the
+# environment as well as config, which `git config user.email` alone would not.
+case "$(git var GIT_AUTHOR_IDENT 2>/dev/null)" in
+  *"<nate.kcmo@gmail.com>"*)
+    git config user.name  "Nathan"
+    git config user.email "ncarrillo.kcmo@gmail.com"
+    case "$(git var GIT_AUTHOR_IDENT 2>/dev/null)" in
+      *"<ncarrillo.kcmo@gmail.com>"*) log "git identity pinned to the address GitHub links" ;;
+      *) log "WARN git identity comes from the environment; export GIT_AUTHOR_EMAIL and"
+         log "     GIT_COMMITTER_EMAIL=ncarrillo.kcmo@gmail.com before committing" ;;
+    esac ;;
+esac
+
 # PATH first. These containers ship the Postgres binaries off the default PATH, so
 # checking the marker before this meant pg_isready always failed and every run redid
 # apt-get, uv sync, and migrations.

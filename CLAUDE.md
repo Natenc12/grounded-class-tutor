@@ -133,6 +133,15 @@ container as root, because it rewrites `.env` — `GCT_FORCE_BOOTSTRAP=1` overri
 `OPENAI_API_KEY` comes from the cloud environment's variables, not from the repo. Without it,
 migrations and non-live tests still run; ingest and ask do not.
 
+**Commit as the address GitHub links.** The cloud agent stamps `nate.kcmo@gmail.com`, which GitHub
+does not link to the repository owner, so a squash merge of that branch credits a co-author who
+does not exist (#151 and #152 carry one). `cloud-bootstrap.sh` pins the linked address; a session
+that commits without having run it does the same by hand first, and checks with
+`git var GIT_AUTHOR_IDENT`:
+```sh
+git config user.name "Nathan" && git config user.email "ncarrillo.kcmo@gmail.com"
+```
+
 ## Conventions / invariants (do not violate)
 - **Hand-rolled RAG** (ADR 0003) — no LangChain/LlamaIndex; we build the pipeline to learn it.
 - **Provider-agnostic** — grounding logic sits *above* the provider interfaces; swapping models never changes product behavior.

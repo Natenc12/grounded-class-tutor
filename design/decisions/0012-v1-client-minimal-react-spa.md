@@ -1,7 +1,9 @@
 # 0012. V1 client — a minimal React SPA, scoped and off the critical path
 
 - **Date:** 2026-07-04
-- **Status:** accepted
+- **Status:** accepted — **answer-surface treatment settled 2026-09-11 in ADR 0015** (*Answer-surface
+  treatment*, #49: the answer states this ADR does not list — partial, integrity-flagged, error — are
+  variants of its answer surface, not new surfaces, so the five-surface bound stands)
 
 ## Context
 Open decision ③ framed the V1 client as *real minimal React PWA* vs. *an even-thinner harness*

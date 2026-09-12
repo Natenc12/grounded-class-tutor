@@ -116,6 +116,7 @@ REFUSAL (ADR 0016).
   bucket (not a pass)**, REFUSAL/INTEGRITY_FLAGGED=fail (in-corpus), ERROR=excluded+logged; `partial_rate`
   reported alongside `grounded_pass_rate`. The `state→outcome` map is the Grounder↔eval-runner contract,
   in the core so V1 eyeball and V3 harness read one definition.
-- **UI:** verified-GROUNDED vs. INTEGRITY_FLAGGED must be visually distinct (N11 extension; reconcile
-  as a state-variant of ADR 0012's answer surface, not a sixth screen).
+- **UI:** verified-GROUNDED vs. INTEGRITY_FLAGGED must be visually distinct (N11 extension) —
+  settled as a state-variant of ADR 0012's answer surface, not a sixth screen; the per-state
+  treatment is ADR 0015 → *Answer-surface treatment*.
 ```

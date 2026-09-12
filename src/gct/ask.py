@@ -45,7 +45,8 @@ from gct.retriever.retrieve import (
 # `error.kind` for the ADR-0018 mismatch. It lives HERE, not beside the grounder's two
 # `provider_*` constants, because the Grounder never produces it: the condition is detected in
 # the Retriever and classified at this seam, so the constant belongs to the box that emits it.
-# Clients still switch on `state`; `kind` exists so telemetry can tell a misconfigured corpus
+# A library caller switches on `state`; over HTTP this kind is a 500
+# (`gct.api.routers.ask._ERROR_STATUS`), and telemetry uses it to tell a misconfigured corpus
 # (re-index needed) from a flaky provider (retry might help).
 ERROR_KIND_EMBEDDING_MISMATCH = "embedding_mismatch"
 

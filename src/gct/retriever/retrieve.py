@@ -25,10 +25,9 @@ exempt from the isolation filter (F6/F12).
 
 from __future__ import annotations
 
-from dataclasses import dataclass
-
 import psycopg
 
+from gct.contracts import RetrievedChunk as RetrievedChunk
 from gct.ids import canonical_uuid
 from gct.providers.base import Embeddings
 
@@ -49,26 +48,6 @@ class EmbeddingModelMismatchError(RuntimeError):
     guard exists to convert into a loud one. Surfaces as a Grounder ERROR, never a refusal
     (ADR 0016).
     """
-
-
-@dataclass(frozen=True)
-class RetrievedChunk:
-    """One retrieved chunk: its text, its provenance, and how well it matched.
-
-    PUBLIC CONTRACT - this is exactly the Grounder's `retrieved` input shape, so the two boxes
-    compose directly (retriever.md Sec.Interface); issue #6 binds to it. Do not drift the field
-    names or types without updating that issue.
-
-    `page_or_slide` is a scalar int, never a range (never-span, ADR 0019) - the honesty
-    guarantee behind a citation. The `chunks.page_or_slide` column is `text`, so it converts
-    back to int at the SQL boundary, mirroring `ingest/index.py`'s int -> str on the way in.
-    """
-
-    chunk_id: str
-    text: str
-    file: str
-    page_or_slide: int
-    score: float  # normalized similarity in [0,1], higher-better (ADR 0017, clamped per ADR 0024)
 
 
 def _assert_embedding_consistency(

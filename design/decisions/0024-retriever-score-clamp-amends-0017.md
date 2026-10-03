@@ -2,6 +2,7 @@
 
 - **Date:** 2026-07-20
 - **Status:** accepted — amends **ADR 0017** (its `[0,1]` range claim; the seam rationale stands)
+  Hosted-specific scope amended 2026-10-02 by ADR 0033; retained core invariants are named there.
 
 ## Context
 ADR 0017 fixed the Retriever's seam currency as normalized cosine similarity and wrote the

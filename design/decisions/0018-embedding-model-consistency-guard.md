@@ -1,7 +1,7 @@
 # 0018. Embedding-model consistency guard — store `model_id`, assert at retrieval, fail loud
 
 - **Date:** 2026-07-04
-- **Status:** accepted
+- **Status:** superseded by 0033 — retained as a historical hosted-runtime decision.
 
 ## Context
 Similarity search is only meaningful if query- and index-time embeddings come from the **identical

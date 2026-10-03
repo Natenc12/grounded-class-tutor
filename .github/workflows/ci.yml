@@ -1,8 +1,6 @@
-# Per-PR merge gate: lint + every test that runs for free (issue #18, extended).
-# Trust is the product, so a red suite must BLOCK merge instead of relying on a
-# "tests pass" claim typed into a PR body. A pgvector service container gives the
-# job a real Postgres 17, so the DB-backed `db` tests AND the migration run on
-# every PR. Only `live` tests (paid API / network) stay local-only.
+# Local Python and desktop gates exercise the product without hosted dependencies.
+# The existing required Postgres job remains as explicit compatibility coverage
+# during migration; its protected check name must not disappear before cutover.
 name: CI
 
 on:
@@ -105,8 +103,8 @@ jobs:
       # `--extra dev` is required: pytest/ruff live in [project.optional-dependencies].dev,
       # which a bare `uv sync` does NOT install (it actively UNINSTALLS them).
       # Pinning comes from UV_LOCKED above, not a --frozen flag here — the two conflict.
-      - name: Sync dependencies
-        run: uv sync --extra dev
+      - name: Sync explicit hosted compatibility dependencies
+        run: uv sync --extra dev --extra legacy-hosted
 
       - name: Ruff
         run: uv run ruff check
@@ -136,7 +134,49 @@ jobs:
           uv run python scripts/migrate.py
 
       - name: Tests (everything except paid-API `live`)
-        run: uv run pytest -m "not live"
+        run: uv run pytest --legacy-hosted -m "not live"
+
+  local-python-test:
+    name: Local Python core (no hosted dependencies)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    env:
+      UV_PYTHON: "3.10"
+      UV_LOCKED: "1"
+      PYTHON_DOTENV_DISABLED: "1"
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@d4b2f3b6ecc6e67c4457f6d3e41ec42d3d0fcb86 # v5.4.2
+        with:
+          enable-cache: true
+
+      - name: Install Python 3.10
+        run: uv python install 3.10
+
+      - name: Install only local runtime and test dependencies
+        run: uv sync --extra dev
+
+      - name: Assert hosted packages are absent
+        run: |
+          uv run python - <<'PY'
+          from importlib.util import find_spec
+          forbidden = ("psycopg", "pgvector", "openai", "dotenv", "fastapi",
+                       "uvicorn", "python_multipart", "httpx2")
+          present = [name for name in forbidden if find_spec(name) is not None]
+          assert not present, f"Hosted dependencies leaked into the local environment: {present}"
+          PY
+
+      - name: Lint and format
+        run: |
+          uv run ruff check
+          uv run ruff format --check .
+
+      - name: Test local parser, core, library and bridge
+        run: uv run pytest
 
   desktop-test:
     name: Desktop build + mocked integration tests
@@ -161,7 +201,7 @@ jobs:
       - name: Install Python 3.10
         run: uv python install 3.10
 
-      - name: Sync Python dependencies
+      - name: Sync only local Python dependencies
         run: uv sync --extra dev --locked
 
       - name: Install Node 22

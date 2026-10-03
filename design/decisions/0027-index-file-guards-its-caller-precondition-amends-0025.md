@@ -8,6 +8,7 @@
   guarded its five writers first (*§Adopted early in the queue module*), then #75 accepted the
   `index_file` half. The guard lives in `gct.db.require_idle`, called by every writer that wraps
   its work in `conn.transaction()`.
+  Hosted-specific scope amended 2026-10-02 by ADR 0033; retained core invariants are named there.
 
 ## Context
 

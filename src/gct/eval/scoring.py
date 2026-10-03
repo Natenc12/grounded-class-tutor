@@ -56,9 +56,9 @@ from collections.abc import Sequence
 from dataclasses import dataclass
 from enum import Enum
 
+from gct.contracts import RetrievedChunk
 from gct.eval.questions import EXPECTATION_ANSWER, EXPECTATION_REFUSE, ExpectedSource
 from gct.grounder.answer import GrounderState
-from gct.retriever.retrieve import RetrievedChunk
 
 
 class Outcome(str, Enum):

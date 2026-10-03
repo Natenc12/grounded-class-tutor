@@ -21,6 +21,7 @@
   interpret, and still may not write a job-layer column. Atomicity, all-or-nothing replace and
   index-write-only stand unchanged, and §1's retryable/terminal split is untouched: a refused
   publish is neither and buys no retry)
+  Hosted-specific scope amended 2026-10-02 by ADR 0033; retained core invariants are named there.
 
 ## Context
 `architecture.md` locked the async substrate (ADR 0011: DB-backed `jobs` + in-process poll worker,

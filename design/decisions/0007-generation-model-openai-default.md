@@ -1,7 +1,7 @@
 # 0007. Generation model default: OpenAI (consolidation, swappable, spike-confirmed)
 
 - **Date:** 2026-07-04
-- **Status:** accepted (default; final production model confirmed by the spike)
+- **Status:** superseded by 0033 — retained as a historical hosted-runtime decision.
 
 ## Context
 Embeddings default to OpenAI (ADR 0005) and generation sits behind a provider interface (ADR 0004),

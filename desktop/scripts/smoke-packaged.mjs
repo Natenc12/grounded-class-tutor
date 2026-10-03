@@ -17,6 +17,15 @@ try {
   await cp(original, relocated, { recursive: true, verbatimSymlinks: true, mode: constants.COPYFILE_FICLONE });
   const resources = join(relocated, 'Contents/Resources'), python = join(resources, 'python');
   const executable = join(python, 'bin/python3.13'), archive = join(resources, 'app.asar');
+  const noticeRoot = join(resources, 'licenses/python-wheels');
+  const noticeManifest = await readJSON(join(noticeRoot, 'manifest.json'));
+  const noticeBytes = await readFile(join(noticeRoot, noticeManifest.notice_file.path));
+  assert.equal(noticeBytes.length, noticeManifest.notice_file.bytes);
+  assert.equal(sha256(noticeBytes), noticeManifest.notice_file.sha256);
+  for (const file of noticeManifest.wheel_files) {
+    const bytes = await readFile(join(python, 'lib/python3.13/site-packages', file.path));
+    assert.equal(bytes.length, file.bytes); assert.equal(sha256(bytes), file.sha256);
+  }
   const models = join(resources, 'models/minilm');
   const provenance = await readJSON(join(models, 'provenance.json'));
   assert.equal(provenance.key, 'minilm');

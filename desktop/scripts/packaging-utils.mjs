@@ -66,6 +66,44 @@ export async function copyModelFiles(candidate, sourceRoot, targetRoot) {
     await writeFile(target, bytes, { flag: 'wx' });
   }
 }
+export async function copyDependencyNotices(sourceRoot, site, targetRoot) {
+  if (!(await lstat(sourceRoot)).isDirectory() || !(await lstat(site)).isDirectory()) {
+    throw new Error('Notice and wheel roots must be real directories.');
+  }
+  async function regular(path) {
+    if (!(await lstat(path)).isFile()) throw new Error('Notice input must be a regular file.');
+    return readFile(path);
+  }
+  const manifestBytes = await regular(join(sourceRoot, 'manifest.json'));
+  const manifest = JSON.parse(manifestBytes.toString('utf8'));
+  if (manifest.schema !== 1 || manifest.notice_file?.path !== 'THIRD_PARTY_NOTICES.txt') {
+    throw new Error('Invalid supplemental notice manifest.');
+  }
+  for (const file of manifest.wheel_files) {
+    const parts = file.path.split('/');
+    if (parts.some(part => !part || part === '.' || part === '..' || part.includes('\\'))) {
+      throw new Error('Invalid wheel notice identity path.');
+    }
+    let directory = site;
+    for (const part of parts.slice(0, -1)) {
+      directory = join(directory, part);
+      if (!(await lstat(directory)).isDirectory()) throw new Error('Wheel notice directories must be real.');
+    }
+    const bytes = await regular(join(directory, parts.at(-1)));
+    if (bytes.length !== file.bytes || sha256(bytes) !== file.sha256) {
+      throw new Error('Installed wheel differs from audited notice inventory.');
+    }
+  }
+  const notices = await regular(join(sourceRoot, manifest.notice_file.path));
+  if (notices.length !== manifest.notice_file.bytes || sha256(notices) !== manifest.notice_file.sha256) {
+    throw new Error('Supplemental notice checksum mismatch.');
+  }
+  const target = await ensureBuildDirectory(targetRoot, 'python-wheels');
+  await writeFile(join(target, 'manifest.json'), manifestBytes, { flag: 'wx' });
+  await writeFile(join(target, 'THIRD_PARTY_NOTICES.txt'), notices, { flag: 'wx' });
+  return { manifestSha256: sha256(manifestBytes), noticesSha256: sha256(notices),
+    wheelFiles: manifest.wheel_files, sources: manifest.sources.length };
+}
 export async function inventoryTree(root) {
   const canonicalRoot = await realpath(root);
   const output = [];

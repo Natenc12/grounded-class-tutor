@@ -56,18 +56,21 @@ filenames, model weights, account state or live-library copy is published.
 
 ## Package and final checks
 
-The complete local suite passed: **539 Python tests and 157 desktop tests**, plus
+The complete local suite passed: **539 Python tests and 160 desktop tests**, plus
 Ruff and formatting. The real packaged Python was relocated outside the checkout
 and exercised semantic preparation/restart, a paraphrase, missing/corrupt-model
 fallback, stale cache, source citations/deletion and canonical-only backup. Generation
 was mocked. All 76 native-library dependency checks passed; ad-hoc signing was verified.
 
-The app contains 555,181,225 regular-file bytes, up 142.89 MiB from the prior preview,
-below the 250 MiB growth budget. The ZIP is 215,318,408 bytes, up 52.92 MiB. Its SHA-256
-is `df4084372a1b24e75ab20aca090b5d4d1f20a387477ddeffc46f128267550cfc`.
+The app contains 557,075,339 regular-file bytes, up 144.70 MiB from the prior preview,
+below the 250 MiB growth budget. The ZIP is 215,484,719 bytes, up 53.08 MiB. Its SHA-256
+is `a2efbde6c4932390e41b0310328b1d0533a6ed24c0ddf7bf0351b48c1eec526f`.
 The artifact remains in ignored `desktop/dist`; it was not uploaded or publicly
 distributed. Model assets, source/model hashes and dependency licenses are included
-in the bundle's manifest and notices. These checks did not open the existing library
+in the bundle's manifest and notices. Supplemental wheel notices retain 588 original
+files or header excerpts from 130 pinned sources; independent review verified their
+bytes and reproduced the consolidated text. Packaging binds these notices to the
+installed wheel metadata and tokenizer SBOM. These checks did not open the existing library
 or account store, launch native UI or make SDK requests.
 
 ## Remaining limits

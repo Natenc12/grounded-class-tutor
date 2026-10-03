@@ -73,7 +73,13 @@ closed; it never falls back to a system interpreter. The existing source
 `Contents/Resources/licenses` contains a build manifest, Electron/Chromium
 license texts, and the exact standalone-Python archive's license texts and
 `PYTHON.json` metadata. Python package notices remain in their `.dist-info`
-directories. JavaScript dependency notices remain inside their directories in
+directories. Supplemental tokenizers/flatbuffers and compiled dependency notices
+are included under `licenses/python-wheels`, with original source URLs and hashes.
+Packaging verifies this notice bundle against the installed wheels' metadata and
+tokenizer SBOM; a changed dependency requires a new notice review. The
+[notice manifest and collector](licenses/python-wheels/README.md) reproduce the
+original texts using free public sources. Normal builds use the committed texts.
+JavaScript dependency notices remain inside their directories in
 `app.asar`; the SDK also includes its pinned source, LICENSE, third-party notices,
 and GCT modification notes. The changed SDK source and compiled output both
 carry a change notice. Packaging strips development tools, static archives and

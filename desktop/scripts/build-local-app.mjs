@@ -4,7 +4,7 @@ import { cp, lstat, mkdir, readFile, readdir, rm, writeFile } from 'node:fs/prom
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { packager } from '@electron/packager';
-import { APP_FILES, PYTHON, auditPayload, copyAppFiles, copyModelFiles, ensureBuildDirectory, inventoryTree, readJSON, sha256, writeJSON } from './packaging-utils.mjs';
+import { APP_FILES, PYTHON, auditPayload, copyAppFiles, copyDependencyNotices, copyModelFiles, ensureBuildDirectory, inventoryTree, readJSON, sha256, writeJSON } from './packaging-utils.mjs';
 
 const desktop = resolve(dirname(fileURLToPath(import.meta.url)), '..'), repo = dirname(desktop);
 const build = join(desktop, 'build'), output = join(desktop, 'dist');
@@ -66,6 +66,7 @@ for (const file of await inventoryTree(python)) {
 }
 const pythonPackages = JSON.parse(capture(interpreter, ['-I', '-B', '-c',
   'import importlib.metadata as m,json; print(json.dumps(sorted([{ "name":d.metadata["Name"],"version":d.version} for d in m.distributions()],key=lambda d:d["name"])))']));
+const supplementalNotices = await copyDependencyNotices(join(desktop, 'licenses/python-wheels'), site, licenses);
 const modelCache = await ensureBuildDirectory(build, 'models');
 const models = await ensureBuildDirectory(join(build, 'model-bundle'), 'models');
 // Build-time downloads are pinned, free public assets. The shipped application
@@ -100,11 +101,11 @@ for (const packagePath of packagePaths) {
 }
 await cp(join(desktop, 'node_modules/electron/dist/LICENSE'), join(licenses, 'Electron-LICENSE.txt'));
 await cp(join(desktop, 'node_modules/electron/dist/LICENSES.chromium.html'), join(licenses, 'Electron-Chromium-LICENSES.html'));
-await writeFile(join(licenses, 'README.txt'), `This is a personal, noncommercial GCT preview, with no Developer ID signature or notarization.\n\nOpenAI SDK license and notices: app.asar/node_modules/@siwc/local/{LICENSE,THIRD_PARTY_NOTICES.md,GCT_MODIFICATIONS.md}. Modified source and compiled comments are preserved.\nJavaScript dependency licenses are retained in each app.asar/node_modules package.\nPython ${PYTHON.version} (${PYTHON.release}) and native-library license texts plus the exact upstream PYTHON.json are in licenses/python. Installed Python dependency licenses are retained under python/lib/python3.13/site-packages/*.dist-info.\nElectron/Chromium license texts are alongside this file.\nMiniLM model files, original model card, Apache-2.0 license, and pinned download provenance are in models/minilm. Semantic search runs locally; no model download occurs at runtime.\nThe SDK license does not grant service access or commercial distribution rights. Each user must connect their own eligible ChatGPT account; GCT has no paid API fallback.\n`);
+await writeFile(join(licenses, 'README.txt'), `This is a personal, noncommercial GCT preview, with no Developer ID signature or notarization.\n\nOpenAI SDK license and notices: app.asar/node_modules/@siwc/local/{LICENSE,THIRD_PARTY_NOTICES.md,GCT_MODIFICATIONS.md}. Modified source and compiled comments are preserved.\nJavaScript dependency licenses are retained in each app.asar/node_modules package.\nPython ${PYTHON.version} (${PYTHON.release}) and native-library license texts plus the exact upstream PYTHON.json are in licenses/python. Installed Python dependency licenses are retained under python/lib/python3.13/site-packages/*.dist-info. Supplemental tokenizers/flatbuffers wheel and compiled dependency notices, with pinned source hashes, are in licenses/python-wheels.\nElectron/Chromium license texts are alongside this file.\nMiniLM model files, original model card, Apache-2.0 license, and pinned download provenance are in models/minilm. Semantic search runs locally; no model download occurs at runtime.\nThe SDK license does not grant service access or commercial distribution rights. Each user must connect their own eligible ChatGPT account; GCT has no paid API fallback.\n`);
 const electronVersion = (await readJSON(join(desktop, 'node_modules/electron/package.json'))).version;
 const wheelHash = sha256(await readFile(join(build, 'wheels', wheels[0])));
 await writeJSON(join(licenses, 'build-manifest.json'), { version: manifest.version, platform: 'darwin', arch: 'arm64',
-  electronVersion, python: PYTHON, pythonPackages, nodePackages, model,
+  electronVersion, python: PYTHON, pythonPackages, nodePackages, model, supplementalNotices,
   gctWheelSha256: wheelHash, uvLockSha256: sha256(await readFile(join(repo, 'uv.lock'))),
   npmLockSha256: sha256(await readFile(join(desktop, 'package-lock.json'))),
   applicationInputs: APP_FILES, signing: 'ad-hoc local only; not Developer ID or notarized',

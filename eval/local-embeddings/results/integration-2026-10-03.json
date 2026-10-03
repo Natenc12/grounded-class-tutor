@@ -489,20 +489,26 @@
       "zip_bytes": 159829477
     },
     "after": {
-      "app_regular_file_bytes": 555181225,
-      "regular_files": 3800,
+      "app_regular_file_bytes": 557075339,
+      "regular_files": 3802,
       "symlinks": 14,
-      "zip_bytes": 215318408,
-      "zip_sha256": "df4084372a1b24e75ab20aca090b5d4d1f20a387477ddeffc46f128267550cfc"
+      "zip_bytes": 215484719,
+      "zip_sha256": "a2efbde6c4932390e41b0310328b1d0533a6ed24c0ddf7bf0351b48c1eec526f"
     },
-    "app_growth_bytes": 149830427,
-    "zip_growth_bytes": 55488931,
-    "app_growth_mib": 142.88943004608154,
-    "zip_growth_mib": 52.918368339538574
+    "app_growth_bytes": 151724541,
+    "zip_growth_bytes": 55655242,
+    "app_growth_mib": 144.69579792022705,
+    "zip_growth_mib": 53.076974868774414,
+    "supplemental_notices": {
+      "sources": 130,
+      "original_excerpts": 588,
+      "bytes": 1733807,
+      "sha256": "0cdea31d04e0aee5dd37eaf02b3407ca51ca9493a0e21e05393fd15994f381f1"
+    }
   },
   "final_local_checks": {
     "python_tests": 539,
-    "desktop_tests": 157,
+    "desktop_tests": 160,
     "ruff_and_format": true,
     "relocated_bundled_runtime_smoke": true,
     "native_dependency_checks": 76,

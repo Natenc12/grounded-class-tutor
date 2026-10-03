@@ -8,6 +8,7 @@
   `gct.db.require_idle`, and the `seed_class` counter-example no longer holds — ADR 0027
   §Context). The precondition itself, the autocommit remedy, and the atomicity-vs-publication
   distinction stand.
+  Hosted-specific scope amended 2026-10-02 by ADR 0033; retained core invariants are named there.
 
 ## Context
 ADR 0020 §2–3 state the ingest guarantee without qualification: processing a file "commits its

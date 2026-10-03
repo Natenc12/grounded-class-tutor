@@ -1,7 +1,7 @@
 # 0011. Async substrate — DB-backed job/status + in-process worker (V1)
 
 - **Date:** 2026-07-04
-- **Status:** accepted
+- **Status:** superseded by 0033 — retained as a historical hosted-runtime decision.
 
 ## Context
 ADR 0006 locked async ingestion; this ADR settles *what runs it*. Open decision ② framed the axis:

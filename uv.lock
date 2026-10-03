@@ -195,42 +195,44 @@ name = "grounded-class-tutor"
 version = "0.1.0"
 source = { editable = "." }
 dependencies = [
-    { name = "fastapi" },
-    { name = "openai" },
-    { name = "pgvector" },
-    { name = "psycopg", extra = ["binary"] },
     { name = "pypdf" },
-    { name = "python-dotenv" },
-    { name = "python-multipart" },
     { name = "python-pptx" },
-    { name = "uvicorn" },
 ]
 
 [package.optional-dependencies]
 dev = [
-    { name = "httpx2" },
     { name = "pytest" },
     { name = "reportlab" },
     { name = "ruff" },
 ]
+legacy-hosted = [
+    { name = "fastapi" },
+    { name = "httpx2" },
+    { name = "openai" },
+    { name = "pgvector" },
+    { name = "psycopg", extra = ["binary"] },
+    { name = "python-dotenv" },
+    { name = "python-multipart" },
+    { name = "uvicorn" },
+]
 
 [package.metadata]
 requires-dist = [
-    { name = "fastapi", specifier = ">=0.115" },
-    { name = "httpx2", marker = "extra == 'dev'", specifier = ">=2.0" },
-    { name = "openai", specifier = ">=1.40" },
-    { name = "pgvector", specifier = ">=0.3" },
-    { name = "psycopg", extras = ["binary"], specifier = ">=3.2" },
+    { name = "fastapi", marker = "extra == 'legacy-hosted'", specifier = ">=0.115" },
+    { name = "httpx2", marker = "extra == 'legacy-hosted'", specifier = ">=2.0" },
+    { name = "openai", marker = "extra == 'legacy-hosted'", specifier = ">=1.40" },
+    { name = "pgvector", marker = "extra == 'legacy-hosted'", specifier = ">=0.3" },
+    { name = "psycopg", extras = ["binary"], marker = "extra == 'legacy-hosted'", specifier = ">=3.2" },
     { name = "pypdf", specifier = ">=6.19.0" },
     { name = "pytest", marker = "extra == 'dev'", specifier = ">=8.0" },
-    { name = "python-dotenv", specifier = ">=1.0" },
-    { name = "python-multipart", specifier = ">=0.0.9" },
+    { name = "python-dotenv", marker = "extra == 'legacy-hosted'", specifier = ">=1.0" },
+    { name = "python-multipart", marker = "extra == 'legacy-hosted'", specifier = ">=0.0.9" },
     { name = "python-pptx", specifier = ">=1.0.2" },
     { name = "reportlab", marker = "extra == 'dev'", specifier = ">=5.0.0" },
     { name = "ruff", marker = "extra == 'dev'", specifier = "~=0.15.20" },
-    { name = "uvicorn", specifier = ">=0.30" },
+    { name = "uvicorn", marker = "extra == 'legacy-hosted'", specifier = ">=0.30" },
 ]
-provides-extras = ["dev"]
+provides-extras = ["dev", "legacy-hosted"]
 
 [[package]]
 name = "h11"

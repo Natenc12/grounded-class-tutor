@@ -25,9 +25,9 @@ from typing import TYPE_CHECKING, TextIO
 if TYPE_CHECKING:
     from collections.abc import Sequence
 
+    from gct.contracts import RetrievedChunk
     from gct.ingest.parse import ParsedUnit
     from gct.providers.base import Message
-    from gct.retriever.retrieve import RetrievedChunk
 
 MAX_FILE_BYTES = 10 * 1024 * 1024
 MAX_PAGES = 500
@@ -271,9 +271,9 @@ def inspect_document(document: Document) -> dict:
 
 
 def _selected_chunks(document: Document, pages: object) -> list[RetrievedChunk]:
+    from gct.contracts import RetrievedChunk
     from gct.grounder.answer import _build_labeled_context
     from gct.ingest.chunk import chunk_units
-    from gct.retriever.retrieve import RetrievedChunk
 
     if pages is _UNSET:
         if document.page_count > MAX_SELECTED_PAGES:

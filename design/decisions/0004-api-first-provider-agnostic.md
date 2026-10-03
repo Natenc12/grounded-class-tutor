@@ -2,6 +2,7 @@
 
 - **Date:** 2026-07-04
 - **Status:** accepted
+  Hosted-specific scope amended 2026-10-02 by ADR 0033; retained core invariants are named there.
 
 ## Context
 We initially considered a **local-first** build (run a local model in v1, swap to APIs later) to

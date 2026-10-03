@@ -1,5 +1,11 @@
 # Local GCT subscription proof
 
+> Historical account-integration proof. [ADR 0033](decisions/0033-local-desktop-primary.md)
+> now makes the local app the primary architecture. Statements below about this
+> experiment being additive describe its original scope, not the current product
+> direction. Follow the [current architecture](architecture.md) and [roadmap](roadmap.md)
+> for implementation work; retain the observed proof as bounded evidence.
+
 Nathan selected a local, downloadable direction on October 2, 2026. The immediate
 experiment is GCT's own ChatGPT sign-in followed by one answer with source
 citations. This replaces hosted deployment as the next milestone; the earlier

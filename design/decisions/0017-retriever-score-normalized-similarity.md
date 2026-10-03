@@ -3,6 +3,7 @@
 - **Date:** 2026-07-04
 - **Status:** accepted — **range claim amended 2026-07-20 by ADR 0024** (pgvector cosine distance is
   `[0,2]`, so the conversion clamps at zero; the seam rationale below stands unchanged)
+  Hosted-specific scope amended 2026-10-02 by ADR 0033; retained core invariants are named there.
 
 ## Context
 ADR 0008 placed the relevance filter at the **Grounder** seam and decided the Retriever always emits

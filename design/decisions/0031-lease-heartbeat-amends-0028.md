@@ -8,6 +8,7 @@
   budget, backoff and poll numbers, §2's lease bound on the backoff, §3's accepted head-of-line
   cost, §4's DB-blip class and §5's reaper cadence all stand unchanged — §2 deliberately so, see
   §3 below)
+  Hosted-specific scope amended 2026-10-02 by ADR 0033; retained core invariants are named there.
 
 > ADR 0020's own status line is NOT extended by this ADR, and that is a finding rather than an
 > omission. §1's retryable/terminal split never classified a lease overrun at all: the budget was

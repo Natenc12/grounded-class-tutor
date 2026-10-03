@@ -8,6 +8,7 @@
   untouched — a refused publish is neither, and buys no retry. Everything ADR 0025 and ADR 0027
   say about the connection precondition stands unchanged; the veto runs inside the same
   transaction those two exist to guarantee is real.)
+  Hosted-specific scope amended 2026-10-02 by ADR 0033; retained core invariants are named there.
 
 ## Context
 

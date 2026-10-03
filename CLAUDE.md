@@ -1,280 +1,64 @@
-# CLAUDE.md — Grounded Class Tutor
+# Grounded Class Tutor
 
-Auto-loaded each session. Sections are ordered **most stable first**; *Current status* at the bottom is
-the only part expected to churn.
+GCT is a local desktop study tutor. It answers from the user's course materials
+with file/page citations, or reports insufficient support. Citation formatting
+checks do not establish factual entailment.
 
-**Keep status thin — it must not restate the issue board.** The board is the single writer for what's
-done and what's ready; duplicating it here creates two writers for one fact and they always diverge
-(this file once listed a merged issue as ready to pick up, and later still named a merged issue as the
-next thing to build). Update this file when a *slice's shape* changes, not when an issue closes.
+## Source of truth
 
-**Slice granularity is the floor.** Any fact here that changes when a single issue closes is a bug in
-this file — it belongs on the board, which recomputes itself. A *derived* pointer cannot go stale; a
-pointer that spells out its target — an issue number, a slice label — expires exactly like a copy
-does. Fetch the target, don't name it. If `gh` is unavailable you get *no* status rather than *wrong*
-status, which is the better failure: a missing fact prompts a query, a stale one gets confidently
-built on.
+Start with `design/START-HERE.md`. `design/architecture.md`, `data-model.md`, and
+ADR 0033 define the current local architecture. Older hosted-stack ADRs and
+component diagrams are historical where ADR 0033 supersedes them. The GitHub
+issue board owns implementation assignments and completion; do not infer them
+from old Slice 4 labels or the historical launch plan.
 
-## What this is
-A RAG study tutor: answers a student's question from **their own uploaded course materials**, cited to
-the exact file + page/slide, or gives an **honest refusal** when the corpus doesn't cover it. Trust is
-the product. Full design lives in `design/` — start with `design/START-HERE.md`, then `HANDOFF.md`.
+## Runtime and development
 
-**Source-of-truth rule:** `architecture.md` + `data-model.md` + the `decisions/` ADRs are current truth.
-`vision.md` is the origin story — where it disagrees with a later doc, the later doc wins.
-
-**Local desktop direction:** Nathan selected a local app using his ChatGPT plan. The additive
-`desktop/` proof and `src/gct/local_proof.py` reuse the parser and Grounder without a database or
-API key. Start with `design/local-app-proof.md` for setup, boundaries, and remaining release work.
-This experiment does not silently replace the production architecture or database ADRs below.
-
-## Stack
-- **Core:** Python 3.10+, package `gct` under `src/` (a callable library — API/eval/scripts are thin peer callers, ADR 0009).
-- **DB:** Postgres 17 + pgvector (local V1 → Supabase V2, ADR 0006). DB name `grounded_class_tutor`.
-- **Models:** OpenAI behind a swappable provider layer (ADR 0004/0013) — `text-embedding-3-small` (dim 1536), `gpt-4o-mini`. Defaults, not commitments.
-- **Tooling:** `uv` (deps + venv). React SPA arrives in Slice 4.
-
-## Where things live
-| Path | What |
-|---|---|
-| `src/gct/` | the library — the product |
-| `scripts/` | thin peer callers (`migrate.py`, `worker.py`, and the per-slice exit smokes) |
-| `web/` | the Slice 4 client — its own `package.json`, never imported by `src/` (ADR 0032) |
-| `tests/gct/` | the test suite |
-| `design/` | current truth: ADRs, component specs, data model |
-| `.claude/skills/roadmap-to-issues/` | the one in-repo skill — projects a roadmap slice into issues |
-| `understanding/` | Nate's own notes — gitignored, never project truth |
-
-## Local dev
-```sh
-uv sync --extra dev                     # deps into .venv — `--extra dev` or you get NO pytest/ruff
-uv run python scripts/migrate.py        # apply migrations/*.sql
-uv run python scripts/smoke_slice0.py   # Slice 0 exit test → "PASS — foundation is wired."
-uv run python scripts/ask_smoke.py      # Slice 1 exit gate — SPENDS MONEY (real models, real corpus)
-uv run python scripts/ingest_smoke.py   # Slice 2 exit gate — SPENDS MONEY
-uv run python scripts/worker.py         # the poll worker — a SEPARATE process, never in the API loop (ADR 0011)
-uv run uvicorn gct.api.app:app          # the Slice 3 API — its own process; refuses to start without OPENAI_API_KEY
-uv run python scripts/http_smoke.py     # Slice 3 exit gate — launches API + worker itself; SPENDS MONEY
-uv run python scripts/http_smoke.py --launch-only   # ...the same launch, no ceremony, no cost
-uv run pytest tests/ -q                 # full suite
-uv run pytest -m db -q                  # just the Postgres-backed tests (DB must be up)
-uv run pytest -m "not live" -q          # exactly what CI runs
-uv run ruff check                       # lint — no paths, to match CI (it covers scripts/ too)
-uv run ruff format                      # formatting — writes; CI gates the same run as `--check`
-cd web && npm ci && npm run typecheck && npm run lint && npm run format:check && npm test && npm run build
-                                        # the client's gate (ADR 0032) — local only, CI does not run it yet
-```
-A bare `uv sync` doesn't just skip the dev tools, it **uninstalls** them: `pytest`/`ruff`/`reportlab`
-live in `[project.optional-dependencies].dev`, so the next two commands stop working.
-Postgres 17 is keg-only; its psql/createdb live at `/opt/homebrew/opt/postgresql@17/bin`.
-Secrets (`OPENAI_API_KEY`, `DATABASE_URL`) live in `.env` (gitignored).
-**What "green" is worth.** CI runs `ruff`, the migrations, and `pytest -m "not live"` on every PR,
-against a pgvector Postgres 17 service container (#18, extended by #32). Green proves lint, formatting
-(#34), that `migrations/*.sql` applies cleanly, and every `db`-marked test — both DB paths, on fake
-embedders.
-**The paid exit gates have their own workflow, `live-gates.yml`.** It runs the Slice 0 and Slice 2
-smokes three times each, with `OPENAI_API_KEY` from the repository secrets, only by explicit
-`workflow_dispatch` with `allow_paid_api=true`. That required boolean defaults to false. PRs,
-labels, merges, and pushes do not start paid checks. The local app uses the user's ChatGPT plan;
-routine development must not introduce paid API spending. Do not dispatch this workflow or run
-the paid local smokes without the user's explicit paid-API authorization. An authorized run
-fails rather than skips when the secret is absent; a dispatch without consent is skipped and
-does not establish a passed gate. The Slice 2 gate runs on a corpus
-`scripts/ci_corpus.py` generates, because the write path does not care what the documents say.
-**The Slice 3 gate (`http_smoke.py`) is CI-*capable* but not wired into that workflow** — a
-distinction worth keeping straight, because it is the only paid gate where "could it run there"
-and "does it" have different answers. It grounds on what it uploads, so a generated corpus was not
-a free inheritance from Slice 2; it was measured, and the questions hold. Which paid gates run on
-what cadence is a cost decision, not a capability one. Unlike the other three it starts its own
-`uvicorn` and its own worker, so nothing needs to be running first — and `--launch-only` proves
-that pair comes up for free, which is the thing to run when the machine, not the product, is in
-doubt. **Both forms first refuse a database they do not own (#138)**, and on a dev machine that
-means the dogfood database `.env` points at: `files` must be empty, so point `DATABASE_URL` at a
-scratch database before either. `--dedicated-database` skips that check and is a statement that
-nothing else writes to the database — true of a scratch one, false of the dogfood one, and using
-it to get past a refusal there re-opens exactly the hazard #138 closed (measured: a foreign job
-reaped and claimed inside a `--launch-only` launch window).
-**The Slice 1 gate (`ask_smoke.py`) cannot run in CI:** its questions are anchored to the dogfood
-corpus by file and page, and that corpus is gitignored. It stays local and needs the same explicit
-paid-API authorization, including when following `/ship` or `/land`. A green `CI` check still
-says nothing about any paid gate, and a successful `live-gates` job says nothing about Slice 1 or
-Slice 3. Inspect the actual job result at the revision being reviewed; neither a label nor a
-skipped dispatch proves a paid gate passed.
-The `db` fixture skips locally when Postgres is down but **hard-fails in CI**, so DB tests can't
-silently skip their way to green. Locally that judgement is still yours: `pytest -m db` reporting
-**skips means Postgres is down, not that the DB path passed.**
-
-**A `db` green does not prove anything was saved.** A connection sees its own uncommitted work, so
-every assertion read back through `db`'s connection holds whether or not the write was ever
-published — the savepoint failure ADR 0025 describes is invisible from one connection *by
-construction*. Assert through `db` for what the code computed; assert through **`db_other`** — a
-second connection, same database — for what actually survives. Any test whose point is that
-something was written takes it. This is not a style preference: the rule was stated in four places
-and two tests written against it still published nothing, which is what `db_other` exists to have
-caught. Its docstring carries the mechanism; ADR 0027 (accepted — writers now refuse a non-IDLE
-connection via `gct.db.require_idle`) carries the argument that got enforcement adopted.
-
-`live` marks a test that hits a paid API, and is excluded from the CI gate. Like `db`, it is
-**derived, never hand-declared**: `pytest_collection_modifyitems` in `tests/conftest.py` applies it to
-any test taking a `live_*` fixture. Constructing a real provider client through such a fixture is what
-makes a test paid, so the mark cannot drift from the dependency.
-
-Hand-declaring it failed in the dangerous direction — **two** ways at once, in opposite directions:
-- a test that FORGETS the mark runs in CI against an empty `OPENAI_API_KEY`, spending money or going
-  red for the wrong reason;
-- and a test that carries it stops being covered by CI, silently.
-
-Deriving removes both, and leaves one edge it cannot see: a test that builds a provider client
-**inline** rather than through a fixture. New paid tests MUST take a `live_*` fixture — the same "take
-the fixture and it stays true" rule `db` has. How many carriers there are *today* is a fetched fact,
-not one this file stores: `uv run pytest -m live -q --collect-only`.
-
-## Cloud sessions
-The README's Homebrew setup does not apply in a cloud container: Postgres 16 binaries are
-installed but there is no cluster and nothing is running, and `.env` is gitignored so a fresh
-clone has no `DATABASE_URL`. **Before anything that touches the database, run:**
-```sh
-bash scripts/cloud-bootstrap.sh         # creates the cluster, DB, pgvector, .env, deps, schema
-```
-Minutes on a cold container, instant afterwards. It refuses to run anywhere but a Linux
-container as root, because it rewrites `.env` — `GCT_FORCE_BOOTSTRAP=1` overrides that.
-
-`OPENAI_API_KEY` comes from the cloud environment's variables, not from the repo. Without it,
-migrations and non-live tests still run; ingest and ask do not.
-
-**Commit as the address GitHub links.** The cloud agent stamps `nate.kcmo@gmail.com`, which GitHub
-does not link to the repository owner, so a squash merge of that branch credits a co-author who
-does not exist (#151 and #152 carry one). `cloud-bootstrap.sh` pins the linked address; a session
-that commits without having run it does the same by hand first, and checks with
-`git var GIT_AUTHOR_IDENT`:
-```sh
-git config user.name "Nathan" && git config user.email "ncarrillo.kcmo@gmail.com"
-```
-
-## Conventions / invariants (do not violate)
-- **Hand-rolled RAG** (ADR 0003) — no LangChain/LlamaIndex; we build the pipeline to learn it.
-- **Provider-agnostic** — grounding logic sits *above* the provider interfaces; swapping models never changes product behavior.
-- **Embedding consistency** (ADR 0018) — two distinct rules; don't collapse them:
-  - *Which embedder gets constructed* — sourced only from `gct.config.ACTIVE_EMBEDDING_MODEL_ID`. Never hardcode a model id.
-  - *What gets recorded about a run* — `chunks.embedding_model_id` is stamped from `embedder.model_id`, i.e. "the model that **actually produced** the stored vectors" (ADR 0018). **Not** from config: the Retriever's guard compares the stamp against the active embedder, so sourcing both from config would make it compare config to itself and never fire.
-- **The PM-4 seam** — build the ingest pipeline (parse→chunk→embed→index) *pure and separate* from any job/queue/lease machinery, so Slice 2 wraps it instead of rewriting it.
-- **`owner_id` on every row**; retrieval always filters `owner_id AND class_id` (F6/F12).
-- **Citation spine** — source metadata born at parse ①, rendered to `[S#]` labels ②, resolved back to citations ③; the model only ever cites labels we handed it.
-- **Cite ADRs, don't re-argue them.** A comment may name an ADR and state what the code must do; restating the ADR's *argument* makes the comment a second writer for that fact, and the copy is the one that drifts. `_to_score`'s docstring argued its clamp deviated from ADR 0017; ADR 0024 ratified that clamp **25 minutes later**, and the stale argument then survived a deliberate docstring-correction pass and two later 0024 edits — nine days, three chances to catch it. Drift is not slow rot; it is invisible to people who are looking. Same reasoning as *Current status* below: a pointer that spells out its target expires exactly like a copy does.
-  - **Where an ADR is amended, cite both, in the form the design corpus uses:** `(ADR 0017, clamped per ADR 0024)` — never the slash form `(ADR 0017/0024)`, which says nothing about which ADR owns what. A bare cite of the amended ADR is the drift.
-  - **Which ADRs are amended is derived, never listed here** — a stored list is exactly the copy-with-a-second-writer this bullet is about, and it goes stale the next time anyone writes an amendment. `decisions/0000-template.md` owns *how* the relationship is declared (both status-line halves); one legacy ADR predates it and uses an `**Amends:**` header, so a census must catch that form too: `grep -rniE '^\- \*\*Amends|amend(s\|ed)? .*ADR [0-9]{4}' design/decisions/`.
-  - **A citation census covers every writer** — `src/`, `tests/`, `scripts/`, and `design/`, not just the library. Fixing one and leaving the others is a half-fix, and deleting the last corroborating copy of a term can orphan a reference that reads fine in isolation.
-  - This is **not** a density limit. Depth is welcome wherever the code cannot hold the fact itself — non-obvious runtime behavior, a **rejected alternative** (the thing no ADR carries and no reader can recover), an invariant a future edit would silently break. `grounder/answer.py` is the reference for how deep that can honestly go.
-
-## Current status
-The slice name below is **stored, not derived** — a deliberate exception to the rule above.
-`/roadmap-to-issues` reads this section to know which slice to project and halts if it disagrees with
-`design/roadmap.md`, so deriving it away would remove the anchor it reads by default. It moves only a
-handful of times in the project's life, which is the declared floor. Everything finer-grained than a
-slice still belongs on the board.
-
-**Slice 0 — Foundation: COMPLETE.** Schema + provider interfaces + the embedding-consistency anchor;
-4 tables, vector column, scope + HNSW indexes, smoke test green end-to-end against live models.
-
-**Slice 1 — the tracer bullet: COMPLETE.** Ingest ONE real file inline (parse→chunk→embed→index, no
-queue) → Retriever → Grounder → cited answer / refusal, script-driven, over `eval/questions.jsonl`.
-The differentiator, proven on real course materials before any HTTP/UI — see `eval/FINDINGS.md` for
-what the live runs showed. See `design/roadmap.md` and
-`design/components/{grounder,retriever,ingestion-worker}.md`.
-
-The seams it draws, which later slices wrap rather than rewrite:
-- **Write path** — `ingest_file(path, owner_id, class_id, embedder=, conn=)` takes a real PDF/PPTX to a
-  `ready`, queryable, provenance-carrying chunk set in one atomic transaction, pure of job/queue
-  machinery (PM-4 seam, ADR 0020).
-- **Read path** — `retrieve()` returns scoped, ranked `RetrievedChunk[]` with normalized scores;
-  `answer()` consumes exactly that shape and returns one of five states, deciding cite/partial/refuse
-  and validating everything the model returned (ADR 0014/0015/0016).
-- **Exit gate** — `ask(class, question)` returns a cited answer for an in-corpus question and an honest
-  refusal for an out-of-corpus one, demonstrated over the smoke suite.
-
-**Spike Pass 1 — validation, not optimization: COMPLETE.** Chunking + generation run on the tracer +
-seed smoke suite; the differentiator grounds and refuses on real course materials. **The verdict is
-ADR 0026** — read it rather than this line: it names the *configuration* validated (validation here
-is not a general claim), states the bars it does not clear, and records the red the pass caught as a
-bound on Pass 2's chunking axis. Evidence lives in `eval/FINDINGS.md`, which stays the writer of the
-measurements — the ADR reproduces none of them except where the figure is its own decision content.
-
-**Slice 2 — Real write path: COMPLETE.** The *proven* inline pipeline wrapped in the async worker +
-job queue + status store (DB-backed `jobs`, poll worker, `enqueue`/`claim`, ADR 0011) plus
-failure/idempotency — retryable/terminal split, all-or-nothing atomic replace, index-write-only
-transaction (ADR 0020, precondition per ADR 0025, guarded per ADR 0027). Additive, not a rewrite: the
-PM-4 seam did its job — this slice *wrapped* `ingest_file` rather than reshaping it. Exit met: upload
-→ `queued→processing→ready/failed` is real, at-least-once + reaper safe, no partial index ever
-visible.
-
-The seams it draws, which Slice 3 wraps rather than rewrites:
-- **Enqueue** — `enqueue(conn, path=, owner_id=, class_id=)` creates the `queued` `files` row and its
-  `jobs` row in one transaction. Slice 3 substitutes a stager for the raw path behind it.
-- **Status** — `files.status` is the domain truth an API returns, distinct from `jobs.state`; the
-  terminal reason set is the CHECK constraint's, not a prose list.
-- **Worker topology** — `scripts/worker.py` is a SEPARATE OS process, never an asyncio task inside a
-  web server's loop (ADR 0011, PM-3 addendum).
-
-An open `slice-2` row does not mean the slice is unfinished: refinements to this machinery are picked
-up on their own merits, and the exit above does not wait on them.
-
-**Slice 3 — API adapter: COMPLETE.** A thin FastAPI over the core — `POST /classes`, `POST /files`
-(stage + enqueue, ADR 0010), `GET /files/:id` (status including the terminal reason), `POST /ask`.
-**No business logic:** a handler validates, calls one library callable, and renders — the seam is
-library-callable vs. adapter (ADR 0009), not one endpoint per module. Exit met: the full loop is
-drivable over HTTP and the status surface exposes actionable terminal reasons — `scripts/http_smoke.py`
-drives it against the API and the worker as two real processes. Spec: `design/components/api.md`.
-
-The seams it draws, which Slice 4 consumes rather than re-derives:
-- **One connection per request, autocommit** (`gct.api.deps.get_conn`), because every writer refuses a
-  non-IDLE connection (ADR 0027) and a handler that reads before it writes would otherwise raise.
-- **The owner is server-side.** `gct.api.deps.owner_id` is the one source of the V1 user (ADR 0004);
-  no route reads one from the request, and the request models forbid extra fields.
-- **One error envelope.** Every non-2xx the app produces is `{error: {kind, message, detail}}` —
-  `kind` is what a client switches on, `message` names the remedy. `body_too_large`/`body_too_nested`
-  come from middleware and so appear on every route. Two non-2xx responses sit outside it — a
-  bodyless 307 to the canonical path, and a request the HTTP server itself rejects before the app
-  sees it — see api.md's error-envelope section.
-- **Refusal is a 200.** The four grounding states render as 200 bodies; only the transport-level ERROR
-  leaves as an envelope, 503 or 500 by its `kind`.
-
-**Slice 4 — Client: CURRENT.** A minimal React SPA — the five P0 surfaces (ADR 0012): create class,
-upload, ingest status, ask, view cited answer. Clean inline citation rendering (N11, the trust
-surface). SPA, not PWA; a single-purpose shell, not an app — no auth, no delete, no tap-to-source
-(V2/V3, named OUT by the ADR). The first front-end code in the repo: its tooling — Vite, TypeScript,
-npm, the dev server proxying uvicorn — is ADR 0032. `web/` is self-contained and its checks are a
-local gate only; CI does not run them yet (a Node job is a separate chore, per that ADR). **Exit — V1
-done:** upload → ingest → cited
-answer → refuses end-to-end in the UI. Demoable, not yet measured (ADR 0004). See
-`design/roadmap.md` → *Slice 4*.
-
-Two contracts Slice 4 inherits and must not rediscover:
-- **The rendering input is `POST /ask`'s 200 body, and nothing else.** `answer_prose` carries the
-  model's citations inline as `[S#]`; `citations[].label` resolves each to file + page/slide. Only
-  labels the server resolved are ever rendered as sources (citation spine ③, ADR 0015), and an answer
-  with `integrity.ok = false` must look different from a verified one.
-- **Refusal is a successful outcome, but it is not the only state.** The grounder's states (ADR
-  0014–0016) are returned, not raised. GROUNDED, PARTIAL, REFUSAL and INTEGRITY_FLAGGED arrive as
-  200 bodies — rendering a refusal as an error would be a lie about the student's materials. ERROR
-  is the exception and a client that assumes five 200s will not handle it: `provider_transient` is
-  a 503, the rest are 500s (`gct.api.routers.ask._ERROR_STATUS`).
-
-**Issue-level state is NOT recorded in this file.** Never write "#N is done" or "#N is next" here — it
-is wrong within the week, and this file is not the writer of that fact. Fetch it instead:
+- Electron owns UI coordination, file dialogs, encrypted ChatGPT credentials,
+  model requests, and cancellation.
+- The Python library owns bounded parsing, chunking, local persistence/search,
+  and the Grounder's five states.
+- SQLite and app-owned original bytes are the durable local-library target.
+- No Postgres, HTTP server, `.env`, API key, or hosted embeddings are prerequisites
+  for the normal local install. The transitional `legacy-hosted` extra exists only
+  to keep the old adapters testable until their explicit retirement.
 
 ```sh
-gh issue list --repo Natenc12/grounded-class-tutor --state open --json number,title,labels \
-  --jq 'sort_by([.labels[].name]|index("ready")==null)[]
-        | "#\(.number) [\([.labels[].name]|join(","))] \(.title)"'
+uv sync --extra dev --locked
+uv run pytest
+uv run ruff check
+uv run ruff format --check
+cd desktop
+npm ci
+npm test
+npm start
 ```
 
-`ready` rows sort first, so the frontier is on line one. No slice filter on purpose: later-slice and
-cross-cutting work reports itself instead of being invisible — it just sorts below the pickable work.
-A `slice-N` label is not guaranteed — chores and spikes may carry none, so open the row rather than
-inferring its slice from the listing. The **epic for the current slice** carries the dependency graph,
-the ready-frontier, and the open design flags — it is whichever row above is labeled `epic`
-(add `--label epic` to isolate it), never a number written down here. Re-run `/roadmap-to-issues` after
-**closing** a blocking issue — closed, not merely merged — and the board advances itself.
-`design/HANDOFF.md` →
-*Working the issue board* is the single writer for the claim-by-assign / reconcile rules — including
-which rows are pickable, and how far the recompute actually reaches.
+See `design/local-app-proof.md` for the observed subscription proof and remaining
+release limits. A checkout-launched app is not a self-contained installer.
+
+## Invariants
+
+- Keep parser, chunker, Grounder and evaluation reusable without hosted imports.
+- Preserve source identity and exact physical page/slide numbers through citations.
+- Scope every library lookup to the selected class; filenames are not identity.
+- Publish an imported original, metadata and its full index atomically.
+- Originals selected by the user must never be modified or deleted.
+- The local OS user's library survives ChatGPT sign-out and account changes.
+- Credentials stay in Electron's encrypted account store, never Python, renderer,
+  database backups, logs, or Git. Retain the existing app-data path during migration.
+- Partial or cancelled model responses cannot be accepted as completed answers.
+  Account changes invalidate pending results; shutdown waits for credential saves.
+- Provider failure is an error, not evidence that the course material lacks an answer.
+- Search ranking is not calibrated support confidence. Evaluate source retrieval
+  separately from generated claims; no paid embeddings fallback.
+- Preserve the old database, `.env`, and ignored course corpus when retiring code.
+- Change accepted design decisions through a new ADR with matching back-pointers.
+
+## Delivery
+
+Follow `AGENTS.md`: use a fleet, separate builder/reviewer ownership, one Git
+integrator, and this original checkout. Publish coherent PRs with exact-head review
+records and current CI; never force-push main or bypass protection. Routine checks
+must not spend API money. The explicit paid workflow is transitional historical
+compatibility only and requires separate user authorization to dispatch.

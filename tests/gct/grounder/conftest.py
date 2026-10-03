@@ -22,8 +22,8 @@ from collections.abc import Sequence
 
 import pytest
 
+from gct.contracts import RetrievedChunk
 from gct.providers.base import Message
-from gct.retriever.retrieve import RetrievedChunk
 
 
 class ScriptedGeneration:

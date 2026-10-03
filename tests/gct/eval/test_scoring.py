@@ -30,6 +30,7 @@ from collections.abc import Sequence
 
 import pytest
 
+from gct.contracts import RetrievedChunk
 from gct.eval import scoring
 from gct.eval.questions import ExpectedSource
 from gct.eval.scoring import (
@@ -51,7 +52,6 @@ from gct.eval.scoring import (
 from gct.grounder import answer as grounder_answer
 from gct.grounder.answer import Coverage, GrounderResult, GrounderState, Integrity
 from gct.providers.base import Message, TransientGenerationError
-from gct.retriever.retrieve import RetrievedChunk
 
 # ADR 0023 §2's table, transcribed INDEPENDENTLY of the module's own dict. Writing the parameters
 # out cell by cell is the point: importing `_SCORE_TABLE` and asserting it equals itself would

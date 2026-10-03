@@ -23,7 +23,6 @@ from pptx import Presentation
 from pypdf import PdfReader, PdfWriter
 from reportlab.pdfgen import canvas
 
-from gct.config import EMBEDDING_DIM
 from gct.ingest.parse import _OLE_SIGNATURE
 
 
@@ -144,7 +143,13 @@ class FakeEmbeddings:
     suite has its own ranking-capable stub in `tests/gct/retriever/conftest.py` (issue #5).
     """
 
-    def __init__(self, model_id: str = "fake-embed-3", dim: int = EMBEDDING_DIM) -> None:
+    def __init__(self, model_id: str = "fake-embed-3", dim: int | None = None) -> None:
+        if dim is None:
+            # Parser/chunker fixtures must load without hosted configuration or
+            # dotenv. Only legacy embedding tests need this schema default.
+            from gct.config import EMBEDDING_DIM
+
+            dim = EMBEDDING_DIM
         self._model_id = model_id
         self._dim = dim
 

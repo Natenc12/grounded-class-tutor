@@ -5,6 +5,7 @@
   kinds of bad input — corrupt, password-protected, unsupported/zero-text — and now carries a
   fourth; §1's transient half, §2's all-or-nothing replace and §3's index-write-only boundary all
   stand unchanged)
+  Hosted-specific scope amended 2026-10-02 by ADR 0033; retained core invariants are named there.
 
 ## Context
 Nothing bounded how large an ingested file could be. `compose` ran parse → chunk → **embed** over

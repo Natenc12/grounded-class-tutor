@@ -1,11 +1,8 @@
-"""Fixtures shared across every test package.
+"""Local tests by default; hosted compatibility requires explicit opt-in.
 
-Home to `db` — hoisted here from `tests/gct/ingest/conftest.py` when the retriever suite
-(issue #5) needed the same real-Postgres connection. pytest only exposes a conftest to its
-own directory and below, so a fixture two suites share has to live at the root. One copy
-keeps the FK-ordered teardown (chunks -> files -> classes) from drifting between them.
-
-Ingest-specific fixtures (the PDF/PPTX factories, `FakeEmbeddings`) deliberately stayed put.
+Legacy fixtures remain shared during migration, but their server imports happen
+only inside the fixture. Default discovery excludes hosted paths before loading
+their modules and nested fixture files. Pure parsing fixtures live under ingest.
 """
 
 from __future__ import annotations
@@ -13,13 +10,68 @@ from __future__ import annotations
 import os
 import uuid
 
-import psycopg
 import pytest
 
-from gct.db import connect
+_LEGACY_PATHS = (
+    "gct/api",
+    "gct/ask",
+    "gct/jobs",
+    "gct/providers",
+    "gct/retriever",
+    "scripts",
+    "gct/test_classes.py",
+    "gct/test_config.py",
+    "gct/test_files.py",
+    "gct/test_staging.py",
+    "gct/ingest/test_ceiling_through_worker.py",
+    "gct/ingest/test_index.py",
+    "gct/ingest/test_pipeline.py",
+)
 
 
-def pytest_collection_modifyitems(items):
+def pytest_addoption(parser):
+    parser.addoption(
+        "--legacy-hosted",
+        action="store_true",
+        help="Also collect transitional hosted/API/Postgres compatibility tests.",
+    )
+
+
+def _is_legacy_path(path, config):
+    try:
+        relative = path.resolve().relative_to(config.rootpath / "tests").as_posix()
+    except ValueError:
+        return False
+    return any(relative == entry or relative.startswith(entry + "/") for entry in _LEGACY_PATHS)
+
+
+def pytest_configure(config):
+    if config.getoption("--legacy-hosted"):
+        return
+    for argument in config.args:
+        # Explicit file/node selections bypass pytest_ignore_collect; make the
+        # opt-in requirement visible for direct test selection too.
+        path = config.invocation_params.dir / argument.split("::", 1)[0]
+        if _is_legacy_path(path, config):
+            raise pytest.UsageError(
+                "Hosted compatibility tests require --legacy-hosted and "
+                "uv sync --extra dev --extra legacy-hosted."
+            )
+
+
+def pytest_ignore_collect(collection_path, config):
+    if not config.getoption("--legacy-hosted") and _is_legacy_path(collection_path, config):
+        return True
+    return None
+
+
+def pytest_report_header(config):
+    if config.getoption("--legacy-hosted"):
+        return "GCT tests: local core + transitional hosted compatibility"
+    return "GCT tests: local core (hosted compatibility requires --legacy-hosted)"
+
+
+def pytest_collection_modifyitems(config, items):
     """Apply the `db` marker to every test that requests the `db` fixture.
 
     The marker is DERIVED from the dependency, never hand-declared. `--strict-markers` catches a
@@ -45,6 +97,13 @@ def pytest_collection_modifyitems(items):
     """
     for item in items:
         fixturenames = getattr(item, "fixturenames", ())
+        if not config.getoption("--legacy-hosted") and (
+            "db" in fixturenames or any(name.startswith("live_") for name in fixturenames)
+        ):
+            raise pytest.UsageError(
+                f"{item.nodeid} uses a hosted fixture in the local suite; "
+                "classify this compatibility test before running it."
+            )
         if "db" in fixturenames:
             item.add_marker("db")
         if any(name.startswith("live_") for name in fixturenames):
@@ -79,6 +138,10 @@ def db():
     kill. Only `OperationalError` means "no DB here"; everything else is a real error and must
     surface as one.
     """
+    import psycopg
+
+    from gct.db import connect
+
     try:
         conn = connect()
     except psycopg.OperationalError as exc:
@@ -143,6 +206,8 @@ def db_other(db):
     it can never hold an old snapshot and report a stale answer regardless of the server's default
     isolation level. It only ever reads, so it has nothing to clean up — `db` owns teardown.
     """
+    from gct.db import connect
+
     conn = connect()
     conn.autocommit = True
     try:
@@ -170,6 +235,8 @@ def db_open_txn(db):
     Teardown rolls back FIRST, so locks held by a failed test die with it instead of blocking
     `db`'s own teardown deletes.
     """
+    from gct.db import connect
+
     conn = connect()
     try:
         yield conn

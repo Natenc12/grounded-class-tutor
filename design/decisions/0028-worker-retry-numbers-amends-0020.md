@@ -13,6 +13,7 @@
   does not wrap the backoff — §3, §4 and §5 all stand unchanged; §Consequences' "on V1 a reap means
   something died" is strengthened rather than revised, since it now holds against a second worker
   too)
+  Hosted-specific scope amended 2026-10-02 by ADR 0033; retained core invariants are named there.
 
 > §§1–3 ratify numbers and rules the code already ran on; **§4 is the amendment**; **§5 is a new
 > decision** — the reaper's cadence, which ADR 0011's addendum located on the poll loop without

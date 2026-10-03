@@ -15,13 +15,14 @@ app.setPath('userData', join(app.getPath('appData'), 'Grounded Class Tutor Local
 if (!app.requestSingleInstanceLock()) { app.quit(); process.exit(0); }
 
 let window, chatgpt, sourceStore, source, active, closing = false;
-let modelRevision = 0, answerSource;
+let modelRevision = 0, answerSource, restoringConnection;
 const sdkOperations = new Set();
 const appLifetime = new AbortController();
-const state = { session: { status: 'disconnected', sharing: false }, models: [], busy: null,
+const state = { session: { status: 'restoring', sharing: false }, models: [], busy: null,
   library: { classes: [], selectedClassId: null, documents: [], selectedDocumentId: null } };
 const snapshot = () => structuredClone(state);
 const publish = () => {
+  if (closing) return;
   if (window && !window.isDestroyed()) window.webContents.send('gct:state', snapshot());
 };
 
@@ -66,7 +67,7 @@ function runSDK(operation) {
   return pending;
 }
 function setSession(value) {
-  if (closing) return;
+  if (closing || restoringConnection?.signal.aborted) return;
   const changed = state.session.profileId !== value.profileId;
   state.session = {
     status: value.status, sharing: value.sharing === true,
@@ -89,19 +90,47 @@ function assertIdle() {
   if (closing) throw new ProofError('cancelled', 'GCT is closing.');
   if (state.busy) throw new ProofError('busy', 'Finish or cancel the current action first.');
 }
-async function refreshModels() {
+async function refreshModels(signal = appLifetime.signal) {
   const revision = ++modelRevision;
   state.models = [];
   if (closing || state.session.status !== 'connected' || !state.session.sharing) { publish(); return; }
   const profile = state.session.profileId;
-  const models = await runSDK(() => chatgpt.listModels({ signal: appLifetime.signal }));
-  if (closing || revision !== modelRevision || state.session.profileId !== profile ||
+  const models = await runSDK(() => chatgpt.listModels({ signal }));
+  if (closing || signal.aborted || revision !== modelRevision || state.session.profileId !== profile ||
       state.session.status !== 'connected' || !state.session.sharing) return;
   state.models = models.map(model => ({ slug: model.slug, display_name: model.displayName }));
   publish();
 }
+async function restoreConnection({ clearNotice = true } = {}) {
+  assertIdle();
+  const controller = new AbortController();
+  active = controller; restoringConnection = controller;
+  state.busy = 'restore';
+  if (clearNotice) delete state.notice;
+  publish();
+  try {
+    // Reading saved credentials never starts OAuth. Keep this flight owned until
+    // the read settles: native credential dialogs are not cancelled by AbortSignal.
+    const session = await runSDK(() => chatgpt.getSession());
+    assertActive(controller);
+    setSession(session);
+    await refreshModels(controller.signal);
+    assertActive(controller);
+  } finally {
+    controller.abort();
+    if (restoringConnection === controller) restoringConnection = undefined;
+    if (active === controller) active = undefined;
+    if (state.session.status === 'restoring') {
+      state.session = { status: 'storage_unavailable', sharing: false };
+    }
+    state.busy = null; publish();
+  }
+}
 async function connect() {
   assertIdle();
+  if (['restoring', 'storage_unavailable'].includes(state.session.status)) {
+    throw new ProofError('saved_connection_unavailable', 'Retry your saved connection before starting a new sign-in. Existing credentials have been preserved.');
+  }
   clearAnswer();
   state.busy = 'signin'; publish();
   try {
@@ -336,6 +365,8 @@ function registerActions() {
   const actions = {
     getState: () => {},
     signIn: connect,
+    retryConnection: () => restoreConnection(),
+    cancelConnection: () => { if (state.busy === 'restore') cancelCurrent(); },
     cancelSignIn: () => chatgpt.cancelSignIn(),
     signOut: async () => {
       assertIdle(); clearAnswer(); state.busy = 'signin'; publish();
@@ -345,7 +376,7 @@ function registerActions() {
       }
       finally { state.busy = null; publish(); }
     },
-    listModels: async () => { assertIdle(); await refreshModels(); },
+    listModels: () => restoreConnection(),
     chooseFile: () => selectDocument(false),
     useSample: () => selectDocument(true),
     ask, createClass, selectClass, selectStoredDocument, deleteDocument, deleteClass, backupLibrary, showCitation, prepareSearch,
@@ -404,7 +435,11 @@ async function startApp() {
       await shell.openExternal(url.href);
     },
   });
-  chatgpt.subscribe(setSession);
+  // subscribe immediately sends the SDK's initial disconnected snapshot. Keep
+  // the app's restoring state until its first read of saved credentials settles.
+  let subscribed = false;
+  chatgpt.subscribe(value => { if (subscribed) setSession(value); });
+  subscribed = true;
   window = new BrowserWindow({ width: 1120, height: 850, minWidth: 720, minHeight: 620,
     title: 'Grounded Class Tutor', backgroundColor: '#f5f3ed',
     webPreferences: { preload: join(directory, 'preload.cjs'), nodeIntegration: false,
@@ -419,7 +454,7 @@ async function startApp() {
   await window.loadFile(join(directory, 'renderer/index.html'));
   try { await localAction('library', controller => reloadLibrary(controller)); }
   catch (error) { state.notice = safeMessage(error); publish(); }
-  try { setSession(await runSDK(() => chatgpt.getSession())); await refreshModels(); }
+  try { await restoreConnection({ clearNotice: false }); }
   catch (error) { state.notice = safeMessage(error); publish(); }
 }
 

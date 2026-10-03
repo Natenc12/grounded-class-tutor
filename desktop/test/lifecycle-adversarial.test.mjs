@@ -75,6 +75,8 @@ async function harness(overrides = {}) {
     __sdk: { cancelSignIn() {}, ...overrides.sdk }, __window: fakeWindow, __sourceStore: sourceStore, __class: storedClass,
   });
   vm.runInContext(`${source}\nwindow = __window; chatgpt = __sdk; sourceStore = __sourceStore;
+    // This harness skips startup and models a completed empty-store restoration.
+    setSession({ status: 'disconnected', sharing: false });
     state.library.classes = [__class]; state.library.selectedClassId = __class.id;
     registerActions(); globalThis.testAPI = { state, snapshot, setSession, refreshModels,
     setSource: value => { source = value; }, source: () => source };`, context);

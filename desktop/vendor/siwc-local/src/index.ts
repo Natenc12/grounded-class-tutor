@@ -1,3 +1,7 @@
+/* GCT local modification, 2026-10-03: distinguish unreadable saved storage from
+ * revoked credentials and clear stale transient errors after a successful read.
+ * See ../LICENSE and desktop/vendor/README.md. These modifications use the same
+ * noncommercial license as the upstream OpenAI SDK. */
 import { randomUUID } from "node:crypto";
 import { homedir } from "node:os";
 import { isAbsolute, join } from "node:path";
@@ -85,6 +89,16 @@ export function createChatGPT(config: ChatGPTConfig): ChatGPTClient {
     return snapshot();
   };
   const read = () => store.withLock(async () => (await store.read()) ?? emptyState());
+  const unavailableSession = (error: unknown): SessionState => ({
+    status: "storage_unavailable", sharing: false, error: asError(error).toJSON(),
+  });
+  const sessionAfterError = async (error: ChatGPTError): Promise<SessionState> => {
+    // Do not immediately prompt the OS again after its credential read failed.
+    if (error.code.startsWith("storage_")) return unavailableSession(error);
+    try {
+      return { ...safeSession(await read()), ...(error.code !== "cancelled" ? { error: error.toJSON() } : {}) };
+    } catch (storageError) { return unavailableSession(storageError); }
+  };
   const cancelRequests = () => { epoch++; for (const request of requests) request.abort(); };
   const assertIdle = () => {
     if (pendingSignIn || changingProfile) throw new ChatGPTError("connection_busy", "Finish the connection change before continuing.");
@@ -154,8 +168,7 @@ export function createChatGPT(config: ChatGPTConfig): ChatGPTClient {
       const typed = asError(error);
       if (typed.code !== "cancelled" && currentEpoch === epoch) {
         // HTTP authorization failures alone do not establish that OAuth was revoked.
-        const saved = await read().catch(() => undefined);
-        publish({ ...(saved ? safeSession(saved) : state), error: typed.toJSON() });
+        publish(await sessionAfterError(typed));
       }
       throw typed;
     } finally {
@@ -255,8 +268,7 @@ export function createChatGPT(config: ChatGPTConfig): ChatGPTClient {
       } catch (error) {
         const typed = asError(error);
         if (operation === epoch) {
-          const saved = await read().catch(() => emptyState());
-          publish({ ...safeSession(saved), ...(typed.code !== "cancelled" ? { error: typed.toJSON() } : {}) });
+          publish(await sessionAfterError(typed));
         }
         throw typed;
       } finally {
@@ -269,10 +281,9 @@ export function createChatGPT(config: ChatGPTConfig): ChatGPTClient {
     async getSession() {
       if (pendingSignIn || changingProfile) return snapshot();
       try {
-        const next = safeSession(await read());
-        return publish({ ...next, ...(state.profileId === next.profileId && state.error ? { error: state.error } : {}) });
+        return publish(safeSession(await read()));
       } catch (error) {
-        return publish({ status: "reauth_required", sharing: false, error: asError(error).toJSON() });
+        return publish(unavailableSession(error));
       }
     },
 

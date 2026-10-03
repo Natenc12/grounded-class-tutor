@@ -97,7 +97,7 @@ test('SDK preserves encrypted credentials when the OS encryption provider become
   encryption.isAvailable = () => false;
   t.mock.method(globalThis, 'fetch', () => assert.fail('No request may escape unavailable credential storage'));
   const session = await client.getSession();
-  assert.equal(session.status, 'reauth_required');
+  assert.equal(session.status, 'storage_unavailable');
   assert.equal(session.error.code, 'storage_encryption_unavailable');
   await assert.rejects(client.streamResponse(options()), error => error.code === 'storage_encryption_unavailable');
   assert.equal(await readFile(filename, 'utf8'), before);

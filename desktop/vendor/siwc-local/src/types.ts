@@ -1,3 +1,7 @@
+/* GCT local modification, 2026-10-03: expose a safe storage-unavailable session
+ * state without changing stored credentials or connection formats. See ../LICENSE
+ * and desktop/vendor/README.md. These modifications use the same noncommercial
+ * license as the upstream OpenAI SDK. */
 export interface SessionIdentity {
   name?: string;
   email?: string;
@@ -15,7 +19,7 @@ export interface SessionError {
 
 /** Safe to send to a renderer. Credentials never form part of this type. */
 export interface SessionState {
-  status: "disconnected" | "connecting" | "connected" | "reauth_required";
+  status: "disconnected" | "connecting" | "connected" | "reauth_required" | "storage_unavailable";
   sharing: boolean;
   profileId?: string;
   profileLabel?: string;

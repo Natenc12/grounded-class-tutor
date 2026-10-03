@@ -83,7 +83,10 @@ def retrieve(
         "FROM chunks_fts JOIN chunks c ON c.rowid = chunks_fts.rowid "
         "JOIN documents d ON d.id = c.document_id WHERE "
         + " AND ".join(conditions)
-        + " ORDER BY bm25(chunks_fts, 1.0, 0.35), d.id, c.page_or_slide, c.ordinal LIMIT ?",
+        # UUIDs are identity, not relevance. Break exact ties by stable source
+        # properties so identical reimports do not arbitrarily change evidence.
+        + " ORDER BY bm25(chunks_fts, 1.0, 0.35), d.filename, d.sha256, "
+        "c.page_or_slide, c.ordinal LIMIT ?",
         parameters,
     ).fetchall()
     selected = []

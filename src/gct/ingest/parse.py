@@ -201,12 +201,20 @@ def _parse_pptx(path: Path) -> list[ParsedUnit]:
                 if shape.has_table:
                     # Preserve grid positions. Carry a vertical merge's label
                     # into each covered row; horizontal continuations stay empty.
+                    table = shape.table
+                    row_count, column_count = len(table.rows), len(table.columns)
                     carried: dict[tuple[int, int], str] = {}
-                    for row_index, row in enumerate(shape.table.rows):
+                    for row_index, row in enumerate(table.rows):
                         cells = []
                         for column, cell in enumerate(row.cells):
                             if cell.is_merge_origin:
-                                for offset in range(1, cell.span_height):
+                                row_span, column_span = cell.span_height, cell.span_width
+                                if not (
+                                    1 <= row_span <= row_count - row_index
+                                    and 1 <= column_span <= column_count - column
+                                ):
+                                    raise ValueError("table merge extends beyond its grid")
+                                for offset in range(1, row_span):
                                     carried[row_index + offset, column] = cell.text
                             cells.append(
                                 carried.get((row_index, column), "")

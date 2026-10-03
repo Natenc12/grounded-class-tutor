@@ -193,6 +193,22 @@ def test_vertical_table_merge_preserves_category_and_column_membership(tmp_path)
     )
 
 
+@pytest.mark.parametrize("attribute", ["rowSpan", "gridSpan"])
+def test_out_of_grid_table_merge_is_rejected_before_expansion(tmp_path, attribute):
+    path = tmp_path / "malformed-merge.pptx"
+    deck = Presentation()
+    slide = deck.slides.add_slide(deck.slide_layouts[6])
+    table = slide.shapes.add_table(2, 2, Inches(1), Inches(1), Inches(4), Inches(2)).table
+    table.cell(0, 0).text = "A bounded table"
+    # An ordinary-sized malformed fixture exercises the same admission guard as
+    # a billion-row declaration without risking a large allocation on regression.
+    table.cell(0, 0)._tc.set(attribute, "1000")
+    deck.save(path)
+    status, events = exchange({"file_path": str(path)}, inspect=True)
+    assert status == 1
+    assert events[0]["code"] == "unparseable"
+
+
 @pytest.mark.parametrize(
     "digits", ["9" * 5_000, "٠" * 5_000 + "١"], ids=["long-ascii", "long-unicode"]
 )

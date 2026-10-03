@@ -263,7 +263,9 @@
     else if (flagged) {
       const reasons = Array.isArray(result.integrity?.reasons) ? result.integrity.reasons.map(text).filter(Boolean) : [];
       alert = ["This response needs review. Check its claims against your material.", ...reasons].join("\n");
-    } else if (refused) alert = "The selected passages don’t support an answer to this question. Try different pages or a more focused question.";
+    } else if (refused) alert = effectiveScope() === "pages"
+      ? "The selected passages don’t support an answer to this question. Try different pages or a more focused question."
+      : "The matching passages don’t support an answer. Search may miss related wording; rephrase your question or select relevant pages.";
     else if (cancelled) alert = "The request was cancelled. You can change your selection and ask again.";
     else if (missingCitations) alert = "No usable source references were returned. Check this response against your material.";
     else if (partial) alert = "The selected passages support only part of the answer. Review the gaps below.";

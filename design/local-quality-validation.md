@@ -3,6 +3,10 @@
 Observed October 2, 2026. These are bounded measurements, not a claim of general
 accuracy or a comparison proving superiority over the retired embedding stack.
 
+The [October 3 local embedding comparison](local-embedding-validation.md) builds
+on this unchanged lexical baseline. It reports offline source retrieval separately
+from the connected-answer pilot below; no new generation calls were made.
+
 ## Retrieval and actual answers are different measurements
 
 The offline runner uses the real PDF/PPTX parser, chunker, SQLite library and search.

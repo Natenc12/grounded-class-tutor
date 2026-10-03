@@ -54,14 +54,20 @@ jobs:
       - name: Test local parser, core, library and bridge
         run: uv run pytest
 
+      - name: Check retrieval-study scoring and safe asset downloads with fakes
+        run: |
+          uv run python eval/local-embeddings/test_runner.py
+          uv run pytest eval/local-embeddings/runtime/test_download_assets.py
+
       - name: Measure synthetic retrieval without model calls
         run: |
           uv run python -m gct.eval.local_quality --suite eval/local-quality/suite.json > /tmp/gct-development-quality.json
           uv run python -m gct.eval.local_quality --suite eval/local-quality/aster.json > /tmp/gct-aster-quality.json
+          uv run python -m gct.eval.local_quality --suite eval/local-quality/embedding-holdout.json > /tmp/gct-holdout-quality.json
           uv run python - <<'PY'
           import json
           from pathlib import Path
-          for name in ("development", "aster"):
+          for name in ("development", "aster", "holdout"):
               report = json.loads(Path(f"/tmp/gct-{name}-quality.json").read_text())
               print(name, json.dumps(report["retrieval"]))
           PY

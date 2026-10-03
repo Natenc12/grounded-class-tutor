@@ -14,6 +14,18 @@ Only the lead changes branches, commits, pushes, opens PRs, or merges. Keep PRs
 coherent, review their final commit, and require current CI without admin bypass.
 Use bounded review rounds tied to concrete findings, rather than endless polling.
 
+Test proposals before calling them improvements. For retrieval or performance
+changes, state the comparison and acceptance criteria before inspecting results,
+keep an unchanged baseline, report per-case regressions and resource costs, and
+use independent held-out cases before choosing a default. Preserve unsuccessful
+experiments; a benchmark result is not a factual-answer accuracy claim.
+
+No money may be spent. Use local computation and free public downloads; do not
+use paid APIs, credits, hosted inference, paid runners, storage overages, purchases
+or new subscriptions. The local embedding study makes no ChatGPT generation calls.
+When a proposed operation's cost cannot be established as zero, continue with
+independent free work instead of initiating that operation.
+
 The product is a local desktop tutor under ADR 0033. Preserve course files,
 existing account credentials, and the old local database during migration.
 Library operations are local; generation uses the user's authorized ChatGPT

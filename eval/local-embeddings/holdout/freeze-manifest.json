@@ -1,0 +1,30 @@
+{
+  "version": 1,
+  "status": "Originally unseen; exposed once after candidate/configuration freeze on 2026-10-03. This is now a public regression fixture, not a fresh holdout.",
+  "authored_by": "migration_governance independent agent",
+  "original_local_bundle_sha256": "3b9c50dd828ea4b157ff0558e7541c758ac3fe2f0323d7ba79d698df191b5c12",
+  "original_bundle_note": "Historical local freeze also covered generated PDF bytes, author validation and preregistration. The canonical source and control inputs below retain their exact original frozen bytes.",
+  "canonical_inputs": [
+    {
+      "path": "../../local-quality/embedding-holdout.json",
+      "sha256": "9c41c1020c9619d8e7c5721eefe8a6e7649a1c54ad2028c51734e1c39961d316"
+    },
+    {
+      "path": "foreign-classes.json",
+      "sha256": "1f974e54ed4f6ffe528590dbe0eda2792d5956aab81276171c4d3629bc14b3fb"
+    }
+  ],
+  "counts": {
+    "cases": 34,
+    "answerable": 28,
+    "unsupported": 6,
+    "required_groups": 34,
+    "paraphrases": 8,
+    "zero_content_overlap_paraphrases": 4,
+    "documents": 7,
+    "pages": 34,
+    "foreign_classes": 3,
+    "foreign_pages": 3,
+    "empty_control_classes": 1
+  }
+}

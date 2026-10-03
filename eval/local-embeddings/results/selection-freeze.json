@@ -1,0 +1,16 @@
+{
+  "candidate": "all-MiniLM-L6-v2-qint8-arm64",
+  "retrieval": "equal-weight reciprocal-rank fusion",
+  "rrf_k": 60,
+  "candidate_limit_each": 50,
+  "final_chunks": 8,
+  "context_chars": 40000,
+  "batch_size": 16,
+  "token_overlap": 32,
+  "encoder_fingerprint": "9bba96885968853e8949c6d3c574e7d47c81d5c6f11156949712b2bb15901f9b",
+  "encoder_sha256": "c7394706767284c41348fd9d5ec3608790bebfd45d9ecdcb9b4672cc03c464b9",
+  "runner_sha256": "915373a2523568a14056d87e369a1a20872075417754ea27f1e23f1e4a970c3c",
+  "heldout_exposed": false,
+  "reason": "Only hybrid retains every existing answerable case and fixes known paraphrase; MiniLM fits resource budgets, BGE16 fails memory. Earlier rank regressions retained.",
+  "source_git": "06b45e6129c456ae7736aea0f11469716341820d"
+}

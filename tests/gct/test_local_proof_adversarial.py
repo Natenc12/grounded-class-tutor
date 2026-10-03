@@ -14,7 +14,7 @@ import zipfile
 import pytest
 from pptx import Presentation
 from pptx.util import Inches
-from pypdf import PdfWriter, filters
+from pypdf import PdfWriter, apply_configuration, filters, get_configuration
 from pypdf.generic import DecodedStreamObject, DictionaryObject, NameObject
 
 from gct import local_proof
@@ -142,6 +142,50 @@ def test_small_compressed_pdf_succeeds_and_restores_decoder_globals(tmp_path, mo
     assert events[0]["page_count"] == 1
     assert filters.decode_stream_data is original_decode
     assert filters.ZLIB_MAX_OUTPUT_LENGTH == original_limit
+
+
+def test_pdf_remaining_budget_reaches_decoder_before_allocation(tmp_path, monkeypatch):
+    path = compressed_pdf(tmp_path, [40_000, 40_000])
+    original_decode = filters.decode_stream_data
+    observed_limits = []
+    decoded_sizes = []
+
+    def observed_decode(stream):
+        observed_limits.append(get_configuration().zlib_maximum_output_length)
+        data = original_decode(stream)
+        decoded_sizes.append(len(data))
+        return data
+
+    monkeypatch.setattr(filters, "decode_stream_data", observed_decode)
+    monkeypatch.setattr(local_proof, "MAX_PDF_STREAM_BYTES", 60_000)
+    monkeypatch.setattr(local_proof, "MAX_PDF_DECODED_BYTES", 65_000)
+    original_configuration = get_configuration()
+    status, events = exchange({"file_path": str(path)}, inspect=True)
+    assert status == 1
+    assert events[0]["code"] == "too_long"
+    assert observed_limits == [60_000, 24_998]
+    # The second stream must fail inside the bounded decoder, before it returns
+    # all 40,002 bytes. A post-decode aggregate check alone is not sufficient.
+    assert decoded_sizes == [40_002]
+    assert get_configuration() is original_configuration
+    assert filters.decode_stream_data is observed_decode
+
+
+@pytest.mark.parametrize("sizes", [[40_000], [80_000]])
+def test_pdf_guard_restores_actual_configuration_on_success_and_failure(
+    tmp_path, monkeypatch, sizes
+):
+    path = compressed_pdf(tmp_path, sizes)
+    monkeypatch.setattr(local_proof, "MAX_PDF_STREAM_BYTES", 60_000)
+    monkeypatch.setattr(local_proof, "MAX_PDF_DECODED_BYTES", 65_000)
+    before = get_configuration()
+    with apply_configuration(zlib_maximum_output_length=70_000) as enclosing:
+        status, events = exchange({"file_path": str(path)}, inspect=True)
+        assert status == (0 if sizes == [40_000] else 1)
+        assert events[0]["type"] == ("document" if status == 0 else "error")
+        assert get_configuration() is enclosing
+        assert get_configuration().zlib_maximum_output_length == 70_000
+    assert get_configuration() is before
 
 
 def test_table_only_slide_remains_citable_after_blank_slide_and_merged_cells(tmp_path):

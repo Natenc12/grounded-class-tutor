@@ -193,6 +193,26 @@ def test_vertical_table_merge_preserves_category_and_column_membership(tmp_path)
     )
 
 
+def test_long_vertical_merge_text_is_not_multiplied_by_the_row_count(tmp_path):
+    path = tmp_path / "long-merged-label.pptx"
+    deck = Presentation()
+    slide = deck.slides.add_slide(deck.slide_layouts[6])
+    table = slide.shapes.add_table(250, 2, Inches(1), Inches(1), Inches(4), Inches(3)).table
+    table.cell(0, 0).merge(table.cell(249, 0))
+    original = "X" * 4000
+    table.cell(0, 0).text = original
+    for row in range(250):
+        table.cell(row, 1).text = f"Fact {row + 1}"
+    deck.save(path)
+    status, events = exchange({"file_path": str(path)}, inspect=True)
+    assert status == 0
+    text = events[0]["pages"][0]["text"]
+    assert text.count(original) == 1
+    assert "(same merged cell as row 1, column 1) | Fact 250" in text
+    assert len(text) < 20_000
+    assert events[0]["truncated"] is False
+
+
 @pytest.mark.parametrize("attribute", ["rowSpan", "gridSpan"])
 def test_out_of_grid_table_merge_is_rejected_before_expansion(tmp_path, attribute):
     path = tmp_path / "malformed-merge.pptx"

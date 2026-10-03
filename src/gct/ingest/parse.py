@@ -214,8 +214,21 @@ def _parse_pptx(path: Path) -> list[ParsedUnit]:
                                     and 1 <= column_span <= column_count - column
                                 ):
                                     raise ValueError("table merge extends beyond its grid")
+                                origin_text = cell.text
+                                # Repeat small category labels for readability. A
+                                # large merged value is emitted in full once; later
+                                # rows reference that cell instead of multiplying
+                                # arbitrary source text by the row count.
+                                continuation = (
+                                    origin_text
+                                    if len(origin_text) <= 160
+                                    else (
+                                        f"(same merged cell as row {row_index + 1}, "
+                                        f"column {column + 1})"
+                                    )
+                                )
                                 for offset in range(1, row_span):
-                                    carried[row_index + offset, column] = cell.text
+                                    carried[row_index + offset, column] = continuation
                             cells.append(
                                 carried.get((row_index, column), "")
                                 if cell.is_spanned

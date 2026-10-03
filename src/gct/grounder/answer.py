@@ -237,9 +237,10 @@ class _ParsedAnswer:
     """One generation attempt, text-parsed. Internal - never leaves this module."""
 
     prose: str  # the reply minus EVERY coverage line, stripped
-    ordinals: list[int]  # every [S#] found in prose, in order, duplicates kept
+    ordinals: list[int]  # bounded [S#] ordinals in prose order, duplicates kept
     coverage: Coverage | None  # None unless EXACTLY ONE marker was found and parsed
     marker_count: int  # how many coverage lines the model emitted; the contract asks for 1
+    oversized_label: bool = False  # do not convert attacker-sized decimal strings to int
 
 
 def _build_labeled_context(
@@ -320,9 +321,18 @@ def _parse(raw: str) -> _ParsedAnswer:
     # so the two can never disagree about what a marker line is.
     prose = _COVERAGE_RE.sub("", raw).strip()
     coverage = _parse_coverage(matches[0].group("body")) if len(matches) == 1 else None
-    ordinals = [int(m.group("ordinal")) for m in _LABEL_RE.finditer(prose)]
+    labels = [m.group("ordinal") for m in _LABEL_RE.finditer(prose)]
+    # Ten decimal digits already exceed a feasible source count. Bound before
+    # conversion: Python rejects enormous integers, which must be a structural
+    # failure with the normal retry/flag behavior, not an uncaught parser error.
+    oversized_label = any(len(label) > 10 for label in labels)
+    ordinals = [int(label) for label in labels if len(label) <= 10]
     return _ParsedAnswer(
-        prose=prose, ordinals=ordinals, coverage=coverage, marker_count=len(matches)
+        prose=prose,
+        ordinals=ordinals,
+        coverage=coverage,
+        marker_count=len(matches),
+        oversized_label=oversized_label,
     )
 
 
@@ -345,6 +355,9 @@ def _validate(parsed: _ParsedAnswer, n_sources: int) -> list[str]:
     moves the V1/V3 line; move it in the spec first.
     """
     reasons: list[str] = []
+
+    if parsed.oversized_label:
+        reasons.append("cited label ordinal was too long to be a provided source")
 
     dangling = sorted({o for o in parsed.ordinals if not 1 <= o <= n_sources})
     if dangling:

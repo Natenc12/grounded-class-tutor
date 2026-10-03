@@ -121,6 +121,8 @@ def _strip_nul(units: list[ParsedUnit]) -> list[ParsedUnit]:
 def _parse_pdf(path: Path) -> list[ParsedUnit]:
     try:
         reader = PdfReader(path)
+    except pypdf.errors.LimitReachedError as exc:
+        raise ParseError("too_long", "PDF parser expansion limit exceeded") from exc
     except pypdf.errors.PyPdfError as exc:
         raise ParseError("unparseable", f"could not read PDF {path.name}: {exc}") from exc
 
@@ -131,6 +133,8 @@ def _parse_pdf(path: Path) -> list[ParsedUnit]:
     for i, page in enumerate(reader.pages, start=1):
         try:
             text = page.extract_text() or ""
+        except pypdf.errors.LimitReachedError as exc:
+            raise ParseError("too_long", "PDF parser expansion limit exceeded") from exc
         except Exception as exc:
             raise ParseError(
                 "unparseable", f"could not extract text from {path.name} page {i}: {exc}"
@@ -194,6 +198,45 @@ def _parse_pptx(path: Path) -> list[ParsedUnit]:
         try:
             lines = []
             for shape in _iter_shapes(slide.shapes):
+                if shape.has_table:
+                    # Preserve grid positions. Carry a vertical merge's label
+                    # into each covered row; horizontal continuations stay empty.
+                    table = shape.table
+                    row_count, column_count = len(table.rows), len(table.columns)
+                    carried: dict[tuple[int, int], str] = {}
+                    for row_index, row in enumerate(table.rows):
+                        cells = []
+                        for column, cell in enumerate(row.cells):
+                            if cell.is_merge_origin:
+                                row_span, column_span = cell.span_height, cell.span_width
+                                if not (
+                                    1 <= row_span <= row_count - row_index
+                                    and 1 <= column_span <= column_count - column
+                                ):
+                                    raise ValueError("table merge extends beyond its grid")
+                                origin_text = cell.text
+                                # Repeat small category labels for readability. A
+                                # large merged value is emitted in full once; later
+                                # rows reference that cell instead of multiplying
+                                # arbitrary source text by the row count.
+                                continuation = (
+                                    origin_text
+                                    if len(origin_text) <= 160
+                                    else (
+                                        f"(same merged cell as row {row_index + 1}, "
+                                        f"column {column + 1})"
+                                    )
+                                )
+                                for offset in range(1, row_span):
+                                    carried[row_index + offset, column] = continuation
+                            cells.append(
+                                carried.get((row_index, column), "")
+                                if cell.is_spanned
+                                else cell.text
+                            )
+                        if any(cell.strip() for cell in cells):
+                            lines.append(" | ".join(cells))
+                    continue
                 if not shape.has_text_frame:
                     continue
                 for paragraph in shape.text_frame.paragraphs:

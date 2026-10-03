@@ -1,0 +1,884 @@
+{
+  "version": 1,
+  "description": "Original synthetic cooperative lending material authored as an unseen local retrieval holdout on 2026-10-03, before embedding results. Retrieval only: no generated answer or real-world policy claim.",
+  "documents": [
+    {
+      "file": "Borrowing handbook.pdf",
+      "pages": [
+        "Alder game cooperative: borrowing handbook, 1 October\nStandard boxed games have a loan period of 21 days. One extension is\nallowed if nobody is waiting for that title. Staff check the reservation\nqueue before approving an extension.",
+        "Alder pocket collection\nPocket games are lent for seven days. This collection does not permit\nrenewals. The pocket label identifies the collection; the size of a\ngame's outer packaging does not determine its loan category.",
+        "Alder reservations\nReservations are ordered by the time a request was received. When a copy\nbecomes available, staff notify the first person in the queue. The\ncollection window expires 48 hours after that notification, after which\nthe offer passes to the next person.",
+        "Repeated access\nA patron becomes eligible for another copy of the identical title\nseventy-two hours after check-in. This interval gives other members an\nopportunity to use popular sets.",
+        "Delegated collection\nAn authorized representative presents the reservation identifier plus\nwritten permission from the account holder at the service counter. Staff\nrecord the collector's name beside the transaction.",
+        "Alder reference collection\nReference editions remain in the reading room. Members may consult them\nthere but cannot take them home. Ordinary game membership does not\nchange this restriction."
+      ]
+    },
+    {
+      "file": "Operations notebook.pdf",
+      "pages": [
+        "Damage intake\nDamaged components or incomplete sets belong in the quarantine crate.\nNotify the inventory lead using the condition checklist. Reshelving\nawaits recorded clearance from that lead.",
+        "Unstaffed returns\nDeposit ordinary sets through the south entrance chute overnight.\nFragile editions require handover during opening times. The intake team\nempties the chute each morning.",
+        "Alder access arrangements\nThe west entrance provides a step-free route. Spoken versions of game\ninstructions can be heard through headphones borrowed at the information\ndesk. Large-print rules are stored with each game's ordinary rulebook.",
+        "Alder circulation records\nIndividual borrowing histories are visible to the account holder and\ncirculation staff while an account is open. Ninety days after account\nclosure, the individual history is erased. Anonymous monthly totals are\nretained.",
+        "Alder collection hours\nA quiet collection session takes place on the last Thursday of each\nmonth, from 18:30 until 19:00. The ordinary service counter opens\nTuesday through Saturday from 10:00 until 16:00.",
+        "Alder stock-count day\nThe third Wednesday of each month is the inventory session. The counter\ncloses at 14:00 on that day. Any reservation collected that Wednesday\nmust be collected before 14:00."
+      ]
+    },
+    {
+      "file": "Inventory ledger.pdf",
+      "pages": [
+        "Alder stock ledger: Mosaic Harbour\nMosaic Harbour has six copies in the catalogue. Four are ready for\nborrowing and two are undergoing repair. These are copy counts, not the\nnumber of players supported by the game.",
+        "Alder stock ledger: Lantern Route\nLantern Route has nine copies in the catalogue. Seven are ready for\nborrowing and two are undergoing repair. A copy undergoing repair cannot\nbe reserved for collection.",
+        "Alder stock ledger: Driftwood Market\nDriftwood Market has eight copies in the catalogue. Three are ready for\nborrowing and five are undergoing repair. The ledger does not project\nwhen repairs will finish.",
+        "Alder component store: scoring markers\nThe store began the week with 120 scoring markers. Forty-five were\nallocated to the festival and eighteen to repairs. No other markers\nentered or left the store during that week.",
+        "Alder cataloguing session\nTwo volunteer teams sorted rulebooks. The morning team catalogued 18\nbooklets and the afternoon team catalogued 27. Both teams worked for\nthree hours. The task was cataloguing, not repairing game copies."
+      ]
+    },
+    {
+      "file": "Policy circulars.pdf",
+      "pages": [
+        "Alder circular issued 14 October, effective 20 October\nThe standard boxed-game loan period becomes 28 days on 20 October. This\ncircular replaces the standard loan period in the 1 October borrowing\nhandbook. The extension condition and other collection categories are\nunchanged.",
+        "Alder guest festival, 24 October\nFestival visitors may use a demonstration game for two hours within the\nevent hall. Demonstration loans cannot be renewed. Every demonstration\nset must be returned by the hall's 18:00 closing time. The festival\narrangement does not grant a home loan.",
+        "Alder circulation notice, 16 October\nThe next printed catalogue will include an accessibility symbol beside\ngames with large-print instructions. Existing game identifiers remain\nunchanged. This publication notice does not set loan periods."
+      ]
+    },
+    {
+      "file": "Community programmes.pdf",
+      "pages": [
+        "Lantern Route performance programme\nThe town youth orchestra performs Lantern Route at 19:00 on Saturday.\nThe piece is arranged for nine musicians. Two rehearsals precede the\nconcert.",
+        "Mosaic Harbour public art programme\nThe riverside Mosaic Harbour mural covers six wall panels. Repair work\nwill replace two square metres of tile. Four artists are participating\nin the exhibition opening.",
+        "Pocket theatre programme\nSeven actors perform short plays at the pocket theatre. The company\nrenews its stage booking each autumn. Audience members collect reserved\ntickets from the east entrance.",
+        "Reference desk workshop\nThe computing workshop explains how a reference points to an object in\nmemory. Participants take their practice code home. An example uses a\nseven-element array.",
+        "Clock exhibition\nThe display includes a 24-hour clock, a 48-hour mechanical timer and a\n72-tooth gear. The accompanying label describes construction, not the\ncooperative's reservation queue.",
+        "Community survey\nVisitors praised quiet streets, step-free buses and large-print maps.\nThe survey's totals concern transport preferences. It contains no\nrecords of individual game loans."
+      ]
+    },
+    {
+      "file": "Neighbour club notes.pdf",
+      "pages": [
+        "Briar board-game club: visitor information\nStandard boxed games may be borrowed for 30 days. Two extensions are\nallowed. A reserved copy is held for 24 hours after the member is\nnotified. These rules belong to Briar club.",
+        "Briar board-game club: pocket collection\nPocket games may be borrowed for ten days and renewed once. The\ncatalogue gives each pocket game a small leaf symbol.",
+        "Briar board-game club: reference collection\nReference games may leave the club for seven days. They must be signed\nout at the same desk as ordinary boxed games.",
+        "Briar board-game club: stock card\nLantern Route has seven copies: two ready to borrow and five under\nrepair. Briar does not share stock records with Alder."
+      ]
+    },
+    {
+      "file": "Annual review.pdf",
+      "pages": [
+        "Alder membership review\nThere were 480 registered members during the year. Of these, 360\nborrowed at least one game. The report defines an active member as\nsomeone who borrowed at least once during the year.",
+        "Alder overdue procedure\nAn account with an overdue game cannot begin a new loan until that game\nhas been returned. The restriction applies to borrowing; the member may\nstill attend public game sessions. The review does not list monetary\ncharges.",
+        "Alder access review\nMembers requested clearer signs for the west entrance and a quieter\ncollection option. The review records these requests but does not supply\nthe operating timetable.",
+        "Alder donations review\nThe cooperative received boxed games from residents and rulebook\nreprints from volunteers. The review records neither a monetary\nvaluation nor a manufacturer for each donated item."
+      ]
+    }
+  ],
+  "cases": [
+    {
+      "id": "h01",
+      "question": "What delay applies if somebody wants to borrow a game they just brought back?",
+      "expectation": "answer",
+      "source_groups": [
+        [
+          {
+            "file": "Borrowing handbook.pdf",
+            "page": 4
+          }
+        ]
+      ],
+      "required_facts": [
+        "The same title is unavailable to that patron for seventy-two hours after check-in."
+      ],
+      "forbidden_claims": [
+        "Immediate eligibility.",
+        "Applying the reservation collection window instead."
+      ],
+      "tags": [
+        "paraphrase",
+        "zero-content-overlap"
+      ]
+    },
+    {
+      "id": "h02",
+      "question": "May somebody else pick up an item on my behalf?",
+      "expectation": "answer",
+      "source_groups": [
+        [
+          {
+            "file": "Borrowing handbook.pdf",
+            "page": 5
+          }
+        ]
+      ],
+      "required_facts": [
+        "An authorized representative can collect with the reservation identifier and written permission from the account holder."
+      ],
+      "forbidden_claims": [
+        "Permission alone is sufficient."
+      ],
+      "tags": [
+        "paraphrase",
+        "zero-content-overlap"
+      ]
+    },
+    {
+      "id": "h03",
+      "question": "Where should I put a box when the building is shut?",
+      "expectation": "answer",
+      "source_groups": [
+        [
+          {
+            "file": "Operations notebook.pdf",
+            "page": 2
+          }
+        ]
+      ],
+      "required_facts": [
+        "Ordinary sets go through the south entrance chute overnight.",
+        "Fragile editions require handover during opening times."
+      ],
+      "forbidden_claims": [
+        "All boxes can be dropped overnight.",
+        "The east entrance is the return location."
+      ],
+      "tags": [
+        "paraphrase",
+        "zero-content-overlap"
+      ]
+    },
+    {
+      "id": "h04",
+      "question": "Can broken bits go straight back onto shelves?",
+      "expectation": "answer",
+      "source_groups": [
+        [
+          {
+            "file": "Operations notebook.pdf",
+            "page": 1
+          }
+        ]
+      ],
+      "required_facts": [
+        "No: damaged components belong in quarantine. Notify the inventory lead using the condition checklist and wait for recorded clearance before reshelving."
+      ],
+      "forbidden_claims": [
+        "Broken pieces can be reshelved immediately."
+      ],
+      "tags": [
+        "paraphrase",
+        "zero-content-overlap"
+      ]
+    },
+    {
+      "id": "h05",
+      "question": "In Alder, who gets offered a copy first when several people are waiting, and when does somebody lose that turn?",
+      "expectation": "answer",
+      "source_groups": [
+        [
+          {
+            "file": "Borrowing handbook.pdf",
+            "page": 3
+          }
+        ]
+      ],
+      "required_facts": [
+        "Earlier requests come first.",
+        "The offer passes on 48 hours after notification if not collected."
+      ],
+      "forbidden_claims": [
+        "Priority is based on member age.",
+        "24 hours."
+      ],
+      "tags": [
+        "paraphrase",
+        "low-lexical-overlap"
+      ]
+    },
+    {
+      "id": "h06",
+      "question": "Under the original Alder handbook, can I hang on to a normal boxed game for longer if nobody else wants it?",
+      "expectation": "answer",
+      "source_groups": [
+        [
+          {
+            "file": "Borrowing handbook.pdf",
+            "page": 1
+          }
+        ]
+      ],
+      "required_facts": [
+        "One extension is allowed if nobody is waiting for the title, checked against the reservation queue."
+      ],
+      "forbidden_claims": [
+        "Unlimited extensions.",
+        "Two extensions."
+      ],
+      "tags": [
+        "paraphrase",
+        "low-lexical-overlap"
+      ]
+    },
+    {
+      "id": "h07",
+      "question": "I cannot manage stairs and would rather listen than read. What arrangements let me enter and learn the rules?",
+      "expectation": "answer",
+      "source_groups": [
+        [
+          {
+            "file": "Operations notebook.pdf",
+            "page": 3
+          }
+        ]
+      ],
+      "required_facts": [
+        "Use the step-free west entrance.",
+        "Spoken game instructions are available with headphones borrowed from the information desk."
+      ],
+      "forbidden_claims": [
+        "The east entrance is the accessible route."
+      ],
+      "tags": [
+        "paraphrase",
+        "multi-fact"
+      ]
+    },
+    {
+      "id": "h08",
+      "question": "If I stop being a member, will staff keep a permanent list of the games I took out?",
+      "expectation": "answer",
+      "source_groups": [
+        [
+          {
+            "file": "Operations notebook.pdf",
+            "page": 4
+          }
+        ]
+      ],
+      "required_facts": [
+        "Individual history is erased 90 days after account closure.",
+        "Anonymous monthly totals are retained."
+      ],
+      "forbidden_claims": [
+        "All records are erased immediately.",
+        "Individual history is retained permanently."
+      ],
+      "tags": [
+        "paraphrase",
+        "privacy"
+      ]
+    },
+    {
+      "id": "h09",
+      "question": "What standard boxed-game loan period does the 1 October Alder handbook give?",
+      "expectation": "answer",
+      "source_groups": [
+        [
+          {
+            "file": "Borrowing handbook.pdf",
+            "page": 1
+          }
+        ]
+      ],
+      "required_facts": [
+        "21 days, attributed to the original handbook."
+      ],
+      "forbidden_claims": [
+        "28 days as the handbook period.",
+        "30 days."
+      ],
+      "tags": [
+        "exact",
+        "number",
+        "version"
+      ]
+    },
+    {
+      "id": "h10",
+      "question": "For Alder pocket games, what is the loan period and renewal rule?",
+      "expectation": "answer",
+      "source_groups": [
+        [
+          {
+            "file": "Borrowing handbook.pdf",
+            "page": 2
+          }
+        ]
+      ],
+      "required_facts": [
+        "Seven days; no renewal."
+      ],
+      "forbidden_claims": [
+        "Ten days and one renewal."
+      ],
+      "tags": [
+        "exact",
+        "number"
+      ]
+    },
+    {
+      "id": "h11",
+      "question": "How long after notification does Alder hold a reserved copy?",
+      "expectation": "answer",
+      "source_groups": [
+        [
+          {
+            "file": "Borrowing handbook.pdf",
+            "page": 3
+          }
+        ]
+      ],
+      "required_facts": [
+        "48 hours."
+      ],
+      "forbidden_claims": [
+        "24 hours.",
+        "72 hours."
+      ],
+      "tags": [
+        "exact",
+        "number"
+      ]
+    },
+    {
+      "id": "h12",
+      "question": "When is the Alder quiet collection session held?",
+      "expectation": "answer",
+      "source_groups": [
+        [
+          {
+            "file": "Operations notebook.pdf",
+            "page": 5
+          }
+        ]
+      ],
+      "required_facts": [
+        "Last Thursday of the month, 18:30 to 19:00."
+      ],
+      "forbidden_claims": [
+        "Third Wednesday.",
+        "Ordinary counter hours instead."
+      ],
+      "tags": [
+        "exact",
+        "schedule"
+      ]
+    },
+    {
+      "id": "h13",
+      "question": "How many Alder copies of Mosaic Harbour are ready for borrowing?",
+      "expectation": "answer",
+      "source_groups": [
+        [
+          {
+            "file": "Inventory ledger.pdf",
+            "page": 1
+          }
+        ]
+      ],
+      "required_facts": [
+        "Four copies."
+      ],
+      "forbidden_claims": [
+        "Six ready copies.",
+        "Two ready copies."
+      ],
+      "tags": [
+        "exact",
+        "number",
+        "distractor"
+      ]
+    },
+    {
+      "id": "h14",
+      "question": "How many Alder copies of Lantern Route are undergoing repair?",
+      "expectation": "answer",
+      "source_groups": [
+        [
+          {
+            "file": "Inventory ledger.pdf",
+            "page": 2
+          }
+        ]
+      ],
+      "required_facts": [
+        "Two copies."
+      ],
+      "forbidden_claims": [
+        "Five, from Briar stock.",
+        "Seven, which is the ready count."
+      ],
+      "tags": [
+        "exact",
+        "number",
+        "distractor"
+      ]
+    },
+    {
+      "id": "h15",
+      "question": "How many scoring markers remain after the festival and repair allocations?",
+      "expectation": "answer",
+      "source_groups": [
+        [
+          {
+            "file": "Inventory ledger.pdf",
+            "page": 4
+          }
+        ]
+      ],
+      "required_facts": [
+        "120 - 45 - 18 = 57 markers."
+      ],
+      "forbidden_claims": [
+        "63 remaining rather than allocated."
+      ],
+      "tags": [
+        "exact",
+        "arithmetic"
+      ]
+    },
+    {
+      "id": "h16",
+      "question": "What percentage of registered Alder members were active under the annual review definition?",
+      "expectation": "answer",
+      "source_groups": [
+        [
+          {
+            "file": "Annual review.pdf",
+            "page": 1
+          }
+        ]
+      ],
+      "required_facts": [
+        "360 / 480 = 75 percent."
+      ],
+      "forbidden_claims": [
+        "480/360.",
+        "Counting attendance instead of at least one loan."
+      ],
+      "tags": [
+        "exact",
+        "arithmetic"
+      ]
+    },
+    {
+      "id": "h17",
+      "question": "How did the standard Alder home-loan period change from the 1 October handbook to the circular effective 20 October?",
+      "expectation": "answer",
+      "source_groups": [
+        [
+          {
+            "file": "Borrowing handbook.pdf",
+            "page": 1
+          }
+        ],
+        [
+          {
+            "file": "Policy circulars.pdf",
+            "page": 1
+          }
+        ]
+      ],
+      "required_facts": [
+        "Original handbook: 21 days.",
+        "Effective 20 October: 28 days, replacing the earlier standard period."
+      ],
+      "forbidden_claims": [
+        "Both documents give the same period.",
+        "The circular applies to pocket games."
+      ],
+      "tags": [
+        "multi-source",
+        "version"
+      ]
+    },
+    {
+      "id": "h18",
+      "question": "How many ready-to-borrow copies do Mosaic Harbour and Lantern Route have altogether at Alder?",
+      "expectation": "answer",
+      "source_groups": [
+        [
+          {
+            "file": "Inventory ledger.pdf",
+            "page": 1
+          }
+        ],
+        [
+          {
+            "file": "Inventory ledger.pdf",
+            "page": 2
+          }
+        ]
+      ],
+      "required_facts": [
+        "Four plus seven equals eleven ready copies."
+      ],
+      "forbidden_claims": [
+        "Total stock of fifteen presented as ready."
+      ],
+      "tags": [
+        "multi-source",
+        "arithmetic"
+      ]
+    },
+    {
+      "id": "h19",
+      "question": "How many more Alder copies of Driftwood Market than Mosaic Harbour are in repair?",
+      "expectation": "answer",
+      "source_groups": [
+        [
+          {
+            "file": "Inventory ledger.pdf",
+            "page": 3
+          }
+        ],
+        [
+          {
+            "file": "Inventory ledger.pdf",
+            "page": 1
+          }
+        ]
+      ],
+      "required_facts": [
+        "Five minus two equals three more copies."
+      ],
+      "forbidden_claims": [
+        "Compare the total catalogued copies instead."
+      ],
+      "tags": [
+        "multi-source",
+        "arithmetic"
+      ]
+    },
+    {
+      "id": "h20",
+      "question": "I have an overdue game and find that one of its components is damaged. What blocks another loan, and what is the handling procedure?",
+      "expectation": "answer",
+      "source_groups": [
+        [
+          {
+            "file": "Annual review.pdf",
+            "page": 2
+          }
+        ],
+        [
+          {
+            "file": "Operations notebook.pdf",
+            "page": 1
+          }
+        ]
+      ],
+      "required_facts": [
+        "No new loan until the overdue game is returned.",
+        "Damaged material belongs in quarantine; notify the inventory lead using the checklist and await recorded clearance before reshelving."
+      ],
+      "forbidden_claims": [
+        "Attending public sessions is forbidden.",
+        "Immediate reshelving."
+      ],
+      "tags": [
+        "multi-source",
+        "procedure"
+      ]
+    },
+    {
+      "id": "h21",
+      "question": "How do the monthly quiet collection session and stock-count day differ in weekday and collection time?",
+      "expectation": "answer",
+      "source_groups": [
+        [
+          {
+            "file": "Operations notebook.pdf",
+            "page": 5
+          }
+        ],
+        [
+          {
+            "file": "Operations notebook.pdf",
+            "page": 6
+          }
+        ]
+      ],
+      "required_facts": [
+        "Quiet session: last Thursday, 18:30-19:00.",
+        "Stock count: third Wednesday; reservation collection before 14:00."
+      ],
+      "forbidden_claims": [
+        "Both happen on the third Wednesday."
+      ],
+      "tags": [
+        "multi-source",
+        "schedule"
+      ]
+    },
+    {
+      "id": "h22",
+      "question": "After 20 October, compare the Alder pocket-game and standard boxed-game home-loan lengths.",
+      "expectation": "answer",
+      "source_groups": [
+        [
+          {
+            "file": "Borrowing handbook.pdf",
+            "page": 2
+          }
+        ],
+        [
+          {
+            "file": "Policy circulars.pdf",
+            "page": 1
+          }
+        ]
+      ],
+      "required_facts": [
+        "Pocket: seven days.",
+        "Standard boxed: 28 days."
+      ],
+      "forbidden_claims": [
+        "Pocket games also changed to 28 days.",
+        "Briar durations."
+      ],
+      "tags": [
+        "multi-source",
+        "number",
+        "version"
+      ]
+    },
+    {
+      "id": "h23",
+      "question": "How long may a Briar member keep a standard boxed game, and how many extensions are allowed?",
+      "expectation": "answer",
+      "source_groups": [
+        [
+          {
+            "file": "Neighbour club notes.pdf",
+            "page": 1
+          }
+        ]
+      ],
+      "required_facts": [
+        "30 days and two extensions."
+      ],
+      "forbidden_claims": [
+        "Alder durations or one extension."
+      ],
+      "tags": [
+        "distractor",
+        "attribution",
+        "number"
+      ]
+    },
+    {
+      "id": "h24",
+      "question": "What loan and renewal terms apply to the pocket collection at Briar?",
+      "expectation": "answer",
+      "source_groups": [
+        [
+          {
+            "file": "Neighbour club notes.pdf",
+            "page": 2
+          }
+        ]
+      ],
+      "required_facts": [
+        "Ten days and one renewal."
+      ],
+      "forbidden_claims": [
+        "Seven days and no renewals."
+      ],
+      "tags": [
+        "distractor",
+        "attribution",
+        "number"
+      ]
+    },
+    {
+      "id": "h25",
+      "question": "Can an Alder member take a reference edition home for seven days?",
+      "expectation": "answer",
+      "source_groups": [
+        [
+          {
+            "file": "Borrowing handbook.pdf",
+            "page": 6
+          }
+        ]
+      ],
+      "required_facts": [
+        "No. Alder reference editions stay in the reading room."
+      ],
+      "forbidden_claims": [
+        "Applying Briar reference rules to Alder."
+      ],
+      "tags": [
+        "distractor",
+        "attribution",
+        "negative"
+      ]
+    },
+    {
+      "id": "h26",
+      "question": "How long may an Alder festival visitor use a demonstration game, and can they take it home?",
+      "expectation": "answer",
+      "source_groups": [
+        [
+          {
+            "file": "Policy circulars.pdf",
+            "page": 2
+          }
+        ]
+      ],
+      "required_facts": [
+        "Two hours in the event hall; no home loan.",
+        "It must be returned by the 18:00 hall closing time."
+      ],
+      "forbidden_claims": [
+        "A 28-day home loan."
+      ],
+      "tags": [
+        "distractor",
+        "attribution",
+        "number"
+      ]
+    },
+    {
+      "id": "h27",
+      "question": "The Mosaic Harbour stock entry lists six copies. How are they split between available and repair status?",
+      "expectation": "answer",
+      "source_groups": [
+        [
+          {
+            "file": "Inventory ledger.pdf",
+            "page": 1
+          }
+        ]
+      ],
+      "required_facts": [
+        "Four ready and two undergoing repair."
+      ],
+      "forbidden_claims": [
+        "Four artists or two square metres of repair used as copy evidence."
+      ],
+      "tags": [
+        "distractor",
+        "near-match",
+        "number"
+      ]
+    },
+    {
+      "id": "h28",
+      "question": "At Alder, how many Lantern Route copies can be borrowed now, excluding anything in repair?",
+      "expectation": "answer",
+      "source_groups": [
+        [
+          {
+            "file": "Inventory ledger.pdf",
+            "page": 2
+          }
+        ]
+      ],
+      "required_facts": [
+        "Seven ready copies."
+      ],
+      "forbidden_claims": [
+        "19:00 concert time.",
+        "Briar two-ready figure."
+      ],
+      "tags": [
+        "distractor",
+        "near-match",
+        "number"
+      ]
+    },
+    {
+      "id": "h29",
+      "question": "What is the Alder annual membership fee in pounds?",
+      "expectation": "refuse",
+      "source_groups": [],
+      "required_facts": [
+        "The supplied Alder sources do not state a membership fee."
+      ],
+      "forbidden_claims": [
+        "Inventing a price or using a donation valuation."
+      ],
+      "tags": [
+        "unsupported"
+      ]
+    },
+    {
+      "id": "h30",
+      "question": "What date will every Driftwood Market repair be complete?",
+      "expectation": "refuse",
+      "source_groups": [],
+      "required_facts": [
+        "No repair-completion date is supplied."
+      ],
+      "forbidden_claims": [
+        "Inferring completion from stock counts."
+      ],
+      "tags": [
+        "unsupported"
+      ]
+    },
+    {
+      "id": "h31",
+      "question": "Which company manufactured the Alder Mosaic Harbour copies?",
+      "expectation": "refuse",
+      "source_groups": [],
+      "required_facts": [
+        "No manufacturer is provided."
+      ],
+      "forbidden_claims": [
+        "Naming an artist or cooperative as the manufacturer."
+      ],
+      "tags": [
+        "unsupported"
+      ]
+    },
+    {
+      "id": "h32",
+      "question": "What is Alder's approved grant total for 2027?",
+      "expectation": "refuse",
+      "source_groups": [],
+      "required_facts": [
+        "No approved 2027 grant total is present in the selected cooperative class."
+      ],
+      "forbidden_claims": [
+        "Using material belonging only to the separate funding class."
+      ],
+      "tags": [
+        "unsupported",
+        "cross-class-negative"
+      ]
+    },
+    {
+      "id": "h33",
+      "question": "Which cubby holds Alder's spare chess clocks?",
+      "expectation": "refuse",
+      "source_groups": [],
+      "required_facts": [
+        "The selected class contains no spare-clock cubby assignment."
+      ],
+      "forbidden_claims": [
+        "Using the inventory-training class cubby assignment."
+      ],
+      "tags": [
+        "unsupported",
+        "cross-class-negative"
+      ]
+    },
+    {
+      "id": "h34",
+      "question": "Who will coordinate Alder's 2027 visitor survey?",
+      "expectation": "refuse",
+      "source_groups": [],
+      "required_facts": [
+        "The selected class contains no named coordinator for the 2027 survey."
+      ],
+      "forbidden_claims": [
+        "Using the separate planning class person."
+      ],
+      "tags": [
+        "unsupported",
+        "cross-class-negative"
+      ]
+    }
+  ]
+}

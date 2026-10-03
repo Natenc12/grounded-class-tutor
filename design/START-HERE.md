@@ -15,6 +15,9 @@ Grounded Class Tutor's primary architecture is a local desktop app.
    preview, isolated runtime checks and remaining public-release requirements.
    [Observed packaging evidence](local-packaging-validation.md) records exactly
    which checks passed and where native verification is pending.
+9. [Local embedding evidence](local-embedding-validation.md) compares free local
+   semantic retrieval with the existing keyword baseline, including a separately
+   authored holdout, resource measurements and explicit integration requirements.
 
 The older component specifications, diagrams, hosted launch plan, maturity ladder,
 and Slice 4 issue descriptions remain historical context where they conflict with

@@ -1,0 +1,147 @@
+[
+  {
+    "key": "bge",
+    "name": "bge-small-en-v1.5-int8",
+    "model_id": "Xenova/bge-small-en-v1.5",
+    "revision": "ea104dacec62c0de699686887e3f920caeb4f3e3",
+    "model_file": "onnx/model_int8.onnx",
+    "model_sha256": "bf64d05457cb391fa88d045faf5927a15ea36d96228ddf23ea970087afdc1197",
+    "origin_id": "BAAI/bge-small-en-v1.5",
+    "origin_revision": "5c38ec7c405ec4b44b94cc5a9bb96e735b38267a",
+    "license": "MIT",
+    "max_tokens": 512,
+    "pooling": "cls",
+    "query_prefix": "Represent this sentence for searching relevant passages: ",
+    "files": [
+      {
+        "path": "bge/model.onnx",
+        "url": "https://huggingface.co/Xenova/bge-small-en-v1.5/resolve/ea104dacec62c0de699686887e3f920caeb4f3e3/onnx/model_int8.onnx",
+        "sha256": "bf64d05457cb391fa88d045faf5927a15ea36d96228ddf23ea970087afdc1197",
+        "bytes": 33760831
+      },
+      {
+        "path": "bge/tokenizer.json",
+        "url": "https://huggingface.co/BAAI/bge-small-en-v1.5/resolve/5c38ec7c405ec4b44b94cc5a9bb96e735b38267a/tokenizer.json",
+        "sha256": "d241a60d5e8f04cc1b2b3e9ef7a4921b27bf526d9f6050ab90f9267a1f9e5c66",
+        "bytes": 711396
+      },
+      {
+        "path": "bge/tokenizer_config.json",
+        "url": "https://huggingface.co/BAAI/bge-small-en-v1.5/resolve/5c38ec7c405ec4b44b94cc5a9bb96e735b38267a/tokenizer_config.json",
+        "sha256": "9261e7d79b44c8195c1cada2b453e55b00aeb81e907a6664974b4d7776172ab3",
+        "bytes": 366
+      },
+      {
+        "path": "bge/config.json",
+        "url": "https://huggingface.co/BAAI/bge-small-en-v1.5/resolve/5c38ec7c405ec4b44b94cc5a9bb96e735b38267a/config.json",
+        "sha256": "094f8e891b932f2000c92cfc663bac4c62069f5d8af5b5278c4306aef3084750",
+        "bytes": 743
+      },
+      {
+        "path": "bge/sentence_bert_config.json",
+        "url": "https://huggingface.co/BAAI/bge-small-en-v1.5/resolve/5c38ec7c405ec4b44b94cc5a9bb96e735b38267a/sentence_bert_config.json",
+        "sha256": "84e39fda68ccbff05bfa723ae9c0e70e23e2ec373b76e0f8c6e71af72a693cbf",
+        "bytes": 52
+      },
+      {
+        "path": "bge/1_Pooling/config.json",
+        "url": "https://huggingface.co/BAAI/bge-small-en-v1.5/resolve/5c38ec7c405ec4b44b94cc5a9bb96e735b38267a/1_Pooling/config.json",
+        "sha256": "d1caf60c96f5fba2157c0c26b76d80818fad6cf0b8eb5e73ec372ff9818eba5c",
+        "bytes": 190
+      },
+      {
+        "path": "bge/README.md",
+        "url": "https://huggingface.co/BAAI/bge-small-en-v1.5/resolve/5c38ec7c405ec4b44b94cc5a9bb96e735b38267a/README.md",
+        "sha256": "ddb964361a55c6e5dfca6361615854b260c9c960205d04c7520151aaa1d75837",
+        "bytes": 94783
+      },
+      {
+        "path": "bge/CONVERSION_README.md",
+        "url": "https://huggingface.co/Xenova/bge-small-en-v1.5/resolve/ea104dacec62c0de699686887e3f920caeb4f3e3/README.md",
+        "sha256": "ce711ead2cb11725c9c6de69779d918c500ab12c74c5c2437ff0c448ed1566a5",
+        "bytes": 3134
+      },
+      {
+        "path": "bge/LICENSE",
+        "url": "https://raw.githubusercontent.com/FlagOpen/FlagEmbedding/fd1a2bdf69488ffebe0327999d4400d8c8058a0b/LICENSE",
+        "sha256": "587a673933425dbc36ec61268d3b954051b2d3ef3c9b322ede357976055ffdd5",
+        "bytes": 1065
+      }
+    ],
+    "inference_asset_bytes": 34473578,
+    "license_evidence": "Pinned original model card declares MIT. BGE full license from pinned upstream FlagEmbedding source; Apache full text from the license publisher.",
+    "conversion_evidence": "Xenova card declares BAAI/bge-small-en-v1.5 base model; official BAAI and Xenova fp32 ONNX have identical published SHA256 828e1496d7fabb79cfa4dcd84fa38625c0d3d21da474a00f08db0f559940cf35. Study uses explicitly pinned Xenova int8 derivative; original model card CLS pooling takes precedence over conversion card mean-pooling example.",
+    "model_path": "bge/model.onnx",
+    "tokenizer_path": "bge/tokenizer.json",
+    "dimensions": 384
+  },
+  {
+    "key": "minilm",
+    "name": "all-MiniLM-L6-v2-qint8-arm64",
+    "model_id": "sentence-transformers/all-MiniLM-L6-v2",
+    "revision": "1110a243fdf4706b3f48f1d95db1a4f5529b4d41",
+    "model_file": "onnx/model_qint8_arm64.onnx",
+    "model_sha256": "4278337fd0ff3c68bfb6291042cad8ab363e1d9fbc43dcb499fe91c871902474",
+    "origin_id": "sentence-transformers/all-MiniLM-L6-v2",
+    "origin_revision": "1110a243fdf4706b3f48f1d95db1a4f5529b4d41",
+    "license": "Apache-2.0",
+    "max_tokens": 256,
+    "pooling": "mean",
+    "query_prefix": "",
+    "files": [
+      {
+        "path": "minilm/model.onnx",
+        "url": "https://huggingface.co/sentence-transformers/all-MiniLM-L6-v2/resolve/1110a243fdf4706b3f48f1d95db1a4f5529b4d41/onnx/model_qint8_arm64.onnx",
+        "sha256": "4278337fd0ff3c68bfb6291042cad8ab363e1d9fbc43dcb499fe91c871902474",
+        "bytes": 23026053
+      },
+      {
+        "path": "minilm/tokenizer.json",
+        "url": "https://huggingface.co/sentence-transformers/all-MiniLM-L6-v2/resolve/1110a243fdf4706b3f48f1d95db1a4f5529b4d41/tokenizer.json",
+        "sha256": "be50c3628f2bf5bb5e3a7f17b1f74611b2561a3a27eeab05e5aa30f411572037",
+        "bytes": 466247
+      },
+      {
+        "path": "minilm/tokenizer_config.json",
+        "url": "https://huggingface.co/sentence-transformers/all-MiniLM-L6-v2/resolve/1110a243fdf4706b3f48f1d95db1a4f5529b4d41/tokenizer_config.json",
+        "sha256": "acb92769e8195aabd29b7b2137a9e6d6e25c476a4f15aa4355c233426c61576b",
+        "bytes": 350
+      },
+      {
+        "path": "minilm/config.json",
+        "url": "https://huggingface.co/sentence-transformers/all-MiniLM-L6-v2/resolve/1110a243fdf4706b3f48f1d95db1a4f5529b4d41/config.json",
+        "sha256": "953f9c0d463486b10a6871cc2fd59f223b2c70184f49815e7efbcab5d8908b41",
+        "bytes": 612
+      },
+      {
+        "path": "minilm/sentence_bert_config.json",
+        "url": "https://huggingface.co/sentence-transformers/all-MiniLM-L6-v2/resolve/1110a243fdf4706b3f48f1d95db1a4f5529b4d41/sentence_bert_config.json",
+        "sha256": "fc1993fde0a95c24ec6c022539d41cf6e2f7c9721e5415d6fb6897472a9cd4b7",
+        "bytes": 53
+      },
+      {
+        "path": "minilm/1_Pooling/config.json",
+        "url": "https://huggingface.co/sentence-transformers/all-MiniLM-L6-v2/resolve/1110a243fdf4706b3f48f1d95db1a4f5529b4d41/1_Pooling/config.json",
+        "sha256": "4be450dde3b0273bb9787637cfbd28fe04a7ba6ab9d36ac48e92b11e350ffc23",
+        "bytes": 190
+      },
+      {
+        "path": "minilm/README.md",
+        "url": "https://huggingface.co/sentence-transformers/all-MiniLM-L6-v2/resolve/1110a243fdf4706b3f48f1d95db1a4f5529b4d41/README.md",
+        "sha256": "dcd602d2fd35c203a247304a06fec6654a12f7941b739f9221a064fe8dc3b7f0",
+        "bytes": 10502
+      },
+      {
+        "path": "minilm/LICENSE",
+        "url": "https://www.apache.org/licenses/LICENSE-2.0.txt",
+        "sha256": "cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30",
+        "bytes": 11358
+      }
+    ],
+    "inference_asset_bytes": 23493505,
+    "license_evidence": "Pinned original model card declares Apache-2.0. BGE full license from pinned upstream FlagEmbedding source; Apache full text from the license publisher.",
+    "model_path": "minilm/model.onnx",
+    "tokenizer_path": "minilm/tokenizer.json",
+    "dimensions": 384
+  }
+]

@@ -1,0 +1,116 @@
+{
+  "python": "3.13.14 (main, Jun 23 2026, 15:20:43) [Clang 22.1.3 ]",
+  "packages": [
+    {
+      "name": "PyYAML",
+      "version": "6.0.3",
+      "installed_logical_bytes": 605677
+    },
+    {
+      "name": "anyio",
+      "version": "4.15.1",
+      "installed_logical_bytes": 539391
+    },
+    {
+      "name": "certifi",
+      "version": "2026.7.22",
+      "installed_logical_bytes": 249105
+    },
+    {
+      "name": "click",
+      "version": "8.5.0",
+      "installed_logical_bytes": 447891
+    },
+    {
+      "name": "filelock",
+      "version": "4.0.9",
+      "installed_logical_bytes": 385160
+    },
+    {
+      "name": "flatbuffers",
+      "version": "25.12.19",
+      "installed_logical_bytes": 88178
+    },
+    {
+      "name": "fsspec",
+      "version": "2026.9.0",
+      "installed_logical_bytes": 810762
+    },
+    {
+      "name": "h11",
+      "version": "0.16.0",
+      "installed_logical_bytes": 104105
+    },
+    {
+      "name": "hf-xet",
+      "version": "1.6.0",
+      "installed_logical_bytes": 8152433
+    },
+    {
+      "name": "httpcore",
+      "version": "1.0.9",
+      "installed_logical_bytes": 288194
+    },
+    {
+      "name": "httpx",
+      "version": "0.28.1",
+      "installed_logical_bytes": 295908
+    },
+    {
+      "name": "huggingface_hub",
+      "version": "1.33.0",
+      "installed_logical_bytes": 3292686
+    },
+    {
+      "name": "idna",
+      "version": "3.20",
+      "installed_logical_bytes": 342676
+    },
+    {
+      "name": "numpy",
+      "version": "2.4.4",
+      "installed_logical_bytes": 19510398
+    },
+    {
+      "name": "onnxruntime",
+      "version": "1.30.0",
+      "installed_logical_bytes": 78198828
+    },
+    {
+      "name": "packaging",
+      "version": "26.3",
+      "installed_logical_bytes": 499357
+    },
+    {
+      "name": "protobuf",
+      "version": "7.36.2",
+      "installed_logical_bytes": 1662142
+    },
+    {
+      "name": "tokenizers",
+      "version": "0.23.2",
+      "installed_logical_bytes": 9968754
+    },
+    {
+      "name": "tqdm",
+      "version": "4.70.1",
+      "installed_logical_bytes": 234084
+    },
+    {
+      "name": "typing_extensions",
+      "version": "4.16.0",
+      "installed_logical_bytes": 182965
+    }
+  ],
+  "site_packages_logical_bytes": 125860613,
+  "note": "All resolver-installed dependencies included, including HF Hub download dependencies. Excludes existing bundled Python and model assets; not a measured compressed-app increment.",
+  "packages_already_bundled": [
+    {
+      "name": "typing_extensions",
+      "version": "4.16.0",
+      "installed_logical_bytes": 182965
+    }
+  ],
+  "additional_dependency_record_bytes": 125675729,
+  "size_caveat": "Additional package RECORD bytes exclude packages already in bundled runtime; includes command scripts outside site-packages, so differs slightly from recursive site byte count. Installed and model bytes are not compressed app increments. No optional dependency trimming assumed."
+}

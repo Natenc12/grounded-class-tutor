@@ -1,0 +1,44 @@
+{
+  "version": 1,
+  "classes": [
+    {
+      "name": "Funding seminar",
+      "documents": [
+        {
+          "file": "Annual review.pdf",
+          "pages": [
+            "Alder funding seminar: 2027 grant approval\nThe approved Alder grant total for 2027 is 18,500 pounds. It covers display cabinets and a touring collection. This is a funding seminar record."
+          ]
+        }
+      ]
+    },
+    {
+      "name": "Inventory training",
+      "documents": [
+        {
+          "file": "Inventory ledger.pdf",
+          "pages": [
+            "Alder equipment practice ledger\nThe spare chess clocks are stored in cubby K9. The practice coordinator checks that cubby at the end of each session."
+          ]
+        }
+      ]
+    },
+    {
+      "name": "Future planning",
+      "documents": [
+        {
+          "file": "Community programmes.pdf",
+          "pages": [
+            "Alder 2027 visitor-survey plan\nMira Fenwick will coordinate the 2027 visitor survey. Responses will be collected at two open afternoons."
+          ]
+        }
+      ]
+    }
+  ],
+  "negative_case_ids": [
+    "h32",
+    "h33",
+    "h34"
+  ],
+  "empty_class_name": "Empty control class"
+}

@@ -1,0 +1,62 @@
+{
+  "version": 1,
+  "frozen_before_inference": true,
+  "scope": "Free local CPU inference only; public model downloads; no SDK, remote inference, course uploads, or paid resources.",
+  "host": {
+    "chip": "Apple M1 Pro",
+    "cpu_cores": 8,
+    "memory_gib": 16,
+    "macos": "26.5.2",
+    "python": "3.13.14"
+  },
+  "candidates": [
+    "bge-small-en-v1.5-int8",
+    "all-MiniLM-L6-v2-qint8-arm64"
+  ],
+  "providers": [
+    "CPUExecutionProvider"
+  ],
+  "intra_op_threads": 2,
+  "inter_op_threads": 1,
+  "batch_size": 16,
+  "window_overlap_tokens": 32,
+  "truncation": "disabled; full tokenizer windows within each existing citable chunk, no dropped tail",
+  "query_aggregation": "mean of normalized window vectors, then normalize",
+  "chunk_score": "maximum cosine over a chunk's window vectors",
+  "trial_order": [
+    [
+      "bge",
+      "minilm"
+    ],
+    [
+      "minilm",
+      "bge"
+    ],
+    [
+      "bge",
+      "minilm"
+    ]
+  ],
+  "cold_trials_per_candidate": 3,
+  "cold_definition": "Fresh Python process, not a flushed OS filesystem cache; separately time imports, Encoder construction, and first query encode.",
+  "query_text": "How does retrieving an idea from memory help a student learn it?",
+  "warm_query_repetitions_per_trial": 20,
+  "document_text_words": 250,
+  "document_batch_count": 16,
+  "document_warmup_batches": 1,
+  "warm_document_batches_per_trial": 5,
+  "peak_rss": "Process ru_maxrss after all encodes; macOS reports bytes. This includes Python, libraries, model session and document batch high-water memory.",
+  "sizes": "Report downloaded inference asset bytes separately from installed runtime dependency logical bytes. Neither is a measured final compressed app increment.",
+  "concurrency": "No competing candidate benchmark or retrieval run during timing window; normal desktop activity cannot be fully controlled.",
+  "report": [
+    "raw trial timings",
+    "median cold construction",
+    "median first query",
+    "pooled warm query median and p95",
+    "warm batch median",
+    "peak RSS range",
+    "asset and dependency bytes",
+    "model/tokenizer revisions and sha256"
+  ],
+  "document_suffix": "Final two words of each 250-word passage are Passage INDEX."
+}

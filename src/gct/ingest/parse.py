@@ -121,6 +121,8 @@ def _strip_nul(units: list[ParsedUnit]) -> list[ParsedUnit]:
 def _parse_pdf(path: Path) -> list[ParsedUnit]:
     try:
         reader = PdfReader(path)
+    except pypdf.errors.LimitReachedError as exc:
+        raise ParseError("too_long", "PDF parser expansion limit exceeded") from exc
     except pypdf.errors.PyPdfError as exc:
         raise ParseError("unparseable", f"could not read PDF {path.name}: {exc}") from exc
 
@@ -131,6 +133,8 @@ def _parse_pdf(path: Path) -> list[ParsedUnit]:
     for i, page in enumerate(reader.pages, start=1):
         try:
             text = page.extract_text() or ""
+        except pypdf.errors.LimitReachedError as exc:
+            raise ParseError("too_long", "PDF parser expansion limit exceeded") from exc
         except Exception as exc:
             raise ParseError(
                 "unparseable", f"could not extract text from {path.name} page {i}: {exc}"
@@ -194,6 +198,14 @@ def _parse_pptx(path: Path) -> list[ParsedUnit]:
         try:
             lines = []
             for shape in _iter_shapes(slide.shapes):
+                if shape.has_table:
+                    # Keep row membership explicit and skip the hidden cells of a
+                    # merged range; the merge origin already carries their text.
+                    for row in shape.table.rows:
+                        cells = [cell.text for cell in row.cells if not cell.is_spanned]
+                        if any(cell.strip() for cell in cells):
+                            lines.append(" | ".join(cells))
+                    continue
                 if not shape.has_text_frame:
                     continue
                 for paragraph in shape.text_frame.paragraphs:

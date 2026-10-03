@@ -54,6 +54,18 @@ jobs:
       - name: Test local parser, core, library and bridge
         run: uv run pytest
 
+      - name: Measure synthetic retrieval without model calls
+        run: |
+          uv run python -m gct.eval.local_quality --suite eval/local-quality/suite.json > /tmp/gct-development-quality.json
+          uv run python -m gct.eval.local_quality --suite eval/local-quality/aster.json > /tmp/gct-aster-quality.json
+          uv run python - <<'PY'
+          import json
+          from pathlib import Path
+          for name in ("development", "aster"):
+              report = json.loads(Path(f"/tmp/gct-{name}-quality.json").read_text())
+              print(name, json.dumps(report["retrieval"]))
+          PY
+
   desktop-test:
     name: Desktop build + mocked integration tests
     runs-on: ubuntu-latest

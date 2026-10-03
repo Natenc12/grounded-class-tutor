@@ -136,3 +136,18 @@ def test_retrieval_short_circuits_empty_class_and_unmatched_query(tmp_path):
         add(library, class_id, ["Recall facts through memory retrieval."])
         assert library.retrieve(class_id, "quasiparticleunobtainium") == []
         assert library.retrieve(class_id, "retrieving")
+
+
+def test_equal_relevance_is_stable_when_fresh_imports_get_different_uuids(tmp_path, monkeypatch):
+    from uuid import UUID
+
+    results = []
+    for run, order in enumerate(([11, 12], [12, 11])):
+        identifiers = iter([UUID(int=100), *(UUID(int=value) for value in order)])
+        monkeypatch.setattr("gct.local.store.uuid4", lambda values=identifiers: next(values))
+        with Library(tmp_path / f"library-{run}.db") as library:
+            class_id = library.create_class("A")["id"]
+            add(library, class_id, ["Recall has exactly equal relevance here."], name="A.pdf")
+            add(library, class_id, ["Recall has exactly equal relevance here."], name="B.pdf")
+            results.append([chunk.file for chunk in library.retrieve(class_id, "recall", k=1)])
+    assert results == [["A.pdf"], ["A.pdf"]]

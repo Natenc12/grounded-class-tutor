@@ -4,6 +4,9 @@
   const MAX_PAGES = 5;
   const byId = (id) => document.getElementById(id);
   const ui = Object.fromEntries([
+    "class-picker", "class-name", "create-class", "document-picker", "library-detail",
+    "delete-document", "delete-class", "backup-library", "search-scope",
+    "citation-preview", "citation-location", "citation-text",
     "account-status", "account-status-text", "account-identity", "account-detail",
     "sign-in", "cancel-sign-in", "sign-out", "open-usage", "notice",
     "choose-file", "use-sample", "document-empty", "document-info", "document-name",
@@ -24,6 +27,7 @@
   let pageRows = [];
   let answerSuppressed = false;
   let resultKey = "";
+  let searchScope = "class";
 
   const text = (value) => typeof value === "string" ? value : "";
   const connected = () => state.session?.status === "connected";
@@ -55,6 +59,42 @@
       return true;
     });
   };
+
+
+  const effectiveScope = () => !state.library || state.document?.sample ? "pages" : searchScope;
+  const hasMaterial = () => effectiveScope() === "class"
+    ? Boolean(state.library?.selectedClassId && state.library.documents?.length)
+    : Boolean(state.document && (effectiveScope() !== "pages" || selectedPages.size));
+
+  function renderLibrary() {
+    const library = state.library;
+    const locked = !bridge || !library || isLocked();
+    const fill = (node, entries, value, placeholder, label) => {
+      node.replaceChildren();
+      const empty = make("option", "", placeholder); empty.value = ""; node.append(empty);
+      for (const [index, entry] of (entries || []).entries()) {
+        const option = make("option", "", label(entry, index)); option.value = entry.id; node.append(option);
+      }
+      node.value = value || "";
+    };
+    fill(ui["class-picker"], library?.classes, library?.selectedClassId, "Choose a class", entry => text(entry.name));
+    fill(ui["document-picker"], library?.documents, library?.selectedDocumentId, "Choose saved material", (entry, index) => `${index + 1}. ${text(entry.filename)} · ${entry.page_count} pages`);
+    ui["class-picker"].disabled = locked;
+    ui["class-name"].disabled = locked;
+    ui["create-class"].disabled = locked || !ui["class-name"].value.trim();
+    ui["document-picker"].disabled = locked || !library?.selectedClassId;
+    ui["delete-document"].disabled = locked || !library?.selectedDocumentId;
+    ui["delete-class"].disabled = locked || !library?.selectedClassId;
+    ui["backup-library"].disabled = locked;
+    ui["library-detail"].textContent = !library ? "Loading your local library…"
+      : !library.classes?.length ? "Create a class, then add a PDF or PowerPoint. Files stay on this laptop."
+        : `${library.documents?.length || 0} saved documents in this class. Your library stays when you sign out.`;
+    ui["search-scope"].value = effectiveScope();
+    ui["search-scope"].disabled = locked || state.document?.sample === true;
+    ui["citation-preview"].hidden = !state.citation || answerSuppressed;
+    ui["citation-location"].textContent = state.citation ? `${state.citation.filename} · page or slide ${state.citation.page_or_slide}` : "";
+    ui["citation-text"].textContent = text(state.citation?.text);
+  }
 
   function renderAccount() {
     const session = state.session || {};
@@ -105,7 +145,7 @@
   function renderDocument() {
     const material = state.document;
     const pages = validPages();
-    const key = material ? JSON.stringify([material.filename, material.sample === true, material.page_count, pages]) : "";
+    const key = material ? JSON.stringify([material.id, material.filename, material.sample === true, material.page_count, pages]) : "";
     if (key !== documentKey) {
       documentKey = key;
       if (material?.sample === true && !ui.question.value.trim() && text(material.suggested_question)) {
@@ -145,8 +185,8 @@
     const unit = /\.pptx$/i.test(text(material?.filename)) ? "slide" : "page";
     ui["document-meta"].textContent = `${count} ${unit}${count === 1 ? "" : "s"} · Opened locally`;
     ui["sample-badge"].hidden = material?.sample !== true;
-    ui["page-section"].hidden = !material;
-    ui["choose-file"].textContent = material ? "Choose another file" : "Choose a file";
+    ui["page-section"].hidden = !material || effectiveScope() !== "pages";
+    ui["choose-file"].textContent = state.library ? "Add a file to class" : material ? "Choose another file" : "Choose a file";
     renderPageSelection();
   }
 
@@ -154,7 +194,7 @@
     ui["selection-count"].textContent = `${selectedPages.size} of ${MAX_PAGES} selected`;
     for (const { number, checkbox, label } of pageRows) {
       checkbox.checked = selectedPages.has(number);
-      checkbox.disabled = isLocked() || (!checkbox.checked && selectedPages.size >= MAX_PAGES);
+      checkbox.disabled = isLocked() || effectiveScope() !== "pages" || (!checkbox.checked && selectedPages.size >= MAX_PAGES);
       label.classList.toggle("selected", checkbox.checked);
       label.classList.toggle("unavailable", checkbox.disabled && !checkbox.checked);
     }
@@ -163,8 +203,8 @@
   function renderControls() {
     const busy = activeTask();
     const hasQuestion = Boolean(ui.question.value.trim());
-    const mayAsk = Boolean(bridge && connected() && state.session.sharing === true && selectedModel && selectedPages.size && hasQuestion && !busy);
-    ui["choose-file"].disabled = !bridge || Boolean(busy);
+    const mayAsk = Boolean(bridge && connected() && state.session.sharing === true && selectedModel && hasMaterial() && hasQuestion && !busy);
+    ui["choose-file"].disabled = !bridge || Boolean(busy) || (state.library && !state.library.selectedClassId);
     ui["use-sample"].disabled = !bridge || Boolean(busy);
     ui.question.disabled = !bridge || Boolean(busy);
     ui.ask.disabled = !mayAsk;
@@ -177,10 +217,11 @@
           : !connected() ? "Connect your ChatGPT account to get started."
             : state.session.sharing !== true ? "ChatGPT access is not enabled for this connection."
               : !selectedModel ? "Your account has no available models. Reconnect to refresh the list."
-                : !state.document ? "Choose a file or use the sample before asking."
-                  : !selectedPages.size ? "Select at least one page or slide."
+                : !hasMaterial() ? "Add material to this class, choose a document, or use the sample."
+                  : effectiveScope() === "pages" && !selectedPages.size ? "Select at least one page or slide."
                     : !hasQuestion ? "Write a question about the selected passages."
-                      : state.document.sample ? "Asking about sample demo content using your ChatGPT plan."
+                      : state.document?.sample ? "Asking about sample demo content using your ChatGPT plan."
+                        : effectiveScope() !== "pages" ? "Only the matching passages and your question are sent when you ask."
                         : `Only the ${selectedPages.size} selected ${selectedPages.size === 1 ? "page or slide" : "pages or slides"} and your question will be sent.`;
   }
 
@@ -192,6 +233,7 @@
 
   function renderAnswer() {
     const busy = activeTask() === "ask";
+    ui["citation-preview"].hidden = !state.citation || answerSuppressed || busy;
     const result = answerSuppressed ? null : state.result;
     ui["answer-section"].setAttribute("aria-busy", String(busy));
     ui["answer-progress"].hidden = !busy;
@@ -235,6 +277,12 @@
       for (const citation of citations) {
         const item = make("li", "citation");
         item.append(make("span", "citation-label", citation.label), make("span", "", `${citation.file} · ${/\.pptx$/i.test(citation.file) ? "slide" : "p."} ${citation.page_or_slide}`));
+        if (state.library && !state.document?.sample && text(citation.chunk_id)) {
+          const open = make("button", "text-button", "View saved passage");
+          open.type = "button"; open.disabled = isLocked();
+          open.addEventListener("click", () => perform("showCitation", { chunkId: citation.chunk_id }));
+          item.append(open);
+        }
         ui.citations.append(item);
       }
       ui["citations-section"].hidden = false;
@@ -247,6 +295,7 @@
   }
 
   function render() {
+    renderLibrary();
     renderAccount();
     renderModels();
     renderDocument();
@@ -273,7 +322,7 @@
     const version = stateEvents;
     localAction = action;
     localNotice = "";
-    if (name === "ask" || name === "chooseFile" || name === "useSample" || name === "signOut") answerSuppressed = true;
+    if (name === "ask" || name === "chooseFile" || name === "useSample" || name === "signOut" || ["selectClass", "selectStoredDocument", "deleteDocument", "deleteClass", "createClass"].includes(name)) answerSuppressed = true;
     render();
     try {
       const next = await (args === undefined ? bridge[name]() : bridge[name](args));
@@ -286,6 +335,27 @@
     }
   }
 
+  ui["class-name"].addEventListener("input", renderLibrary);
+  ui["create-class"].addEventListener("click", async () => {
+    if (ui["create-class"].disabled) return;
+    await perform("createClass", { name: ui["class-name"].value.trim() });
+    ui["class-name"].value = ""; renderLibrary();
+  });
+  ui["class-picker"].addEventListener("change", () => {
+    if (!isLocked() && ui["class-picker"].value) perform("selectClass", { classId: ui["class-picker"].value });
+    else renderLibrary();
+  });
+  ui["document-picker"].addEventListener("change", () => {
+    if (!isLocked() && ui["document-picker"].value) perform("selectStoredDocument", { documentId: ui["document-picker"].value });
+    else renderLibrary();
+  });
+  ui["delete-document"].addEventListener("click", () => perform("deleteDocument"));
+  ui["delete-class"].addEventListener("click", () => perform("deleteClass"));
+  ui["backup-library"].addEventListener("click", () => perform("backupLibrary"));
+  ui["search-scope"].addEventListener("change", () => {
+    if (isLocked() || !["class", "document", "pages"].includes(ui["search-scope"].value)) return;
+    searchScope = ui["search-scope"].value; answerSuppressed = true; render();
+  });
   ui["sign-in"].addEventListener("click", () => perform("signIn", undefined, "signin"));
   ui["cancel-sign-in"].addEventListener("click", () => perform("cancelSignIn", undefined, "cancel"));
   ui["sign-out"].addEventListener("click", () => perform("signOut"));
@@ -297,7 +367,10 @@
   ui.model.addEventListener("change", () => { selectedModel = ui.model.value; answerSuppressed = true; renderControls(); renderAnswer(); });
   ui.ask.addEventListener("click", () => {
     if (ui.ask.disabled) return;
-    perform("ask", { question: ui.question.value.trim(), model: selectedModel, pages: [...selectedPages].sort((a, b) => a - b) }, "ask");
+    const request = { question: ui.question.value.trim(), model: selectedModel };
+    if (state.library && !state.document?.sample) request.scope = effectiveScope();
+    if (effectiveScope() === "pages") request.pages = [...selectedPages].sort((a, b) => a - b);
+    perform("ask", request, "ask");
   });
   if (bridge && typeof bridge.onState === "function") {
     unsubscribe = bridge.onState((next) => { stateEvents += 1; acceptState(next); });

@@ -11,6 +11,9 @@ const deferred = () => {
   const promise = new Promise((yes, no) => { resolve = yes; reject = no; });
   return { promise, resolve, reject };
 };
+const classId = '10000000-0000-4000-8000-000000000001';
+const savedId = '20000000-0000-4000-8000-000000000001';
+const storedClass = { id: classId, name: 'Synthetic class', created_at: '2026-10-02T12:00:00Z' };
 const connected = { status: 'connected', sharing: true, profileId: 'synthetic-account' };
 const document = (filename = 'synthetic.pdf') => ({ type: 'document', filename, page_count: 1,
   pages: [{ page_or_slide: 1, text: 'Synthetic source.', truncated: false }], synthetic: false, truncated: false });
@@ -31,17 +34,35 @@ async function harness(overrides = {}) {
     discard: async selected => { calls.push(['discard', selected]); },
     close: async () => { calls.push(['store-close']); },
   };
+  let importedPreview;
+  const bridge = overrides.runBridge ?? (async () => { calls.push(['bridge']); return document(); });
+  const metadata = () => ({ id: savedId, class_id: classId, filename: importedPreview?.filename ?? 'synthetic.pdf',
+    sha256: 'a'.repeat(64), byte_count: 20, page_count: 1, status: 'ready', created_at: '2026-10-02T12:00:00Z' });
+  const library = overrides.runLibrary ?? (async (root, _path, payload, options) => {
+    if (payload.operation === 'import_document') {
+      importedPreview = await bridge(root, { file_path: payload.file_path }, { ...options, inspect: true });
+      return metadata();
+    }
+    if (payload.operation === 'list_classes') return [storedClass];
+    if (payload.operation === 'list_documents') return importedPreview ? [metadata()] : [];
+    if (payload.operation === 'get_document') return { document: metadata(), preview: importedPreview };
+    assert.fail('Unexpected synthetic library operation: ' + payload.operation);
+  });
   const context = vm.createContext({
     app: { setName() {}, setPath() {}, getPath: () => '/synthetic-unused', requestSingleInstanceLock: () => true,
       on: (name, callback) => listeners.set(name, callback), quit: () => { calls.push(['quit']); quit.resolve(); } },
-    BrowserWindow: class {}, dialog: { showOpenDialog: overrides.dialog ?? (async () => ({ canceled: false, filePaths: ['/synthetic/source.pdf'] })) },
+    BrowserWindow: class {}, dialog: {
+      showOpenDialog: overrides.dialog ?? (async () => ({ canceled: false, filePaths: ['/synthetic/source.pdf'] })),
+      showMessageBox: overrides.confirm ?? (async () => ({ response: 0 })),
+      showSaveDialog: overrides.save ?? (async () => ({ canceled: true })),
+    },
     safeStorage: {}, shell: { openExternal: async () => { calls.push(['external']); } },
     createChatGPT() { assert.fail('No real SDK client may be created'); },
     CHATGPT_USAGE_URL: 'https://chatgpt.com/settings/usage',
     ipcMain: { handle: (name, action) => handlers.set(name, action) },
     basename, dirname, extname, join, fileURLToPath, pathToFileURL,
     ProofError, responseOptions, validateAsk,
-    runBridge: overrides.runBridge ?? (async () => { calls.push(['bridge']); return document(); }),
+    runBridge: bridge, runLibrary: library,
     stopBridges: async () => { calls.push(['stop-bridges']); },
     createSourceStore: () => sourceStore,
     stat: async () => { calls.push(['stat']); return { isFile: () => true, size: 20 }; },
@@ -50,9 +71,10 @@ async function harness(overrides = {}) {
     rm: async () => { calls.push(['rm']); },
     process: { platform: process.platform, exit() { assert.fail('Unexpected process exit'); } },
     structuredClone, AbortController, URL, console,
-    __sdk: { cancelSignIn() {}, ...overrides.sdk }, __window: fakeWindow, __sourceStore: sourceStore,
+    __sdk: { cancelSignIn() {}, ...overrides.sdk }, __window: fakeWindow, __sourceStore: sourceStore, __class: storedClass,
   });
   vm.runInContext(`${source}\nwindow = __window; chatgpt = __sdk; sourceStore = __sourceStore;
+    state.library.classes = [__class]; state.library.selectedClassId = __class.id;
     registerActions(); globalThis.testAPI = { state, snapshot, setSession, refreshModels,
     setSource: value => { source = value; }, source: () => source };`, context);
   const event = { sender: webContents, senderFrame: mainFrame };
@@ -126,8 +148,10 @@ test('successful source replacement releases the previous copy only after inspec
   inspection.resolve(document('new.pdf'));
   await selecting;
   assert.equal(main.snapshot().document.filename, 'new.pdf');
-  assert.equal(main.calls.filter(([name]) => name === 'discard').length, 1);
+  assert.equal(main.calls.filter(([name]) => name === 'discard').length, 2);
   assert.equal(main.calls.find(([name]) => name === 'discard')[1], previous);
+  assert.equal(main.source().document_id, savedId);
+  assert.equal(main.source().file_path, undefined);
 });
 
 test('overlapping same-account catalog refreshes cannot publish the older response last', async () => {
@@ -314,4 +338,140 @@ test('duplicate questions and source replacements cannot race a running answer',
   await asking;
   assert.equal(main.snapshot().busy, null);
   assert.equal(main.snapshot().result.answer_prose, 'Synthetic completed answer.');
+});
+
+
+test('class creation and library loading work signed out without model traffic', async () => {
+  const requests = [];
+  const main = await harness({ runLibrary: async (_root, _path, payload) => {
+    requests.push(payload);
+    if (payload.operation === 'create_class') return storedClass;
+    if (payload.operation === 'list_classes') return [storedClass];
+    if (payload.operation === 'list_documents') return [];
+    assert.fail('Unexpected operation');
+  } });
+  await main.invoke('createClass', { name: 'Synthetic class' });
+  assert.deepEqual(requests.map(request => request.operation), ['create_class', 'list_classes', 'list_documents']);
+  assert.equal(main.snapshot().session.status, 'disconnected');
+  assert.equal(main.snapshot().library.selectedClassId, classId);
+  assert.equal(main.snapshot().library.classes[0].name, 'Synthetic class');
+  assert.equal(main.snapshot().busy, null);
+});
+
+test('renderer cannot provide paths, choose a foreign document, or invoke an unlisted citation', async () => {
+  const requests = [];
+  const main = await harness({ runLibrary: async (...args) => { requests.push(args); } });
+  await main.invoke('createClass', { name: 'Class', file_path: '/private/path' });
+  await main.invoke('selectClass', { classId: '../../private' });
+  await main.invoke('selectStoredDocument', { documentId: savedId });
+  await main.invoke('showCitation', { chunkId: 'a'.repeat(64) });
+  await assert.rejects(main.invoke('backupLibrary', { output_path: '/private/path' }), /arguments/i);
+  await assert.rejects(main.invoke('deleteDocument', { documentId: savedId }), /arguments/i);
+  assert.equal(requests.length, 0);
+});
+
+test('an account change cannot cancel a local import or erase the library', async () => {
+  const importing = deferred();
+  let importSignal;
+  const main = await harness({ runLibrary: async (_root, _path, payload, options) => {
+    if (payload.operation === 'import_document') { importSignal = options.signal; return importing.promise; }
+    if (payload.operation === 'list_classes') return [storedClass];
+    if (payload.operation === 'list_documents') return [{ id: savedId }];
+    if (payload.operation === 'get_document') return { document: { id: savedId }, preview: document() };
+    assert.fail('Unexpected operation');
+  } });
+  main.setSession(connected);
+  const selecting = main.invoke('chooseFile');
+  await new Promise(resolve => setImmediate(resolve));
+  main.setSession({ status: 'disconnected', sharing: false });
+  assert.equal(importSignal.aborted, false);
+  importing.resolve({ id: savedId });
+  await selecting;
+  assert.equal(main.snapshot().library.selectedDocumentId, savedId);
+  assert.equal(main.snapshot().document.id, savedId);
+  assert.equal(main.snapshot().session.status, 'disconnected');
+});
+
+test('native deletion cancellation does not call the library delete operation', async () => {
+  const requests = [];
+  const main = await harness({ runLibrary: async (_root, _path, payload) => requests.push(payload), confirm: async () => ({ response: 0 }) });
+  main.state.library.selectedDocumentId = savedId;
+  await main.invoke('deleteDocument');
+  await main.invoke('deleteClass');
+  assert.equal(requests.length, 0);
+  assert.equal(main.snapshot().library.selectedClassId, classId);
+  assert.equal(main.snapshot().library.selectedDocumentId, savedId);
+});
+
+test('confirmed class deletion refreshes the library and clears obsolete source state', async () => {
+  const requests = [];
+  const main = await harness({ confirm: async () => ({ response: 1 }), runLibrary: async (_root, _path, payload) => {
+    requests.push(payload);
+    if (payload.operation === 'delete_class') return null;
+    if (payload.operation === 'list_classes') return [];
+    assert.fail('Unexpected operation');
+  } });
+  main.setSource({ class_id: classId, document_id: savedId });
+  main.state.document = document();
+  main.state.library.selectedDocumentId = savedId;
+  await main.invoke('deleteClass');
+  assert.deepEqual(requests.map(request => request.operation), ['delete_class', 'list_classes']);
+  assert.equal(main.snapshot().library.selectedClassId, null);
+  assert.equal(main.snapshot().document, undefined);
+  assert.equal(main.source(), undefined);
+});
+
+test('library backup path comes only from the native save dialog', async () => {
+  const requests = [];
+  const main = await harness({ save: async () => ({ canceled: false, filePath: '/synthetic/new-backup.sqlite3' }),
+    runLibrary: async (_root, path, payload) => { requests.push({ path, payload }); return null; } });
+  await main.invoke('backupLibrary');
+  assert.equal(requests[0].path, '/synthetic-unused/library.sqlite3');
+  assert.equal(requests[0].payload.operation, 'backup');
+  assert.equal(requests[0].payload.output_path, '/synthetic/new-backup.sqlite3');
+  assert.match(main.snapshot().notice, /backup saved/i);
+});
+
+test('class asks need no open document and citations resolve only from the current answer', async () => {
+  const chunkId = 'a'.repeat(64), requests = [];
+  const main = await harness({ runLibrary: async (_root, _path, payload) => {
+    requests.push(payload);
+    if (payload.operation === 'ask') return { state: 'GROUNDED', citations: [{ chunk_id: chunkId, file: 'Lecture.pdf', page_or_slide: 3 }] };
+    if (payload.operation === 'citation') return { document_id: savedId, filename: 'Lecture.pdf', page_or_slide: 3, text: 'The cited saved passage.' };
+    assert.fail('Unexpected operation');
+  } });
+  main.setSession(connected);
+  main.state.models = [{ slug: 'synthetic-model' }];
+  await main.invoke('ask', { question: 'What is recalled?', model: 'synthetic-model', scope: 'class' });
+  assert.equal(requests[0].class_id, classId);
+  assert.equal(requests[0].document_id, undefined);
+  await main.invoke('showCitation', { chunkId: 'b'.repeat(64) });
+  assert.equal(requests.length, 1);
+  await main.invoke('showCitation', { chunkId });
+  assert.equal(requests[1].chunk_id, chunkId);
+  assert.equal(main.snapshot().citation.document_id, savedId);
+  main.setSession({ status: 'disconnected', sharing: false });
+  assert.equal(main.snapshot().result, undefined);
+  assert.equal(main.snapshot().citation, undefined);
+  assert.equal(main.snapshot().library.selectedClassId, classId);
+});
+
+test('a citation opened from an invalidated answer cannot publish after sign-out', async () => {
+  const pending = deferred(), chunkId = 'c'.repeat(64);
+  const main = await harness({ runLibrary: async (_root, _path, payload) => {
+    if (payload.operation === 'ask') return { state: 'GROUNDED', citations: [{ chunk_id: chunkId, file: 'Lecture.pdf', page_or_slide: 1 }] };
+    if (payload.operation === 'citation') return pending.promise;
+    assert.fail('Unexpected operation');
+  } });
+  main.setSession(connected);
+  main.state.models = [{ slug: 'synthetic-model' }];
+  await main.invoke('ask', { question: 'Recall?', model: 'synthetic-model', scope: 'class' });
+  const opening = main.invoke('showCitation', { chunkId });
+  main.setSession({ status: 'disconnected', sharing: false });
+  pending.resolve({ document_id: savedId, filename: 'Lecture.pdf', page_or_slide: 1, text: 'Late cited passage.' });
+  await opening;
+  assert.equal(main.snapshot().result, undefined);
+  assert.equal(main.snapshot().citation, undefined);
+  assert.match(main.snapshot().notice, /answer changed/i);
+  assert.equal(main.snapshot().busy, null);
 });

@@ -87,7 +87,7 @@ test('cancellation terminates the local bridge while generation is pending', asy
   await stopBridges();
 });
 
-test('shutdown waits for and reaps a child that ignores graceful termination', { skip: process.platform === 'win32' }, async () => {
+test('cancellation rejects only after reaping a child that ignores graceful termination', { skip: process.platform === 'win32' }, async () => {
   const directory = await mkdtemp(join(tmpdir(), 'gct-child-test-'));
   const executable = join(directory, 'stalled-parser');
   await writeFile(executable, `#!${pythonExecutable(root)}\nimport json, os, signal, time\nsignal.signal(signal.SIGTERM, signal.SIG_IGN)\nprint(json.dumps({'type':'generate','messages':[{'role':'user','content':str(os.getpid())}]}), flush=True)\nwhile True: time.sleep(0.1)\n`, { mode: 0o700 });
@@ -103,7 +103,23 @@ test('shutdown waits for and reaps a child that ignores graceful termination', {
     await ready;
     controller.abort();
     await assert.rejects(result, /cancelled/);
-    await stopBridges();
     assert.throws(() => process.kill(pid, 0), { code: 'ESRCH' });
-  } finally { await rm(directory, { recursive: true, force: true }); }
+  } finally { await stopBridges(); await rm(directory, { recursive: true, force: true }); }
+});
+
+
+test('ask scope is explicit and cannot smuggle pages into class-wide search', () => {
+  const models = [{ slug: 'available-model' }];
+  const library = { selectedClassId: 'class', selectedDocumentId: 'document' };
+  const document = { pages: [{ page_or_slide: 1 }], sample: false };
+  const base = { question: ' Recall? ', model: 'available-model' };
+  assert.equal(validateAsk({ ...base, scope: 'class' }, undefined, models, library).scope, 'class');
+  assert.equal(validateAsk({ ...base, scope: 'document' }, document, models, library).scope, 'document');
+  assert.deepEqual(validateAsk({ ...base, scope: 'pages', pages: [1] }, document, models, library).pages, [1]);
+  for (const request of [{ ...base, scope: 'class', pages: [1] }, { ...base, scope: 'arbitrary' },
+    { ...base, scope: 'document', file_path: '/private/path' }]) {
+    assert.throws(() => validateAsk(request, document, models, library));
+  }
+  assert.throws(() => validateAsk({ ...base, scope: 'class' }, document, models, {}));
+  assert.throws(() => validateAsk({ ...base, scope: 'document' }, { ...document, sample: true }, models, library));
 });

@@ -1,7 +1,8 @@
 const { contextBridge, ipcRenderer } = require('electron');
 
 const actions = ['getState', 'signIn', 'cancelSignIn', 'signOut', 'listModels',
-  'chooseFile', 'useSample', 'ask', 'cancelAsk', 'openUsage'];
+  'chooseFile', 'useSample', 'ask', 'cancelAsk', 'openUsage',
+  'createClass', 'selectClass', 'selectStoredDocument', 'deleteDocument', 'deleteClass', 'backupLibrary', 'showCitation'];
 const bridge = Object.fromEntries(actions.map(name => [name,
   (...args) => ipcRenderer.invoke(`gct:${name}`, ...args)]));
 bridge.onState = callback => {

@@ -30,22 +30,31 @@
             <span class="note-symbol" aria-hidden="true">↗</span>
             <h2 id="privacy-heading">You choose what to send</h2>
             <p>Files open locally. Selected passages and your question are sent to OpenAI only when you choose <strong>Ask</strong>.</p>
-            <p>Choose up to five pages or slides for each question.</p>
+            <p>Search a saved class, one document, or up to five selected pages.</p>
           </section>
           <p class="preview-note">This is a development preview. A standalone installer is not included yet.</p>
         </aside>
         <main class="main-content">
-          <div class="intro"><p class="eyebrow">A SMALL, GROUNDED START</p><h2>Bring a question.<br />Start with your material.</h2><p>Choose a document, select a few passages, and ask.</p></div>
+          <div class="intro"><p class="eyebrow">A SMALL, GROUNDED START</p><h2>Bring a question.<br />Start with your material.</h2><p>Save your class material locally, then ask a question.</p></div>
           <div id="notice" class="notice" role="status" aria-live="polite" hidden></div>
+          <section class="card library-card" aria-labelledby="library-heading">
+            <h2 id="library-heading">Your local library</h2>
+            <label for="class-picker">Class</label><select id="class-picker" disabled><option value="">Loading library…</option></select>
+            <div class="file-actions"><input id="class-name" maxlength="200" placeholder="New class name" aria-label="New class name" disabled /><button id="create-class" class="button secondary" disabled>Create class</button></div>
+            <label for="document-picker">Saved material</label><select id="document-picker" disabled><option value="">Choose a class</option></select>
+            <p id="library-detail" class="muted">Saved on this laptop. Your library stays when you sign out.</p>
+            <div class="file-actions"><button id="delete-document" class="text-button" disabled>Remove document</button><button id="delete-class" class="text-button" disabled>Remove class</button><button id="backup-library" class="text-button" disabled>Back up library</button></div>
+          </section>
           <section class="card material-card" aria-labelledby="material-heading">
             <div class="section-heading"><div><span class="step-number" aria-hidden="true">1</span><h2 id="material-heading">Choose your material</h2></div><span class="section-hint">PDF or PowerPoint</span></div>
             <div id="document-empty" class="document-empty"><div class="file-symbol" aria-hidden="true">≡</div><p class="empty-title">Start with a PDF or PPTX</p><p class="muted">A lecture deck, reading, or a small sample to try.</p></div>
             <div id="document-info" class="document-info" hidden><div class="file-symbol small" aria-hidden="true">≡</div><div class="file-details"><h3 id="document-name"></h3><p id="document-meta" class="muted"></p></div><span id="sample-badge" class="small-badge" hidden>Demo content</span></div>
             <div class="file-actions"><button id="choose-file" class="button secondary" type="button" disabled>Choose a file</button><button id="use-sample" class="text-button" type="button" disabled>Use sample</button></div>
-            <div id="page-section" class="page-section" hidden><div class="page-heading"><h3>Pages to include</h3><p id="selection-count" aria-live="polite">0 of 5 selected</p></div><p id="selection-help" class="muted">Select the pages or slides relevant to your question.</p><fieldset id="page-options" class="page-options" aria-describedby="selection-help"><legend class="sr-only">Select up to five pages or slides</legend></fieldset></div>
+            <div id="page-section" class="page-section" hidden><div class="page-heading"><h3>Pages for a focused question</h3><p id="selection-count" aria-live="polite">0 of 5 selected</p></div><p id="selection-help" class="muted">Select the pages or slides relevant to your question.</p><fieldset id="page-options" class="page-options" aria-describedby="selection-help"><legend class="sr-only">Select up to five pages or slides</legend></fieldset></div>
           </section>
           <section class="card question-card" aria-labelledby="question-heading">
             <div class="section-heading"><div><span class="step-number" aria-hidden="true">2</span><h2 id="question-heading">Ask about what you selected</h2></div></div>
+            <label for="search-scope">Search in</label><select id="search-scope" disabled><option value="class">This class</option><option value="document">This document</option><option value="pages">Selected pages</option></select>
             <label for="question" class="sr-only">Your question</label><textarea id="question" rows="3" maxlength="2000" placeholder="What is the main idea, and which details support it?" disabled></textarea>
             <div class="question-toolbar"><div class="model-field"><label for="model">Model</label><select id="model" disabled><option value="">Connect to see your models</option></select></div><div class="ask-actions"><button id="cancel-ask" class="button secondary" type="button" hidden>Cancel</button><button id="ask" class="button primary" type="button" disabled>Ask <span aria-hidden="true">↗</span></button></div></div>
             <p id="ask-help" class="action-hint">Connect your ChatGPT account to get started.</p>
@@ -56,7 +65,8 @@
             <div id="answer-progress" class="answer-progress" role="status" hidden><span class="spinner" aria-hidden="true"></span><div><p>Reading your selected passages…</p><p class="muted">You can cancel while the answer is in progress.</p></div></div>
             <div id="answer-content" hidden><div id="answer-alert" class="answer-alert" hidden></div><div id="answer-prose" class="answer-prose"></div><section id="citations-section" class="citations-section" aria-labelledby="citations-heading" hidden><h3 id="citations-heading">Sources in your material</h3><ul id="citations" class="citations"></ul></section><section id="gaps-section" class="gaps-section" aria-labelledby="gaps-heading" hidden><h3 id="gaps-heading">What the material doesn’t cover</h3><ul id="gaps"></ul></section></div>
           </section>
-          <footer class="workspace-footer">Grounded in the passages you select. Check important details against the source.</footer>
+          <section id="citation-preview" class="card" hidden aria-labelledby="citation-heading"><h2 id="citation-heading">Saved source passage</h2><p id="citation-location" class="muted"></p><p id="citation-text" class="answer-prose"></p></section>
+          <footer class="workspace-footer">Grounded in your saved material. Check important details against the source.</footer>
         </main>
       </div>
     </div>

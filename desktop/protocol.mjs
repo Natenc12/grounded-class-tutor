@@ -2,10 +2,49 @@
 // shape and state coherence before any result enters application state. It does
 // not independently decide whether a cited claim is supported by the source.
 const object = value => value !== null && typeof value === 'object' && !Array.isArray(value);
-const text = (value, max = 80000) => typeof value === 'string' && value.length <= max;
+export function characterCount(value) {
+  let count = 0;
+  for (const _character of value) count++;
+  return count;
+}
+// Python bounds Unicode code points, while JS length counts UTF-16 units. Check
+// a cheap raw ceiling before counting, without allocating an expanded array.
+const text = (value, max = 80000) => typeof value === 'string' && value.length <= 2 * max &&
+  (value.length <= max || characterCount(value) <= max);
 const strings = value => Array.isArray(value) && value.length <= 2000 && value.every(item => text(item));
 const keys = (value, allowed) => object(value) && Object.keys(value).every(key => allowed.includes(key));
 const filename = value => text(value, 1024) && value.length > 0 && !/[\x00/\\]/.test(value);
+const identifier = value => typeof value === 'string' && /^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/.test(value);
+const timestamp = value => text(value, 64) && Number.isFinite(Date.parse(value));
+const validClass = value => keys(value, ['id', 'name', 'created_at']) && identifier(value.id) &&
+  text(value.name, 200) && value.name.trim().length > 0 && timestamp(value.created_at);
+const validStoredDocument = value => keys(value, ['id', 'class_id', 'filename', 'sha256', 'byte_count', 'page_count', 'status', 'created_at']) &&
+  identifier(value.id) && identifier(value.class_id) && filename(value.filename) &&
+  typeof value.sha256 === 'string' && /^[a-f0-9]{64}$/.test(value.sha256) &&
+  Number.isInteger(value.byte_count) && value.byte_count > 0 && value.byte_count <= 10 * 1024 * 1024 &&
+  Number.isInteger(value.page_count) && value.page_count > 0 && value.page_count <= 500 &&
+  value.status === 'ready' && timestamp(value.created_at);
+
+export function validLibraryEvent(event, request) {
+  if (!keys(event, ['type', 'operation', 'value']) || event.type !== 'library' || event.operation !== request.operation) return false;
+  const value = event.value;
+  switch (request.operation) {
+    case 'list_classes': return Array.isArray(value) && value.length <= 10000 && value.every(validClass) && new Set(value.map(row => row.id)).size === value.length;
+    case 'create_class': return validClass(value);
+    case 'list_documents': return Array.isArray(value) && value.length <= 10000 &&
+      value.every(row => validStoredDocument(row) && row.class_id === request.class_id) && new Set(value.map(row => row.id)).size === value.length;
+    case 'import_document': return validStoredDocument(value) && value.class_id === request.class_id;
+    case 'get_document': return keys(value, ['document', 'preview']) && validStoredDocument(value.document) &&
+      value.document.id === request.document_id && value.document.class_id === request.class_id &&
+      validDocument(value.preview) && !value.preview.synthetic &&
+      value.preview.filename === value.document.filename && value.preview.page_count === value.document.page_count;
+    case 'citation': return keys(value, ['document_id', 'filename', 'page_or_slide', 'text']) &&
+      identifier(value.document_id) && filename(value.filename) && text(value.text, 30000) &&
+      Number.isInteger(value.page_or_slide) && value.page_or_slide > 0 && value.page_or_slide <= 500;
+    case 'delete_document': case 'delete_class': case 'backup': return value === null;
+    default: return false;
+  }
+}
 
 export function validDocument(value) {
   return keys(value, ['type', 'filename', 'page_count', 'pages', 'truncated', 'synthetic', 'suggested_question']) &&
@@ -16,7 +55,7 @@ export function validDocument(value) {
     Array.isArray(value.pages) && value.pages.length === value.page_count &&
     value.pages.every((page, index) => keys(page, ['page_or_slide', 'text', 'truncated']) &&
       page.page_or_slide === index + 1 && text(page.text) && typeof page.truncated === 'boolean') &&
-    value.pages.reduce((total, page) => total + page.text.length, 0) <= 80000;
+    value.pages.reduce((total, page) => total + characterCount(page.text), 0) <= 80000;
 }
 
 export function validResult(value) {

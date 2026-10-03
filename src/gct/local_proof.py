@@ -129,46 +129,52 @@ def _pdf_decoding_limits():
     pypdf's bounded decoders stop an individual stream before unbounded expansion;
     counting decoded streams also bounds the cumulative decoded data. This is not
     an OS memory sandbox: parser object/operation overhead still needs the caller's
-    timeout and process cleanup. Restore globals for in-process test callers.
+    timeout and process cleanup. Restore the decoder and configuration context
+    for in-process test callers.
     """
-    from pypdf import filters
+    from pypdf import apply_configuration, filters, get_configuration
     from pypdf.errors import LimitReachedError
 
     names = (
-        "MAX_DECLARED_STREAM_LENGTH",
-        "MAX_ARRAY_BASED_STREAM_OUTPUT_LENGTH",
-        "JBIG2_MAX_OUTPUT_LENGTH",
-        "LZW_MAX_OUTPUT_LENGTH",
-        "RUN_LENGTH_MAX_OUTPUT_LENGTH",
-        "ZLIB_MAX_OUTPUT_LENGTH",
-        "FLATE_MAX_BUFFER_SIZE",
+        "maximum_declared_stream_length",
+        "array_based_stream_maximum_output_length",
+        "jbig2_maximum_output_length",
+        "lzw_maximum_output_length",
+        "run_length_maximum_output_length",
+        "zlib_maximum_output_length",
+        "image_maximum_buffer_size",
     )
-    original_limits = {name: getattr(filters, name) for name in names}
+    original_configuration = get_configuration()
     original_decode = filters.decode_stream_data
     decoded_bytes = 0
+
+    def limits(remaining):
+        return {
+            name: min(getattr(original_configuration, name), MAX_PDF_STREAM_BYTES, remaining)
+            for name in names
+        }
 
     def decode(stream):
         nonlocal decoded_bytes
         remaining = MAX_PDF_DECODED_BYTES - decoded_bytes
         if remaining <= 0:
             raise LimitReachedError("The proof's PDF decode budget was exceeded.")
-        for name, original in original_limits.items():
-            setattr(filters, name, min(original, MAX_PDF_STREAM_BYTES, remaining))
-        data = original_decode(stream)
+        # pypdf 6.19 decoders read the active Configuration, not legacy module
+        # constants. Apply the remaining budget before allocation, then restore
+        # the enclosing context even when the decoder rejects the stream.
+        with apply_configuration(**limits(remaining)):
+            data = original_decode(stream)
         decoded_bytes += len(data)
         if len(data) > MAX_PDF_STREAM_BYTES or decoded_bytes > MAX_PDF_DECODED_BYTES:
             raise LimitReachedError("The proof's PDF decode budget was exceeded.")
         return data
 
-    try:
-        for name, original in original_limits.items():
-            setattr(filters, name, min(original, MAX_PDF_STREAM_BYTES))
+    with apply_configuration(**limits(MAX_PDF_DECODED_BYTES), disable_legacy_handling=True):
         filters.decode_stream_data = decode
-        yield
-    finally:
-        filters.decode_stream_data = original_decode
-        for name, original in original_limits.items():
-            setattr(filters, name, original)
+        try:
+            yield
+        finally:
+            filters.decode_stream_data = original_decode
 
 
 def _load_document(request: dict) -> Document:

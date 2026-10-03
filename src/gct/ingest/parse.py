@@ -199,10 +199,20 @@ def _parse_pptx(path: Path) -> list[ParsedUnit]:
             lines = []
             for shape in _iter_shapes(slide.shapes):
                 if shape.has_table:
-                    # Keep row membership explicit and skip the hidden cells of a
-                    # merged range; the merge origin already carries their text.
-                    for row in shape.table.rows:
-                        cells = [cell.text for cell in row.cells if not cell.is_spanned]
+                    # Preserve grid positions. Carry a vertical merge's label
+                    # into each covered row; horizontal continuations stay empty.
+                    carried: dict[tuple[int, int], str] = {}
+                    for row_index, row in enumerate(shape.table.rows):
+                        cells = []
+                        for column, cell in enumerate(row.cells):
+                            if cell.is_merge_origin:
+                                for offset in range(1, cell.span_height):
+                                    carried[row_index + offset, column] = cell.text
+                            cells.append(
+                                carried.get((row_index, column), "")
+                                if cell.is_spanned
+                                else cell.text
+                            )
                         if any(cell.strip() for cell in cells):
                             lines.append(" | ".join(cells))
                     continue

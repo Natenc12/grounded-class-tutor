@@ -59,6 +59,10 @@ def compressed_pdf(tmp_path, stream_sizes):
 
 @pytest.mark.parametrize("limit", ["member", "aggregate", "count"])
 def test_pptx_expansion_rejected_before_presentation_is_loaded(tmp_path, monkeypatch, limit):
+    # Import before patching: parse.py keeps its own imported Presentation alias.
+    # Patch and restore both aliases so running this module alone is order-safe.
+    from gct.ingest import parse as ingest_parse
+
     path = presentation(tmp_path)
     with zipfile.ZipFile(path) as archive:
         original_size = sum(item.file_size for item in archive.infolist())
@@ -79,6 +83,7 @@ def test_pptx_expansion_rejected_before_presentation_is_loaded(tmp_path, monkeyp
         raise AssertionError("The expansion guard must precede Presentation")
 
     monkeypatch.setattr("pptx.Presentation", unexpected_parse)
+    monkeypatch.setattr(ingest_parse, "Presentation", unexpected_parse)
     assert path.stat().st_size < local_proof.MAX_FILE_BYTES
     status, events = exchange({"file_path": str(path)}, inspect=True)
     assert status == 1
@@ -167,6 +172,25 @@ def test_table_only_slide_remains_citable_after_blank_slide_and_merged_cells(tmp
     assert events[-1]["result"]["state"] == "GROUNDED"
     citation = events[-1]["result"]["citations"][0]
     assert (citation["file"], citation["page_or_slide"]) == (path.name, 2)
+
+
+def test_vertical_table_merge_preserves_category_and_column_membership(tmp_path):
+    path = tmp_path / "vertical-table.pptx"
+    deck = Presentation()
+    slide = deck.slides.add_slide(deck.slide_layouts[6])
+    table = slide.shapes.add_table(3, 2, Inches(1), Inches(1), Inches(4), Inches(3)).table
+    table.cell(0, 0).text = "Category"
+    table.cell(0, 1).text = "Fact"
+    table.cell(1, 0).merge(table.cell(2, 0))
+    table.cell(1, 0).text = "Category A"
+    table.cell(1, 1).text = "First property"
+    table.cell(2, 1).text = "Second property"
+    deck.save(path)
+    status, events = exchange({"file_path": str(path)}, inspect=True)
+    assert status == 0
+    assert events[0]["pages"][0]["text"] == (
+        "Category | Fact\nCategory A | First property\nCategory A | Second property"
+    )
 
 
 @pytest.mark.parametrize(

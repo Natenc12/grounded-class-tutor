@@ -9,7 +9,7 @@
     "search-status", "prepare-search", "cancel-search",
     "citation-preview", "citation-location", "citation-text",
     "account-status", "account-status-text", "account-identity", "account-detail",
-    "sign-in", "cancel-sign-in", "sign-out", "open-usage", "notice",
+    "sign-in", "cancel-sign-in", "retry-connection", "cancel-connection", "sign-out", "open-usage", "notice",
     "choose-file", "use-sample", "document-empty", "document-info", "document-name",
     "document-meta", "sample-badge", "page-section", "page-options", "selection-count",
     "question", "model", "ask", "cancel-ask", "ask-help", "answer-section",
@@ -17,7 +17,7 @@
     "answer-prose", "citations-section", "citations", "gaps-section", "gaps",
   ].map((id) => [id, byId(id)]));
   const bridge = window.gct;
-  let state = {};
+  let state = { session: { status: "restoring", sharing: false } };
   let selectedPages = new Set();
   let documentKey = "";
   let selectedModel = "";
@@ -110,13 +110,22 @@
     const session = state.session || {};
     const signedIn = connected();
     const connecting = activeTask() === "signin";
-    ui["account-status"].className = `status-line ${signedIn ? "connected" : connecting ? "connecting" : ""}`;
-    ui["account-status-text"].textContent = signedIn ? "Connected" : connecting ? "Connecting…" : session.status === "reauth_required" ? "Reconnect required" : "Not connected";
+    const restoring = activeTask() === "restore" || session.status === "restoring";
+    const storageBlocked = session.status === "storage_unavailable";
+    const missingModels = signedIn && session.sharing === true && !availableModels().length;
+    ui["account-status"].className = `status-line ${restoring || connecting ? "connecting" : signedIn ? "connected" : ""}`;
+    ui["account-status-text"].textContent = restoring ? "Restoring saved connection…" : signedIn ? "Connected" : connecting ? "Connecting…" : storageBlocked ? "Saved connection unavailable" : session.status === "reauth_required" ? "Reconnect required" : "Not connected";
     const identity = text(session.identity?.name) || text(session.identity?.email) || text(session.profileLabel);
     ui["account-identity"].textContent = identity;
     ui["account-identity"].hidden = !signedIn || !identity;
-    ui["account-detail"].textContent = connecting
+    ui["account-detail"].textContent = restoring
+      ? "Checking the connection saved on this laptop. This does not start a new browser sign-in."
+      : storageBlocked
+        ? "Your saved connection is preserved. Restore access to your Mac credential storage, then retry here."
+        : connecting
       ? "Complete the sign-in steps in the window that opened."
+      : missingModels
+        ? "Your account is saved, but its models could not be loaded. Retry the connection to load them again."
       : signedIn && session.sharing === true
         ? "Questions use your connected ChatGPT plan and its available usage."
         : signedIn
@@ -124,11 +133,16 @@
           : session.status === "reauth_required"
             ? "Reconnect your ChatGPT account to continue asking questions."
             : "Connect your account to ask questions using your ChatGPT plan.";
-    ui["sign-in"].hidden = signedIn && session.sharing === true;
+    ui["sign-in"].hidden = restoring || storageBlocked || (signedIn && session.sharing === true);
     ui["sign-in"].textContent = signedIn ? "Enable ChatGPT plan usage" : session.status === "reauth_required" ? "Reconnect with ChatGPT" : "Continue with ChatGPT";
-    ui["sign-in"].disabled = !bridge || isLocked();
+    ui["sign-in"].disabled = !bridge || isLocked() || restoring || storageBlocked;
     ui["cancel-sign-in"].hidden = !connecting;
     ui["cancel-sign-in"].disabled = localAction === "cancel";
+    ui["retry-connection"].hidden = restoring || (!storageBlocked && !missingModels);
+    ui["retry-connection"].textContent = storageBlocked ? "Retry saved connection" : "Retry model connection";
+    ui["retry-connection"].disabled = !bridge || isLocked();
+    ui["cancel-connection"].hidden = activeTask() !== "restore";
+    ui["cancel-connection"].disabled = localAction === "cancel";
     ui["sign-out"].hidden = !signedIn;
     ui["sign-out"].disabled = isLocked();
     ui["open-usage"].disabled = !bridge || isLocked();
@@ -225,9 +239,11 @@
         : busy === "prepare_search" ? "Preparing local search. Cancel preparation to ask using keyword search."
         : busy === "document" ? "Reading document…"
         : busy === "signin" ? "Finish connecting your account to continue."
+          : busy === "restore" || state.session?.status === "restoring" ? "Checking your saved ChatGPT connection…"
+          : state.session?.status === "storage_unavailable" ? "Restore access to your saved connection, then choose Retry saved connection."
           : !connected() ? "Connect your ChatGPT account to get started."
             : state.session.sharing !== true ? "ChatGPT access is not enabled for this connection."
-              : !selectedModel ? "Your account has no available models. Reconnect to refresh the list."
+              : !selectedModel ? "Choose Retry model connection to load your available models."
                 : !hasMaterial() ? "Add material to this class, choose a document, or use the sample."
                   : effectiveScope() === "pages" && !selectedPages.size ? "Select at least one page or slide."
                     : !hasQuestion ? "Write a question about the selected passages."
@@ -375,6 +391,8 @@
   });
   ui["sign-in"].addEventListener("click", () => perform("signIn", undefined, "signin"));
   ui["cancel-sign-in"].addEventListener("click", () => perform("cancelSignIn", undefined, "cancel"));
+  ui["retry-connection"].addEventListener("click", () => perform("retryConnection", undefined, "restore"));
+  ui["cancel-connection"].addEventListener("click", () => perform("cancelConnection", undefined, "cancel"));
   ui["sign-out"].addEventListener("click", () => perform("signOut"));
   ui["choose-file"].addEventListener("click", () => perform("chooseFile"));
   ui["use-sample"].addEventListener("click", () => perform("useSample"));

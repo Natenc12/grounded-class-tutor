@@ -65,6 +65,10 @@ This creates a self-contained `.app` and ZIP in `desktop/dist`. The resulting ap
 includes Python and its runtime dependencies; running it does not require the
 checkout or developer tools. It preserves the existing library and account-storage
 location. macOS may ask for Keychain access to the saved connection on first launch.
+GCT restores the saved ChatGPT connection when it opens. If macOS temporarily
+blocks access, **Retry saved connection** retries the existing credentials without
+starting browser sign-in. A changed preview build can still require fresh macOS
+permission; see [saved-connection recovery](design/session-recovery-validation.md).
 
 This is an ad-hoc signed personal preview, without Developer ID notarization or
 automatic updates. The packaging checks relocate the app and exercise its shipped

@@ -19,11 +19,13 @@
           <section class="card account-card" aria-labelledby="account-heading">
             <p class="eyebrow">YOUR CONNECTION</p>
             <h2 id="account-heading">ChatGPT account</h2>
-            <p id="account-status" class="status-line"><span class="status-dot" aria-hidden="true"></span><span id="account-status-text">Not connected</span></p>
+            <p id="account-status" class="status-line"><span class="status-dot" aria-hidden="true"></span><span id="account-status-text">Restoring saved connection…</span></p>
             <p id="account-identity" class="account-identity" hidden></p>
-            <p id="account-detail" class="muted">Connect your account to ask questions using your ChatGPT plan.</p>
-            <button id="sign-in" class="button primary full-width" type="button" disabled>Continue with ChatGPT</button>
+            <p id="account-detail" class="muted">Checking the connection saved on this laptop.</p>
+            <button id="sign-in" class="button primary full-width" type="button" disabled hidden>Continue with ChatGPT</button>
             <button id="cancel-sign-in" class="button secondary full-width" type="button" hidden>Cancel sign-in</button>
+            <button id="retry-connection" class="button primary full-width" type="button" hidden>Retry saved connection</button>
+            <button id="cancel-connection" class="button secondary full-width" type="button" hidden>Cancel retry</button>
             <div class="account-links"><button id="sign-out" class="text-button" type="button" hidden>Sign out</button><button id="open-usage" class="text-button" type="button" disabled>Manage usage</button></div>
           </section>
           <section class="privacy-note" aria-labelledby="privacy-heading">

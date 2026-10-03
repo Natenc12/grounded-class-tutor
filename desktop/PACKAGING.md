@@ -33,6 +33,12 @@ promise clean-machine compatibility based only on the local smoke tests.
 Neither building nor testing uploads artifacts or reads existing app data.
 The first packaged launch may ask macOS Keychain permission to use the saved
 connection; changing the application signature can change its access prompt.
+For GCT's named Keychain item, **Always Allow** normally remembers permission for
+the same app identity. If access is temporarily unavailable, restore it and choose
+**Retry saved connection** in GCT. That reopens the existing connection without
+starting a browser login. Changed ad-hoc builds can ask again; the app cannot
+promise that updates preserve native permission. See the
+[recovery evidence and native acceptance steps](../design/session-recovery-validation.md).
 No purchased certificate, paid signing service, paid runner or hosted inference
 is used by this build. Developer ID distribution is outside the zero-spending scope.
 

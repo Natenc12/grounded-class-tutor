@@ -1,6 +1,6 @@
 const { contextBridge, ipcRenderer } = require('electron');
 
-const actions = ['getState', 'signIn', 'cancelSignIn', 'signOut', 'listModels',
+const actions = ['getState', 'signIn', 'cancelSignIn', 'signOut', 'listModels', 'retryConnection', 'cancelConnection',
   'chooseFile', 'useSample', 'ask', 'cancelAsk', 'openUsage',
   'createClass', 'selectClass', 'selectStoredDocument', 'deleteDocument', 'deleteClass', 'backupLibrary', 'showCitation', 'prepareSearch'];
 const bridge = Object.fromEntries(actions.map(name => [name,

@@ -68,10 +68,13 @@ against a pgvector Postgres 17 service container (#18, extended by #32). Green p
 (#34), that `migrations/*.sql` applies cleanly, and every `db`-marked test — both DB paths, on fake
 embedders.
 **The paid exit gates have their own workflow, `live-gates.yml`.** It runs the Slice 0 and Slice 2
-smokes three times each, with `OPENAI_API_KEY` from the repository secrets, on: a PR carrying the
-`live-gate` label (`/land` applies it before merging), the merge queue if one is ever enabled, every
-push to `main` as a canary, or by hand. Never on a bare pull request, so a fork cannot spend the key.
-It fails rather than skips when the secret is absent. The Slice 2 gate runs on a corpus
+smokes three times each, with `OPENAI_API_KEY` from the repository secrets, only by explicit
+`workflow_dispatch` with `allow_paid_api=true`. That required boolean defaults to false. PRs,
+labels, merges, and pushes do not start paid checks. The local app uses the user's ChatGPT plan;
+routine development must not introduce paid API spending. Do not dispatch this workflow or run
+the paid local smokes without the user's explicit paid-API authorization. An authorized run
+fails rather than skips when the secret is absent; a dispatch without consent is skipped and
+does not establish a passed gate. The Slice 2 gate runs on a corpus
 `scripts/ci_corpus.py` generates, because the write path does not care what the documents say.
 **The Slice 3 gate (`http_smoke.py`) is CI-*capable* but not wired into that workflow** — a
 distinction worth keeping straight, because it is the only paid gate where "could it run there"
@@ -87,10 +90,11 @@ nothing else writes to the database — true of a scratch one, false of the dogf
 it to get past a refusal there re-opens exactly the hazard #138 closed (measured: a foreign job
 reaped and claimed inside a `--launch-only` launch window).
 **The Slice 1 gate (`ask_smoke.py`) cannot run in CI:** its questions are anchored to the dogfood
-corpus by file and page, and that corpus is gitignored. It stays local — `/ship`'s acceptance lane
-and `/land` run it. A green `CI` check still says nothing about any gate, and a green `live-gates`
-check says nothing about Slice 1 or Slice 3; look for the label and the check before reading a PR
-as gate-clean.
+corpus by file and page, and that corpus is gitignored. It stays local and needs the same explicit
+paid-API authorization, including when following `/ship` or `/land`. A green `CI` check still
+says nothing about any paid gate, and a successful `live-gates` job says nothing about Slice 1 or
+Slice 3. Inspect the actual job result at the revision being reviewed; neither a label nor a
+skipped dispatch proves a paid gate passed.
 The `db` fixture skips locally when Postgres is down but **hard-fails in CI**, so DB tests can't
 silently skip their way to green. Locally that judgement is still yours: `pytest -m db` reporting
 **skips means Postgres is down, not that the DB path passed.**

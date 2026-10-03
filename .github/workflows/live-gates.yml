@@ -1,24 +1,20 @@
-# The paid exit gates, run in CI so that nobody has to remember them.
+# Explicitly authorized paid exit checks. Routine development uses free ci.yml.
 #
 # The slice smokes CLAUDE.md names spend money, so ci.yml excludes them and a green PR says
 # nothing about them. PR #114 turned the Slice 2 gate red with every other check green, and it
-# was caught by a hand-run 35 minutes after the PR opened. A gate that only runs when a person
-# remembers it is not a gate.
+# was caught by a hand-run 35 minutes after the PR opened. Keep these checks available, but
+# do not spend API money automatically under the local app's subscription-only cost policy.
 #
 # Two of the four run here. `smoke_slice0.py` needs no corpus. `ingest_smoke.py` checks the write
 # path and is content-agnostic, so it runs on a corpus `scripts/ci_corpus.py` generates on the
 # runner. `ask_smoke.py` does NOT run here: its questions are anchored to Nate's real course
-# materials by file and page, and those are gitignored. That gate stays local — /ship's acceptance
-# lane and /land run it — and CLAUDE.md says so. `http_smoke.py`, the Slice 3 gate, does not run
+# materials by file and page, and those are gitignored. That gate stays local and requires
+# separate paid-API authorization. `http_smoke.py`, the Slice 3 gate, does not run
 # here either — but unlike `ask_smoke.py` it COULD: it grounds on a corpus it generates. Whether it
 # should is a cost decision nobody has made.
 #
-# When it runs — never on a bare pull_request, so a fork cannot spend the key:
-#   - a PR carrying the `live-gate` label (/land applies it to each PR it is about to merge);
-#   - the merge queue, if one is ever enabled on `main`;
-#   - every push to `main`, as a canary: a red here means main itself is red, and the run that
-#     merged it is the one to look at;
-#   - by hand, from the Actions tab.
+# Run only by explicit workflow dispatch with allow_paid_api=true. PRs, labels, merges,
+# and pushes cannot start this job. A skipped dispatch is not paid-gate evidence.
 #
 # Each gate runs THREE times. The ingest gate once false-failed on a healthy tree — its observer
 # sampled a job between two writes that commit in separate transactions on purpose — and a single
@@ -29,12 +25,13 @@
 name: live-gates
 
 on:
-  pull_request:
-    types: [labeled, synchronize, reopened]
-  merge_group:
-  push:
-    branches: [main]
   workflow_dispatch:
+    inputs:
+      allow_paid_api:
+        description: "Authorize this run to spend money using the repository OpenAI API key"
+        required: true
+        type: boolean
+        default: false
 
 concurrency:
   group: live-gates-${{ github.ref }}
@@ -43,8 +40,8 @@ concurrency:
 jobs:
   gates:
     name: paid exit gates ×3 (slice0, ingest)
-    # On a pull_request event, run only when the label is present. Other events always run.
-    if: github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'live-gate')
+    # The boolean input is deliberately false by default; skipped does not mean passed.
+    if: github.event_name == 'workflow_dispatch' && inputs.allow_paid_api == true
     runs-on: ubuntu-latest
     permissions:
       contents: read

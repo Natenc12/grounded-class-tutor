@@ -1,0 +1,21 @@
+{
+  "name": "gct-local-proof",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "main": "main.mjs",
+  "workspaces": ["vendor/siwc-local"],
+  "engines": {"node": ">=22.12.0"},
+  "scripts": {
+    "build": "tsc -p vendor/siwc-local/tsconfig.json",
+    "start": "npm run build && electron .",
+    "test": "npm run build && node --test test/*.test.mjs test/*.test.cjs vendor/siwc-local/test/*.test.mjs"
+  },
+  "dependencies": {"@siwc/local": "file:vendor/siwc-local"},
+  "devDependencies": {
+    "@types/node": "^24.0.0",
+    "@types/proper-lockfile": "^4.1.4",
+    "electron": "^42.0.0",
+    "typescript": "^5.9.3"
+  }
+}

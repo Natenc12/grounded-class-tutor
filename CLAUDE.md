@@ -18,10 +18,10 @@ from old Slice 4 labels or the historical launch plan.
   model requests, and cancellation.
 - The Python library owns bounded parsing, chunking, local persistence/search,
   and the Grounder's five states.
-- SQLite and app-owned original bytes are the durable local-library target.
+- SQLite and app-owned original bytes provide the durable local library.
 - No Postgres, HTTP server, `.env`, API key, or hosted embeddings are prerequisites
-  for the normal local install. The transitional `legacy-hosted` extra exists only
-  to keep the old adapters testable until their explicit retirement.
+  for the local install. Hosted adapters, paid provider clients and their operational
+  scaffolding have been retired; Git history preserves the previous implementation.
 
 ```sh
 uv sync --extra dev --locked
@@ -60,5 +60,5 @@ release limits. A checkout-launched app is not a self-contained installer.
 Follow `AGENTS.md`: use a fleet, separate builder/reviewer ownership, one Git
 integrator, and this original checkout. Publish coherent PRs with exact-head review
 records and current CI; never force-push main or bypass protection. Routine checks
-must not spend API money. The explicit paid workflow is transitional historical
-compatibility only and requires separate user authorization to dispatch.
+must not spend API money. CI runs only local Python and mocked desktop checks;
+there is no paid workflow or server compatibility lane.

@@ -1,5 +1,9 @@
 > **Direction changed October 2, 2026:** Nathan selected a local desktop app using his ChatGPT plan. The hosted deployment proposal below is retained for reference. Its cloud release gates are no longer the next milestone. The local proof and remaining decisions are documented in [the local app proof](local-app-proof.md).
 
+> Historical hosted architecture. ADR 0033 supersedes this document where it conflicts with the
+> [local architecture](architecture.md) and [local roadmap](roadmap.md). Source paths
+> for retired server components refer to Git revision `0b004e7`, not the current runtime.
+
 # Grounded Class Tutor Agent Launch Plan
 
 This plan finishes Grounded Class Tutor as a private hosted application Nathan can use on a laptop or phone and demonstrate. It defines implementation packages, agent responsibilities, verification, and release conditions. The implementation keeps the existing grounding core and Postgres worker queue.

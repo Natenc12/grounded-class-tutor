@@ -34,7 +34,6 @@ and account changes; current questions/answers are not saved as chat history.
 Automatic search is keyword-based and can miss paraphrases; choose explicit pages
 when you already know the relevant source. Scanned files still need extractable text.
 
-
 ## Your data
 
 On macOS, the app retains its existing `Grounded Class Tutor Local Proof` folder
@@ -69,11 +68,12 @@ and [the local roadmap](design/roadmap.md). Historical account proof and its
 limits are in [the proof record](design/local-app-proof.md). The local library and
 restart demonstration are recorded in [migration validation](design/local-refactor-validation.md).
 
-The old hosted adapters are temporarily isolated behind the `legacy-hosted`
-extra for migration compatibility. They are not the default product setup. Their
-previous instructions and implementation are recoverable at Git revision
-`0b004e7`. Do not delete the existing Postgres database, ignored course corpus,
-or saved credentials while retiring that code.
+The hosted server, worker, Postgres migrations, paid provider adapters and separate
+web client have been retired. Their code, tests and setup instructions remain
+recoverable at Git revision `0b004e7`. Existing Postgres data, local `.env` files,
+ignored course material and saved credentials are preserved; this refactor does not
+automatically import that old database. Import the original PDFs/PPTX files through
+the desktop app to build the local library.
 
 The vendored Sign in with ChatGPT SDK has its own license and notices in
 `desktop/vendor/`; this development app currently uses it for personal learning

@@ -1,7 +1,6 @@
 # --- Secrets / config ---
 .env
 .env.*
-!.env.example
 
 # --- Python ---
 __pycache__/
@@ -13,7 +12,7 @@ venv/
 .mypy_cache/
 .ruff_cache/
 
-# --- Node / React (arrives in Slice 4) ---
+# --- Desktop JavaScript and retained build caches ---
 node_modules/
 dist/
 build/
@@ -32,7 +31,7 @@ build/
 data/dogfood/**
 !data/dogfood/**/
 !data/dogfood/**/manifest.md
-# Staged uploads (ADR 0010, `gct.staging`) — bytes a student sent; never committed.
+# Retained historical uploads contain private course material; never commit or clear them.
 data/staging/
 
 # --- Review / decision artifacts ---

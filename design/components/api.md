@@ -1,5 +1,9 @@
 # Component Spec — API adapter
 
+> Historical hosted architecture. ADR 0033 supersedes this document where it conflicts with the
+> [local architecture](../architecture.md) and [local roadmap](../roadmap.md). Source paths
+> for retired server components refer to Git revision `0b004e7`, not the current runtime.
+
 **Phase:** 3 — Component Design  **Rigor:** Deep (ADR 0001)  **Criticality:** adapter (thin; the trust surface is below it)
 
 > Convention (Phase-4): names the shape + contract; where a choice is locked it **points to an ADR**

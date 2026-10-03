@@ -48,10 +48,8 @@ from gct.providers.base import Generation, Message, TransientGenerationError
 # sequence - separate budgets would multiply into a latency blowout (N5) for no robustness gain.
 MAX_GENERATION_ATTEMPTS = 2
 
-# `error.kind` values. A library caller switches on `state`; over HTTP the kind also picks the
-# status and what the screen says (`gct.api.routers.ask._ERROR_STATUS`; ADR 0015 ->
-# *Answer-surface treatment*): a flaky provider (retried, still failed) is a 503 worth trying
-# again, a misconfigured one (never worth retrying) is a 500 that is not the student's fault.
+# `error.kind` distinguishes retryable transport failure from terminal failure.
+# Callers render ERROR separately from an evidence-based REFUSAL (ADR 0015/0016).
 ERROR_KIND_PROVIDER_TRANSIENT = "provider_transient"
 ERROR_KIND_PROVIDER_TERMINAL = "provider_terminal"
 
@@ -59,8 +57,8 @@ ERROR_KIND_PROVIDER_TERMINAL = "provider_terminal"
 class GrounderState(str, Enum):
     """The five render states - the WHOLE output contract (grounder.md Sec.Interface).
 
-    Subclasses `str` so the value serializes straight to JSON for the API adapter and the eval
-    runner without a custom encoder (`GrounderState.GROUNDED == "GROUNDED"` is True).
+    Subclasses `str` so the value serializes straight to JSON for the desktop bridge and eval
+    consumers without a custom encoder (`GrounderState.GROUNDED == "GROUNDED"` is True).
 
     ERROR is transport-level, NOT a grounding outcome; the client must render it distinctly from
     REFUSAL, and INTEGRITY_FLAGGED distinctly from GROUNDED (ADR 0015/0016, the N11 extension).
@@ -530,7 +528,7 @@ def answer(
 
     PUBLIC CONTRACT (grounder.md Sec.Interface) - issue #8's `ask()` binds to this signature.
     `retrieved` is the Retriever's shipped return type, in rank order; `generator` is keyword-only
-    and injected, mirroring `retrieve(..., embedder=)` and `ingest_file(..., embedder=)`, which is
+    and injected, keeping the transport separate from grounding, which is
     also what keeps the tests offline.
 
     `owner_id` is carried because the ask is a scoped act and every result is attributable to one

@@ -334,12 +334,10 @@ class TestSlideNotes:
 
 
 class TestNulSanitization:
-    """NUL (0x00) never leaves `parse_file` - the write path's one Postgres-fatal character.
+    """NUL (0x00) extraction debris never leaves `parse_file`.
 
-    The real carrier is OCR junk on `Livingston Cosmogony.pdf` p.11 (dogfood corpus): one NUL
-    that survived parse and chunking, was embedded (money spent), and then killed `index_file`'s
-    insert with `psycopg.DataError: PostgreSQL text fields cannot contain NUL` - all-or-nothing
-    rollback, file unindexable. These tests pin the fix at its chokepoint.
+    The real carrier was OCR junk in the retained dogfood corpus. These tests keep
+    normalization before chunking so persistence and citations share the same text.
 
     The carrier cannot be synthesized honestly: reportlab substitutes NUL before it reaches the
     PDF bytes (it round-trips as a glyph-box, verified), and PPTX bodies are XML 1.0, which

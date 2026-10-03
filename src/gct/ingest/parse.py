@@ -2,15 +2,9 @@
 metadata that the citation spine trusts from here on: citation-spine honor-point ①
 (design/decisions/0019-chunking-contract-never-span.md, F2).
 
-Pure function: no DB, no job/status/lease state (the PM-4 seam - Slice 2 wraps this
-in worker/queue machinery without rewriting it). Terminal failures (unparseable /
-password-protected / zero-text) are signalled by raising `ParseError` with a `reason`
-drawn from the same terminal taxonomy as `files.failed_reason`
-(design/decisions/0020-ingestion-failure-idempotency-model.md); the caller decides
-retry policy, this module never does.
-
-Tooling (pypdf / python-pptx) is a spike choice (design/components/ingestion-worker.md
-§"spec/spike line") - swappable without changing the `ParsedUnit` contract.
+Pure function: no database, model connection or job state. Terminal failures raise
+`ParseError` with a closed reason; the local service owns user-facing messages.
+PDF/PowerPoint tooling remains replaceable without changing `ParsedUnit` provenance.
 """
 
 from __future__ import annotations
@@ -23,11 +17,8 @@ from pptx import Presentation
 from pptx.enum.shapes import MSO_SHAPE_TYPE
 from pypdf import PdfReader
 
-# The closed terminal-reason taxonomy, mirroring `files.failed_reason`'s CHECK
-# (migrations/0001_init.sql, widened by 0003). NOT every value is born here: `too_long` is raised
-# by the pipeline's input ceiling, downstream of parsing (ADR 0020, terminal set extended per
-# ADR 0029). Every entry is a legal `ParseError` reason; `parse_file` is simply not the only
-# place one is raised.
+# Closed terminal reasons retained from ADR 0020/0029. The caller may also raise
+# `too_long` when enforcing a bound after parsing.
 TERMINAL_REASONS = ("unparseable", "protected", "unsupported", "empty", "too_long")
 
 # MS-CFB (OLE2) container signature. Password-protected OOXML files (.pptx/.docx/.xlsx)
@@ -39,10 +30,8 @@ _OLE_SIGNATURE = b"\xd0\xcf\x11\xe0\xa1\xb1\x1a\xe1"
 class ParseError(Exception):
     """A terminal (no-retry) parse failure.
 
-    `reason` matches `files.failed_reason`'s terminal taxonomy (ADR 0020, terminal set
-    extended per ADR 0029) so a future caller can pass it straight through with no
-    translation. That pass-through is not aspirational any more: `worker.py`'s
-    `except ParseError` writes `exc.reason` into the column untranslated.
+    `reason` belongs to the closed terminal taxonomy (ADR 0020/0029). Consumers
+    translate it to a safe public message without exposing parser diagnostics.
     """
 
     def __init__(self, reason: str, message: str) -> None:
@@ -92,14 +81,8 @@ def parse_file(path: str | Path) -> list[ParsedUnit]:
 def _strip_nul(units: list[ParsedUnit]) -> list[ParsedUnit]:
     """Drop NUL (0x00) bytes from every unit's text, and drop units with nothing else left.
 
-    NUL is never legitimate course-material text - it is extraction junk (the real carrier: OCR
-    debris on `Livingston Cosmogony.pdf` p.11 of the dogfood corpus). It matters because Postgres
-    `text` columns reject it outright: `index_file`'s insert dies with `psycopg.DataError:
-    PostgreSQL text fields cannot contain NUL`, AFTER the whole file was parsed, chunked, and
-    embedded - money spent, transaction rolled back, file unindexable. Scrubbing belongs HERE, at
-    the chokepoint where provenance is born, so every downstream consumer (chunker, embedder,
-    index, retrieval, the model's context) sees the same clean text; scrubbing at the DB boundary
-    instead would stamp the corpus with text that differs from what was embedded.
+    NUL is extraction debris, observed in the retained dogfood corpus. Normalize it
+    before chunking so stored text, retrieved evidence and model context agree.
 
     Applied in `parse_file` AFTER format dispatch - one rule for both formats - though only PDFs
     can actually carry it: PPTX bodies are XML 1.0, which cannot represent NUL at all. A unit that

@@ -8,6 +8,7 @@ import { createSourceStore } from './source-store.mjs';
 
 const directory = dirname(fileURLToPath(import.meta.url));
 const repoRoot = dirname(directory);
+const runtimeOptions = app.isPackaged ? { packaged: true, resourcesPath: process.resourcesPath } : {};
 const rendererURL = pathToFileURL(join(directory, 'renderer/index.html')).href;
 app.setName('Grounded Class Tutor');
 app.setPath('userData', join(app.getPath('appData'), 'Grounded Class Tutor Local Proof'));
@@ -116,7 +117,7 @@ async function connect() {
   } finally { state.busy = null; publish(); }
 }
 function libraryCall(payload, signal) {
-  return runLibrary(repoRoot, join(app.getPath('userData'), 'library.sqlite3'), payload, { signal });
+  return runLibrary(repoRoot, join(app.getPath('userData'), 'library.sqlite3'), payload, { ...runtimeOptions, signal });
 }
 function assertActive(controller) {
   if (controller.signal.aborted || closing || active !== controller) throw new ProofError('cancelled', messages.cancelled);
@@ -197,7 +198,7 @@ async function selectDocument(sample) {
     let selected;
     try {
       if (sample) {
-        const document = await runBridge(repoRoot, { sample: true }, { inspect: true, signal: controller.signal });
+        const document = await runBridge(repoRoot, { sample: true }, { ...runtimeOptions, inspect: true, signal: controller.signal });
         assertActive(controller);
         const previous = source;
         source = { sample: true };
@@ -292,7 +293,7 @@ async function ask(value) {
         throw new ProofError('cancelled', messages.cancelled);
       }
     };
-    const options = { signal: controller.signal,
+    const options = { ...runtimeOptions, signal: controller.signal,
       generate: async (messages, generationSignal) => {
         assertCurrent();
         const response = await runSDK(() => chatgpt.streamResponse(responseOptions(messages, request.model, generationSignal)));

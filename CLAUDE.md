@@ -34,8 +34,9 @@ npm test
 npm start
 ```
 
-See `design/local-app-proof.md` for the observed subscription proof and remaining
-release limits. A checkout-launched app is not a self-contained installer.
+See `design/local-app-proof.md` for the observed subscription proof and
+`desktop/PACKAGING.md` for the self-contained personal macOS preview. A successful
+local bundle check is not evidence of notarization or clean-machine compatibility.
 
 ## Invariants
 

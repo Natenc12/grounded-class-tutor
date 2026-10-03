@@ -8,8 +8,9 @@ or report missing support.
 The local desktop architecture is now the primary product direction (ADR 0033).
 The native app saves classes, original documents, parsed pages and source indexes
 in a local SQLite library. Ask across a class, one saved document, or up to five
-selected pages; reopen cited passages and create a library backup. A standalone
-installer remains a separate release milestone.
+selected pages; reopen cited passages and create a library backup. A personal
+macOS Apple Silicon app bundle is available through the reproducible packaging
+command below. Signed public distribution remains a separate milestone.
 
 ## Run the development app
 
@@ -28,11 +29,31 @@ Postgres, Supabase, server process, or embeddings service is needed. Generation
 requires a network connection. To avoid additional credit spending, keep paid
 credit use disabled in ChatGPT's usage controls.
 
-This currently launches from a checkout; it is not yet a standalone installer.
+These development commands launch from the checkout.
 The visual redesign is deferred. Classes and imported originals survive restarts
 and account changes; current questions/answers are not saved as chat history.
 Automatic search is keyword-based and can miss paraphrases; choose explicit pages
 when you already know the relevant source. Scanned files still need extractable text.
+
+## Build the personal Mac preview
+
+On an Apple Silicon Mac, after installing the development prerequisites:
+
+```sh
+cd desktop
+npm ci
+npm run package:mac
+```
+
+This creates a self-contained `.app` and ZIP in `desktop/dist`. The resulting app
+includes Python and its runtime dependencies; running it does not require the
+checkout or developer tools. It preserves the existing library and account-storage
+location. macOS may ask for Keychain access to the saved connection on first launch.
+
+This is an ad-hoc signed personal preview, without Developer ID notarization or
+automatic updates. The packaging checks relocate the app and exercise its shipped
+runtime in an isolated environment on the build Mac; they are not a clean-machine
+certification. See [packaging and installation details](desktop/PACKAGING.md).
 
 ## Your data
 
@@ -59,6 +80,9 @@ npm test
 The default Python tests exercise the local core without hosted dependencies.
 Desktop tests use the real Python bridge and synthetic/mock account traffic;
 CI does not make live model requests.
+The [quality bench](eval/local-quality/README.md) separates source retrieval from
+reviewed answer quality; [observed evidence](design/local-quality-validation.md)
+records both successes and known search limits.
 
 ## Design and migration
 

@@ -1,3 +1,7 @@
+/* GCT local modification, 2026-10-02: validate completed response status/error,
+ * reconcile streamed text, and stop at the terminal event. See ../LICENSE and
+ * desktop/vendor/README.md. These modifications use the same noncommercial
+ * license as the upstream OpenAI SDK. */
 import { apiError, ChatGPTError, fetchRemote, isObject, jsonResponse } from "./errors.js";
 import type { StreamResponseOptions } from "./types.js";
 

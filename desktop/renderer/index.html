@@ -32,7 +32,7 @@
             <p>Files open locally. Selected passages and your question are sent to OpenAI only when you choose <strong>Ask</strong>.</p>
             <p>Search a saved class, one document, or up to five selected pages.</p>
           </section>
-          <p class="preview-note">This is a development preview. A standalone installer is not included yet.</p>
+          <p class="preview-note">Personal local preview. Automatic updates are not available yet.</p>
         </aside>
         <main class="main-content">
           <div class="intro"><p class="eyebrow">A SMALL, GROUNDED START</p><h2>Bring a question.<br />Start with your material.</h2><p>Save your class material locally, then ask a question.</p></div>
@@ -55,6 +55,7 @@
           <section class="card question-card" aria-labelledby="question-heading">
             <div class="section-heading"><div><span class="step-number" aria-hidden="true">2</span><h2 id="question-heading">Ask about what you selected</h2></div></div>
             <label for="search-scope">Search in</label><select id="search-scope" disabled><option value="class">This class</option><option value="document">This document</option><option value="pages">Selected pages</option></select>
+            <p class="action-hint">Class and document search use up to eight matching passages and may miss related wording. Rephrase your question or select relevant pages if evidence is missed. Selected pages use their full extracted text within the size limit.</p>
             <label for="question" class="sr-only">Your question</label><textarea id="question" rows="3" maxlength="2000" placeholder="What is the main idea, and which details support it?" disabled></textarea>
             <div class="question-toolbar"><div class="model-field"><label for="model">Model</label><select id="model" disabled><option value="">Connect to see your models</option></select></div><div class="ask-actions"><button id="cancel-ask" class="button secondary" type="button" hidden>Cancel</button><button id="ask" class="button primary" type="button" disabled>Ask <span aria-hidden="true">↗</span></button></div></div>
             <p id="ask-help" class="action-hint">Connect your ChatGPT account to get started.</p>

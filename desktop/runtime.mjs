@@ -33,6 +33,22 @@ export function pythonExecutable(repoRoot) {
   return existsSync(local) ? local : (process.platform === 'win32' ? 'python' : 'python3');
 }
 
+export function pythonLaunch(repoRoot, { packaged = false, resourcesPath, executable } = {}) {
+  if (!packaged) return { executable: executable ?? pythonExecutable(repoRoot), args: [],
+    cwd: repoRoot, env: pythonEnvironment(repoRoot) };
+  if (typeof resourcesPath !== 'string' || !isAbsolute(resourcesPath)) {
+    throw new ProofError('python_unavailable', 'The bundled document runtime is missing. Reinstall the app.');
+  }
+  const runtime = join(resourcesPath, 'python');
+  const bundled = join(runtime, 'bin', 'python3.13');
+  if (!existsSync(bundled)) {
+    throw new ProofError('python_unavailable', 'The bundled document runtime is missing. Reinstall the app.');
+  }
+  // -I ignores Python environment variables and user/cwd imports; -B prevents
+  // writes inside a read-only app bundle. Never use a developer override here.
+  return { executable: bundled, args: ['-I', '-B'], cwd: runtime, env: { PATH: '/usr/bin:/bin' } };
+}
+
 export function responseOptions(messages, model, signal) {
   if (!Array.isArray(messages) || messages.length > 10) throw new ProofError('bridge_invalid', 'Invalid grounding request.');
   let instructions = '';
@@ -81,13 +97,14 @@ export function validateAsk(value, document, models, library) {
 }
 
 export function runBridge(repoRoot, payload, { inspect = false, generate, signal,
-  timeoutMs = inspect ? 30000 : 240000, executable = pythonExecutable(repoRoot), libraryPath } = {}) {
+  timeoutMs = inspect ? 30000 : 240000, executable, libraryPath, packaged = false, resourcesPath } = {}) {
   return new Promise((resolve, reject) => {
     if (signal?.aborted) { reject(new ProofError('cancelled', 'Request cancelled.')); return; }
     const command = libraryPath ? ['-m', 'gct.local.service', '--library', libraryPath] :
       ['-m', 'gct.local_proof', ...(inspect ? ['--inspect'] : [])];
-    const child = spawn(executable, command, {
-      cwd: repoRoot, env: pythonEnvironment(repoRoot), stdio: ['pipe', 'pipe', 'pipe'], shell: false,
+    const launch = pythonLaunch(repoRoot, { executable, packaged, resourcesPath });
+    const child = spawn(launch.executable, [...launch.args, ...command], {
+      cwd: launch.cwd, env: launch.env, stdio: ['pipe', 'pipe', 'pipe'], shell: false,
     });
     let markClosed;
     const closed = new Promise(resolveClosed => { markClosed = resolveClosed; });
@@ -118,7 +135,9 @@ export function runBridge(repoRoot, payload, { inspect = false, generate, signal
     const abort = () => complete(new ProofError('cancelled', 'Request cancelled.'));
     const timer = setTimeout(() => complete(new ProofError('timeout', 'The request took too long. Try fewer pages.')), timeoutMs);
     signal?.addEventListener('abort', abort, { once: true });
-    child.on('error', () => complete(new ProofError('python_unavailable', 'The local Python runtime could not start. Run uv sync --extra dev in this checkout.')));
+    child.on('error', () => complete(new ProofError('python_unavailable', packaged
+      ? 'The bundled document runtime could not start. Reinstall the app.'
+      : 'The local Python runtime could not start. Run uv sync --extra dev in this checkout.')));
     child.stdin.on('error', () => complete(new ProofError('bridge_failed', 'The local document process stopped.')));
     // Parser errors may contain local file paths or document text; do not forward/log stderr.
     child.stderr.on('data', () => {});

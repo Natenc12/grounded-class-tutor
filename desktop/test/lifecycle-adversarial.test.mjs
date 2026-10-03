@@ -45,6 +45,7 @@ async function harness(overrides = {}) {
     }
     if (payload.operation === 'list_classes') return [storedClass];
     if (payload.operation === 'list_documents') return importedPreview ? [metadata()] : [];
+    if (payload.operation === 'search_status') return { state: 'missing', mode: 'lexical', message: 'Keyword search is active.' };
     if (payload.operation === 'get_document') return { document: metadata(), preview: importedPreview };
     assert.fail('Unexpected synthetic library operation: ' + payload.operation);
   });
@@ -348,13 +349,53 @@ test('class creation and library loading work signed out without model traffic',
     if (payload.operation === 'create_class') return storedClass;
     if (payload.operation === 'list_classes') return [storedClass];
     if (payload.operation === 'list_documents') return [];
+    if (payload.operation === 'search_status') return { state: 'missing', mode: 'lexical', message: 'Keyword search is active.' };
     assert.fail('Unexpected operation');
   } });
   await main.invoke('createClass', { name: 'Synthetic class' });
-  assert.deepEqual(requests.map(request => request.operation), ['create_class', 'list_classes', 'list_documents']);
+  assert.deepEqual(requests.map(request => request.operation), ['create_class', 'list_classes', 'list_documents', 'search_status']);
   assert.equal(main.snapshot().session.status, 'disconnected');
   assert.equal(main.snapshot().library.selectedClassId, classId);
   assert.equal(main.snapshot().library.classes[0].name, 'Synthetic class');
+  assert.equal(main.snapshot().busy, null);
+});
+
+test('semantic preparation uses the selected class without an account or renderer paths', async () => {
+  const requests = [];
+  const main = await harness({ runLibrary: async (_root, _path, payload) => {
+    requests.push(payload);
+    return { state: 'ready', mode: 'hybrid', message: 'Semantic and keyword search are ready.' };
+  } });
+  main.state.library.documents = [{ id: savedId }];
+  await assert.rejects(main.invoke('prepareSearch', { modelRoot: '/untrusted' }), /arguments/i);
+  assert.equal(requests.length, 0);
+  await main.invoke('prepareSearch');
+  assert.equal(requests.length, 1);
+  assert.equal(requests[0].operation, 'prepare_search');
+  assert.equal(requests[0].class_id, classId);
+  assert.equal(main.snapshot().session.status, 'disconnected');
+  assert.equal(main.snapshot().library.search.mode, 'hybrid');
+  assert.equal(main.snapshot().busy, null);
+});
+
+test('cancelled search preparation cannot publish late ready status', async () => {
+  const pending = deferred();
+  let signal;
+  const main = await harness({ runLibrary: async (_root, _path, _payload, options) => {
+    signal = options.signal; return pending.promise;
+  } });
+  main.state.library.documents = [{ id: savedId }];
+  main.state.library.search = { state: 'missing', mode: 'lexical', message: 'Keyword search is active.' };
+  const preparing = main.invoke('prepareSearch');
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(main.snapshot().busy, 'prepare_search');
+  main.setSession({ status: 'disconnected', sharing: false });
+  assert.equal(signal.aborted, false, 'account changes must not cancel local preparation');
+  await main.invoke('cancelAsk');
+  assert.equal(signal.aborted, true);
+  pending.resolve({ state: 'ready', mode: 'hybrid', message: 'Late result.' });
+  await preparing;
+  assert.equal(main.snapshot().library.search.mode, 'lexical');
   assert.equal(main.snapshot().busy, null);
 });
 
@@ -377,6 +418,7 @@ test('an account change cannot cancel a local import or erase the library', asyn
     if (payload.operation === 'import_document') { importSignal = options.signal; return importing.promise; }
     if (payload.operation === 'list_classes') return [storedClass];
     if (payload.operation === 'list_documents') return [{ id: savedId }];
+    if (payload.operation === 'search_status') return { state: 'missing', mode: 'lexical', message: 'Keyword search is active.' };
     if (payload.operation === 'get_document') return { document: { id: savedId }, preview: document() };
     assert.fail('Unexpected operation');
   } });

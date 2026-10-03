@@ -18,6 +18,10 @@ Grounded Class Tutor's primary architecture is a local desktop app.
 9. [Local embedding evidence](local-embedding-validation.md) compares free local
    semantic retrieval with the existing keyword baseline, including a separately
    authored holdout, resource measurements and explicit integration requirements.
+   [ADR 0034](decisions/0034-local-semantic-search.md) defines the optional local
+   model, complete class indexes and keyword fallback.
+   [Integration validation](local-semantic-validation.md) records production parity,
+   interruption and resource checks separately from the original experiment.
 
 The older component specifications, diagrams, hosted launch plan, maturity ladder,
 and Slice 4 issue descriptions remain historical context where they conflict with

@@ -4,7 +4,7 @@ import { cp, lstat, mkdir, readFile, readdir, rm, writeFile } from 'node:fs/prom
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { packager } from '@electron/packager';
-import { APP_FILES, PYTHON, auditPayload, copyAppFiles, ensureBuildDirectory, inventoryTree, readJSON, sha256, writeJSON } from './packaging-utils.mjs';
+import { APP_FILES, PYTHON, auditPayload, copyAppFiles, copyDependencyNotices, copyModelFiles, ensureBuildDirectory, inventoryTree, readJSON, sha256, writeJSON } from './packaging-utils.mjs';
 
 const desktop = resolve(dirname(fileURLToPath(import.meta.url)), '..'), repo = dirname(desktop);
 const build = join(desktop, 'build'), output = join(desktop, 'dist');
@@ -13,7 +13,7 @@ const run = (program, args, cwd = repo) => execFileSync(program, args, { cwd, st
 const capture = (program, args, cwd = repo) => execFileSync(program, args, { cwd, encoding: 'utf8' }).trim();
 if (process.platform !== 'darwin' || process.arch !== 'arm64') throw new Error('This private build targets macOS arm64 only.');
 await ensureBuildDirectory(desktop, 'build'); await ensureBuildDirectory(desktop, 'dist');
-for (const folder of [python, stage, licenses, join(build, 'python-extracted'), join(build, 'wheels')]) {
+for (const folder of [python, stage, licenses, join(build, 'python-extracted'), join(build, 'wheels'), join(build, 'model-bundle')]) {
   await ensureBuildDirectory(build, folder.split('/').at(-1));
   await rm(folder, { recursive: true, force: true });
   await mkdir(folder, { recursive: true });
@@ -50,7 +50,7 @@ for (const entry of ['include', 'share', 'lib/pkgconfig', 'lib/python3.13/test']
 const site = join(python, 'lib/python3.13/site-packages');
 await rm(site, { recursive: true, force: true }); await mkdir(site, { recursive: true });
 const interpreter = join(python, 'bin/python3.13'), requirements = join(build, 'runtime-requirements.txt');
-capture('uv', ['export', '--locked', '--no-dev', '--no-emit-project', '--no-header', '--no-annotate', '--output-file', requirements]);
+capture('uv', ['export', '--locked', '--extra', 'semantic', '--no-dev', '--no-emit-project', '--no-header', '--no-annotate', '--output-file', requirements]);
 run('uv', ['pip', 'install', '--python', interpreter, '--target', site, '--require-hashes', '--only-binary', ':all:', '-r', requirements]);
 run('uv', ['build', '--wheel', '--out-dir', join(build, 'wheels')]);
 const wheels = (await readdir(join(build, 'wheels'))).filter(name => name.endsWith('.whl'));
@@ -66,6 +66,17 @@ for (const file of await inventoryTree(python)) {
 }
 const pythonPackages = JSON.parse(capture(interpreter, ['-I', '-B', '-c',
   'import importlib.metadata as m,json; print(json.dumps(sorted([{ "name":d.metadata["Name"],"version":d.version} for d in m.distributions()],key=lambda d:d["name"])))']));
+const supplementalNotices = await copyDependencyNotices(join(desktop, 'licenses/python-wheels'), site, licenses);
+const modelCache = await ensureBuildDirectory(build, 'models');
+const models = await ensureBuildDirectory(join(build, 'model-bundle'), 'models');
+// Build-time downloads are pinned, free public assets. The shipped application
+// contains no downloader and never contacts a model hub during preparation.
+execFileSync(interpreter, ['-I', '-B', join(repo, 'eval/local-embeddings/runtime/download_assets.py'),
+  '--candidate', 'minilm', '--assets-root', modelCache], { cwd: repo, stdio: 'inherit',
+  env: { PATH: '/usr/bin:/bin', SSL_CERT_FILE: join(site, 'certifi/cacert.pem') } });
+const model = (await readJSON(join(repo, 'eval/local-embeddings/runtime/assets.json'))).find(entry => entry.key === 'minilm');
+await copyModelFiles(model, modelCache, models);
+await writeJSON(join(models, 'minilm/provenance.json'), model);
 await copyAppFiles(desktop, stage);
 const manifest = await readJSON(join(desktop, 'package.json'));
 await writeJSON(join(stage, 'package.json'), { name: manifest.name, version: manifest.version,
@@ -90,21 +101,21 @@ for (const packagePath of packagePaths) {
 }
 await cp(join(desktop, 'node_modules/electron/dist/LICENSE'), join(licenses, 'Electron-LICENSE.txt'));
 await cp(join(desktop, 'node_modules/electron/dist/LICENSES.chromium.html'), join(licenses, 'Electron-Chromium-LICENSES.html'));
-await writeFile(join(licenses, 'README.txt'), `This is a personal, noncommercial GCT preview, with no Developer ID signature or notarization.\n\nOpenAI SDK license and notices: app.asar/node_modules/@siwc/local/{LICENSE,THIRD_PARTY_NOTICES.md,GCT_MODIFICATIONS.md}. Modified source and compiled comments are preserved.\nJavaScript dependency licenses are retained in each app.asar/node_modules package.\nPython ${PYTHON.version} (${PYTHON.release}) and native-library license texts plus the exact upstream PYTHON.json are in licenses/python. Installed Python dependency licenses are retained under python/lib/python3.13/site-packages/*.dist-info.\nElectron/Chromium license texts are alongside this file.\nThe SDK license does not grant service access or commercial distribution rights. Each user must connect their own eligible ChatGPT account; GCT has no paid API fallback.\n`);
+await writeFile(join(licenses, 'README.txt'), `This is a personal, noncommercial GCT preview, with no Developer ID signature or notarization.\n\nOpenAI SDK license and notices: app.asar/node_modules/@siwc/local/{LICENSE,THIRD_PARTY_NOTICES.md,GCT_MODIFICATIONS.md}. Modified source and compiled comments are preserved.\nJavaScript dependency licenses are retained in each app.asar/node_modules package.\nPython ${PYTHON.version} (${PYTHON.release}) and native-library license texts plus the exact upstream PYTHON.json are in licenses/python. Installed Python dependency licenses are retained under python/lib/python3.13/site-packages/*.dist-info. Supplemental tokenizers/flatbuffers wheel and compiled dependency notices, with pinned source hashes, are in licenses/python-wheels.\nElectron/Chromium license texts are alongside this file.\nMiniLM model files, original model card, Apache-2.0 license, and pinned download provenance are in models/minilm. Semantic search runs locally; no model download occurs at runtime.\nThe SDK license does not grant service access or commercial distribution rights. Each user must connect their own eligible ChatGPT account; GCT has no paid API fallback.\n`);
 const electronVersion = (await readJSON(join(desktop, 'node_modules/electron/package.json'))).version;
 const wheelHash = sha256(await readFile(join(build, 'wheels', wheels[0])));
 await writeJSON(join(licenses, 'build-manifest.json'), { version: manifest.version, platform: 'darwin', arch: 'arm64',
-  electronVersion, python: PYTHON, pythonPackages, nodePackages,
+  electronVersion, python: PYTHON, pythonPackages, nodePackages, model, supplementalNotices,
   gctWheelSha256: wheelHash, uvLockSha256: sha256(await readFile(join(repo, 'uv.lock'))),
   npmLockSha256: sha256(await readFile(join(desktop, 'package-lock.json'))),
   applicationInputs: APP_FILES, signing: 'ad-hoc local only; not Developer ID or notarized',
   sdkUpstreamCommit: 'f723814abdccec135b519c451fb6e1992ee5e933' });
-await auditPayload(stage); await auditPayload(python);
+await auditPayload(stage); await auditPayload(python); await auditPayload(models);
 await ensureBuildDirectory(output, 'Grounded Class Tutor-darwin-arm64');
 const [bundleDirectory] = await packager({ dir: stage, out: output, name: 'Grounded Class Tutor',
   appBundleId: 'com.natenc12.grounded-class-tutor', appVersion: manifest.version, electronVersion,
   platform: 'darwin', arch: 'arm64', asar: true, prune: false, overwrite: true,
-  extraResource: [python, licenses], appCategoryType: 'public.app-category.education',
+  extraResource: [python, licenses, models], appCategoryType: 'public.app-category.education',
   darwinDarkModeSupport: true, quiet: true });
 const app = join(bundleDirectory, 'Grounded Class Tutor.app');
 // Preserve local execution, without implying a trusted Developer ID release.

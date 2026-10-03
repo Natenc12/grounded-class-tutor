@@ -43,6 +43,8 @@
             <div class="file-actions"><input id="class-name" maxlength="200" placeholder="New class name" aria-label="New class name" disabled /><button id="create-class" class="button secondary" disabled>Create class</button></div>
             <label for="document-picker">Saved material</label><select id="document-picker" disabled><option value="">Choose a class</option></select>
             <p id="library-detail" class="muted">Saved on this laptop. Your library stays when you sign out.</p>
+            <p id="search-status" class="muted" role="status" aria-live="polite"></p>
+            <div class="file-actions"><button id="prepare-search" class="text-button" disabled>Prepare semantic search</button><button id="cancel-search" class="text-button" hidden>Cancel preparation</button></div>
             <div class="file-actions"><button id="delete-document" class="text-button" disabled>Remove document</button><button id="delete-class" class="text-button" disabled>Remove class</button><button id="backup-library" class="text-button" disabled>Back up library</button></div>
           </section>
           <section class="card material-card" aria-labelledby="material-heading">

@@ -32,8 +32,24 @@ credit use disabled in ChatGPT's usage controls.
 These development commands launch from the checkout.
 The visual redesign is deferred. Classes and imported originals survive restarts
 and account changes; current questions/answers are not saved as chat history.
-Automatic search is keyword-based and can miss paraphrases; choose explicit pages
-when you already know the relevant source. Scanned files still need extractable text.
+Keyword search is available immediately. With the optional local model installed,
+use **Prepare semantic search** for a class to combine meaning-based and keyword
+matching. Preparation runs on your laptop, needs no account and can be cancelled.
+Add/remove documents, then prepare the class again; keyword search remains available
+until a complete current index is ready. Choose explicit pages when you already know
+the relevant source. Scanned files still need extractable text.
+
+The packaged Mac preview includes the free model. To enable it in the source app,
+use Python 3.11+ (3.13.14 was tested) and download only the pinned public MiniLM files:
+
+```sh
+uv sync --python 3.13.14 --extra dev --extra semantic --locked
+uv run --no-sync python eval/local-embeddings/runtime/download_assets.py --candidate minilm --assets-root desktop/build/models
+```
+
+These downloads and inference have no service charge. The app never downloads a
+model during a question or falls back to a paid embedding API. The Python 3.10
+development setup continues to use keyword search.
 
 ## Build the personal Mac preview
 
@@ -59,8 +75,10 @@ certification. See [packaging and installation details](desktop/PACKAGING.md).
 
 On macOS, the app retains its existing `Grounded Class Tutor Local Proof` folder
 in Application Support so the connected account remains accessible. `library.sqlite3`
-contains the local library; the separate `chatgpt` folder contains encrypted account
-state. Backups include saved course documents and exclude account credentials.
+contains the local library; `library.embeddings.sqlite3` is its optional rebuildable
+semantic index; the separate `chatgpt` folder contains encrypted account
+state. Backups include saved course documents and exclude account credentials and
+derived vectors; prepare semantic search again after restoring.
 Backups must use a new filename. To restore manually, close GCT and move the existing
 `library.sqlite3` and any matching `-journal`, `-wal`, and `-shm` files together to a
 recovery folder. Copy a verified backup into the now-clear `library.sqlite3` location;
@@ -83,6 +101,8 @@ CI does not make live model requests.
 The [quality bench](eval/local-quality/README.md) separates source retrieval from
 reviewed answer quality; [observed evidence](design/local-quality-validation.md)
 records both successes and known search limits.
+The [local embedding comparison](design/local-embedding-validation.md) records the
+measured model choice, remaining misses, resource costs and reproducible controls.
 
 ## Design and migration
 

@@ -47,6 +47,8 @@ _OPERATIONS = {
     "delete_class": ({"class_id"}, set()),
     "citation": ({"class_id", "chunk_id"}, set()),
     "backup": ({"output_path"}, set()),
+    "search_status": ({"class_id"}, set()),
+    "prepare_search": ({"class_id"}, set()),
     "ask": ({"class_id", "question"}, {"document_id", "pages"}),
 }
 
@@ -193,7 +195,7 @@ def _selected_evidence(library: Library, request: dict) -> list[RetrievedChunk]:
     return chunks
 
 
-def _action(library: Library, request: dict):
+def _action(library: Library, request: dict, model_root: Path | None):
     operation = request["operation"]
     if operation == "list_classes":
         return library.list_classes()
@@ -213,10 +215,24 @@ def _action(library: Library, request: dict):
         return library.citation(request["class_id"], request["chunk_id"])
     if operation == "backup":
         return library.backup(_path(request["output_path"]))
+    if operation in {"search_status", "prepare_search"}:
+        from gct.local import embedding_index
+
+        if operation == "search_status":
+            return embedding_index.status(library, request["class_id"], model_root)
+        return embedding_index.prepare(
+            library, request["class_id"], model_root, deadline_seconds=210
+        )
     raise ProofError("invalid_operation", "Choose an available library action.")
 
 
-def run(source: TextIO, destination: TextIO, *, library_path: str | Path) -> int:
+def run(
+    source: TextIO,
+    destination: TextIO,
+    *,
+    library_path: str | Path,
+    model_root: str | Path | None = None,
+) -> int:
     """Serve exactly one operation; complete answers keep the existing wire contract."""
     previous_dotenv = os.environ.get("PYTHON_DOTENV_DISABLED")
     os.environ["PYTHON_DOTENV_DISABLED"] = "1"
@@ -229,17 +245,28 @@ def run(source: TextIO, destination: TextIO, *, library_path: str | Path) -> int
         ):
             request = _request(_read_object(source))
             path = _path(str(library_path))
+            models = _path(str(model_root)) if model_root is not None else None
             with Library(path) as library:
                 if request["operation"] == "ask":
-                    chunks = (
-                        _selected_evidence(library, request)
-                        if "pages" in request
-                        else library.retrieve(
+                    if "pages" in request:
+                        chunks = _selected_evidence(library, request)
+                    else:
+                        from gct.local import embedding_index
+
+                        chunks, search_status = embedding_index.retrieve(
+                            library,
                             request["class_id"],
                             request["question"],
+                            models,
                             document_id=request.get("document_id"),
                         )
-                    )
+                        if chunks is None:
+                            chunks = library.retrieve(
+                                request["class_id"],
+                                request["question"],
+                                document_id=request.get("document_id"),
+                            )
+                        _emit(destination, {"type": "search_status", "value": search_status})
                     # No database transaction remains open while a network reply
                     # is pending; generation receives text and source labels only.
                     result = answer(
@@ -250,7 +277,7 @@ def run(source: TextIO, destination: TextIO, *, library_path: str | Path) -> int
                     )
                     _emit(destination, {"type": "result", "result": asdict(result)})
                 else:
-                    value = _action(library, request)
+                    value = _action(library, request, models)
                     _emit(
                         destination,
                         {"type": "library", "operation": request["operation"], "value": value},
@@ -280,8 +307,9 @@ def run(source: TextIO, destination: TextIO, *, library_path: str | Path) -> int
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--library", required=True, help="Absolute path to the local library.")
+    parser.add_argument("--model-root", help="Absolute path to the bundled local model assets.")
     options = parser.parse_args()
-    return run(sys.stdin, sys.stdout, library_path=options.library)
+    return run(sys.stdin, sys.stdout, library_path=options.library, model_root=options.model_root)
 
 
 if __name__ == "__main__":

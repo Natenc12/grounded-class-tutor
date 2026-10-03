@@ -9,6 +9,8 @@ flowchart LR
     UI[Desktop renderer] -->|Narrow validated IPC| Main[Electron coordinator]
     Main -->|Bounded JSON messages| Core[Python local service]
     Core --> Library[(SQLite local library)]
+    Core --> Encoder[Local MiniLM encoder]
+    Encoder --> Cache[(Rebuildable semantic index)]
     Core --> Grounder[Parser, chunker and Grounder]
     Main -->|Authorized question and evidence| SDK[ChatGPT sign-in SDK]
     SDK -->|Completed response| Main
@@ -37,8 +39,13 @@ chunks and a rebuildable full-text index in SQLite. One transaction publishes a
 complete import. Temporary copies are for parsing or source opening, not durability.
 Preserve the existing app-data location so the already-authorized connection survives.
 
-Local full-text retrieval is the initial zero-service baseline. It is class-scoped
-and bounded, with explicit selected-page mode retained for comparison. Ranking
+Local full-text retrieval is the zero-service baseline and fallback. Following
+[ADR 0034](decisions/0034-local-semantic-search.md), an explicitly prepared complete
+class index enables measured local MiniLM plus FTS retrieval. Preparation uses a
+finite cancellable worker and a separate private SQLite sidecar; model assets are
+bundled and inference never downloads or uploads anything. Stale, partial, missing
+or invalid optional indexes retain FTS. Retrieval is class-scoped and bounded,
+with explicit selected-page mode retained. Ranking
 scores are not probabilities or grounds for claiming support. Empty retrieval,
 unsupported content, provider errors and corrupt storage remain different outcomes.
 

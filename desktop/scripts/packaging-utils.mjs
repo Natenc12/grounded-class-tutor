@@ -40,6 +40,32 @@ export async function copyAppFiles(desktop, target) {
     await cp(source, join(target, name));
   }
 }
+// Copy the selected, checksum-verified public assets only. An asset cache can
+// contain other experiments or private files, so it is never copied as a tree.
+export async function copyModelFiles(candidate, sourceRoot, targetRoot) {
+  if (candidate.key !== 'minilm' || !(await lstat(sourceRoot)).isDirectory() ||
+      !(await lstat(targetRoot)).isDirectory()) throw new Error('Invalid model bundle roots.');
+  for (const file of candidate.files) {
+    const parts = file.path.split('/');
+    if (parts[0] !== 'minilm' || parts.length < 2 ||
+        parts.some(part => !part || part === '.' || part === '..' || part.includes('\\'))) {
+      throw new Error('Invalid model asset path.');
+    }
+    let source = sourceRoot, target = targetRoot;
+    for (const part of parts.slice(0, -1)) {
+      source = join(source, part);
+      if (!(await lstat(source)).isDirectory()) throw new Error('Model input directory must be real.');
+      target = await ensureBuildDirectory(target, part);
+    }
+    source = join(source, parts.at(-1)); target = join(target, parts.at(-1));
+    const information = await lstat(source);
+    if (!information.isFile()) throw new Error('Model input must be a regular file.');
+    if (information.size !== file.bytes) throw new Error('Model asset checksum mismatch.');
+    const bytes = await readFile(source);
+    if (bytes.length !== file.bytes || sha256(bytes) !== file.sha256) throw new Error('Model asset checksum mismatch.');
+    await writeFile(target, bytes, { flag: 'wx' });
+  }
+}
 export async function inventoryTree(root) {
   const canonicalRoot = await realpath(root);
   const output = [];

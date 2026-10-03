@@ -1,7 +1,7 @@
 import { spawn } from 'node:child_process';
 import { existsSync } from 'node:fs';
 import { isAbsolute, join } from 'node:path';
-import { characterCount, validDocument, validLibraryEvent, validResult } from './protocol.mjs';
+import { characterCount, validDocument, validLibraryEvent, validResult, validSearchStatus } from './protocol.mjs';
 
 const runningChildren = new Set();
 
@@ -97,19 +97,28 @@ export function validateAsk(value, document, models, library) {
 }
 
 export function runBridge(repoRoot, payload, { inspect = false, generate, signal,
-  timeoutMs = inspect ? 30000 : 240000, executable, libraryPath, packaged = false, resourcesPath } = {}) {
+  timeoutMs = inspect ? 30000 : 240000, executable, libraryPath, packaged = false, resourcesPath,
+  modelRoot, onSearchStatus } = {}) {
   return new Promise((resolve, reject) => {
     if (signal?.aborted) { reject(new ProofError('cancelled', 'Request cancelled.')); return; }
     const command = libraryPath ? ['-m', 'gct.local.service', '--library', libraryPath] :
       ['-m', 'gct.local_proof', ...(inspect ? ['--inspect'] : [])];
     const launch = pythonLaunch(repoRoot, { executable, packaged, resourcesPath });
+    if (libraryPath) {
+      const assets = packaged ? join(resourcesPath, 'models', 'minilm')
+        : modelRoot ?? join(repoRoot, 'desktop', 'build', 'models', 'minilm');
+      if (typeof assets !== 'string' || !isAbsolute(assets)) {
+        reject(new ProofError('invalid_model_path', 'The local search model location is invalid.')); return;
+      }
+      command.push('--model-root', assets);
+    }
     const child = spawn(launch.executable, [...launch.args, ...command], {
       cwd: launch.cwd, env: launch.env, stdio: ['pipe', 'pipe', 'pipe'], shell: false,
     });
     let markClosed;
     const closed = new Promise(resolveClosed => { markClosed = resolveClosed; });
     const generation = new AbortController();
-    let finished = false, buffered = '', outputBytes = 0, calls = 0, terminal, generating = false;
+    let finished = false, buffered = '', outputBytes = 0, calls = 0, terminal, generating = false, searchStatusSeen = false;
     let chain = Promise.resolve();
     const stop = () => {
       generation.abort();
@@ -147,8 +156,16 @@ export function runBridge(repoRoot, payload, { inspect = false, generate, signal
       try { event = JSON.parse(line); } catch { throw new ProofError('bridge_invalid', 'The local document response was invalid.'); }
       if (!event || typeof event !== 'object' || Array.isArray(event)) throw new ProofError('bridge_invalid', 'The local document response was invalid.');
       if (terminal) throw new ProofError('bridge_invalid', 'Unexpected data after the local result.');
-      if (event.type === 'generate') {
+      if (event.type === 'search_status') {
+        if (inspect || !libraryPath || payload.operation !== 'ask' || payload.pages !== undefined || searchStatusSeen || calls ||
+            Object.keys(event).length !== 2 || !validSearchStatus(event.value)) {
+          throw new ProofError('bridge_invalid', 'The local search status was invalid.');
+        }
+        searchStatusSeen = true;
+        onSearchStatus?.(event.value);
+      } else if (event.type === 'generate') {
         if (inspect || (libraryPath && payload.operation !== 'ask') || !generate || ++calls > 2) throw new ProofError('bridge_invalid', 'Unexpected generation request.');
+        if (libraryPath && payload.pages === undefined && !searchStatusSeen) throw new ProofError('bridge_invalid', 'The local search status is missing.');
         generating = true;
         let text;
         try { text = await generate(event.messages, generation.signal); }
@@ -158,7 +175,10 @@ export function runBridge(repoRoot, payload, { inspect = false, generate, signal
         child.stdin.write(`${JSON.stringify({ type: 'generated', text })}\n`);
       } else if (libraryPath && event.type === 'library' && validLibraryEvent(event, payload)) terminal = event;
       else if (!libraryPath && event.type === 'document' && inspect && validDocument(event)) terminal = event;
-      else if (event.type === 'result' && !inspect && (!libraryPath || payload.operation === 'ask') && validResult(event.result)) terminal = event.result;
+      else if (event.type === 'result' && !inspect && (!libraryPath || payload.operation === 'ask') && validResult(event.result)) {
+        if (libraryPath && payload.pages === undefined && !searchStatusSeen) throw new ProofError('bridge_invalid', 'The local search status is missing.');
+        terminal = event.result;
+      }
       else if (event.type === 'error') {
         if (libraryPath) throw libraryFailure(event.code);
         throw new ProofError('document_error', 'This document or page selection could not be processed. Use a text-based PDF/PPTX, at most 10 MB and five pages.');
@@ -218,6 +238,6 @@ export function runLibrary(repoRoot, libraryPath, payload, options = {}) {
   if (typeof libraryPath !== 'string' || !isAbsolute(libraryPath)) {
     return Promise.reject(new ProofError('invalid_library_path', 'The local library location is invalid.'));
   }
-  return runBridge(repoRoot, payload, { timeoutMs: payload.operation === 'ask' ? 240000 : 30000,
+  return runBridge(repoRoot, payload, { timeoutMs: ['ask', 'prepare_search'].includes(payload.operation) ? 240000 : 30000,
     ...options, libraryPath, inspect: false }).then(value => payload.operation === 'ask' ? value : value.value);
 }

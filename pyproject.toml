@@ -9,6 +9,13 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+# Keep Python 3.10's base product lexical; the measured local semantic runtime
+# needs Python 3.11+ (the personal macOS bundle uses Python 3.13).
+semantic = [
+    "onnxruntime==1.30.0; python_version >= '3.11'",
+    "numpy==2.4.4; python_version >= '3.11'",
+    "tokenizers==0.23.2; python_version >= '3.11'",
+]
 dev = [
     "pytest>=8.0",
     # Bounded, unlike the floors above: CI gates `ruff format --check`, and ruff's formatter

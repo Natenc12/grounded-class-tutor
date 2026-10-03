@@ -150,10 +150,12 @@ async function reloadLibrary(controller, preferred = state.library.selectedClass
   const classId = classes.some(entry => entry.id === preferred) ? preferred : (classes[0]?.id ?? null);
   const documents = classId ? await libraryCall({ operation: 'list_documents', class_id: classId }, controller.signal) : [];
   assertActive(controller);
+  const search = classId ? await libraryCall({ operation: 'search_status', class_id: classId }, controller.signal) : null;
+  assertActive(controller);
   const previous = state.library;
   const selectedDocumentId = previous.selectedClassId === classId && documents.some(entry => entry.id === previous.selectedDocumentId)
     ? previous.selectedDocumentId : null;
-  state.library = { classes, selectedClassId: classId, documents, selectedDocumentId };
+  state.library = { classes, selectedClassId: classId, documents, selectedDocumentId, search };
   if (!preserveSource && source && !source.sample && (!selectedDocumentId || source.document_id !== selectedDocumentId)) {
     source = undefined; delete state.document;
   }
@@ -229,7 +231,7 @@ async function deleteDocument() {
   if (!classId || !documentId) throw new ProofError('missing_document', 'Select a saved document first.');
   await localAction('library', async controller => {
     const response = await dialog.showMessageBox(window, { type: 'warning', buttons: ['Cancel', 'Delete from library'],
-      defaultId: 0, cancelId: 0, message: 'Delete this saved document?', detail: 'Its library copy and search index will be removed. Your original file is preserved.' });
+      defaultId: 0, cancelId: 0, message: 'Delete this saved document?', detail: 'It will be removed from the library and future searches. Your original file is preserved.' });
     assertActive(controller);
     if (response.response !== 1) return;
     await libraryCall({ operation: 'delete_document', class_id: classId, document_id: documentId }, controller.signal);
@@ -263,6 +265,15 @@ async function backupLibrary() {
     state.notice = 'Library backup saved. It includes course documents and excludes account credentials.';
   });
 }
+async function prepareSearch() {
+  const classId = state.library.selectedClassId;
+  if (!classId || !state.library.documents.length) throw new ProofError('missing_source', 'Add a document to a class first.');
+  await localAction('prepare_search', async controller => {
+    const search = await libraryCall({ operation: 'prepare_search', class_id: classId }, controller.signal);
+    assertActive(controller);
+    state.library.search = search;
+  }, { clear: false });
+}
 async function showCitation(value) {
   const { chunkId } = actionObject(value, ['chunkId']);
   const currentResult = state.result, currentAnswerSource = answerSource;
@@ -294,6 +305,7 @@ async function ask(value) {
       }
     };
     const options = { ...runtimeOptions, signal: controller.signal,
+      onSearchStatus: search => { assertCurrent(); state.library.search = search; publish(); },
       generate: async (messages, generationSignal) => {
         assertCurrent();
         const response = await runSDK(() => chatgpt.streamResponse(responseOptions(messages, request.model, generationSignal)));
@@ -336,7 +348,7 @@ function registerActions() {
     listModels: async () => { assertIdle(); await refreshModels(); },
     chooseFile: () => selectDocument(false),
     useSample: () => selectDocument(true),
-    ask, createClass, selectClass, selectStoredDocument, deleteDocument, deleteClass, backupLibrary, showCitation,
+    ask, createClass, selectClass, selectStoredDocument, deleteDocument, deleteClass, backupLibrary, showCitation, prepareSearch,
     cancelAsk: () => cancelCurrent(),
     openUsage: () => shell.openExternal(CHATGPT_USAGE_URL),
   };

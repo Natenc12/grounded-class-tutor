@@ -125,3 +125,43 @@ Both models reproduced every original public-suite selected ranking and metric a
 that change. Historical code/configuration/result hashes remain in the evidence record;
 new runs report the actual current encoder and runner hashes. Private reports and all
 downloaded model bytes stay outside Git.
+
+## Check the production implementation
+
+`production_parity.py` compares every streamed production window byte with the
+experimental encoder, then prepares and queries a temporary canonical library.
+Give it a prior full runner report to also check every final selected passage in
+order. It verifies that report's corpus and case hashes before comparing rankings.
+The resulting report contains hashes, counts, case IDs and timings; it omits source
+filenames, questions, passage text and machine paths.
+
+This manual check needs both the core parsing dependencies and the semantic extra.
+Create a separate ignored Python 3.13 environment; the default Python 3.10 test
+environment and CI do not download or run model weights:
+
+```sh
+UV_PROJECT_ENVIRONMENT=.ship/embedding-parity-venv \
+  uv sync --python 3.13 --extra semantic --extra dev --locked
+
+.ship/embedding-parity-venv/bin/python eval/local-embeddings/production_parity.py \
+  --name public --suite eval/local-quality/suite.json \
+  --spec .ship/embedding-study/specs/minilm-spec.json \
+  --model-root desktop/build/model-study/minilm \
+  --reference .ship/embedding-study/minilm-results.json \
+  --output .ship/embedding-study/production-public-parity.json
+```
+
+The reference is the full report from the earlier `runner.py run` command. Add the
+desired corpus to that run first. For Aster, change `--name` to `aster` and use
+`eval/local-quality/aster.json`. For the exposed holdout, use `--name holdout-before`,
+`eval/local-quality/embedding-holdout.json`, and the full holdout report. For private
+materials, replace `--suite` with `--questions eval/questions.jsonl --corpus
+data/dogfood/religion` and use `--name private`. Keep private references ignored.
+Omitting `--reference` checks vector parity and successful production execution,
+but does not check historical ranking order.
+
+Production timings include model loading, asset hashing, original-byte and chunk
+integrity checks, cache validation and ranking. They exclude process startup, app
+coordination and generation. This comparison driver materializes its small study
+corpus so it can compare against the original encoder; the production index itself
+streams bounded batches. Resource-limit tests are a separate measurement.

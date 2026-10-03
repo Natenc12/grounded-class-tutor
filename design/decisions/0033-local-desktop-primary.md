@@ -1,5 +1,8 @@
 # 0033. Local desktop is the primary product architecture
 
+The initial lexical-only retrieval choice is amended by [ADR 0034](0034-local-semantic-search.md)
+after an offline comparison. The local ownership and storage boundaries below remain.
+
 - **Date:** 2026-10-02
 - **Status:** accepted — supersedes hosted runtime decisions 0005, 0006, 0007, 0010,
   0011, 0012, 0018 and 0032; amends 0002, 0004, 0017, 0020 and their implementation

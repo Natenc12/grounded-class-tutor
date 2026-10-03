@@ -1,5 +1,9 @@
 # Local embedding comparison
 
+The subsequent [production integration validation](local-semantic-validation.md)
+records the implemented optional index. The measurements below remain the original
+model-selection experiment, before that integration.
+
 Measured October 3, 2026 against `06b45e6129c456ae7736aea0f11469716341820d`.
 The experiment used local CPU inference and free public downloads. No paid API,
 credits, hosted inference, answer generation, or course-data upload was used.

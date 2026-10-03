@@ -6,6 +6,7 @@
   const ui = Object.fromEntries([
     "class-picker", "class-name", "create-class", "document-picker", "library-detail",
     "delete-document", "delete-class", "backup-library", "search-scope",
+    "search-status", "prepare-search", "cancel-search",
     "citation-preview", "citation-location", "citation-text",
     "account-status", "account-status-text", "account-identity", "account-detail",
     "sign-in", "cancel-sign-in", "sign-out", "open-usage", "notice",
@@ -86,6 +87,15 @@
     ui["delete-document"].disabled = locked || !library?.selectedDocumentId;
     ui["delete-class"].disabled = locked || !library?.selectedClassId;
     ui["backup-library"].disabled = locked;
+    const preparing = activeTask() === "prepare_search";
+    const search = library?.search;
+    ui["search-status"].textContent = preparing
+      ? "Preparing semantic search on this laptop. You can cancel; saved documents stay intact."
+      : text(search?.message);
+    ui["prepare-search"].disabled = locked || !library?.documents?.length || !search ||
+      search.state === "unavailable" || search.state === "ready";
+    ui["cancel-search"].hidden = !preparing;
+    ui["cancel-search"].disabled = localAction === "cancel";
     ui["library-detail"].textContent = !library ? "Loading your local library…"
       : !library.classes?.length ? "Create a class, then add a PDF or PowerPoint. Files stay on this laptop."
         : `${library.documents?.length || 0} saved documents in this class. Your library stays when you sign out.`;
@@ -212,6 +222,7 @@
     ui["cancel-ask"].disabled = localAction === "cancel";
     ui["ask-help"].textContent = !bridge ? "Open this preview in the desktop app to connect and choose material."
       : busy === "ask" ? "Your question and selected passages are being processed."
+        : busy === "prepare_search" ? "Preparing local search. Cancel preparation to ask using keyword search."
         : busy === "document" ? "Reading document…"
         : busy === "signin" ? "Finish connecting your account to continue."
           : !connected() ? "Connect your ChatGPT account to get started."
@@ -354,6 +365,10 @@
   ui["delete-document"].addEventListener("click", () => perform("deleteDocument"));
   ui["delete-class"].addEventListener("click", () => perform("deleteClass"));
   ui["backup-library"].addEventListener("click", () => perform("backupLibrary"));
+  ui["prepare-search"].addEventListener("click", () => {
+    if (!ui["prepare-search"].disabled) perform("prepareSearch", undefined, "prepare_search");
+  });
+  ui["cancel-search"].addEventListener("click", () => perform("cancelAsk", undefined, "cancel"));
   ui["search-scope"].addEventListener("change", () => {
     if (isLocked() || !["class", "document", "pages"].includes(ui["search-scope"].value)) return;
     searchScope = ui["search-scope"].value; answerSuppressed = true; render();

@@ -1,7 +1,8 @@
 # Private macOS app preview
 
 The current build targets Apple Silicon (arm64) macOS. It includes Electron,
-CPython 3.13.14, the GCT core, document parsers and their locked dependencies.
+CPython 3.13.14, the GCT core, document parsers, the pinned local MiniLM model and
+their locked dependencies. The semantic runtime requires macOS 14 or newer.
 Running the resulting app needs no checkout, Python installation, Node, npm or
 uv. Internet access and an eligible, personally connected ChatGPT account are
 needed for tutor generation; the library and source preview work locally.
@@ -15,7 +16,8 @@ npm run package:mac
 ```
 
 The script downloads a pinned Python archive with a checked SHA-256, installs
-runtime-only dependencies from `uv.lock`, builds the current GCT wheel, stages
+runtime-only dependencies including the optional semantic extra from `uv.lock`,
+verifies the pinned public MiniLM files and licenses, builds the current GCT wheel, stages
 an explicit desktop allowlist, signs the bundle ad hoc, verifies it, runs the
 relocated-runtime smoke, and creates:
 
@@ -31,11 +33,17 @@ promise clean-machine compatibility based only on the local smoke tests.
 Neither building nor testing uploads artifacts or reads existing app data.
 The first packaged launch may ask macOS Keychain permission to use the saved
 connection; changing the application signature can change its access prompt.
+No purchased certificate, paid signing service, paid runner or hosted inference
+is used by this build. Developer ID distribution is outside the zero-spending scope.
+
+After importing documents, choose **Prepare semantic search** for the class. This
+runs locally without a ChatGPT connection and can be cancelled. A changed class
+needs preparation again; keyword search works without a ready semantic index.
 
 `npm run test:packaged -- '/absolute/path/Grounded Class Tutor.app'` copies the
 bundle to a temporary path containing spaces and a non-ASCII character. It runs
 its real shipped Python and bridge outside the checkout, exercises PDF/PPTX,
-SQLite FTS5, persistent import/reopen, synthetic generation, citation/deletion
+SQLite FTS5, persistent import/reopen, mocked generation, citation/deletion
 and backup, and checks native-library links for developer-machine dependencies.
 It uses synthetic data and no SDK account. Native Electron UI, account continuity
 and real generation must be checked separately before handing over a release.
@@ -49,7 +57,10 @@ Credentials remain in its encrypted `chatgpt/` store, independently of the
 `library.sqlite3` database. A failed OS credential decryption preserves saved
 bytes and blocks sign-in from overwriting them. Packaging does not migrate,
 copy, reset or bundle that data. Backups are ordinary unencrypted local library
-snapshots and contain documents, but no ChatGPT credentials.
+snapshots and contain documents, but no ChatGPT credentials or rebuildable vectors.
+The optional `library.embeddings.sqlite3` cache is separate from the canonical
+library; prepare it again after restoring source data. Failed or stale cache checks
+use keyword search and leave the source library intact.
 
 Packaged Python runs from `Contents/Resources/python` with `-I -B`, an explicit
 working directory and a minimal environment. It ignores `GCT_PYTHON`, inherited
@@ -67,6 +78,9 @@ directories. JavaScript dependency notices remain inside their directories in
 and GCT modification notes. The changed SDK source and compiled output both
 carry a change notice. Packaging strips development tools, static archives and
 bytecode from the Python runtime, but does not modify its interpreter or modules.
+MiniLM's Apache 2.0 license, pinned model card and file hashes are included alongside
+its verified model assets under `Contents/Resources/models/minilm`. Model loading
+uses local files, with no Hub client or runtime download.
 
 The vendored OpenAI SDK is licensed for noncommercial use; commercial rights
 require separate permission under its license. Its license does not itself

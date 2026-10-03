@@ -95,7 +95,7 @@ def test_real_process_restart_import_question_citation_and_delete(tmp_path):
         },
     )
     assert status == 0
-    assert [event["type"] for event in events] == ["generate", "result"]
+    assert [event["type"] for event in events] == ["search_status", "generate", "result"]
     result = events[-1]["result"]
     assert result["state"] == "GROUNDED"
     assert result["citations"][0]["page_or_slide"] == 3
@@ -334,8 +334,8 @@ def test_empty_retrieval_refuses_without_requesting_generation(tmp_path):
         path, {"operation": "ask", "class_id": class_id, "question": "What do my materials teach?"}
     )
     assert status == 0
-    assert [event["type"] for event in events] == ["result"]
-    assert events[0]["result"]["state"] == "REFUSAL"
+    assert [event["type"] for event in events] == ["search_status", "result"]
+    assert events[-1]["result"]["state"] == "REFUSAL"
 
 
 def test_generation_error_is_safe_terminal_result_and_does_not_retry(tmp_path):
@@ -351,7 +351,7 @@ def test_generation_error_is_safe_terminal_result_and_does_not_retry(tmp_path):
         {"type": "generation_error", "message": "SECRET"},
     )
     assert status == 0
-    assert [event["type"] for event in events] == ["generate", "result"]
+    assert [event["type"] for event in events] == ["search_status", "generate", "result"]
     assert events[-1]["result"]["state"] == "ERROR"
     assert "SECRET" not in json.dumps(events)
 

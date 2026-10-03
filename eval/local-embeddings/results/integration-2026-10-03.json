@@ -1,0 +1,513 @@
+{
+  "measured_on": "2026-10-03",
+  "no_generation": true,
+  "no_spending": true,
+  "parity": {
+    "core_fingerprint": "1c08c25e18878a51e967d8ed77eaef8ce5e182cb496330e0a0a03e4395ce2262",
+    "reports": [
+      {
+        "name": "public",
+        "chunks": 22,
+        "questions": 28,
+        "vectors_bit_identical": true,
+        "all_selected_rankings_identical": true,
+        "prepare_ms": 184.0187079505995,
+        "status_ms": 14.221291989088058,
+        "retrieve_ms": {
+          "median": 83.02837453084067,
+          "p95": 84.66857676394284,
+          "max": 89.53350002411753
+        },
+        "cases": [
+          {
+            "id": "recall-definition",
+            "same_ranking": true
+          },
+          {
+            "id": "recall-paraphrase",
+            "same_ranking": true
+          },
+          {
+            "id": "spacing-paraphrase",
+            "same_ranking": true
+          },
+          {
+            "id": "retention-count",
+            "same_ranking": true
+          },
+          {
+            "id": "retention-difference",
+            "same_ranking": true
+          },
+          {
+            "id": "retention-proportion",
+            "same_ranking": true
+          },
+          {
+            "id": "retention-partial",
+            "same_ranking": true
+          },
+          {
+            "id": "retention-causality",
+            "same_ranking": true
+          },
+          {
+            "id": "check-answer",
+            "same_ranking": true
+          },
+          {
+            "id": "injection-definition",
+            "same_ranking": true
+          },
+          {
+            "id": "injection-task",
+            "same_ranking": true
+          },
+          {
+            "id": "handbook-deadline",
+            "same_ranking": true
+          },
+          {
+            "id": "seminar-deadline",
+            "same_ranking": true
+          },
+          {
+            "id": "deadline-conflict",
+            "same_ranking": true
+          },
+          {
+            "id": "table-cell",
+            "same_ranking": true
+          },
+          {
+            "id": "table-arithmetic",
+            "same_ranking": true
+          },
+          {
+            "id": "table-partial",
+            "same_ranking": true
+          },
+          {
+            "id": "transport",
+            "same_ranking": true
+          },
+          {
+            "id": "transport-paraphrase",
+            "same_ranking": true
+          },
+          {
+            "id": "seal",
+            "same_ranking": true
+          },
+          {
+            "id": "observational-design",
+            "same_ranking": true
+          },
+          {
+            "id": "two-experiments",
+            "same_ranking": true
+          },
+          {
+            "id": "unsupported-interval",
+            "same_ranking": true
+          },
+          {
+            "id": "unsupported-manufacturer",
+            "same_ranking": true
+          },
+          {
+            "id": "unsupported-cooling-time",
+            "same_ranking": true
+          },
+          {
+            "id": "unsupported-instructor",
+            "same_ranking": true
+          },
+          {
+            "id": "unsupported-penalty",
+            "same_ranking": true
+          },
+          {
+            "id": "no-overlap-paraphrase",
+            "same_ranking": true
+          }
+        ]
+      },
+      {
+        "name": "aster",
+        "chunks": 5,
+        "questions": 8,
+        "vectors_bit_identical": true,
+        "all_selected_rankings_identical": true,
+        "prepare_ms": 104.16704195085913,
+        "status_ms": 13.562790933065116,
+        "retrieve_ms": {
+          "median": 82.60266704019159,
+          "p95": 84.53070160467178,
+          "max": 84.58216593135148
+        },
+        "cases": [
+          {
+            "id": "fact",
+            "same_ranking": true
+          },
+          {
+            "id": "paraphrase",
+            "same_ranking": true
+          },
+          {
+            "id": "arithmetic",
+            "same_ranking": true
+          },
+          {
+            "id": "partial",
+            "same_ranking": true
+          },
+          {
+            "id": "unsupported",
+            "same_ranking": true
+          },
+          {
+            "id": "injection",
+            "same_ranking": true
+          },
+          {
+            "id": "conflict",
+            "same_ranking": true
+          },
+          {
+            "id": "unsupported_specific",
+            "same_ranking": true
+          }
+        ]
+      },
+      {
+        "name": "private",
+        "chunks": 122,
+        "questions": 12,
+        "vectors_bit_identical": true,
+        "all_selected_rankings_identical": true,
+        "prepare_ms": 3788.006875081919,
+        "status_ms": 39.605375030077994,
+        "retrieve_ms": {
+          "median": 125.61670795548707,
+          "p95": 127.68015280598775,
+          "max": 127.86983407568187
+        },
+        "cases": [
+          {
+            "id": "q001",
+            "same_ranking": true
+          },
+          {
+            "id": "q002",
+            "same_ranking": true
+          },
+          {
+            "id": "q003",
+            "same_ranking": true
+          },
+          {
+            "id": "q004",
+            "same_ranking": true
+          },
+          {
+            "id": "q005",
+            "same_ranking": true
+          },
+          {
+            "id": "q006",
+            "same_ranking": true
+          },
+          {
+            "id": "q007",
+            "same_ranking": true
+          },
+          {
+            "id": "q008",
+            "same_ranking": true
+          },
+          {
+            "id": "q009",
+            "same_ranking": true
+          },
+          {
+            "id": "q010",
+            "same_ranking": true
+          },
+          {
+            "id": "q011",
+            "same_ranking": true
+          },
+          {
+            "id": "q012",
+            "same_ranking": true
+          }
+        ]
+      },
+      {
+        "name": "holdout-before",
+        "chunks": 34,
+        "questions": 34,
+        "vectors_bit_identical": true,
+        "all_selected_rankings_identical": true,
+        "prepare_ms": 194.9190410086885,
+        "status_ms": 14.516958966851234,
+        "retrieve_ms": {
+          "median": 79.84152098651975,
+          "p95": 85.20976477302611,
+          "max": 85.75870899949223
+        },
+        "cases": [
+          {
+            "id": "h01",
+            "same_ranking": true
+          },
+          {
+            "id": "h02",
+            "same_ranking": true
+          },
+          {
+            "id": "h03",
+            "same_ranking": true
+          },
+          {
+            "id": "h04",
+            "same_ranking": true
+          },
+          {
+            "id": "h05",
+            "same_ranking": true
+          },
+          {
+            "id": "h06",
+            "same_ranking": true
+          },
+          {
+            "id": "h07",
+            "same_ranking": true
+          },
+          {
+            "id": "h08",
+            "same_ranking": true
+          },
+          {
+            "id": "h09",
+            "same_ranking": true
+          },
+          {
+            "id": "h10",
+            "same_ranking": true
+          },
+          {
+            "id": "h11",
+            "same_ranking": true
+          },
+          {
+            "id": "h12",
+            "same_ranking": true
+          },
+          {
+            "id": "h13",
+            "same_ranking": true
+          },
+          {
+            "id": "h14",
+            "same_ranking": true
+          },
+          {
+            "id": "h15",
+            "same_ranking": true
+          },
+          {
+            "id": "h16",
+            "same_ranking": true
+          },
+          {
+            "id": "h17",
+            "same_ranking": true
+          },
+          {
+            "id": "h18",
+            "same_ranking": true
+          },
+          {
+            "id": "h19",
+            "same_ranking": true
+          },
+          {
+            "id": "h20",
+            "same_ranking": true
+          },
+          {
+            "id": "h21",
+            "same_ranking": true
+          },
+          {
+            "id": "h22",
+            "same_ranking": true
+          },
+          {
+            "id": "h23",
+            "same_ranking": true
+          },
+          {
+            "id": "h24",
+            "same_ranking": true
+          },
+          {
+            "id": "h25",
+            "same_ranking": true
+          },
+          {
+            "id": "h26",
+            "same_ranking": true
+          },
+          {
+            "id": "h27",
+            "same_ranking": true
+          },
+          {
+            "id": "h28",
+            "same_ranking": true
+          },
+          {
+            "id": "h29",
+            "same_ranking": true
+          },
+          {
+            "id": "h30",
+            "same_ranking": true
+          },
+          {
+            "id": "h31",
+            "same_ranking": true
+          },
+          {
+            "id": "h32",
+            "same_ranking": true
+          },
+          {
+            "id": "h33",
+            "same_ranking": true
+          },
+          {
+            "id": "h34",
+            "same_ranking": true
+          }
+        ]
+      }
+    ],
+    "boundary": "prepare/status/retrieve core calls include pinned asset hashing, canonical original/chunk validation, model load, cached-vector validation and ranking; exclude process/app startup and generation",
+    "source_sha256": {
+      "src/gct/local/embeddings.py": "cca184fa63e1a9eab13d389e921fcb7ee830566710b3c79bde2a950e0b0a0994",
+      "src/gct/local/embedding_index.py": "c38b931ef94d43e6c4b8a26e1841140c59d1fa018bc2f316cdb734e4fa899448"
+    },
+    "current_source_sha256": {
+      "src/gct/local/embeddings.py": "cca184fa63e1a9eab13d389e921fcb7ee830566710b3c79bde2a950e0b0a0994",
+      "src/gct/local/embedding_index.py": "46cbe672f77d2e408fc93f7eec70437f648eec320dae17ca454516cdc974c0f8"
+    },
+    "post_measurement_change": "Only _cosine explanatory comment changed after82case parity; no executable changes. Foreign controls ran after comment change."
+  },
+  "scope_controls": {
+    "cases": 34,
+    "foreign_imports_preserve_prepared_primary_index": true,
+    "all_selected_rankings_equal_original_after_controls": true,
+    "foreign_leaks": 0,
+    "empty_candidates": 0,
+    "no_generation": true,
+    "source_sha256": {
+      "src/gct/local/embeddings.py": "cca184fa63e1a9eab13d389e921fcb7ee830566710b3c79bde2a950e0b0a0994",
+      "src/gct/local/embedding_index.py": "46cbe672f77d2e408fc93f7eec70437f648eec320dae17ca454516cdc974c0f8"
+    },
+    "current_source_sha256": {
+      "src/gct/local/embeddings.py": "cca184fa63e1a9eab13d389e921fcb7ee830566710b3c79bde2a950e0b0a0994",
+      "src/gct/local/embedding_index.py": "46cbe672f77d2e408fc93f7eec70437f648eec320dae17ca454516cdc974c0f8"
+    },
+    "post_measurement_change": "Only _cosine explanatory comment changed after82case parity; no executable changes. Foreign controls ran after comment change."
+  },
+  "independent_resource_probe": {
+    "synthetic_only": true,
+    "network_socket_connections_blocked": true,
+    "limits": {
+      "pages": 500,
+      "extracted_characters": 1000000
+    },
+    "complete_build": {
+      "state": {
+        "state": "ready",
+        "mode": "hybrid",
+        "message": "Semantic and keyword search are ready for this class."
+      },
+      "seconds": 26.222198875038885,
+      "peak_rss_mib": 426.859375,
+      "chunks": 1000,
+      "windows": 1500,
+      "cache_bytes": 3182592
+    },
+    "deadline_rebuild": {
+      "state": {
+        "state": "limited",
+        "mode": "lexical",
+        "message": "This class exceeded the preparation limit. Keyword search is available."
+      },
+      "seconds": 5.2114501249743626,
+      "prior_cache_unchanged": true
+    },
+    "retrieval": {
+      "state": {
+        "state": "ready",
+        "mode": "hybrid",
+        "message": "Semantic and keyword search are ready for this class."
+      },
+      "seconds": 0.1657743330579251,
+      "selected": 8
+    },
+    "maximum_character_passage": {
+      "characters": 30000,
+      "windows": 68,
+      "seconds": 1.200717916013673,
+      "last_window_ordinal": 67
+    },
+    "peak_rss_mib": 432.890625
+  },
+  "limitations": [
+    "Core call timings exclude process startup, IPC and generation.",
+    "The resource probe covers the maximum one-document text/page boundary, not the 50000-window class cap or all legal input shapes.",
+    "No new generated-answer quality or native account continuity test was performed."
+  ],
+  "record_sha256": {
+    "parity-results.json": "7eba6d8830ede2e3825af938f8e2e4918151969b9b620ccd6e52538dcf1000c5",
+    "parity-controls.json": "f51e7c3040a4167105a9ec3de5dbd8cb2988bad52b3a564fc4fb2eafa5cd7581",
+    "governance-limits.json": "f06e38d5c0d73b3cfbba880e190c5441af48e7de5a54808bb6973ed185f0d975"
+  },
+  "packaging": {
+    "before": {
+      "app_regular_file_bytes": 405350798,
+      "regular_files": 1836,
+      "symlinks": 14,
+      "zip_bytes": 159829477
+    },
+    "after": {
+      "app_regular_file_bytes": 555181225,
+      "regular_files": 3800,
+      "symlinks": 14,
+      "zip_bytes": 215318408,
+      "zip_sha256": "df4084372a1b24e75ab20aca090b5d4d1f20a387477ddeffc46f128267550cfc"
+    },
+    "app_growth_bytes": 149830427,
+    "zip_growth_bytes": 55488931,
+    "app_growth_mib": 142.88943004608154,
+    "zip_growth_mib": 52.918368339538574
+  },
+  "final_local_checks": {
+    "python_tests": 539,
+    "desktop_tests": 157,
+    "ruff_and_format": true,
+    "relocated_bundled_runtime_smoke": true,
+    "native_dependency_checks": 76,
+    "live_generation_calls": 0,
+    "native_account_continuity": "pending protected Keychain interaction",
+    "fresh_machine": "not tested"
+  }
+}

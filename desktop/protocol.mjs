@@ -25,10 +25,18 @@ const validStoredDocument = value => keys(value, ['id', 'class_id', 'filename', 
   Number.isInteger(value.page_count) && value.page_count > 0 && value.page_count <= 500 &&
   value.status === 'ready' && timestamp(value.created_at);
 
+export function validSearchStatus(value) {
+  return keys(value, ['state', 'mode', 'message']) && Object.keys(value).length === 3 &&
+    ['unavailable', 'missing', 'stale', 'ready', 'limited', 'failed'].includes(value.state) &&
+    value.mode === (value.state === 'ready' ? 'hybrid' : 'lexical') &&
+    text(value.message, 500) && value.message.trim().length > 0;
+}
+
 export function validLibraryEvent(event, request) {
   if (!keys(event, ['type', 'operation', 'value']) || event.type !== 'library' || event.operation !== request.operation) return false;
   const value = event.value;
   switch (request.operation) {
+    case 'search_status': case 'prepare_search': return validSearchStatus(value);
     case 'list_classes': return Array.isArray(value) && value.length <= 10000 && value.every(validClass) && new Set(value.map(row => row.id)).size === value.length;
     case 'create_class': return validClass(value);
     case 'list_documents': return Array.isArray(value) && value.length <= 10000 &&

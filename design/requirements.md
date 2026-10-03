@@ -1,5 +1,9 @@
 # Requirements — Grounded Class Tutor
 
+> Historical hosted architecture. ADR 0033 supersedes this document where it conflicts with the
+> [local architecture](architecture.md) and [local roadmap](roadmap.md). Source paths
+> for retired server components refer to Git revision `0b004e7`, not the current runtime.
+
 **Phase:** 1 — Requirements  **Rigor:** Deep (ADR 0001)
 **Delivery model:** the **maturity ladder** (ADR 0004) — build a working skeleton, then deploy,
 then measure/tune. Requirements below are tagged with the stage they must land in:

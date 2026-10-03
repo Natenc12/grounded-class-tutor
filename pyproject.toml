@@ -17,20 +17,6 @@ dev = [
     "ruff~=0.15.20",
     "reportlab>=5.0.0",
 ]
-# Temporary compatibility coverage for the retired hosted architecture. The desktop
-# product, its default tests, and its packaged runtime must not require this extra.
-legacy-hosted = [
-    "psycopg[binary]>=3.2",
-    "pgvector>=0.3",
-    "openai>=1.40",
-    "python-dotenv>=1.0",
-    "fastapi>=0.115",
-    "uvicorn>=0.30",
-    "python-multipart>=0.0.9",
-    # Starlette's TestClient compatibility tests use its preferred HTTP client.
-    "httpx2>=2.0",
-]
-
 [build-system]
 requires = ["hatchling"]
 build-backend = "hatchling.build"
@@ -51,21 +37,7 @@ line-length = 100
 select = ["E", "F", "I", "B", "UP", "W"]
 
 [tool.pytest.ini_options]
-# --strict-markers: applying an unregistered mark is an ERROR, not a silently-ignored no-op. It
-#   guards mark APPLICATION — here, the one `add_marker("db")` call in tests/conftest.py, which
-#   would otherwise accept a typo'd name and quietly under-collect `-m db`. It does NOT validate
-#   `-m` EXPRESSIONS: `pytest -m "not livee"` matches every test and deselects nothing, without a
-#   word of complaint — so the gate string in .github/workflows/ci.yml is unguarded and fails OPEN.
-#   Nothing in pytest can check that string; only a collected-count floor could. Deliberately no
-#   count written here: the number a filter collects is something you run, not something a comment
-#   remembers. Know which half you're covered on.
-# --strict-config: an unknown or misspelled key in this very section is a hard ERROR instead of a
-#   warning nobody reads (`markers` typo'd as `marker` would silently un-register both marks).
-#   One blind spot it cannot cover, by construction: a typo in `addopts` ITSELF, since that's the
-#   key carrying the flag — misspell it and both strict flags vanish with it.
-addopts = ["--strict-markers", "--strict-config", "-m", "not live"]
+# All collected tests exercise the local product without external services or model calls.
+# Unknown configuration and marker names fail instead of silently weakening discovery.
+addopts = ["--strict-markers", "--strict-config"]
 testpaths = ["tests"]
-markers = [
-    "db: test needs a real Postgres (fake embedders — no network, no cost). Runs locally against the dev DB and in CI against the pgvector service container, after the migrate step. The shared `db` fixture skips locally when Postgres is down, but HARD-FAILS in CI, where the container guarantees one. NOT hand-applied: `pytest_collection_modifyitems` in tests/conftest.py adds it to anything requesting the `db` fixture, so the mark can't drift from the dependency.",
-    "live: test hits a paid external API (OpenAI). Excluded from the per-PR CI gate, which runs `pytest -m 'not live'` (added in #18) — these run locally only, with .env secrets. Distinct from `db` deliberately — conflating them would either spend money in CI or silently fence off free DB coverage. LIKE `db`, this mark is DERIVED, never hand-declared (the promise made when it was registered ahead of its first carrier, kept in #8): `pytest_collection_modifyitems` in tests/conftest.py applies it to any test taking a `live_*` fixture, and constructing a real provider client through such a fixture is what makes a test paid — so the mark cannot drift from the dependency. New paid tests MUST take a `live_*` fixture from tests/conftest.py rather than constructing a provider client inline; an inline client is the one edge the derivation cannot see. How many tests carry it right now is a fetched fact, not one recorded here: `uv run pytest -m live -q --collect-only`.",
-]

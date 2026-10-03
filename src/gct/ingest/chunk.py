@@ -1,15 +1,13 @@
-"""Chunk - split parsed page/slide units into smaller, self-contained, embeddable
+"""Chunk - split parsed page/slide units into smaller, self-contained, citable
 passages under the never-span contract: citation-spine honor-point ① is preserved
 through chunking (design/decisions/0019-chunking-contract-never-span.md).
 
-Pure function: no DB, no job/status/lease state, no scope IDs, no chunk identity
-(the PM-4 seam - Slice 2 wraps this in worker/queue machinery without rewriting it).
-Scope (`owner_id`/`class_id`/`file_id`), the embedding + `embedding_model_id` stamp
-(ADR 0018), and `chunk_id` are all attached by LATER stages, never here.
+Pure function: no database, model, scope IDs or chunk identity. The local library
+attaches class/document identity and stable chunk IDs after parsing and chunking.
 
 CONTRACT (locked, ADR 0019 - downstream Retriever/Grounder bind to this):
   1. Every chunk carries `(file, page_or_slide)` provenance - honor-point ①.
-  2. Every chunk is self-contained / independently embeddable + citable.
+  2. Every chunk is self-contained / independently citable.
   3. Every chunk maps to EXACTLY ONE page/slide - `page_or_slide` stays a scalar
      int, never a range (never-span).
   4. Pure `list[ParsedUnit] -> list[TextChunk]`.
@@ -32,8 +30,8 @@ from dataclasses import dataclass
 from gct.ingest.parse import ParsedUnit
 
 # --- Provisional chunking strategy (SPIKE - ADR 0019 / 0021) --------------------------------
-# Word-based fixed-size + overlap. Words are a dep-free token proxy; true-token sizing
-# (tiktoken) is the spike upgrade that enters at #3 embed-adapter (the real per-request cap).
+# Word-based fixed-size + overlap. This is a retrieval heuristic, not a model-token
+# guarantee; local import and evidence selection impose separate character bounds.
 CHUNK_SIZE_WORDS = 250
 CHUNK_OVERLAP_WORDS = 40
 
@@ -43,13 +41,11 @@ assert 0 <= CHUNK_OVERLAP_WORDS < CHUNK_SIZE_WORDS, "overlap must be in [0, size
 
 @dataclass(frozen=True)
 class TextChunk:
-    """One sub-page/-slide passage ready to embed.
+    """One sub-page/-slide passage ready to index or cite.
 
-    Distinct from `ParsedUnit` (a whole page/slide) even though the fields coincide today:
-    the type is what tells a caller this text has been chunked and is safe to embed. Carries
-    ONLY text + provenance - scope, embedding, and identity are attached downstream (the PM-4
-    seam; see module docstring, embedding stamp per ADR 0018). `page_or_slide` is scalar by
-    never-span (ADR 0019).
+    Distinct from a whole `ParsedUnit`. Carries text and physical page provenance;
+    the local library attaches scope and identity. `page_or_slide` remains a scalar
+    under the never-span contract (ADR 0019).
     """
 
     text: str

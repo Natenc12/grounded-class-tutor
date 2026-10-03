@@ -9,7 +9,7 @@ copy in a runner is how two "identical" rules quietly stop agreeing.
 The two signals stay UNCONFLATED (ADR 0023 §1), which is why there are two functions and not one
 verdict:
   - **Retrieval** - was an `expected_sources` chunk in the retrieved top-k? The lever that
-    chunking / k / embedder spikes tune (crude N1 proxy). Misses surface here REGARDLESS of the
+    chunking / k / retrieval changes tune (crude N1 proxy). Misses surface here REGARDLESS of the
     final state, so they cannot hide behind a PARTIAL.
   - **Grounding** - the Grounder `state`. The lever that generation / prompt spikes tune (crude
     N2/N3 proxies).
@@ -40,11 +40,11 @@ sentence split IS the uncited-sentence metric - the whole definition of its deno
 re-scoring a stored run must execute the same definition as the V1 human reading a bench report.
 Computing either in a runner would be the second copy this module exists to not have. REJECTED
 ALTERNATIVE, recorded because nothing else carries it: compute them inline in
-`scripts/ask_smoke.py`'s printer. It is a cheaper diff and matches issue #67's own `Touches:` line
-(#66's already names THIS module, so the alternative contradicts it rather than following it), and
+the retired `scripts/ask_smoke.py` printer. It was a cheaper diff and matched issue #67's
+`Touches:` line (#66 already named THIS module, so the alternative contradicted it), and
 nothing in V1 would ever notice the divergence - which is precisely the failure mode
 ADR 0017 (clamped per ADR 0024) names about its own seam: load-bearing exactly because nothing in
-V1 reads it, so a wrong choice hides until V3. It is also why the runner's own docstring says a
+V1 reads it, so a wrong choice hides until V3. The historical runner's docstring said a
 scoring rule found there "belongs one layer down".
 """
 
@@ -460,9 +460,9 @@ def compute_metrics(records: Sequence[EvalRecord]) -> EvalMetrics:
 #      per-claim citation presence is not an enforcement rung in V1 - is protected best by this
 #      number staying outside the object a verdict is computed from.
 #
-# The cost is real, and named here rather than hidden: `scripts/ask_smoke.py` carries a second
-# parallel list beside `records`, because `EvalRecord` cannot carry prose and `compute_metrics`
-# therefore structurally cannot see it. That is one `.append` in a loop that already appends.
+# Keep answer prose separate from records: `EvalRecord` cannot carry prose and
+# `compute_metrics` therefore structurally cannot see it. Historical runners used a
+# parallel list for attribution diagnostics; local callers should preserve that separation.
 
 
 @dataclass(frozen=True)

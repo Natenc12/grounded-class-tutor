@@ -18,9 +18,8 @@ must be reconciled explicitly into retained requirements or superseded work; nev
 run the old Slice 4 projection blindly against the new architecture. Preserved
 history at `0b004e7` is useful context, not the current task frontier.
 
-Default tests must run without server dependencies. Temporarily retained hosted
-tests require an explicit compatibility install and collection switch. Prove new
-local invariants directly: fresh-process durability, class isolation, atomic import,
+Default tests must run without server dependencies. The hosted tests and explicit
+compatibility install have been retired. Prove local invariants directly: fresh-process durability, class isolation, atomic import,
 source identity, bounded retrieval, complete response acceptance, credential-safe
 shutdown and original-file preservation. Inherited hosted test counts are not
 proof of these behaviors.

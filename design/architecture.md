@@ -23,7 +23,7 @@ material and generation messages, not provider credentials or `.env` configurati
 The Python service owns parsing, source/chunk provenance, transactional library
 operations, class-scoped search and Grounder decisions. Keep the existing pure
 parser, chunker, Grounder and evaluation logic. A neutral retrieval contract lives
-outside database adapters. The old Postgres retriever is not a core dependency.
+outside database adapters. The retired Postgres retriever remains only in Git history.
 
 Use a bounded subprocess per operation initially. A single-instance desktop app
 with SQLite does not need an HTTP server, distributed worker, leases or a reaper.

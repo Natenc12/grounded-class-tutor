@@ -14,7 +14,6 @@ import contextlib
 import hashlib
 import json
 import logging
-import os
 import stat
 import sys
 import zipfile
@@ -346,10 +345,6 @@ class StdioGeneration:
 
 def run(source: TextIO, destination: TextIO, *, inspect: bool = False) -> int:
     """Serve one request. Only the two supplied streams carry the bridge protocol."""
-    # The existing Grounder imports config indirectly; config eagerly loads .env.
-    # This peer does not use credentials, so prevent that incidental file read.
-    previous_dotenv = os.environ.get("PYTHON_DOTENV_DISABLED")
-    os.environ["PYTHON_DOTENV_DISABLED"] = "1"
     old_logging = logging.root.manager.disable
     logging.disable(sys.maxsize)
     try:
@@ -399,10 +394,6 @@ def run(source: TextIO, destination: TextIO, *, inspect: bool = False) -> int:
         return 1
     finally:
         logging.disable(old_logging)
-        if previous_dotenv is None:
-            os.environ.pop("PYTHON_DOTENV_DISABLED", None)
-        else:
-            os.environ["PYTHON_DOTENV_DISABLED"] = previous_dotenv
 
 
 def main() -> int:

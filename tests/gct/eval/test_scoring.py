@@ -1154,11 +1154,8 @@ class TestAttributionIsNotTheVector:
 class ScriptedGeneration:
     """A `Generation`-shaped stub: replays `script` in order; RAISES any exception in it.
 
-    Lives in this module rather than in a shared conftest for the same reason `BrokenEmbeddings`
-    lives inside `test_ask.py`: `tests/gct/eval/` has no conftest of its own, and the grounder
-    suite's `scripted` fixture is not visible from here (pytest exposes a conftest only to its own
-    directory and below). Nothing here constructs a real provider client, so no test in this file
-    takes a `live_*` fixture and none is paid.
+    Lives beside these scoring tests; every outcome is scripted without network
+    traffic or a provider client.
     """
 
     def __init__(self, *script: str | Exception) -> None:

@@ -12,6 +12,8 @@ local source refactor under ADR 0033, not a packaged installer release.
 - Asked across the class without reopening the source file. The connected GPT-6-Astra
   route returned a grounded active-recall/spaced-practice answer citing page 1.
 - “View saved passage” displayed the matching text from the saved library.
+- Created a backup through the native save dialog; reopening it recovered the same
+  class/document and original bytes, with owner-only file permissions.
 - Asked for the exact ideal practice interval, which the source explicitly does not
   prescribe. GCT displayed Not supported with that specific coverage gap.
 - These two live requests used the authorized account connection and synthetic text.

@@ -1,6 +1,5 @@
-"""Grounded Class Tutor — the callable RAG core (ADR 0009).
+"""Grounded Class Tutor's local library and reusable grounding core (ADR 0033).
 
-The API, the eval harness, and the spike scripts are all thin *peer callers* of this
-library; none owns logic. Slice 0 lays the foundation: config, db access, and the
-swappable provider interfaces.
+Electron coordinates the desktop and authorized model connection. Python owns
+bounded parsing, chunking, SQLite persistence, retrieval and citation validation.
 """

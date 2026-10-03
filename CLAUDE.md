@@ -23,6 +23,11 @@ the product. Full design lives in `design/` — start with `design/START-HERE.md
 **Source-of-truth rule:** `architecture.md` + `data-model.md` + the `decisions/` ADRs are current truth.
 `vision.md` is the origin story — where it disagrees with a later doc, the later doc wins.
 
+**Local desktop direction:** Nathan selected a local app using his ChatGPT plan. The additive
+`desktop/` proof and `src/gct/local_proof.py` reuse the parser and Grounder without a database or
+API key. Start with `design/local-app-proof.md` for setup, boundaries, and remaining release work.
+This experiment does not silently replace the production architecture or database ADRs below.
+
 ## Stack
 - **Core:** Python 3.10+, package `gct` under `src/` (a callable library — API/eval/scripts are thin peer callers, ADR 0009).
 - **DB:** Postgres 17 + pgvector (local V1 → Supabase V2, ADR 0006). DB name `grounded_class_tutor`.

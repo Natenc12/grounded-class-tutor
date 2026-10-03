@@ -137,3 +137,44 @@ jobs:
 
       - name: Tests (everything except paid-API `live`)
         run: uv run pytest -m "not live"
+
+  desktop-test:
+    name: Desktop build + mocked integration tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    env:
+      UV_PYTHON: "3.10"
+      UV_LOCKED: "1"
+      # These tests use the real Python bridge with synthetic documents and mock
+      # account/network responses. No database service or live credentials belong here.
+      PYTHON_DOTENV_DISABLED: "1"
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@d4b2f3b6ecc6e67c4457f6d3e41ec42d3d0fcb86 # v5.4.2
+        with:
+          enable-cache: true
+
+      - name: Install Python 3.10
+        run: uv python install 3.10
+
+      - name: Sync Python dependencies
+        run: uv sync --extra dev --locked
+
+      - name: Install Node 22
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: desktop/package-lock.json
+
+      - name: Install desktop dependencies
+        working-directory: desktop
+        run: npm ci
+
+      - name: Build desktop SDK and run mocked tests
+        working-directory: desktop
+        run: npm test

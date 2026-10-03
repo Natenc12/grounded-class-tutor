@@ -1,0 +1,64 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; style-src 'self'; connect-src 'none'; img-src 'none'; font-src 'none'; object-src 'none'; base-uri 'none'; form-action 'none'" />
+    <title>Grounded Class Tutor · Local preview</title>
+    <link rel="stylesheet" href="styles.css" />
+    <script src="app.js" defer></script>
+  </head>
+  <body>
+    <div class="app-shell">
+      <header class="app-header">
+        <div class="brand"><span class="brand-mark" aria-hidden="true">g.</span><div><h1>Grounded Class Tutor</h1><p>Your course material. A clearer answer.</p></div></div>
+        <span class="preview-badge">Local preview</span>
+      </header>
+      <div class="workspace">
+        <aside class="sidebar" aria-label="Account and preview information">
+          <section class="card account-card" aria-labelledby="account-heading">
+            <p class="eyebrow">YOUR CONNECTION</p>
+            <h2 id="account-heading">ChatGPT account</h2>
+            <p id="account-status" class="status-line"><span class="status-dot" aria-hidden="true"></span><span id="account-status-text">Not connected</span></p>
+            <p id="account-identity" class="account-identity" hidden></p>
+            <p id="account-detail" class="muted">Connect your account to ask questions using your ChatGPT plan.</p>
+            <button id="sign-in" class="button primary full-width" type="button" disabled>Continue with ChatGPT</button>
+            <button id="cancel-sign-in" class="button secondary full-width" type="button" hidden>Cancel sign-in</button>
+            <div class="account-links"><button id="sign-out" class="text-button" type="button" hidden>Sign out</button><button id="open-usage" class="text-button" type="button" disabled>Manage usage</button></div>
+          </section>
+          <section class="privacy-note" aria-labelledby="privacy-heading">
+            <span class="note-symbol" aria-hidden="true">↗</span>
+            <h2 id="privacy-heading">You choose what to send</h2>
+            <p>Files open locally. Selected passages and your question are sent to OpenAI only when you choose <strong>Ask</strong>.</p>
+            <p>Choose up to five pages or slides for each question.</p>
+          </section>
+          <p class="preview-note">This is a development preview. A standalone installer is not included yet.</p>
+        </aside>
+        <main class="main-content">
+          <div class="intro"><p class="eyebrow">A SMALL, GROUNDED START</p><h2>Bring a question.<br />Start with your material.</h2><p>Choose a document, select a few passages, and ask.</p></div>
+          <div id="notice" class="notice" role="status" aria-live="polite" hidden></div>
+          <section class="card material-card" aria-labelledby="material-heading">
+            <div class="section-heading"><div><span class="step-number" aria-hidden="true">1</span><h2 id="material-heading">Choose your material</h2></div><span class="section-hint">PDF or PowerPoint</span></div>
+            <div id="document-empty" class="document-empty"><div class="file-symbol" aria-hidden="true">≡</div><p class="empty-title">Start with a PDF or PPTX</p><p class="muted">A lecture deck, reading, or a small sample to try.</p></div>
+            <div id="document-info" class="document-info" hidden><div class="file-symbol small" aria-hidden="true">≡</div><div class="file-details"><h3 id="document-name"></h3><p id="document-meta" class="muted"></p></div><span id="sample-badge" class="small-badge" hidden>Demo content</span></div>
+            <div class="file-actions"><button id="choose-file" class="button secondary" type="button" disabled>Choose a file</button><button id="use-sample" class="text-button" type="button" disabled>Use sample</button></div>
+            <div id="page-section" class="page-section" hidden><div class="page-heading"><h3>Pages to include</h3><p id="selection-count" aria-live="polite">0 of 5 selected</p></div><p id="selection-help" class="muted">Select the pages or slides relevant to your question.</p><fieldset id="page-options" class="page-options" aria-describedby="selection-help"><legend class="sr-only">Select up to five pages or slides</legend></fieldset></div>
+          </section>
+          <section class="card question-card" aria-labelledby="question-heading">
+            <div class="section-heading"><div><span class="step-number" aria-hidden="true">2</span><h2 id="question-heading">Ask about what you selected</h2></div></div>
+            <label for="question" class="sr-only">Your question</label><textarea id="question" rows="3" maxlength="2000" placeholder="What is the main idea, and which details support it?" disabled></textarea>
+            <div class="question-toolbar"><div class="model-field"><label for="model">Model</label><select id="model" disabled><option value="">Connect to see your models</option></select></div><div class="ask-actions"><button id="cancel-ask" class="button secondary" type="button" hidden>Cancel</button><button id="ask" class="button primary" type="button" disabled>Ask <span aria-hidden="true">↗</span></button></div></div>
+            <p id="ask-help" class="action-hint">Connect your ChatGPT account to get started.</p>
+          </section>
+          <section id="answer-section" class="card answer-card" aria-labelledby="answer-heading" aria-busy="false">
+            <div class="section-heading"><div><span class="step-number" aria-hidden="true">3</span><h2 id="answer-heading">An answer you can check</h2></div><span id="answer-badge" class="answer-badge" hidden></span></div>
+            <div id="answer-empty" class="answer-empty"><p>Make room for the answer.</p><p class="muted">Your response, source references, and any gaps will appear here.</p></div>
+            <div id="answer-progress" class="answer-progress" role="status" hidden><span class="spinner" aria-hidden="true"></span><div><p>Reading your selected passages…</p><p class="muted">You can cancel while the answer is in progress.</p></div></div>
+            <div id="answer-content" hidden><div id="answer-alert" class="answer-alert" hidden></div><div id="answer-prose" class="answer-prose"></div><section id="citations-section" class="citations-section" aria-labelledby="citations-heading" hidden><h3 id="citations-heading">Sources in your material</h3><ul id="citations" class="citations"></ul></section><section id="gaps-section" class="gaps-section" aria-labelledby="gaps-heading" hidden><h3 id="gaps-heading">What the material doesn’t cover</h3><ul id="gaps"></ul></section></div>
+          </section>
+          <footer class="workspace-footer">Grounded in the passages you select. Check important details against the source.</footer>
+        </main>
+      </div>
+    </div>
+  </body>
+</html>

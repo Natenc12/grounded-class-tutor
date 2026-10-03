@@ -1,0 +1,154 @@
+import { spawn } from 'node:child_process';
+import { existsSync } from 'node:fs';
+import { join } from 'node:path';
+import { validDocument, validResult } from './protocol.mjs';
+
+const runningChildren = new Set();
+
+export async function stopBridges() {
+  const jobs = [...runningChildren];
+  for (const job of jobs) job.stop();
+  await Promise.all(jobs.map(job => job.closed));
+}
+
+export class ProofError extends Error {
+  constructor(code, message) { super(message); this.code = code; }
+}
+
+export function pythonEnvironment(repoRoot) {
+  // No inherited API keys, OAuth tokens, dotenv, or Python startup injection.
+  return {
+    PATH: process.env.PATH ?? '/usr/bin:/bin',
+    ...(process.env.SYSTEMROOT ? { SYSTEMROOT: process.env.SYSTEMROOT } : {}),
+    PYTHONPATH: join(repoRoot, 'src'),
+    PYTHON_DOTENV_DISABLED: '1',
+    PYTHONUNBUFFERED: '1',
+    PYTHONNOUSERSITE: '1',
+  };
+}
+
+export function pythonExecutable(repoRoot) {
+  if (process.env.GCT_PYTHON) return process.env.GCT_PYTHON;
+  const local = join(repoRoot, '.venv', process.platform === 'win32' ? 'Scripts/python.exe' : 'bin/python');
+  return existsSync(local) ? local : (process.platform === 'win32' ? 'python' : 'python3');
+}
+
+export function responseOptions(messages, model, signal) {
+  if (!Array.isArray(messages) || messages.length > 10) throw new ProofError('bridge_invalid', 'Invalid grounding request.');
+  let instructions = '';
+  const input = [];
+  let length = 0;
+  for (const message of messages) {
+    if (!message || typeof message.content !== 'string') throw new ProofError('bridge_invalid', 'Invalid grounding request.');
+    length += message.content.length;
+    if (length > 60000) throw new ProofError('context_too_large', 'Select fewer pages.');
+    if (message.role === 'system') instructions += `${message.content}\n`;
+    else if (['user', 'assistant', 'developer'].includes(message.role)) input.push({ role: message.role, content: message.content });
+    else throw new ProofError('bridge_invalid', 'Invalid grounding request.');
+  }
+  if (!instructions || !input.length) throw new ProofError('bridge_invalid', 'The grounding request is incomplete.');
+  return { model, instructions, input, signal };
+}
+
+export function validateAsk(value, document, models) {
+  if (!value || typeof value !== 'object' || Array.isArray(value) ||
+      Object.keys(value).some(key => !['question', 'model', 'pages'].includes(key))) {
+    throw new ProofError('invalid_request', 'Check the question and selected pages.');
+  }
+  const { question, model, pages } = value;
+  if (typeof question !== 'string' || !question.trim() || question.length > 2000) {
+    throw new ProofError('invalid_question', 'Enter a question of up to 2,000 characters.');
+  }
+  if (typeof model !== 'string' || !models.some(entry => entry.slug === model)) {
+    throw new ProofError('invalid_model', 'Choose an available model for this account.');
+  }
+  if (!document || !Array.isArray(pages) || !pages.length || pages.length > 5 ||
+      new Set(pages).size !== pages.length || pages.some(page => !Number.isInteger(page) ||
+        !document.pages.some(entry => entry.page_or_slide === page))) {
+    throw new ProofError('invalid_pages', 'Choose between one and five pages.');
+  }
+  return { question: question.trim(), model, pages };
+}
+
+export function runBridge(repoRoot, payload, { inspect = false, generate, signal,
+  timeoutMs = inspect ? 30000 : 240000, executable = pythonExecutable(repoRoot) } = {}) {
+  return new Promise((resolve, reject) => {
+    if (signal?.aborted) { reject(new ProofError('cancelled', 'Request cancelled.')); return; }
+    const child = spawn(executable, ['-m', 'gct.local_proof', ...(inspect ? ['--inspect'] : [])], {
+      cwd: repoRoot, env: pythonEnvironment(repoRoot), stdio: ['pipe', 'pipe', 'pipe'], shell: false,
+    });
+    let markClosed;
+    const closed = new Promise(resolveClosed => { markClosed = resolveClosed; });
+    const generation = new AbortController();
+    let finished = false, buffered = '', outputBytes = 0, calls = 0, terminal, generating = false;
+    let chain = Promise.resolve();
+    const stop = () => {
+      generation.abort();
+      child.stdin.destroy();
+      child.kill('SIGTERM');
+      const force = setTimeout(() => child.kill('SIGKILL'), 1000);
+      force.unref();
+      child.once('close', () => clearTimeout(force));
+    };
+    const job = { stop, closed };
+    runningChildren.add(job);
+    child.once('close', () => { runningChildren.delete(job); markClosed(); });
+    const complete = (error, value) => {
+      if (finished) return;
+      finished = true;
+      generation.abort();
+      clearTimeout(timer);
+      signal?.removeEventListener('abort', abort);
+      if (error) { stop(); reject(error); } else resolve(value);
+    };
+    const abort = () => complete(new ProofError('cancelled', 'Request cancelled.'));
+    const timer = setTimeout(() => complete(new ProofError('timeout', 'The request took too long. Try fewer pages.')), timeoutMs);
+    signal?.addEventListener('abort', abort, { once: true });
+    child.on('error', () => complete(new ProofError('python_unavailable', 'The local Python runtime could not start. Run uv sync --extra dev in this checkout.')));
+    child.stdin.on('error', () => complete(new ProofError('bridge_failed', 'The local document process stopped.')));
+    // Parser errors may contain local file paths or document text; do not forward/log stderr.
+    child.stderr.on('data', () => {});
+    const handle = async line => {
+      if (finished || signal?.aborted) return;
+      let event;
+      try { event = JSON.parse(line); } catch { throw new ProofError('bridge_invalid', 'The local document response was invalid.'); }
+      if (!event || typeof event !== 'object' || Array.isArray(event)) throw new ProofError('bridge_invalid', 'The local document response was invalid.');
+      if (terminal) throw new ProofError('bridge_invalid', 'Unexpected data after the local result.');
+      if (event.type === 'generate') {
+        if (inspect || !generate || ++calls > 2) throw new ProofError('bridge_invalid', 'Unexpected generation request.');
+        generating = true;
+        let text;
+        try { text = await generate(event.messages, generation.signal); }
+        finally { generating = false; }
+        if (finished || signal?.aborted) return;
+        if (typeof text !== 'string' || text.length > 200000) throw new ProofError('response_too_large', 'The answer was too long. Try a smaller question.');
+        child.stdin.write(`${JSON.stringify({ type: 'generated', text })}\n`);
+      } else if (event.type === 'document' && inspect && validDocument(event)) terminal = event;
+      else if (event.type === 'result' && !inspect && validResult(event.result)) terminal = event.result;
+      else if (event.type === 'error') throw new ProofError('document_error', 'This document or page selection could not be processed. Use a text-based PDF/PPTX, at most 10 MB and five pages.');
+      else throw new ProofError('bridge_invalid', 'The local document response was invalid.');
+    };
+    child.stdout.setEncoding('utf8');
+    child.stdout.on('data', buffer => {
+      outputBytes += Buffer.byteLength(buffer);
+      if (outputBytes > 2 * 1024 * 1024) { complete(new ProofError('bridge_limit', 'The local document response was too large.')); return; }
+      buffered += buffer;
+      let end;
+      while ((end = buffered.indexOf('\n')) >= 0) {
+        const line = buffered.slice(0, end); buffered = buffered.slice(end + 1);
+        chain = chain.then(() => handle(line)).catch(error => complete(error));
+      }
+    });
+    child.on('close', code => {
+      // Do not wait on a provider promise once its local consumer has died.
+      if (generating) complete(new ProofError('bridge_failed', 'The local document process stopped during generation.'));
+      chain.then(() => {
+        if (finished) return;
+        if (signal?.aborted) abort();
+        else if (code !== 0 || !terminal || buffered.trim()) complete(new ProofError('bridge_failed', 'The local document process did not finish successfully.'));
+        else complete(null, terminal);
+      }).catch(error => complete(error));
+    });
+    child.stdin.write(`${JSON.stringify(payload)}\n`);
+  });
+}

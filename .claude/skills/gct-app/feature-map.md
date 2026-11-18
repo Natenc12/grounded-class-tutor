@@ -6,7 +6,9 @@ questions; every answer is cited to file and page, or honestly refused.
 There is no user interface yet. A student's actions are HTTP calls. The loop is:
 create a class, upload a file, wait until it is ready, ask.
 
-`Costs money: yes` means reaching the feature with real providers calls a paid API.
+`Costs money: yes` means reaching the feature with the real providers calls a paid API. With
+`GCT_PROVIDERS=standin` every feature is free, and answers are word matching rather than a model
+reading. `drive.py` in this directory runs the whole loop that way.
 
 ## Student features
 

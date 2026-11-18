@@ -41,7 +41,7 @@ from types import FrameType
 from gct.db import connect
 from gct.ingest.chunk import CHUNK_OVERLAP_WORDS, CHUNK_SIZE_WORDS
 from gct.jobs.worker import DEFAULT_LEASE_SECONDS, DEFAULT_POLL_SECONDS, run
-from gct.providers.openai_provider import OpenAIEmbeddings
+from gct.providers.active import build_embedder
 
 # The level `main` configures when nothing asks for another one. Named rather than inlined
 # because two places have to agree on it - the parser's default and the help string that
@@ -284,7 +284,7 @@ def main(argv: Sequence[str] | None = None) -> None:
             # The embedder constructs itself from config (ADR 0018: never hardcode a model id);
             # the chunk window is threaded explicitly because the names are provisional spike
             # parameters (ADR 0019) - see `process_one`'s docstring.
-            embedder=OpenAIEmbeddings(),
+            embedder=build_embedder(),
             chunk_size=args.chunk_size,
             chunk_overlap=args.chunk_overlap,
             lease_seconds=args.lease,

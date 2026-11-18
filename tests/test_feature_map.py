@@ -16,6 +16,7 @@ MAP = REPO / ".claude" / "skills" / "gct-app" / "feature-map.md"
 FIX = f"Update {MAP.relative_to(REPO)} so it describes the product as it is now."
 PAID_PROVIDERS = {deps.get_embedder, deps.get_generator}
 ROUTER_MODULES = (ask, classes, files, health)
+PAID_IN_A_SCRIPT = re.compile(r"openai|gct\.providers\.active", flags=re.I)
 
 
 def _entries() -> dict[str, dict[str, str]]:
@@ -84,8 +85,7 @@ def test_the_map_says_costs_money_exactly_where_a_paid_provider_is_used():
     paid = {reach for reach, route in _routes().items() if _uses_paid_provider(route)} | {
         reach
         for reach, path in _scripts().items()
-        if re.search(r"openai", path.read_text(encoding="utf-8"), flags=re.I)
-        and path.suffix == ".py"
+        if path.suffix == ".py" and PAID_IN_A_SCRIPT.search(path.read_text(encoding="utf-8"))
     }
     claimed = {reach for reach, fields in _entries().items() if fields["Costs money"] == "yes"}
     assert claimed == paid, (

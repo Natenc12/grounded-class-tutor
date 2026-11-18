@@ -15,24 +15,13 @@ from fastapi import FastAPI
 
 from gct.api import errors, limits
 from gct.api.routers import ask, classes, files, health
-from gct.config import load_settings
+from gct.providers import active
 from gct.providers.base import Embeddings, Generation
 
 
 def require_openai_key() -> None:
-    """Refuse to start without `OPENAI_API_KEY`.
-
-    `load_settings()` defaults the key to `""`. Whether the OpenAI client then refuses at
-    construction or only on the first PAID call - the first student's first question - has
-    varied by SDK version (the one pinned today refuses; earlier ones accepted an empty key).
-    Neither is the failure this process should have: refuse at startup, in our words, naming
-    the remedy in the repo's terms.
-    """
-    if not load_settings().openai_api_key:
-        raise RuntimeError(
-            "OPENAI_API_KEY is not set, so the API cannot embed queries or generate answers. "
-            "Set it in `.env` (see `.env.example`) or the environment and start again."
-        )
+    """Refuse to start when the selected providers need a key and there is none."""
+    active.require_usable()
 
 
 def create_app(
@@ -59,14 +48,8 @@ def create_app(
     async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         if embedder is None or generator is None:
             require_openai_key()
-        if embedder is None or generator is None:
-            # Imported here, not at module top: the OpenAI adapter is only a dependency of a
-            # process that actually builds a real client.
-            from gct.providers.openai_provider import OpenAIEmbeddings, OpenAIGeneration
-
-        # The embedder constructs itself from config (ADR 0018: never hardcode a model id).
-        app.state.embedder = embedder if embedder is not None else OpenAIEmbeddings()
-        app.state.generator = generator if generator is not None else OpenAIGeneration()
+        app.state.embedder = embedder if embedder is not None else active.build_embedder()
+        app.state.generator = generator if generator is not None else active.build_generator()
         yield
 
     app = FastAPI(title="Grounded Class Tutor", lifespan=lifespan)

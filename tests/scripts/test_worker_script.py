@@ -9,7 +9,7 @@ library's shutdown guard keeps passing its own tests, and the only symptom is th
 `test_ask_smoke.py` was written for: invisible from reading, visible only from running.
 
 Everything here is offline and free - no DB, no provider, no network. `main()` is driven with
-`connect`, `run` and `OpenAIEmbeddings` all stubbed, so nothing constructs a real client and
+`connect`, `run` and `build_embedder` all stubbed, so nothing constructs a real client and
 nothing reaches Postgres.
 
 What is deliberately NOT here: a test that the released job is actually claimable afterwards.
@@ -117,7 +117,7 @@ def test_main_registers_the_handler_for_sigterm(monkeypatch, restore_sigterm):
         raise KeyboardInterrupt("signal 15")
 
     monkeypatch.setattr(worker_script, "connect", FakeConn)
-    monkeypatch.setattr(worker_script, "OpenAIEmbeddings", fake_embedder)
+    monkeypatch.setattr(worker_script, "build_embedder", fake_embedder)
     monkeypatch.setattr(worker_script, "run", stopped)
 
     worker_script.main([])
@@ -134,7 +134,7 @@ def _stub_main_dependencies(monkeypatch, *, connect):
 
     `run` is stubbed to raise `KeyboardInterrupt`, which is both the shutdown path this script
     exists to handle and the only way out of a `while True` loop. Its ARGUMENTS are still
-    evaluated, so `OpenAIEmbeddings` is constructed either way and stubbing the class is what
+    evaluated, so `build_embedder` is constructed either way and stubbing the class is what
     keeps these tests free and keyless.
     """
 
@@ -142,7 +142,7 @@ def _stub_main_dependencies(monkeypatch, *, connect):
         raise KeyboardInterrupt("signal 15")
 
     monkeypatch.setattr(worker_script, "connect", connect)
-    monkeypatch.setattr(worker_script, "OpenAIEmbeddings", lambda: object())
+    monkeypatch.setattr(worker_script, "build_embedder", lambda: object())
     monkeypatch.setattr(worker_script, "run", stopped)
 
 
@@ -339,7 +339,7 @@ def _spy_on_run(monkeypatch, *, connected: list[bool] | None = None) -> dict:
         return _FakeConn([])
 
     monkeypatch.setattr(worker_script, "connect", connect)
-    monkeypatch.setattr(worker_script, "OpenAIEmbeddings", lambda: object())
+    monkeypatch.setattr(worker_script, "build_embedder", lambda: object())
     monkeypatch.setattr(worker_script, "run", recording_run)
     return seen
 
@@ -501,7 +501,7 @@ def test_a_retuned_library_constant_reaches_the_flagless_worker(
 
     seen: dict = {}
     monkeypatch.setattr(fresh, "connect", lambda: _FakeConn([]))
-    monkeypatch.setattr(fresh, "OpenAIEmbeddings", lambda: object())
+    monkeypatch.setattr(fresh, "build_embedder", lambda: object())
     monkeypatch.setattr(fresh, "run", lambda _conn, **kwargs: seen.update(kwargs))
 
     fresh.main([])

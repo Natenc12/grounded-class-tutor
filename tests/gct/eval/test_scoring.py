@@ -30,7 +30,6 @@ from collections.abc import Sequence
 
 import pytest
 
-from gct.contracts import RetrievedChunk
 from gct.eval import scoring
 from gct.eval.questions import ExpectedSource
 from gct.eval.scoring import (
@@ -52,6 +51,7 @@ from gct.eval.scoring import (
 from gct.grounder import answer as grounder_answer
 from gct.grounder.answer import Coverage, GrounderResult, GrounderState, Integrity
 from gct.providers.base import Message, TransientGenerationError
+from gct.retriever.retrieve import RetrievedChunk
 
 # ADR 0023 §2's table, transcribed INDEPENDENTLY of the module's own dict. Writing the parameters
 # out cell by cell is the point: importing `_SCORE_TABLE` and asserting it equals itself would
@@ -1154,8 +1154,11 @@ class TestAttributionIsNotTheVector:
 class ScriptedGeneration:
     """A `Generation`-shaped stub: replays `script` in order; RAISES any exception in it.
 
-    Lives beside these scoring tests; every outcome is scripted without network
-    traffic or a provider client.
+    Lives in this module rather than in a shared conftest for the same reason `BrokenEmbeddings`
+    lives inside `test_ask.py`: `tests/gct/eval/` has no conftest of its own, and the grounder
+    suite's `scripted` fixture is not visible from here (pytest exposes a conftest only to its own
+    directory and below). Nothing here constructs a real provider client, so no test in this file
+    takes a `live_*` fixture and none is paid.
     """
 
     def __init__(self, *script: str | Exception) -> None:

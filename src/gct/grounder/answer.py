@@ -40,16 +40,18 @@ from collections.abc import Sequence
 from dataclasses import dataclass
 from enum import Enum
 
-from gct.contracts import RetrievedChunk
 from gct.providers.base import Generation, Message, TransientGenerationError
+from gct.retriever.retrieve import RetrievedChunk
 
 # ONE shared retry budget, per ask (ADR 0016). Shared is the point: the single re-attempt fires
 # on EITHER a structural validation failure OR a transient provider error, never both in
 # sequence - separate budgets would multiply into a latency blowout (N5) for no robustness gain.
 MAX_GENERATION_ATTEMPTS = 2
 
-# `error.kind` distinguishes retryable transport failure from terminal failure.
-# Callers render ERROR separately from an evidence-based REFUSAL (ADR 0015/0016).
+# `error.kind` values. A library caller switches on `state`; over HTTP the kind also picks the
+# status and what the screen says (`gct.api.routers.ask._ERROR_STATUS`; ADR 0015 ->
+# *Answer-surface treatment*): a flaky provider (retried, still failed) is a 503 worth trying
+# again, a misconfigured one (never worth retrying) is a 500 that is not the student's fault.
 ERROR_KIND_PROVIDER_TRANSIENT = "provider_transient"
 ERROR_KIND_PROVIDER_TERMINAL = "provider_terminal"
 
@@ -57,8 +59,8 @@ ERROR_KIND_PROVIDER_TERMINAL = "provider_terminal"
 class GrounderState(str, Enum):
     """The five render states - the WHOLE output contract (grounder.md Sec.Interface).
 
-    Subclasses `str` so the value serializes straight to JSON for the desktop bridge and eval
-    consumers without a custom encoder (`GrounderState.GROUNDED == "GROUNDED"` is True).
+    Subclasses `str` so the value serializes straight to JSON for the API adapter and the eval
+    runner without a custom encoder (`GrounderState.GROUNDED == "GROUNDED"` is True).
 
     ERROR is transport-level, NOT a grounding outcome; the client must render it distinctly from
     REFUSAL, and INTEGRITY_FLAGGED distinctly from GROUNDED (ADR 0015/0016, the N11 extension).
@@ -235,10 +237,9 @@ class _ParsedAnswer:
     """One generation attempt, text-parsed. Internal - never leaves this module."""
 
     prose: str  # the reply minus EVERY coverage line, stripped
-    ordinals: list[int]  # bounded [S#] ordinals in prose order, duplicates kept
+    ordinals: list[int]  # every [S#] found in prose, in order, duplicates kept
     coverage: Coverage | None  # None unless EXACTLY ONE marker was found and parsed
     marker_count: int  # how many coverage lines the model emitted; the contract asks for 1
-    oversized_label: bool = False  # do not convert attacker-sized decimal strings to int
 
 
 def _build_labeled_context(
@@ -319,18 +320,9 @@ def _parse(raw: str) -> _ParsedAnswer:
     # so the two can never disagree about what a marker line is.
     prose = _COVERAGE_RE.sub("", raw).strip()
     coverage = _parse_coverage(matches[0].group("body")) if len(matches) == 1 else None
-    labels = [m.group("ordinal") for m in _LABEL_RE.finditer(prose)]
-    # Ten decimal digits already exceed a feasible source count. Bound before
-    # conversion: Python rejects enormous integers, which must be a structural
-    # failure with the normal retry/flag behavior, not an uncaught parser error.
-    oversized_label = any(len(label) > 10 for label in labels)
-    ordinals = [int(label) for label in labels if len(label) <= 10]
+    ordinals = [int(m.group("ordinal")) for m in _LABEL_RE.finditer(prose)]
     return _ParsedAnswer(
-        prose=prose,
-        ordinals=ordinals,
-        coverage=coverage,
-        marker_count=len(matches),
-        oversized_label=oversized_label,
+        prose=prose, ordinals=ordinals, coverage=coverage, marker_count=len(matches)
     )
 
 
@@ -353,9 +345,6 @@ def _validate(parsed: _ParsedAnswer, n_sources: int) -> list[str]:
     moves the V1/V3 line; move it in the spec first.
     """
     reasons: list[str] = []
-
-    if parsed.oversized_label:
-        reasons.append("cited label ordinal was too long to be a provided source")
 
     dangling = sorted({o for o in parsed.ordinals if not 1 <= o <= n_sources})
     if dangling:
@@ -528,7 +517,7 @@ def answer(
 
     PUBLIC CONTRACT (grounder.md Sec.Interface) - issue #8's `ask()` binds to this signature.
     `retrieved` is the Retriever's shipped return type, in rank order; `generator` is keyword-only
-    and injected, keeping the transport separate from grounding, which is
+    and injected, mirroring `retrieve(..., embedder=)` and `ingest_file(..., embedder=)`, which is
     also what keeps the tests offline.
 
     `owner_id` is carried because the ask is a scoped act and every result is attributable to one

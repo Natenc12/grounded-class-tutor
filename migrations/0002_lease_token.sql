@@ -1,0 +1,15 @@
+-- Slice 2 — `jobs.lease_token`: makes "do I still hold this lease?" a question the row can
+-- actually answer (issue #71).
+--
+-- Before this column, `complete`/`fail`/`release` guarded with `state = 'processing'` and the
+-- docstrings read that as "only the current leaseholder may write". It is not: `processing`
+-- says the job is SOMEBODY's, never whose. A worker whose lease expired, whose job was
+-- reclaimed and re-handed out, finds `processing` on the row and writes anyway — and for
+-- `release` that drags a live job back to `queued`, so a third claim re-ingests a file another
+-- worker is still embedding. That is the double embedding charge the lease exists to prevent.
+--
+-- `claim` now mints a fresh token per claim and hands it to the worker; the settle verbs match
+-- on it. Nullable rather than NOT NULL: rows claimed before this migration carry NULL, and
+-- `= null` is never true, so a pre-existing in-flight job settles as "lease lost" — the safe
+-- direction, and the reaper requeues it. Written idempotent like 0001.
+alter table jobs add column if not exists lease_token uuid;

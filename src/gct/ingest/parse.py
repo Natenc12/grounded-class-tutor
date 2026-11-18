@@ -2,9 +2,15 @@
 metadata that the citation spine trusts from here on: citation-spine honor-point ①
 (design/decisions/0019-chunking-contract-never-span.md, F2).
 
-Pure function: no database, model connection or job state. Terminal failures raise
-`ParseError` with a closed reason; the local service owns user-facing messages.
-PDF/PowerPoint tooling remains replaceable without changing `ParsedUnit` provenance.
+Pure function: no DB, no job/status/lease state (the PM-4 seam - Slice 2 wraps this
+in worker/queue machinery without rewriting it). Terminal failures (unparseable /
+password-protected / zero-text) are signalled by raising `ParseError` with a `reason`
+drawn from the same terminal taxonomy as `files.failed_reason`
+(design/decisions/0020-ingestion-failure-idempotency-model.md); the caller decides
+retry policy, this module never does.
+
+Tooling (pypdf / python-pptx) is a spike choice (design/components/ingestion-worker.md
+§"spec/spike line") - swappable without changing the `ParsedUnit` contract.
 """
 
 from __future__ import annotations
@@ -17,8 +23,11 @@ from pptx import Presentation
 from pptx.enum.shapes import MSO_SHAPE_TYPE
 from pypdf import PdfReader
 
-# Closed terminal reasons retained from ADR 0020/0029. The caller may also raise
-# `too_long` when enforcing a bound after parsing.
+# The closed terminal-reason taxonomy, mirroring `files.failed_reason`'s CHECK
+# (migrations/0001_init.sql, widened by 0003). NOT every value is born here: `too_long` is raised
+# by the pipeline's input ceiling, downstream of parsing (ADR 0020, terminal set extended per
+# ADR 0029). Every entry is a legal `ParseError` reason; `parse_file` is simply not the only
+# place one is raised.
 TERMINAL_REASONS = ("unparseable", "protected", "unsupported", "empty", "too_long")
 
 # MS-CFB (OLE2) container signature. Password-protected OOXML files (.pptx/.docx/.xlsx)
@@ -30,8 +39,10 @@ _OLE_SIGNATURE = b"\xd0\xcf\x11\xe0\xa1\xb1\x1a\xe1"
 class ParseError(Exception):
     """A terminal (no-retry) parse failure.
 
-    `reason` belongs to the closed terminal taxonomy (ADR 0020/0029). Consumers
-    translate it to a safe public message without exposing parser diagnostics.
+    `reason` matches `files.failed_reason`'s terminal taxonomy (ADR 0020, terminal set
+    extended per ADR 0029) so a future caller can pass it straight through with no
+    translation. That pass-through is not aspirational any more: `worker.py`'s
+    `except ParseError` writes `exc.reason` into the column untranslated.
     """
 
     def __init__(self, reason: str, message: str) -> None:
@@ -81,8 +92,14 @@ def parse_file(path: str | Path) -> list[ParsedUnit]:
 def _strip_nul(units: list[ParsedUnit]) -> list[ParsedUnit]:
     """Drop NUL (0x00) bytes from every unit's text, and drop units with nothing else left.
 
-    NUL is extraction debris, observed in the retained dogfood corpus. Normalize it
-    before chunking so stored text, retrieved evidence and model context agree.
+    NUL is never legitimate course-material text - it is extraction junk (the real carrier: OCR
+    debris on `Livingston Cosmogony.pdf` p.11 of the dogfood corpus). It matters because Postgres
+    `text` columns reject it outright: `index_file`'s insert dies with `psycopg.DataError:
+    PostgreSQL text fields cannot contain NUL`, AFTER the whole file was parsed, chunked, and
+    embedded - money spent, transaction rolled back, file unindexable. Scrubbing belongs HERE, at
+    the chokepoint where provenance is born, so every downstream consumer (chunker, embedder,
+    index, retrieval, the model's context) sees the same clean text; scrubbing at the DB boundary
+    instead would stamp the corpus with text that differs from what was embedded.
 
     Applied in `parse_file` AFTER format dispatch - one rule for both formats - though only PDFs
     can actually carry it: PPTX bodies are XML 1.0, which cannot represent NUL at all. A unit that
@@ -104,8 +121,6 @@ def _strip_nul(units: list[ParsedUnit]) -> list[ParsedUnit]:
 def _parse_pdf(path: Path) -> list[ParsedUnit]:
     try:
         reader = PdfReader(path)
-    except pypdf.errors.LimitReachedError as exc:
-        raise ParseError("too_long", "PDF parser expansion limit exceeded") from exc
     except pypdf.errors.PyPdfError as exc:
         raise ParseError("unparseable", f"could not read PDF {path.name}: {exc}") from exc
 
@@ -116,8 +131,6 @@ def _parse_pdf(path: Path) -> list[ParsedUnit]:
     for i, page in enumerate(reader.pages, start=1):
         try:
             text = page.extract_text() or ""
-        except pypdf.errors.LimitReachedError as exc:
-            raise ParseError("too_long", "PDF parser expansion limit exceeded") from exc
         except Exception as exc:
             raise ParseError(
                 "unparseable", f"could not extract text from {path.name} page {i}: {exc}"
@@ -181,45 +194,6 @@ def _parse_pptx(path: Path) -> list[ParsedUnit]:
         try:
             lines = []
             for shape in _iter_shapes(slide.shapes):
-                if shape.has_table:
-                    # Preserve grid positions. Carry a vertical merge's label
-                    # into each covered row; horizontal continuations stay empty.
-                    table = shape.table
-                    row_count, column_count = len(table.rows), len(table.columns)
-                    carried: dict[tuple[int, int], str] = {}
-                    for row_index, row in enumerate(table.rows):
-                        cells = []
-                        for column, cell in enumerate(row.cells):
-                            if cell.is_merge_origin:
-                                row_span, column_span = cell.span_height, cell.span_width
-                                if not (
-                                    1 <= row_span <= row_count - row_index
-                                    and 1 <= column_span <= column_count - column
-                                ):
-                                    raise ValueError("table merge extends beyond its grid")
-                                origin_text = cell.text
-                                # Repeat small category labels for readability. A
-                                # large merged value is emitted in full once; later
-                                # rows reference that cell instead of multiplying
-                                # arbitrary source text by the row count.
-                                continuation = (
-                                    origin_text
-                                    if len(origin_text) <= 160
-                                    else (
-                                        f"(same merged cell as row {row_index + 1}, "
-                                        f"column {column + 1})"
-                                    )
-                                )
-                                for offset in range(1, row_span):
-                                    carried[row_index + offset, column] = continuation
-                            cells.append(
-                                carried.get((row_index, column), "")
-                                if cell.is_spanned
-                                else cell.text
-                            )
-                        if any(cell.strip() for cell in cells):
-                            lines.append(" | ".join(cells))
-                    continue
                 if not shape.has_text_frame:
                     continue
                 for paragraph in shape.text_frame.paragraphs:

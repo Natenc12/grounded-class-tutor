@@ -21,7 +21,6 @@ from __future__ import annotations
 
 import pytest
 
-from gct.contracts import RetrievedChunk
 from gct.grounder.answer import (
     MAX_GENERATION_ATTEMPTS,
     Coverage,
@@ -32,6 +31,7 @@ from gct.grounder.answer import (
     answer,
 )
 from gct.providers.base import TransientGenerationError
+from gct.retriever.retrieve import RetrievedChunk
 
 # A well-formed reply against a 2-chunk context: two cited claims + a complete coverage marker.
 GOOD_REPLY = (

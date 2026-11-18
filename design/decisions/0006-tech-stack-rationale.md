@@ -1,7 +1,7 @@
 # 0006. Tech stack rationale (full-stack, deliberate not defaulted)
 
 - **Date:** 2026-07-04
-- **Status:** superseded by 0033 — retained as a historical hosted-runtime decision.
+- **Status:** accepted
 
 ## Context
 The proposal listed a plausible stack, but a Deep-rigor project shouldn't inherit choices by

@@ -1,0 +1,5 @@
+# Written by `npm run api:refresh`, and compared byte-for-byte with what that command would write
+# (tests/gct/api/test_openapi_snapshot.py, scripts/api-types.test.ts) - a reformat is a diff.
+openapi.json
+src/api/schema.gen.ts
+package-lock.json

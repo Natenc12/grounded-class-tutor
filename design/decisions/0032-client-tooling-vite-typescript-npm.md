@@ -1,7 +1,8 @@
 # 0032. V1 client tooling — Vite, TypeScript, npm; the dev server proxies the API
 
 - **Date:** 2026-09-11
-- **Status:** superseded by 0033 — retained as a historical hosted-runtime decision.
+- **Status:** accepted (decided by Nate, 2026-09-11; type generation, the proxy's shape and the
+  version pins decided in build, #140)
 
 ## Context
 ADR 0012 decided *what* the V1 client is — a minimal React SPA over five P0 surfaces — and nothing

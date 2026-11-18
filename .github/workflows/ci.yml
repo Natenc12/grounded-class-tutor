@@ -1,4 +1,8 @@
-# Required local product gates. Neither job uses hosted services or live model calls.
+# Per-PR merge gate: lint + every test that runs for free (issue #18, extended).
+# Trust is the product, so a red suite must BLOCK merge instead of relying on a
+# "tests pass" claim typed into a PR body. A pgvector service container gives the
+# job a real Postgres 17, so the DB-backed `db` tests AND the migration run on
+# every PR. Only `live` tests (paid API / network) stay local-only.
 name: CI
 
 on:
@@ -12,17 +16,80 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  local-python-test:
-    name: Local Python core (no hosted dependencies)
+  lint-and-test:
+    name: ruff + pytest w/ Postgres (py3.10)
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    # State our own floor rather than inheriting the repo default, which is a setting someone can
+    # flip elsewhere: this job only ever reads code, so a write-scoped GITHUB_TOKEN here would be
+    # a standing offer to any dependency that runs in it.
     permissions:
       contents: read
+    # Pin the interpreter for every uv command below. Without this, `uv python
+    # install 3.10` only makes 3.10 available — `uv sync`/`uv run` could still
+    # resolve a newer system Python (>=3.10), so the suite might not run on the
+    # 3.10 we intend to match locally.
+    # A hung job should fail in minutes, not burn the 360-minute default. The suite runs in ~40s;
+    # anything near 10 minutes means a test is blocked on a Postgres lock, not working hard.
+    timeout-minutes: 10
     env:
       UV_PYTHON: "3.10"
+      DATABASE_URL: postgresql://postgres:postgres@localhost:5432/grounded_class_tutor
+      # Applies --locked to EVERY uv command below, `uv run` included. Two things this buys:
+      # `uv run` re-locks and re-syncs by default, so without it a dep added to pyproject.toml
+      # but never `uv lock`ed gets resolved and installed mid-job — CI goes green against a
+      # dependency set uv.lock does not describe, while a teammate's `uv sync` gets a different
+      # environment. And --locked ASSERTS the lockfile is current (--frozen merely declines to
+      # touch it), so a stale uv.lock is itself a red. Same reproducibility argument as pinning
+      # the pgvector tag, one step later in the job.
+      # NB: --frozen and --locked are mutually exclusive — with this set, passing `--frozen` to
+      # any step below is a hard error ("the argument `--locked` cannot be used with UV_FROZEN").
       UV_LOCKED: "1"
-      PYTHON_DOTENV_DISABLED: "1"
+    # Sidecar Postgres, matching local: v17 + pgvector, born empty every run so
+    # each job migrates from scratch (no drifting shared state). The health gate
+    # blocks all steps until the DB accepts TCP connections — without it the
+    # migrate step races Postgres's boot and flakes.
+    #
+    # `-h localhost` is load-bearing. The postgres entrypoint runs its init phase
+    # against a TEMPORARY server started with `listen_addresses=''` — socket only,
+    # no TCP listener. A bare `pg_isready` defaults to the socket, so it reports
+    # healthy during init and the gate opens while port 5432 is still dead. Forcing
+    # TCP makes the check fail until the real server is listening, which is the
+    # thing every step below actually connects to.
+    #
+    # The pgvector version is pinned, not floating. `pgvector/pgvector:pg17` is a
+    # moving tag — a new pgvector release republishes it, and the next PR silently
+    # runs against a different extension than the one this gate was validated on,
+    # with no diff to point at when it goes red. A merge gate has to be reproducible
+    # to be worth anything. Bumping is then a deliberate one-line change.
+    #
+    # NB the `-d` in the health command is decorative: `pg_isready` answers from the server's ping
+    # response, before it resolves the database name, so a typo'd POSTGRES_DB still reports healthy
+    # and fails later at the migrate step. That's a red, not a false green — just don't read this
+    # line as proof the database exists.
+    services:
+      postgres:
+        image: pgvector/pgvector:0.8.5-pg17
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: grounded_class_tutor
+        ports: ["5432:5432"]
+        # start-period gives initdb room before failures start counting: the TCP check above stays
+        # (correctly) red through the whole init phase, so without it that phase eats the retry
+        # budget. Boot is ~5s today against a 75s ceiling — the margin is deliberate, not lazy.
+        options: >-
+          --health-cmd "pg_isready -U postgres -d grounded_class_tutor -h localhost"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 15
+          --health-start-period 10s
     steps:
+      # Third-party actions are pinned to a commit SHA, not a tag, for the same reason the pgvector
+      # image is: `@v4` is mutable and these run arbitrary code in a job holding GITHUB_TOKEN, so a
+      # republished tag would change what executes here with no diff to review. The trailing
+      # comment is the human-readable version — bumping means editing both, deliberately.
+      # (Note `refs/tags/v5` on setup-uv resolves to an annotated TAG object, which Actions will
+      # not accept; the SHA below is the commit that tag points at.)
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
 
       - name: Install uv
@@ -30,85 +97,43 @@ jobs:
         with:
           enable-cache: true
 
+      # Match local dev: 3.10 is our minimum supported (requires-python >=3.10)
+      # and what the local .venv runs, so a green CI reproduces for Nate locally.
       - name: Install Python 3.10
         run: uv python install 3.10
 
-      - name: Install only local runtime and test dependencies
+      # `--extra dev` is required: pytest/ruff live in [project.optional-dependencies].dev,
+      # which a bare `uv sync` does NOT install (it actively UNINSTALLS them).
+      # Pinning comes from UV_LOCKED above, not a --frozen flag here — the two conflict.
+      - name: Sync dependencies
         run: uv sync --extra dev
 
-      - name: Assert hosted packages are absent
+      - name: Ruff
+        run: uv run ruff check
+
+      # Formatting is a separate gate from lint: `ruff check` never reformats, so before this
+      # step layout was whatever each PR happened to type, and review time went to it. `--check`
+      # only reports — it never writes — so a red here means "run `uv run ruff format`", not a
+      # mystery. The one-time flush that made this green is the commit before it.
+      - name: Ruff format
+        run: uv run ruff format --check .
+
+      # Schema drift between migrations/*.sql and the code now fails the PR
+      # instead of only ever being caught on a laptop.
+      #
+      # Applied TWICE on purpose. The container is born empty, so a single pass only ever
+      # exercises the fresh-install path — every `create ... if not exists` takes the create
+      # branch and its no-op branch is never tried. That leaves two green-while-broken holes:
+      # editing an already-applied migration (CI builds the new shape from scratch and passes,
+      # while every existing DB silently keeps the old one), and a future migration whose
+      # `alter table` lacks `if not exists` (fine once, explodes on the re-run that CLAUDE.md
+      # documents as the normal local workflow). The second pass costs ~0.2s and turns both
+      # into a red. It also makes migrate.py's own "idempotent, safe to re-run" claim checked
+      # rather than asserted.
+      - name: Apply migrations (twice — the second pass proves idempotency)
         run: |
-          uv run python - <<'PY'
-          from importlib.util import find_spec
-          forbidden = ("psycopg", "pgvector", "openai", "dotenv", "fastapi",
-                       "uvicorn", "python_multipart", "httpx2")
-          present = [name for name in forbidden if find_spec(name) is not None]
-          assert not present, f"Hosted dependencies leaked into the local environment: {present}"
-          PY
+          uv run python scripts/migrate.py
+          uv run python scripts/migrate.py
 
-      - name: Lint and format
-        run: |
-          uv run ruff check
-          uv run ruff format --check .
-
-      - name: Test local parser, core, library and bridge
-        run: uv run pytest
-
-      - name: Check retrieval-study scoring and safe asset downloads with fakes
-        run: |
-          uv run python eval/local-embeddings/test_runner.py
-          uv run pytest eval/local-embeddings/runtime/test_download_assets.py
-
-      - name: Measure synthetic retrieval without model calls
-        run: |
-          uv run python -m gct.eval.local_quality --suite eval/local-quality/suite.json > /tmp/gct-development-quality.json
-          uv run python -m gct.eval.local_quality --suite eval/local-quality/aster.json > /tmp/gct-aster-quality.json
-          uv run python -m gct.eval.local_quality --suite eval/local-quality/embedding-holdout.json > /tmp/gct-holdout-quality.json
-          uv run python - <<'PY'
-          import json
-          from pathlib import Path
-          for name in ("development", "aster", "holdout"):
-              report = json.loads(Path(f"/tmp/gct-{name}-quality.json").read_text())
-              print(name, json.dumps(report["retrieval"]))
-          PY
-
-  desktop-test:
-    name: Desktop build + mocked integration tests
-    runs-on: ubuntu-latest
-    timeout-minutes: 10
-    permissions:
-      contents: read
-    env:
-      UV_PYTHON: "3.10"
-      UV_LOCKED: "1"
-      # These tests use the real Python bridge with synthetic documents and mock
-      # account/network responses. No database service or live credentials belong here.
-      PYTHON_DOTENV_DISABLED: "1"
-    steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
-
-      - name: Install uv
-        uses: astral-sh/setup-uv@d4b2f3b6ecc6e67c4457f6d3e41ec42d3d0fcb86 # v5.4.2
-        with:
-          enable-cache: true
-
-      - name: Install Python 3.10
-        run: uv python install 3.10
-
-      - name: Sync only local Python dependencies
-        run: uv sync --extra dev --locked
-
-      - name: Install Node 22
-        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
-        with:
-          node-version: "22"
-          cache: npm
-          cache-dependency-path: desktop/package-lock.json
-
-      - name: Install desktop dependencies
-        working-directory: desktop
-        run: npm ci
-
-      - name: Build desktop SDK and run mocked tests
-        working-directory: desktop
-        run: npm test
+      - name: Tests (everything except paid-API `live`)
+        run: uv run pytest -m "not live"

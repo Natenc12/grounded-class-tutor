@@ -1,0 +1,158 @@
+diff --git a/src/gct/api/deps.py b/src/gct/api/deps.py
+index bb2481f..264ac9d 100644
+--- a/src/gct/api/deps.py
++++ b/src/gct/api/deps.py
+@@ -16,6 +16,7 @@ from fastapi import Depends, Request
+ 
+ from gct.config import V1_OWNER_ID
+ from gct.db import connect
++from gct.ids import OwnerId as OwnerIdT
+ from gct.providers.base import Embeddings, Generation
+ 
+ 
+@@ -51,7 +52,7 @@ def get_conn() -> Iterator[psycopg.Connection]:
+         conn.close()
+ 
+ 
+-def owner_id() -> str:
++def owner_id() -> OwnerIdT:
+     """The owner every scoped query filters on - ONE source for the V1 hardcoded user.
+ 
+     V1 has one user and no auth (ADR 0004): the value is `gct.config.V1_OWNER_ID`, and this is
+@@ -64,7 +65,7 @@ def owner_id() -> str:
+     under a unique owner through `app.dependency_overrides`, which is what makes owner-scoped
+     teardown possible.
+     """
+-    return V1_OWNER_ID
++    return OwnerIdT(V1_OWNER_ID)
+ 
+ 
+ def get_embedder(request: Request) -> Embeddings:
+@@ -89,6 +90,6 @@ def get_generator(request: Request) -> Generation:
+ # three routers is three copies of a workaround. A route's signature reads
+ # `def handler(conn: Conn, owner: OwnerId, ...)` and nothing else.
+ Conn = Annotated[psycopg.Connection, Depends(get_conn)]
+-OwnerId = Annotated[str, Depends(owner_id)]
++OwnerId = Annotated[OwnerIdT, Depends(owner_id)]
+ Embedder = Annotated[Embeddings, Depends(get_embedder)]
+ Generator = Annotated[Generation, Depends(get_generator)]
+diff --git a/src/gct/api/routers/ask.py b/src/gct/api/routers/ask.py
+index d474cbe..6b2d502 100644
+--- a/src/gct/api/routers/ask.py
++++ b/src/gct/api/routers/ask.py
+@@ -36,7 +36,6 @@ autocommit connection `gct.api.deps.get_conn` yields is still the wiring this sh
+ from __future__ import annotations
+ 
+ import logging
+-import uuid
+ from typing import Literal
+ 
+ from fastapi import APIRouter
+@@ -46,6 +45,7 @@ from gct.api.deps import Conn, Embedder, Generator, OwnerId
+ from gct.api.errors import ApiError
+ from gct.ask import ERROR_KIND_EMBEDDING_MISMATCH, ask
+ from gct.classes import class_exists
++from gct.ids import parse_class_id
+ from gct.grounder.answer import (
+     ERROR_KIND_PROVIDER_TERMINAL,
+     ERROR_KIND_PROVIDER_TRANSIENT,
+@@ -341,7 +341,7 @@ def ask_question(
+     defensive branch inventing a second answer for it.
+     """
+     try:
+-        class_uuid = str(uuid.UUID(body.class_id))
++        class_uuid = parse_class_id(body.class_id)
+     except ValueError as exc:
+         raise ApiError(
+             400,
+diff --git a/src/gct/ask.py b/src/gct/ask.py
+index 27ce40e..32b989a 100644
+--- a/src/gct/ask.py
++++ b/src/gct/ask.py
+@@ -34,6 +34,7 @@ from gct.grounder.answer import (
+     Integrity,
+     answer,
+ )
++from gct.ids import ClassId, OwnerId
+ from gct.providers.base import Embeddings, Generation, TransientEmbeddingError
+ from gct.retriever.retrieve import (
+     DEFAULT_K,
+@@ -114,8 +115,8 @@ def _retrieval_error(kind: str, message: str) -> GrounderResult:
+ def ask(
+     conn: psycopg.Connection,
+     question: str,
+-    owner_id: str,
+-    class_id: str,
++    owner_id: OwnerId,
++    class_id: ClassId,
+     *,
+     embedder: Embeddings,
+     generator: Generation,
+diff --git a/src/gct/classes.py b/src/gct/classes.py
+index 34516fd..07daecd 100644
+--- a/src/gct/classes.py
++++ b/src/gct/classes.py
+@@ -31,7 +31,7 @@ from __future__ import annotations
+ import psycopg
+ 
+ from gct.db import require_idle
+-from gct.ids import canonical_uuid
++from gct.ids import ClassId, OwnerId, canonical_uuid
+ 
+ # The closed set of reasons a name is refused - a token a caller switches on, exactly as
+ # `gct.staging.STAGING_REASONS` is. Widening it is a change the API's rendering map is required to
+@@ -174,7 +174,7 @@ def create_class(conn: psycopg.Connection, *, owner_id: str, name: str) -> str:
+     return str(row[0])
+ 
+ 
+-def class_exists(conn: psycopg.Connection, *, class_id: str, owner_id: str) -> bool:
++def class_exists(conn: psycopg.Connection, *, class_id: ClassId, owner_id: OwnerId) -> bool:
+     """True if `class_id` names a class belonging to `owner_id`; False otherwise.
+ 
+     ONE False FOR TWO CASES, like `get_file_status`'s one `None`: a class that does not exist and
+diff --git a/src/gct/ids.py b/src/gct/ids.py
+index 24334c5..1435ea1 100644
+--- a/src/gct/ids.py
++++ b/src/gct/ids.py
+@@ -30,6 +30,17 @@ this to the sites #126 names. (`ingest_file`'s `class_id` guard, added by #126,
+ from __future__ import annotations
+ 
+ import uuid
++from typing import NewType
++
++# Typed ids: a `ClassId` can only be made by `parse_class_id`, so holding one IS the proof it is a
++# canonical uuid. An `OwnerId` is a different type, so the two cannot be swapped at a call site.
++ClassId = NewType("ClassId", str)
++OwnerId = NewType("OwnerId", str)
++
++
++def parse_class_id(raw: str) -> ClassId:
++    """The one edge parser. Raises `ValueError` on anything that is not a uuid."""
++    return ClassId(str(uuid.UUID(raw)))
+ 
+ # `uuid.UUID` reports a bad argument in three different ways depending on what it was handed, and
+ # the set is the whole reason this module exists:
+diff --git a/src/gct/retriever/retrieve.py b/src/gct/retriever/retrieve.py
+index 02788ac..0f804bb 100644
+--- a/src/gct/retriever/retrieve.py
++++ b/src/gct/retriever/retrieve.py
+@@ -29,7 +29,7 @@ from dataclasses import dataclass
+ 
+ import psycopg
+ 
+-from gct.ids import canonical_uuid
++from gct.ids import ClassId, OwnerId, canonical_uuid
+ from gct.providers.base import Embeddings
+ 
+ # Provisional top-k. The interface fixes the param; the VALUE is empirical - tuned against
+@@ -153,8 +153,8 @@ def _to_score(distance: float) -> float:
+ def retrieve(
+     conn: psycopg.Connection,
+     question: str,
+-    owner_id: str,
+-    class_id: str,
++    owner_id: OwnerId,
++    class_id: ClassId,
+     *,
+     embedder: Embeddings,
+     k: int = DEFAULT_K,

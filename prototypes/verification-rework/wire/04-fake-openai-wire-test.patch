@@ -1,0 +1,114 @@
+diff --git a/tests/gct/providers/test_openai_wire.py b/tests/gct/providers/test_openai_wire.py
+new file mode 100644
+index 0000000..5fc95d2
+--- /dev/null
++++ b/tests/gct/providers/test_openai_wire.py
+@@ -0,0 +1,108 @@
++"""The real OpenAI providers, built the way production builds them, against a local fake OpenAI.
++
++PROTOTYPE. `GCT_PROVIDERS=openai` runs the real selector, the real adapter classes and the real
++`openai` SDK; only the HTTP endpoint is replaced, through the SDK's own `OPENAI_BASE_URL`. The
++fake answers the way the real service does for a model it does not have: 404. The model ids it
++knows are written out here on purpose, as a second entry that a typo in `gct.config` will not
++match.
++
++The two response bodies are hand-written from the API reference. They should be replaced by one
++real recorded response each before this is relied on.
++"""
++
++from __future__ import annotations
++
++import json
++import threading
++from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
++
++import openai
++import pytest
++
++from gct.config import EMBEDDING_DIM
++from gct.providers import active
++
++MODELS_THAT_EXIST = {
++    "/chat/completions": {"gpt-4o-mini"},
++    "/embeddings": {"text-embedding-3-small"},
++}
++
++
++def _body(path: str, request: dict) -> dict:
++    if path == "/chat/completions":
++        message = {"role": "assistant", "content": "Nine days [S1].\nCOVERAGE: complete"}
++        return {
++            "id": "chatcmpl-fake",
++            "object": "chat.completion",
++            "created": 0,
++            "model": request["model"],
++            "choices": [{"index": 0, "message": message, "finish_reason": "stop"}],
++            "usage": {"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2},
++        }
++    data = [  # deliberately out of order: the adapter must realign by `index`
++        {"object": "embedding", "index": i, "embedding": [float(i)] * request["dimensions"]}
++        for i in reversed(range(len(request["input"])))
++    ]
++    return {"object": "list", "data": data, "model": request["model"], "usage": {}}
++
++
++class _FakeOpenAI(BaseHTTPRequestHandler):
++    seen: list[tuple[str, dict]] = []
++
++    def do_POST(self):
++        path = self.path.removeprefix("/v1")
++        request = json.loads(self.rfile.read(int(self.headers["content-length"])))
++        self.seen.append((path, request))
++        if request.get("model") in MODELS_THAT_EXIST.get(path, ()):
++            status, payload = 200, _body(path, request)
++        else:
++            error = {"message": "The model does not exist", "code": "model_not_found"}
++            status, payload = 404, {"error": error}
++        raw = json.dumps(payload).encode()
++        self.send_response(status)
++        self.send_header("content-type", "application/json")
++        self.send_header("content-length", str(len(raw)))
++        self.end_headers()
++        self.wfile.write(raw)
++
++    def log_message(self, *args):
++        pass
++
++
++@pytest.fixture
++def fake_openai(monkeypatch):
++    _FakeOpenAI.seen = []
++    server = ThreadingHTTPServer(("127.0.0.1", 0), _FakeOpenAI)
++    threading.Thread(target=server.serve_forever, daemon=True).start()
++    monkeypatch.setenv("OPENAI_BASE_URL", f"http://127.0.0.1:{server.server_port}/v1")
++    monkeypatch.setenv("OPENAI_API_KEY", "not-a-real-key")
++    monkeypatch.setenv(active.PROVIDERS_ENV, active.OPENAI)
++    yield _FakeOpenAI.seen
++    server.shutdown()
++    server.server_close()
++
++
++def test_the_configured_generation_model_exists_and_its_reply_is_read(fake_openai):
++    generator = active.build_generator()
++
++    reply = generator.generate([{"role": "user", "content": "How long?"}])
++
++    assert reply == "Nine days [S1].\nCOVERAGE: complete"
++    [(path, request)] = fake_openai
++    assert path == "/chat/completions" and request["model"] == generator.model_id
++
++
++def test_the_configured_embedding_model_exists_and_vectors_come_back_in_input_order(fake_openai):
++    embedder = active.build_embedder()
++
++    vectors = embedder.embed(["first", "second", "third"])
++
++    assert [vector[0] for vector in vectors] == [0.0, 1.0, 2.0]
++    assert {len(vector) for vector in vectors} == {EMBEDDING_DIM}
++
++
++def test_the_fake_refuses_a_model_it_does_not_have_the_way_the_real_service_does(fake_openai):
++    from gct.providers.openai_provider import OpenAIGeneration
++
++    with pytest.raises(openai.NotFoundError):
++        OpenAIGeneration(model_id="gpt-4o-mni").generate([{"role": "user", "content": "q"}])

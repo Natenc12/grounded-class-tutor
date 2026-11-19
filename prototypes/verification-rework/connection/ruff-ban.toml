@@ -1,0 +1,6 @@
+line-length = 100
+[lint]
+select = ["TID251"]
+[lint.flake8-tidy-imports.banned-api]
+"psycopg.connect".msg = "Open connections only through gct.db.connect() (autocommit + pgvector adapter)."
+"psycopg.Connection.connect".msg = "Open connections only through gct.db.connect()."

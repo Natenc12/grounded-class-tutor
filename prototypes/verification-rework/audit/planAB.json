@@ -1,0 +1,2004 @@
+{
+ "picked": [
+  {
+   "file": "src/gct/eval/scoring.py",
+   "line": 185,
+   "kind": "return-nothing",
+   "start": 10723,
+   "end": 10800,
+   "old": "return any((chunk.file, chunk.page_or_slide) in pairs for chunk in retrieved)",
+   "new": "return None",
+   "id": 0
+  },
+  {
+   "file": "src/gct/providers/openai_provider.py",
+   "line": 70,
+   "kind": "negate-if",
+   "start": 2907,
+   "end": 2993,
+   "old": "batch and (len(batch) >= _EMBED_INPUT_CAP or batch_tokens + est > _EMBED_TOKEN_BUDGET)",
+   "new": "not (batch and (len(batch) >= _EMBED_INPUT_CAP or batch_tokens + est > _EMBED_TOKEN_BUDGET))",
+   "id": 1
+  },
+  {
+   "file": "src/gct/providers/openai_provider.py",
+   "line": 54,
+   "kind": "return-nothing",
+   "start": 2177,
+   "end": 2217,
+   "old": "return len(text) // _CHARS_PER_TOKEN + 1",
+   "new": "return None",
+   "id": 2
+  },
+  {
+   "file": "src/gct/eval/scoring.py",
+   "line": 788,
+   "kind": "flip-comparison",
+   "start": 43184,
+   "end": 43190,
+   "old": "not in",
+   "new": "in",
+   "id": 3
+  },
+  {
+   "file": "src/gct/eval/questions.py",
+   "line": 125,
+   "kind": "flip-comparison",
+   "start": 5662,
+   "end": 5668,
+   "old": "not in",
+   "new": "in",
+   "id": 4
+  },
+  {
+   "file": "src/gct/eval/questions.py",
+   "line": 133,
+   "kind": "drop-not",
+   "start": 5944,
+   "end": 5969,
+   "old": "not isinstance(page, int)",
+   "new": "(isinstance(page, int))",
+   "id": 5
+  },
+  {
+   "file": "src/gct/jobs/worker.py",
+   "line": 574,
+   "kind": "return-nothing",
+   "start": 36226,
+   "end": 36237,
+   "old": "return self",
+   "new": "return None",
+   "id": 6
+  },
+  {
+   "file": "src/gct/jobs/worker.py",
+   "line": 1090,
+   "kind": "delete-call",
+   "start": 67249,
+   "end": 67661,
+   "old": "logger.warning(\n                \"reaper: %s job(s) whose lease had elapsed are claimable again - a worker died \"\n                \"in a way that ran no handler (SIGKILL, OOM, power loss); a stopped or crashed \"\n                \"one hands its own job back (issue #82). Their files keep whatever status that \"\n                \"run reached until some later claim moves them\",\n                reclaimed,\n            )",
+   "new": "pass",
+   "id": 7
+  },
+  {
+   "file": "src/gct/staging.py",
+   "line": 146,
+   "kind": "negate-if",
+   "start": 7852,
+   "end": 7877,
+   "old": "filename.strip(\".\") == \"\"",
+   "new": "not (filename.strip(\".\") == \"\")",
+   "id": 8
+  },
+  {
+   "file": "src/gct/jobs/worker.py",
+   "line": 1077,
+   "kind": "negate-if",
+   "start": 66768,
+   "end": 66797,
+   "old": "heartbeat_max_seconds is None",
+   "new": "not (heartbeat_max_seconds is None)",
+   "id": 9
+  },
+  {
+   "file": "src/gct/ingest/pipeline.py",
+   "line": 128,
+   "kind": "true-to-false",
+   "start": 6645,
+   "end": 6649,
+   "old": "True",
+   "new": "False",
+   "id": 10
+  },
+  {
+   "file": "src/gct/api/limits.py",
+   "line": 211,
+   "kind": "flip-comparison",
+   "start": 13107,
+   "end": 13109,
+   "old": "==",
+   "new": "!=",
+   "id": 11
+  },
+  {
+   "file": "src/gct/providers/active.py",
+   "line": 44,
+   "kind": "negate-if",
+   "start": 1284,
+   "end": 1297,
+   "old": "costs_money()",
+   "new": "not (costs_money())",
+   "id": 12
+  },
+  {
+   "file": "src/gct/api/limits.py",
+   "line": 138,
+   "kind": "number-plus-one",
+   "start": 9523,
+   "end": 9527,
+   "old": "0x5D",
+   "new": "94",
+   "id": 13
+  },
+  {
+   "file": "src/gct/eval/scoring.py",
+   "line": 513,
+   "kind": "return-nothing",
+   "start": 27397,
+   "end": 27420,
+   "old": "return bool(self.ranks)",
+   "new": "return None",
+   "id": 14
+  },
+  {
+   "file": "src/gct/classes.py",
+   "line": 98,
+   "kind": "drop-not",
+   "start": 6011,
+   "end": 6036,
+   "old": "not isinstance(name, str)",
+   "new": "(isinstance(name, str))",
+   "id": 15
+  },
+  {
+   "file": "src/gct/providers/standin.py",
+   "line": 87,
+   "kind": "number-plus-one",
+   "start": 2877,
+   "end": 2878,
+   "old": "1",
+   "new": "2",
+   "id": 16
+  },
+  {
+   "file": "src/gct/api/errors.py",
+   "line": 357,
+   "kind": "delete-call",
+   "start": 21222,
+   "end": 21269,
+   "old": "app.add_exception_handler(ApiError, _api_error)",
+   "new": "pass",
+   "id": 17
+  },
+  {
+   "file": "src/gct/api/limits.py",
+   "line": 462,
+   "kind": "delete-call",
+   "start": 24946,
+   "end": 24975,
+   "old": "app.add_middleware(BodyLimit)",
+   "new": "pass",
+   "id": 18
+  },
+  {
+   "file": "src/gct/jobs/queue.py",
+   "line": 398,
+   "kind": "flip-comparison",
+   "start": 22635,
+   "end": 22641,
+   "old": "is not",
+   "new": "is",
+   "id": 19
+  },
+  {
+   "file": "src/gct/api/routers/ask.py",
+   "line": 89,
+   "kind": "number-plus-one",
+   "start": 5497,
+   "end": 5500,
+   "old": "500",
+   "new": "501",
+   "id": 20
+  },
+  {
+   "file": "src/gct/ingest/index.py",
+   "line": 284,
+   "kind": "delete-call",
+   "start": 17923,
+   "end": 18955,
+   "old": "cur.executemany(\n                \"\"\"\n                insert into chunks\n                    (file_id, owner_id, class_id, text, file, page_or_slide,\n                     embedding, embedding_model_id)\n                values\n                    (%(file_id)s::uuid, %(owner_id)s, %(class_id)s::uuid, %(text)s, %(file)s,\n                     %(page_or_slide)s, %(embedding)s, %(embedding_model_id)s)\n                \"\"\",\n                [\n                    {\n                        \"file_id\": file_id,\n                        \"owner_id\": chunk.owner_id,\n                        \"class_id\": chunk_class_id,\n                        \"text\": chunk.text,\n                        \"file\": chunk.file,\n                        \"page_or_slide\": str(chunk.page_or_slide),\n                        \"embedding\": chunk.embedding,\n                        \"embedding_model_id\": chunk.embedding_model_id,\n                    }\n                    for chunk, chunk_class_id in zip(chunks, chunk_class_ids, strict=True)\n                ],\n            )",
+   "new": "pass",
+   "id": 21
+  },
+  {
+   "file": "src/gct/jobs/queue.py",
+   "line": 523,
+   "kind": "return-nothing",
+   "start": 29442,
+   "end": 29756,
+   "old": "return _settle(\n        conn,\n        verb=\"release\",\n        job_id=job_id,\n        lease_token=lease_token,\n        assignments=\"state = 'queued', leased_until = null, last_error = %(error)s\",\n        params={\"error\": error},\n        orphan_note=\"the job the caller believes it handed back does not exist\",\n    )",
+   "new": "return None",
+   "id": 22
+  },
+  {
+   "file": "src/gct/eval/questions.py",
+   "line": 183,
+   "kind": "remove-raise",
+   "start": 8361,
+   "end": 8427,
+   "old": "raise _fail(path, lineno, None, f\"not valid JSON: {err}\") from err",
+   "new": "pass",
+   "id": 23
+  },
+  {
+   "file": "src/gct/staging.py",
+   "line": 222,
+   "kind": "number-plus-one",
+   "start": 12050,
+   "end": 12051,
+   "old": "0",
+   "new": "1",
+   "id": 24
+  },
+  {
+   "file": "src/gct/providers/standin.py",
+   "line": 60,
+   "kind": "negate-if",
+   "start": 1904,
+   "end": 1913,
+   "old": "not asked",
+   "new": "not (not asked)",
+   "id": 25
+  },
+  {
+   "file": "src/gct/api/limits.py",
+   "line": 351,
+   "kind": "negate-if",
+   "start": 19547,
+   "end": 19573,
+   "old": "is_multipart(content_type)",
+   "new": "not (is_multipart(content_type))",
+   "id": 26
+  },
+  {
+   "file": "src/gct/api/errors.py",
+   "line": 262,
+   "kind": "negate-if",
+   "start": 15807,
+   "end": 15827,
+   "old": "used + cost > budget",
+   "new": "not (used + cost > budget)",
+   "id": 27
+  },
+  {
+   "file": "src/gct/eval/scoring.py",
+   "line": 138,
+   "kind": "remove-raise",
+   "start": 7813,
+   "end": 7976,
+   "old": "raise ValueError(\n            f\"unknown grounder state {state!r}; ADR 0023 \u00a72 maps exactly \"\n            f\"{[s.value for s in GrounderState]}\"\n        ) from None",
+   "new": "pass",
+   "id": 28
+  },
+  {
+   "file": "src/gct/config.py",
+   "line": 154,
+   "kind": "number-plus-one",
+   "start": 10558,
+   "end": 10562,
+   "old": "1024",
+   "new": "1025",
+   "id": 29
+  },
+  {
+   "file": "src/gct/classes.py",
+   "line": 114,
+   "kind": "flip-comparison",
+   "start": 6804,
+   "end": 6806,
+   "old": "in",
+   "new": "not in",
+   "id": 30
+  },
+  {
+   "file": "src/gct/jobs/worker.py",
+   "line": 1013,
+   "kind": "delete-call",
+   "start": 63368,
+   "end": 63576,
+   "old": "logger.warning(\n                \"job %s: lease lost after %.1fs (lease was %ss) - another worker owns it now\",\n                job.job_id,\n                elapsed,\n                lease_seconds,\n            )",
+   "new": "pass",
+   "id": 31
+  },
+  {
+   "file": "src/gct/ingest/pipeline.py",
+   "line": 112,
+   "kind": "negate-if",
+   "start": 5801,
+   "end": 5828,
+   "old": "len(vectors) != len(chunks)",
+   "new": "not (len(vectors) != len(chunks))",
+   "id": 32
+  },
+  {
+   "file": "src/gct/eval/questions.py",
+   "line": 225,
+   "kind": "flip-comparison",
+   "start": 10549,
+   "end": 10551,
+   "old": "is",
+   "new": "is not",
+   "id": 33
+  },
+  {
+   "file": "src/gct/jobs/queue.py",
+   "line": 157,
+   "kind": "delete-call",
+   "start": 9347,
+   "end": 9376,
+   "old": "require_idle(conn, \"enqueue\")",
+   "new": "pass",
+   "id": 34
+  },
+  {
+   "file": "src/gct/eval/questions.py",
+   "line": 202,
+   "kind": "drop-not",
+   "start": 9467,
+   "end": 9499,
+   "old": "not isinstance(expectation, str)",
+   "new": "(isinstance(expectation, str))",
+   "id": 35
+  },
+  {
+   "file": "src/gct/providers/active.py",
+   "line": 34,
+   "kind": "drop-not",
+   "start": 817,
+   "end": 851,
+   "old": "not load_settings().openai_api_key",
+   "new": "(load_settings().openai_api_key)",
+   "id": 36
+  },
+  {
+   "file": "src/gct/api/limits.py",
+   "line": 299,
+   "kind": "return-nothing",
+   "start": 17464,
+   "end": 17517,
+   "old": "return subtype == \"json\" or subtype.endswith(\"+json\")",
+   "new": "return None",
+   "id": 37
+  },
+  {
+   "file": "src/gct/ingest/parse.py",
+   "line": 177,
+   "kind": "return-nothing",
+   "start": 7751,
+   "end": 7760,
+   "old": "return \"\"",
+   "new": "return None",
+   "id": 38
+  },
+  {
+   "file": "src/gct/retriever/retrieve.py",
+   "line": 114,
+   "kind": "number-plus-one",
+   "start": 5647,
+   "end": 5648,
+   "old": "0",
+   "new": "1",
+   "id": 39
+  },
+  {
+   "file": "src/gct/jobs/queue.py",
+   "line": 406,
+   "kind": "drop-not",
+   "start": 22798,
+   "end": 22812,
+   "old": "not job_exists",
+   "new": "(job_exists)",
+   "id": 40
+  },
+  {
+   "file": "src/gct/api/limits.py",
+   "line": 240,
+   "kind": "flip-comparison",
+   "start": 14175,
+   "end": 14177,
+   "old": "==",
+   "new": "!=",
+   "id": 41
+  },
+  {
+   "file": "src/gct/jobs/worker.py",
+   "line": 1005,
+   "kind": "true-to-false",
+   "start": 62988,
+   "end": 62992,
+   "old": "True",
+   "new": "False",
+   "id": 42
+  },
+  {
+   "file": "src/gct/api/routers/files.py",
+   "line": 274,
+   "kind": "number-plus-one",
+   "start": 16688,
+   "end": 16691,
+   "old": "400",
+   "new": "401",
+   "id": 43
+  },
+  {
+   "file": "src/gct/config.py",
+   "line": 95,
+   "kind": "number-plus-one",
+   "start": 6028,
+   "end": 6030,
+   "old": "64",
+   "new": "65",
+   "id": 44
+  },
+  {
+   "file": "src/gct/api/limits.py",
+   "line": 241,
+   "kind": "return-nothing",
+   "start": 14207,
+   "end": 14237,
+   "old": "return value.decode(\"latin-1\")",
+   "new": "return None",
+   "id": 45
+  },
+  {
+   "file": "src/gct/grounder/answer.py",
+   "line": 481,
+   "kind": "true-to-false",
+   "start": 25164,
+   "end": 25168,
+   "old": "True",
+   "new": "False",
+   "id": 46
+  },
+  {
+   "file": "src/gct/eval/scoring.py",
+   "line": 309,
+   "kind": "return-nothing",
+   "start": 16606,
+   "end": 16659,
+   "old": "return _rate(self.answer.partial, self.answer.scored)",
+   "new": "return None",
+   "id": 47
+  },
+  {
+   "file": "src/gct/api/app.py",
+   "line": 49,
+   "kind": "negate-if",
+   "start": 2348,
+   "end": 2385,
+   "old": "embedder is None or generator is None",
+   "new": "not (embedder is None or generator is None)",
+   "id": 48
+  },
+  {
+   "file": "src/gct/api/limits.py",
+   "line": 346,
+   "kind": "negate-if",
+   "start": 19398,
+   "end": 19421,
+   "old": "scope[\"type\"] != \"http\"",
+   "new": "not (scope[\"type\"] != \"http\")",
+   "id": 49
+  },
+  {
+   "file": "src/gct/staging.py",
+   "line": 135,
+   "kind": "remove-raise",
+   "start": 7348,
+   "end": 7562,
+   "old": "raise StagingError(\n            \"bad_filename\",\n            f\"filename {_short(filename)} is not valid UTF-8\",\n            remedy=\"rename the file using ordinary characters and upload it again\",\n        ) from None",
+   "new": "pass",
+   "id": 50
+  },
+  {
+   "file": "src/gct/jobs/worker.py",
+   "line": 625,
+   "kind": "number-plus-one",
+   "start": 38965,
+   "end": 38966,
+   "old": "1",
+   "new": "2",
+   "id": 51
+  },
+  {
+   "file": "src/gct/api/limits.py",
+   "line": 297,
+   "kind": "return-nothing",
+   "start": 17404,
+   "end": 17416,
+   "old": "return False",
+   "new": "return None",
+   "id": 52
+  },
+  {
+   "file": "src/gct/jobs/queue.py",
+   "line": 263,
+   "kind": "delete-call",
+   "start": 15788,
+   "end": 15815,
+   "old": "require_idle(conn, \"claim\")",
+   "new": "pass",
+   "id": 53
+  },
+  {
+   "file": "src/gct/api/errors.py",
+   "line": 341,
+   "kind": "number-plus-one",
+   "start": 20559,
+   "end": 20562,
+   "old": "422",
+   "new": "423",
+   "id": 54
+  },
+  {
+   "file": "src/gct/retriever/retrieve.py",
+   "line": 130,
+   "kind": "true-to-false",
+   "start": 6423,
+   "end": 6427,
+   "old": "True",
+   "new": "False",
+   "id": 55
+  },
+  {
+   "file": "src/gct/api/errors.py",
+   "line": 359,
+   "kind": "delete-call",
+   "start": 21345,
+   "end": 21407,
+   "old": "app.add_exception_handler(RequestValidationError, _validation)",
+   "new": "pass",
+   "id": 56
+  },
+  {
+   "file": "src/gct/grounder/answer.py",
+   "line": 367,
+   "kind": "return-nothing",
+   "start": 19683,
+   "end": 19697,
+   "old": "return reasons",
+   "new": "return None",
+   "id": 57
+  },
+  {
+   "file": "src/gct/providers/active.py",
+   "line": 22,
+   "kind": "remove-raise",
+   "start": 508,
+   "end": 680,
+   "old": "raise RuntimeError(\n            f\"{PROVIDERS_ENV}={choice!r} is not a provider set. Use one of {CHOICES}, or unset it \"\n            f\"for the default ({OPENAI}).\"\n        )",
+   "new": "pass",
+   "id": 58
+  },
+  {
+   "file": "src/gct/retriever/retrieve.py",
+   "line": 150,
+   "kind": "return-nothing",
+   "start": 7509,
+   "end": 7540,
+   "old": "return max(0.0, 1.0 - distance)",
+   "new": "return None",
+   "id": 59
+  },
+  {
+   "file": "src/gct/jobs/worker.py",
+   "line": 749,
+   "kind": "negate-if",
+   "start": 46576,
+   "end": 46603,
+   "old": "job.attempts > max_attempts",
+   "new": "not (job.attempts > max_attempts)",
+   "id": 60
+  },
+  {
+   "file": "src/gct/providers/active.py",
+   "line": 66,
+   "kind": "delete-call",
+   "start": 1892,
+   "end": 2075,
+   "old": "_log.warning(\n        \"STAND-IN MODELS (%s=%s): %s come from %s. Nothing here is a real model's output.\",\n        PROVIDERS_ENV,\n        STANDIN,\n        what,\n        model_id,\n    )",
+   "new": "pass",
+   "id": 61
+  },
+  {
+   "file": "src/gct/ingest/parse.py",
+   "line": 50,
+   "kind": "delete-call",
+   "start": 2399,
+   "end": 2424,
+   "old": "super().__init__(message)",
+   "new": "pass",
+   "id": 62
+  },
+  {
+   "file": "src/gct/staging.py",
+   "line": 241,
+   "kind": "delete-call",
+   "start": 12779,
+   "end": 12791,
+   "old": "slot.rmdir()",
+   "new": "pass",
+   "id": 63
+  },
+  {
+   "file": "src/gct/grounder/answer.py",
+   "line": 427,
+   "kind": "return-nothing",
+   "start": 22687,
+   "end": 22905,
+   "old": "return GrounderResult(\n        state=state,\n        answer_prose=parsed.prose or None,\n        citations=citations,\n        coverage=coverage,\n        integrity=Integrity(ok=True, reasons=[]),\n        error=None,\n    )",
+   "new": "return None",
+   "id": 64
+  },
+  {
+   "file": "src/gct/jobs/worker.py",
+   "line": 989,
+   "kind": "delete-call",
+   "start": 62339,
+   "end": 62592,
+   "old": "logger.warning(\n                    \"job %s: backoff cut from %.0fs to %.0fs - the %ss lease could not cover it\",\n                    job.job_id,\n                    wanted,\n                    delay,\n                    lease_seconds,\n                )",
+   "new": "pass",
+   "id": 65
+  },
+  {
+   "file": "src/gct/providers/openai_provider.py",
+   "line": 76,
+   "kind": "negate-if",
+   "start": 3133,
+   "end": 3138,
+   "old": "batch",
+   "new": "not (batch)",
+   "id": 66
+  },
+  {
+   "file": "src/gct/grounder/answer.py",
+   "line": 294,
+   "kind": "false-to-true",
+   "start": 15599,
+   "end": 15604,
+   "old": "False",
+   "new": "True",
+   "id": 67
+  },
+  {
+   "file": "src/gct/grounder/answer.py",
+   "line": 416,
+   "kind": "drop-not",
+   "start": 22295,
+   "end": 22308,
+   "old": "not citations",
+   "new": "(citations)",
+   "id": 68
+  },
+  {
+   "file": "src/gct/ingest/parse.py",
+   "line": 135,
+   "kind": "remove-raise",
+   "start": 5782,
+   "end": 5912,
+   "old": "raise ParseError(\n                \"unparseable\", f\"could not extract text from {path.name} page {i}: {exc}\"\n            ) from exc",
+   "new": "pass",
+   "id": 69
+  },
+  {
+   "file": "src/gct/ingest/parse.py",
+   "line": 127,
+   "kind": "negate-if",
+   "start": 5495,
+   "end": 5514,
+   "old": "reader.is_encrypted",
+   "new": "not (reader.is_encrypted)",
+   "id": 70
+  },
+  {
+   "file": "src/gct/grounder/answer.py",
+   "line": 293,
+   "kind": "negate-if",
+   "start": 15556,
+   "end": 15560,
+   "old": "gaps",
+   "new": "not (gaps)",
+   "id": 71
+  },
+  {
+   "file": "src/gct/staging.py",
+   "line": 214,
+   "kind": "remove-raise",
+   "start": 11804,
+   "end": 11864,
+   "old": "raise ValueError(f\"max_bytes must be >= 0, got {max_bytes}\")",
+   "new": "pass",
+   "id": 72
+  },
+  {
+   "file": "src/gct/providers/standin.py",
+   "line": 47,
+   "kind": "flip-comparison",
+   "start": 1441,
+   "end": 1443,
+   "old": "==",
+   "new": "!=",
+   "id": 73
+  },
+  {
+   "file": "src/gct/grounder/answer.py",
+   "line": 235,
+   "kind": "true-to-false",
+   "start": 12667,
+   "end": 12671,
+   "old": "True",
+   "new": "False",
+   "id": 74
+  },
+  {
+   "file": "src/gct/jobs/worker.py",
+   "line": 573,
+   "kind": "delete-call",
+   "start": 36197,
+   "end": 36217,
+   "old": "self._thread.start()",
+   "new": "pass",
+   "id": 75
+  },
+  {
+   "file": "src/gct/grounder/answer.py",
+   "line": 480,
+   "kind": "false-to-true",
+   "start": 25116,
+   "end": 25121,
+   "old": "False",
+   "new": "True",
+   "id": 76
+  },
+  {
+   "file": "src/gct/jobs/worker.py",
+   "line": 400,
+   "kind": "drop-not",
+   "start": 26208,
+   "end": 26283,
+   "old": "not fail(conn, job_id=job.job_id, lease_token=job.lease_token, error=error)",
+   "new": "(fail(conn, job_id=job.job_id, lease_token=job.lease_token, error=error))",
+   "id": 77
+  },
+  {
+   "file": "src/gct/ingest/parse.py",
+   "line": 231,
+   "kind": "return-nothing",
+   "start": 10041,
+   "end": 10053,
+   "old": "return units",
+   "new": "return None",
+   "id": 78
+  },
+  {
+   "file": "src/gct/jobs/worker.py",
+   "line": 762,
+   "kind": "return-nothing",
+   "start": 47037,
+   "end": 47048,
+   "old": "return True",
+   "new": "return None",
+   "id": 79
+  },
+  {
+   "file": "src/gct/providers/active.py",
+   "line": 47,
+   "kind": "return-nothing",
+   "start": 1375,
+   "end": 1400,
+   "old": "return OpenAIEmbeddings()",
+   "new": "return None",
+   "id": 80
+  },
+  {
+   "file": "src/gct/eval/scoring.py",
+   "line": 508,
+   "kind": "number-plus-one",
+   "start": 27220,
+   "end": 27221,
+   "old": "0",
+   "new": "1",
+   "id": 81
+  },
+  {
+   "file": "src/gct/api/errors.py",
+   "line": 254,
+   "kind": "negate-if",
+   "start": 15439,
+   "end": 15488,
+   "old": "len(_serialise(detail)) <= MAX_ERROR_DETAIL_BYTES",
+   "new": "not (len(_serialise(detail)) <= MAX_ERROR_DETAIL_BYTES)",
+   "id": 82
+  },
+  {
+   "file": "src/gct/retriever/retrieve.py",
+   "line": 191,
+   "kind": "remove-raise",
+   "start": 9591,
+   "end": 9637,
+   "old": "raise ValueError(f\"k must be >= 1, got {k!r}\")",
+   "new": "pass",
+   "id": 83
+  },
+  {
+   "file": "src/gct/jobs/queue.py",
+   "line": 601,
+   "kind": "number-plus-one",
+   "start": 33523,
+   "end": 33524,
+   "old": "1",
+   "new": "2",
+   "id": 84
+  },
+  {
+   "file": "src/gct/staging.py",
+   "line": 48,
+   "kind": "number-plus-one",
+   "start": 2709,
+   "end": 2712,
+   "old": "255",
+   "new": "256",
+   "id": 85
+  },
+  {
+   "file": "src/gct/ingest/chunk.py",
+   "line": 127,
+   "kind": "flip-comparison",
+   "start": 6094,
+   "end": 6096,
+   "old": "==",
+   "new": "!=",
+   "id": 86
+  },
+  {
+   "file": "src/gct/grounder/answer.py",
+   "line": 285,
+   "kind": "negate-if",
+   "start": 15116,
+   "end": 15142,
+   "old": "body.lower() == \"complete\"",
+   "new": "not (body.lower() == \"complete\")",
+   "id": 87
+  },
+  {
+   "file": "src/gct/staging.py",
+   "line": 230,
+   "kind": "flip-comparison",
+   "start": 12324,
+   "end": 12325,
+   "old": ">",
+   "new": ">=",
+   "id": 88
+  },
+  {
+   "file": "src/gct/staging.py",
+   "line": 213,
+   "kind": "negate-if",
+   "start": 11781,
+   "end": 11794,
+   "old": "max_bytes < 0",
+   "new": "not (max_bytes < 0)",
+   "id": 89
+  },
+  {
+   "file": "src/gct/api/limits.py",
+   "line": 169,
+   "kind": "flip-comparison",
+   "start": 11201,
+   "end": 11203,
+   "old": "in",
+   "new": "not in",
+   "id": 90
+  },
+  {
+   "file": "src/gct/db.py",
+   "line": 37,
+   "kind": "remove-raise",
+   "start": 2079,
+   "end": 2544,
+   "old": "raise RuntimeError(\n            f\"{fn}() requires a connection that is NOT already inside a transaction; \"\n            f\"psycopg reports {status.name}. Its write would degrade to a SAVEPOINT and \"\n            \"publish nothing while returning successfully (ADR 0025). Fix at the caller: \"\n            \"set `conn.autocommit = True` at wiring, or commit before calling. NB a bare \"\n            \"SELECT opens the implicit transaction exactly as a write does.\"\n        )",
+   "new": "pass",
+   "id": 91
+  },
+  {
+   "file": "src/gct/jobs/worker.py",
+   "line": 923,
+   "kind": "true-to-false",
+   "start": 57916,
+   "end": 57920,
+   "old": "True",
+   "new": "False",
+   "id": 92
+  },
+  {
+   "file": "src/gct/api/limits.py",
+   "line": 317,
+   "kind": "return-nothing",
+   "start": 18207,
+   "end": 18221,
+   "old": "return receive",
+   "new": "return None",
+   "id": 93
+  },
+  {
+   "file": "src/gct/eval/scoring.py",
+   "line": 293,
+   "kind": "return-nothing",
+   "start": 15623,
+   "end": 15677,
+   "old": "return _rate(self.answer.grounded, self.answer.scored)",
+   "new": "return None",
+   "id": 94
+  },
+  {
+   "file": "src/gct/api/limits.py",
+   "line": 296,
+   "kind": "negate-if",
+   "start": 17348,
+   "end": 17394,
+   "old": "parsed.get_content_maintype() != \"application\"",
+   "new": "not (parsed.get_content_maintype() != \"application\")",
+   "id": 95
+  },
+  {
+   "file": "src/gct/api/limits.py",
+   "line": 215,
+   "kind": "flip-comparison",
+   "start": 13219,
+   "end": 13220,
+   "old": ">",
+   "new": ">=",
+   "id": 96
+  },
+  {
+   "file": "src/gct/grounder/answer.py",
+   "line": 355,
+   "kind": "delete-call",
+   "start": 19098,
+   "end": 19174,
+   "old": "reasons.append(\"answer prose asserts claims with no citation labels at all\")",
+   "new": "pass",
+   "id": 97
+  },
+  {
+   "file": "src/gct/eval/questions.py",
+   "line": 154,
+   "kind": "return-nothing",
+   "start": 6997,
+   "end": 7013,
+   "old": "return list(raw)",
+   "new": "return None",
+   "id": 98
+  },
+  {
+   "file": "src/gct/api/routers/ask.py",
+   "line": 200,
+   "kind": "return-nothing",
+   "start": 12916,
+   "end": 12931,
+   "old": "return question",
+   "new": "return None",
+   "id": 99
+  },
+  {
+   "file": "src/gct/ingest/chunk.py",
+   "line": 82,
+   "kind": "negate-if",
+   "start": 3903,
+   "end": 3928,
+   "old": "not (0 <= overlap < size)",
+   "new": "not (not (0 <= overlap < size))",
+   "id": 100
+  },
+  {
+   "file": "src/gct/eval/scoring.py",
+   "line": 838,
+   "kind": "return-nothing",
+   "start": 45552,
+   "end": 45785,
+   "old": "return AttributionTotals(\n        answers_measured=len(measured),\n        answers_unmeasured=len(measurements) - len(measured),\n        sentences=sum(m.total for m in measured),\n        uncited=sum(m.uncited for m in measured),\n    )",
+   "new": "return None",
+   "id": 101
+  },
+  {
+   "file": "src/gct/api/routers/files.py",
+   "line": 56,
+   "kind": "number-plus-one",
+   "start": 3350,
+   "end": 3353,
+   "old": "400",
+   "new": "401",
+   "id": 102
+  },
+  {
+   "file": "src/gct/ingest/chunk.py",
+   "line": 134,
+   "kind": "true-to-false",
+   "start": 6189,
+   "end": 6193,
+   "old": "True",
+   "new": "False",
+   "id": 103
+  },
+  {
+   "file": "src/gct/providers/openai_provider.py",
+   "line": 38,
+   "kind": "number-plus-one",
+   "start": 1307,
+   "end": 1311,
+   "old": "2048",
+   "new": "2049",
+   "id": 104
+  },
+  {
+   "file": "src/gct/jobs/worker.py",
+   "line": 556,
+   "kind": "number-plus-one",
+   "start": 35648,
+   "end": 35649,
+   "old": "0",
+   "new": "1",
+   "id": 105
+  },
+  {
+   "file": "src/gct/eval/scoring.py",
+   "line": 412,
+   "kind": "delete-call",
+   "start": 21458,
+   "end": 21503,
+   "old": "score_state(record.state, record.expectation)",
+   "new": "pass",
+   "id": 106
+  },
+  {
+   "file": "src/gct/classes.py",
+   "line": 60,
+   "kind": "flip-comparison",
+   "start": 3652,
+   "end": 3654,
+   "old": "in",
+   "new": "not in",
+   "id": 107
+  },
+  {
+   "file": "src/gct/ingest/parse.py",
+   "line": 54,
+   "kind": "true-to-false",
+   "start": 2474,
+   "end": 2478,
+   "old": "True",
+   "new": "False",
+   "id": 108
+  },
+  {
+   "file": "src/gct/api/errors.py",
+   "line": 259,
+   "kind": "number-plus-one",
+   "start": 15710,
+   "end": 15711,
+   "old": "0",
+   "new": "1",
+   "id": 109
+  },
+  {
+   "file": "src/gct/providers/standin.py",
+   "line": 31,
+   "kind": "flip-comparison",
+   "start": 885,
+   "end": 891,
+   "old": "not in",
+   "new": "in",
+   "id": 110
+  },
+  {
+   "file": "src/gct/providers/openai_provider.py",
+   "line": 140,
+   "kind": "return-nothing",
+   "start": 5444,
+   "end": 5488,
+   "old": "return resp.choices[0].message.content or \"\"",
+   "new": "return None",
+   "id": 111
+  },
+  {
+   "file": "src/gct/providers/standin.py",
+   "line": 23,
+   "kind": "number-plus-one",
+   "start": 685,
+   "end": 686,
+   "old": "2",
+   "new": "3",
+   "id": 112
+  },
+  {
+   "file": "src/gct/api/deps.py",
+   "line": 47,
+   "kind": "true-to-false",
+   "start": 2500,
+   "end": 2504,
+   "old": "True",
+   "new": "False",
+   "id": 113
+  },
+  {
+   "file": "src/gct/api/app.py",
+   "line": 61,
+   "kind": "delete-call",
+   "start": 3041,
+   "end": 3060,
+   "old": "limits.install(app)",
+   "new": "pass",
+   "id": 114
+  },
+  {
+   "file": "src/gct/ids.py",
+   "line": 66,
+   "kind": "remove-raise",
+   "start": 4221,
+   "end": 4392,
+   "old": "raise ValueError(\n            f\"{fn}() requires a uuid {param} as a str (pass str(id) if you hold a uuid.UUID); \"\n            f\"got {value!r}. {remedy}\"\n        ) from exc",
+   "new": "pass",
+   "id": 115
+  },
+  {
+   "file": "src/gct/api/limits.py",
+   "line": 251,
+   "kind": "return-nothing",
+   "start": 14674,
+   "end": 14687,
+   "old": "return parsed",
+   "new": "return None",
+   "id": 116
+  },
+  {
+   "file": "src/gct/jobs/worker.py",
+   "line": 1079,
+   "kind": "delete-call",
+   "start": 66876,
+   "end": 67156,
+   "old": "logger.info(\n        \"worker started: poll %.1fs, lease %ss renewed every %.0fs up to %.0fs, budget %s attempts\",\n        poll_seconds,\n        lease_seconds,\n        heartbeat_interval(lease_seconds, heartbeat_fraction),\n        heartbeat_max_seconds,\n        max_attempts,\n    )",
+   "new": "pass",
+   "id": 117
+  },
+  {
+   "file": "src/gct/jobs/worker.py",
+   "line": 200,
+   "kind": "number-plus-one",
+   "start": 13268,
+   "end": 13269,
+   "old": "2",
+   "new": "3",
+   "id": 118
+  },
+  {
+   "file": "src/gct/eval/questions.py",
+   "line": 152,
+   "kind": "drop-not",
+   "start": 6857,
+   "end": 6882,
+   "old": "not isinstance(item, str)",
+   "new": "(isinstance(item, str))",
+   "id": 119
+  },
+  {
+   "file": "src/gct/eval/questions.py",
+   "line": 140,
+   "kind": "delete-call",
+   "start": 6177,
+   "end": 6252,
+   "old": "sources.append(ExpectedSource(file=str(entry[\"file\"]), page_or_slide=page))",
+   "new": "pass",
+   "id": 120
+  },
+  {
+   "file": "src/gct/api/errors.py",
+   "line": 85,
+   "kind": "return-nothing",
+   "start": 4196,
+   "end": 4287,
+   "old": "return (text[: max(0, MAX_ERROR_ECHO_CHARS - len(marker))] + marker)[:MAX_ERROR_ECHO_CHARS]",
+   "new": "return None",
+   "id": 121
+  },
+  {
+   "file": "src/gct/jobs/worker.py",
+   "line": 1097,
+   "kind": "drop-not",
+   "start": 67673,
+   "end": 68012,
+   "old": "not process_one(\n            conn,\n            embedder=embedder,\n            chunk_size=chunk_size,\n            chunk_overlap=chunk_overlap,\n            lease_seconds=lease_seconds,\n            max_attempts=max_attempts,\n            heartbeat_fraction=heartbeat_fraction,\n            heartbeat_max_seconds=heartbeat_max_seconds,\n        )",
+   "new": "(process_one(\n            conn,\n            embedder=embedder,\n            chunk_size=chunk_size,\n            chunk_overlap=chunk_overlap,\n            lease_seconds=lease_seconds,\n            max_attempts=max_attempts,\n            heartbeat_fraction=heartbeat_fraction,\n            heartbeat_max_seconds=heartbeat_max_seconds,\n        ))",
+   "id": 122
+  },
+  {
+   "file": "src/gct/api/errors.py",
+   "line": 127,
+   "kind": "negate-if",
+   "start": 7137,
+   "end": 7161,
+   "old": "isinstance(value, bytes)",
+   "new": "not (isinstance(value, bytes))",
+   "id": 123
+  },
+  {
+   "file": "src/gct/api/app.py",
+   "line": 66,
+   "kind": "return-nothing",
+   "start": 3359,
+   "end": 3369,
+   "old": "return app",
+   "new": "return None",
+   "id": 124
+  },
+  {
+   "file": "src/gct/api/app.py",
+   "line": 50,
+   "kind": "delete-call",
+   "start": 2399,
+   "end": 2419,
+   "old": "require_openai_key()",
+   "new": "pass",
+   "id": 125
+  },
+  {
+   "file": "src/gct/api/app.py",
+   "line": 24,
+   "kind": "delete-call",
+   "start": 911,
+   "end": 934,
+   "old": "active.require_usable()",
+   "new": "pass",
+   "id": 126
+  },
+  {
+   "file": "src/gct/providers/standin.py",
+   "line": 59,
+   "kind": "swap-and-or",
+   "start": 1873,
+   "end": 1875,
+   "old": "or",
+   "new": "and",
+   "id": 127
+  },
+  {
+   "file": "src/gct/api/routers/classes.py",
+   "line": 175,
+   "kind": "number-plus-one",
+   "start": 10817,
+   "end": 10820,
+   "old": "400",
+   "new": "401",
+   "id": 128
+  },
+  {
+   "file": "src/gct/db.py",
+   "line": 53,
+   "kind": "delete-call",
+   "start": 2909,
+   "end": 2930,
+   "old": "register_vector(conn)",
+   "new": "pass",
+   "id": 129
+  },
+  {
+   "file": "src/gct/eval/scoring.py",
+   "line": 724,
+   "kind": "return-nothing",
+   "start": 39078,
+   "end": 39116,
+   "old": "return _rate(self.uncited, self.total)",
+   "new": "return None",
+   "id": 130
+  },
+  {
+   "file": "src/gct/jobs/worker.py",
+   "line": 233,
+   "kind": "return-nothing",
+   "start": 15504,
+   "end": 15569,
+   "old": "return wanted, min(wanted, max(0.0, lease_seconds - elapsed) / 2)",
+   "new": "return None",
+   "id": 131
+  },
+  {
+   "file": "src/gct/jobs/worker.py",
+   "line": 870,
+   "kind": "flip-comparison",
+   "start": 55005,
+   "end": 55011,
+   "old": "is not",
+   "new": "is",
+   "id": 132
+  },
+  {
+   "file": "src/gct/eval/questions.py",
+   "line": 69,
+   "kind": "true-to-false",
+   "start": 3217,
+   "end": 3221,
+   "old": "True",
+   "new": "False",
+   "id": 133
+  },
+  {
+   "file": "src/gct/api/errors.py",
+   "line": 152,
+   "kind": "return-nothing",
+   "start": 8373,
+   "end": 8469,
+   "old": "return json.dumps(value, ensure_ascii=True, allow_nan=False, indent=None, separators=(\",\", \":\"))",
+   "new": "return None",
+   "id": 134
+  },
+  {
+   "file": "src/gct/ingest/parse.py",
+   "line": 77,
+   "kind": "negate-if",
+   "start": 3264,
+   "end": 3280,
+   "old": "suffix == \".pdf\"",
+   "new": "not (suffix == \".pdf\")",
+   "id": 135
+  },
+  {
+   "file": "src/gct/ingest/parse.py",
+   "line": 190,
+   "kind": "remove-raise",
+   "start": 8117,
+   "end": 8200,
+   "old": "raise ParseError(\"unparseable\", f\"could not read PPTX {path.name}: {exc}\") from exc",
+   "new": "pass",
+   "id": 136
+  },
+  {
+   "file": "src/gct/staging.py",
+   "line": 126,
+   "kind": "flip-comparison",
+   "start": 7058,
+   "end": 7060,
+   "old": "==",
+   "new": "!=",
+   "id": 137
+  },
+  {
+   "file": "src/gct/jobs/worker.py",
+   "line": 583,
+   "kind": "return-nothing",
+   "start": 36697,
+   "end": 36709,
+   "old": "return False",
+   "new": "return None",
+   "id": 138
+  },
+  {
+   "file": "src/gct/retriever/retrieve.py",
+   "line": 54,
+   "kind": "true-to-false",
+   "start": 2729,
+   "end": 2733,
+   "old": "True",
+   "new": "False",
+   "id": 139
+  },
+  {
+   "file": "src/gct/staging.py",
+   "line": 43,
+   "kind": "number-plus-one",
+   "start": 2444,
+   "end": 2448,
+   "old": "1024",
+   "new": "1025",
+   "id": 140
+  },
+  {
+   "file": "src/gct/ids.py",
+   "line": 87,
+   "kind": "drop-not",
+   "start": 5290,
+   "end": 5303,
+   "old": "not canonical",
+   "new": "(canonical)",
+   "id": 141
+  },
+  {
+   "file": "src/gct/api/limits.py",
+   "line": 229,
+   "kind": "return-nothing",
+   "start": 13677,
+   "end": 13694,
+   "old": "return int(value)",
+   "new": "return None",
+   "id": 142
+  },
+  {
+   "file": "src/gct/ingest/parse.py",
+   "line": 202,
+   "kind": "delete-call",
+   "start": 8637,
+   "end": 8655,
+   "old": "lines.append(line)",
+   "new": "pass",
+   "id": 143
+  },
+  {
+   "file": "src/gct/providers/active.py",
+   "line": 26,
+   "kind": "return-nothing",
+   "start": 685,
+   "end": 698,
+   "old": "return choice",
+   "new": "return None",
+   "id": 144
+  },
+  {
+   "file": "src/gct/ingest/chunk.py",
+   "line": 41,
+   "kind": "number-plus-one",
+   "start": 2138,
+   "end": 2139,
+   "old": "0",
+   "new": "1",
+   "id": 145
+  },
+  {
+   "file": "src/gct/jobs/worker.py",
+   "line": 997,
+   "kind": "delete-call",
+   "start": 62631,
+   "end": 62648,
+   "old": "time.sleep(delay)",
+   "new": "pass",
+   "id": 146
+  },
+  {
+   "file": "src/gct/providers/active.py",
+   "line": 50,
+   "kind": "delete-call",
+   "start": 1462,
+   "end": 1509,
+   "old": "_warn(\"embeddings\", StandInEmbeddings.model_id)",
+   "new": "pass",
+   "id": 147
+  },
+  {
+   "file": "src/gct/staging.py",
+   "line": 218,
+   "kind": "false-to-true",
+   "start": 11978,
+   "end": 11983,
+   "old": "False",
+   "new": "True",
+   "id": 148
+  },
+  {
+   "file": "src/gct/ingest/parse.py",
+   "line": 219,
+   "kind": "negate-if",
+   "start": 9348,
+   "end": 9361,
+   "old": "notes.strip()",
+   "new": "not (notes.strip())",
+   "id": 149
+  },
+  {
+   "file": "src/gct/jobs/worker.py",
+   "line": 908,
+   "kind": "true-to-false",
+   "start": 57077,
+   "end": 57081,
+   "old": "True",
+   "new": "False",
+   "id": 150
+  },
+  {
+   "file": "src/gct/api/limits.py",
+   "line": 219,
+   "kind": "flip-comparison",
+   "start": 13351,
+   "end": 13353,
+   "old": "in",
+   "new": "not in",
+   "id": 151
+  },
+  {
+   "file": "src/gct/api/limits.py",
+   "line": 369,
+   "kind": "flip-comparison",
+   "start": 20898,
+   "end": 20899,
+   "old": ">",
+   "new": ">=",
+   "id": 152
+  },
+  {
+   "file": "src/gct/eval/questions.py",
+   "line": 124,
+   "kind": "remove-raise",
+   "start": 5530,
+   "end": 5611,
+   "old": "raise _fail(path, lineno, qid, f\"expected_sources[{position}] must be an object\")",
+   "new": "pass",
+   "id": 153
+  },
+  {
+   "file": "src/gct/classes.py",
+   "line": 235,
+   "kind": "return-nothing",
+   "start": 13922,
+   "end": 13944,
+   "old": "return row is not None",
+   "new": "return None",
+   "id": 154
+  },
+  {
+   "file": "src/gct/ingest/pipeline.py",
+   "line": 260,
+   "kind": "delete-call",
+   "start": 14401,
+   "end": 14605,
+   "old": "index_file(\n        conn,\n        file_id=file_id,\n        filename=Path(path).name,\n        owner_id=owner_id,\n        class_id=class_id,\n        chunks=chunks,\n        publish_guard=publish_guard,\n    )",
+   "new": "pass",
+   "id": 155
+  },
+  {
+   "file": "src/gct/api/routers/health.py",
+   "line": 22,
+   "kind": "return-nothing",
+   "start": 804,
+   "end": 827,
+   "old": "return {\"status\": \"ok\"}",
+   "new": "return None",
+   "id": 156
+  },
+  {
+   "file": "src/gct/api/routers/ask.py",
+   "line": 283,
+   "kind": "return-nothing",
+   "start": 16427,
+   "end": 16499,
+   "old": "return CoverageOut(complete=coverage.complete, gaps=list(coverage.gaps))",
+   "new": "return None",
+   "id": 157
+  },
+  {
+   "file": "src/gct/eval/scoring.py",
+   "line": 131,
+   "kind": "remove-raise",
+   "start": 7590,
+   "end": 7748,
+   "old": "raise ValueError(\n            f\"unknown expectation {expectation!r}; must be one of \"\n            f\"{sorted(_SCORE_TABLE)} (ADR 0021 \u00a73)\"\n        ) from None",
+   "new": "pass",
+   "id": 158
+  },
+  {
+   "file": "src/gct/api/errors.py",
+   "line": 130,
+   "kind": "return-nothing",
+   "start": 7260,
+   "end": 7282,
+   "old": "return _bounded(value)",
+   "new": "return None",
+   "id": 159
+  },
+  {
+   "file": "src/gct/api/errors.py",
+   "line": 256,
+   "kind": "number-plus-one",
+   "start": 15573,
+   "end": 15574,
+   "old": "1",
+   "new": "2",
+   "id": 160
+  },
+  {
+   "file": "src/gct/grounder/answer.py",
+   "line": 352,
+   "kind": "delete-call",
+   "start": 18956,
+   "end": 19043,
+   "old": "reasons.append(f\"cited label(s) {labels} were not in the {n_sources} sources provided\")",
+   "new": "pass",
+   "id": 161
+  },
+  {
+   "file": "src/gct/eval/scoring.py",
+   "line": 787,
+   "kind": "number-plus-one",
+   "start": 43164,
+   "end": 43165,
+   "old": "0",
+   "new": "1",
+   "id": 162
+  },
+  {
+   "file": "src/gct/api/errors.py",
+   "line": 323,
+   "kind": "return-nothing",
+   "start": 19303,
+   "end": 19363,
+   "old": "return envelope(exc.status_code, KIND_HTTP, str(exc.detail))",
+   "new": "return None",
+   "id": 163
+  },
+  {
+   "file": "src/gct/jobs/worker.py",
+   "line": 478,
+   "kind": "negate-if",
+   "start": 31665,
+   "end": 31833,
+   "old": "release(\n            conn,\n            job_id=job.job_id,\n            lease_token=job.lease_token,\n            error=f\"shutdown: {type(exc).__name__}: {exc}\",\n        )",
+   "new": "not (release(\n            conn,\n            job_id=job.job_id,\n            lease_token=job.lease_token,\n            error=f\"shutdown: {type(exc).__name__}: {exc}\",\n        ))",
+   "id": 164
+  },
+  {
+   "file": "src/gct/api/routers/files.py",
+   "line": 163,
+   "kind": "remove-raise",
+   "start": 9778,
+   "end": 9852,
+   "old": "raise ApiError(_STAGING_STATUS[exc.reason], exc.reason, str(exc)) from exc",
+   "new": "pass",
+   "id": 165
+  },
+  {
+   "file": "src/gct/jobs/queue.py",
+   "line": 221,
+   "kind": "return-nothing",
+   "start": 13114,
+   "end": 13128,
+   "old": "return file_id",
+   "new": "return None",
+   "id": 166
+  },
+  {
+   "file": "src/gct/eval/scoring.py",
+   "line": 298,
+   "kind": "return-nothing",
+   "start": 15829,
+   "end": 15882,
+   "old": "return _rate(self.refuse.refusal, self.refuse.scored)",
+   "new": "return None",
+   "id": 167
+  },
+  {
+   "file": "src/gct/api/limits.py",
+   "line": 204,
+   "kind": "negate-if",
+   "start": 12894,
+   "end": 12901,
+   "old": "escaped",
+   "new": "not (escaped)",
+   "id": 168
+  },
+  {
+   "file": "src/gct/retriever/retrieve.py",
+   "line": 118,
+   "kind": "drop-not",
+   "start": 5861,
+   "end": 5871,
+   "old": "not stored",
+   "new": "(stored)",
+   "id": 169
+  },
+  {
+   "file": "src/gct/eval/questions.py",
+   "line": 177,
+   "kind": "drop-not",
+   "start": 8217,
+   "end": 8233,
+   "old": "not line.strip()",
+   "new": "(line.strip())",
+   "id": 170
+  },
+  {
+   "file": "src/gct/jobs/worker.py",
+   "line": 1023,
+   "kind": "remove-raise",
+   "start": 63684,
+   "end": 63689,
+   "old": "raise",
+   "new": "pass",
+   "id": 171
+  },
+  {
+   "file": "src/gct/api/errors.py",
+   "line": 125,
+   "kind": "swap-and-or",
+   "start": 7073,
+   "end": 7076,
+   "old": "and",
+   "new": "or",
+   "id": 172
+  },
+  {
+   "file": "src/gct/ask.py",
+   "line": 90,
+   "kind": "true-to-false",
+   "start": 4869,
+   "end": 4873,
+   "old": "True",
+   "new": "False",
+   "id": 173
+  },
+  {
+   "file": "src/gct/eval/scoring.py",
+   "line": 823,
+   "kind": "return-nothing",
+   "start": 44821,
+   "end": 44863,
+   "old": "return _rate(self.uncited, self.sentences)",
+   "new": "return None",
+   "id": 174
+  },
+  {
+   "file": "src/gct/api/app.py",
+   "line": 65,
+   "kind": "delete-call",
+   "start": 3328,
+   "end": 3354,
+   "old": "app.include_router(router)",
+   "new": "pass",
+   "id": 175
+  },
+  {
+   "file": "src/gct/ingest/pipeline.py",
+   "line": 218,
+   "kind": "negate-if",
+   "start": 12319,
+   "end": 12332,
+   "old": "not canonical",
+   "new": "not (not canonical)",
+   "id": 176
+  },
+  {
+   "file": "src/gct/retriever/retrieve.py",
+   "line": 190,
+   "kind": "flip-comparison",
+   "start": 9578,
+   "end": 9579,
+   "old": "<",
+   "new": "<=",
+   "id": 177
+  },
+  {
+   "file": "src/gct/jobs/queue.py",
+   "line": 397,
+   "kind": "swap-and-or",
+   "start": 22492,
+   "end": 22494,
+   "old": "or",
+   "new": "and",
+   "id": 178
+  },
+  {
+   "file": "src/gct/grounder/answer.py",
+   "line": 286,
+   "kind": "true-to-false",
+   "start": 15177,
+   "end": 15181,
+   "old": "True",
+   "new": "False",
+   "id": 179
+  },
+  {
+   "file": "src/gct/jobs/worker.py",
+   "line": 1009,
+   "kind": "delete-call",
+   "start": 63129,
+   "end": 63186,
+   "old": "logger.info(\"job %s: done in %.1fs\", job.job_id, elapsed)",
+   "new": "pass",
+   "id": 180
+  },
+  {
+   "file": "src/gct/api/limits.py",
+   "line": 203,
+   "kind": "negate-if",
+   "start": 12868,
+   "end": 12877,
+   "old": "in_string",
+   "new": "not (in_string)",
+   "id": 181
+  },
+  {
+   "file": "src/gct/api/limits.py",
+   "line": 258,
+   "kind": "false-to-true",
+   "start": 14947,
+   "end": 14952,
+   "old": "False",
+   "new": "True",
+   "id": 182
+  },
+  {
+   "file": "src/gct/eval/scoring.py",
+   "line": 577,
+   "kind": "negate-if",
+   "start": 30942,
+   "end": 30958,
+   "old": "best < len(rows)",
+   "new": "not (best < len(rows))",
+   "id": 183
+  },
+  {
+   "file": "src/gct/providers/standin.py",
+   "line": 82,
+   "kind": "return-nothing",
+   "start": 2636,
+   "end": 2911,
+   "old": "return [\n            (\n                int(header.group(\"ordinal\")),\n                context[header.end() : following.start() if following else len(context)].strip(),\n            )\n            for header, following in zip(headers, [*headers[1:], None], strict=True)\n        ]",
+   "new": "return None",
+   "id": 184
+  },
+  {
+   "file": "src/gct/api/routers/files.py",
+   "line": 285,
+   "kind": "negate-if",
+   "start": 17027,
+   "end": 17052,
+   "old": "result.status == \"failed\"",
+   "new": "not (result.status == \"failed\")",
+   "id": 185
+  },
+  {
+   "file": "src/gct/files.py",
+   "line": 107,
+   "kind": "flip-comparison",
+   "start": 5909,
+   "end": 5911,
+   "old": "is",
+   "new": "is not",
+   "id": 186
+  },
+  {
+   "file": "src/gct/eval/scoring.py",
+   "line": 772,
+   "kind": "return-nothing",
+   "start": 42273,
+   "end": 42341,
+   "old": "return AnswerAttribution(sentences=sentences) if sentences else None",
+   "new": "return None",
+   "id": 187
+  },
+  {
+   "file": "src/gct/jobs/worker.py",
+   "line": 615,
+   "kind": "delete-call",
+   "start": 38462,
+   "end": 38479,
+   "old": "beat_conn.close()",
+   "new": "pass",
+   "id": 188
+  },
+  {
+   "file": "src/gct/eval/scoring.py",
+   "line": 375,
+   "kind": "flip-comparison",
+   "start": 19822,
+   "end": 19824,
+   "old": "is",
+   "new": "is not",
+   "id": 189
+  },
+  {
+   "file": "src/gct/ids.py",
+   "line": 91,
+   "kind": "return-nothing",
+   "start": 5441,
+   "end": 5453,
+   "old": "return value",
+   "new": "return None",
+   "id": 190
+  },
+  {
+   "file": "src/gct/grounder/answer.py",
+   "line": 597,
+   "kind": "negate-if",
+   "start": 31359,
+   "end": 31378,
+   "old": "last_parsed is None",
+   "new": "not (last_parsed is None)",
+   "id": 191
+  },
+  {
+   "file": "src/gct/api/routers/ask.py",
+   "line": 198,
+   "kind": "negate-if",
+   "start": 12789,
+   "end": 12809,
+   "old": "not question.strip()",
+   "new": "not (not question.strip())",
+   "id": 192
+  },
+  {
+   "file": "src/gct/grounder/answer.py",
+   "line": 550,
+   "kind": "negate-if",
+   "start": 28741,
+   "end": 28754,
+   "old": "not retrieved",
+   "new": "not (not retrieved)",
+   "id": 193
+  },
+  {
+   "file": "src/gct/grounder/answer.py",
+   "line": 417,
+   "kind": "return-nothing",
+   "start": 22318,
+   "end": 22598,
+   "old": "return GrounderResult(\n            state=GrounderState.REFUSAL,\n            answer_prose=None,  # REFUSAL carries no prose, by contract\n            citations=[],\n            coverage=coverage,\n            integrity=Integrity(ok=True, reasons=[]),\n            error=None,\n        )",
+   "new": "return None",
+   "id": 194
+  },
+  {
+   "file": "src/gct/providers/standin.py",
+   "line": 48,
+   "kind": "number-plus-one",
+   "start": 1468,
+   "end": 1469,
+   "old": "0",
+   "new": "1",
+   "id": 195
+  },
+  {
+   "file": "src/gct/ingest/chunk.py",
+   "line": 99,
+   "kind": "return-nothing",
+   "start": 4597,
+   "end": 4793,
+   "old": "return [\n        TextChunk(\n            text=\" \".join(words[start:end]),\n            file=unit.file,\n            page_or_slide=unit.page_or_slide,\n        )\n        for start, end in windows\n    ]",
+   "new": "return None",
+   "id": 196
+  },
+  {
+   "file": "src/gct/ingest/parse.py",
+   "line": 230,
+   "kind": "delete-call",
+   "start": 9968,
+   "end": 10036,
+   "old": "units.append(ParsedUnit(text=text, file=path.name, page_or_slide=i))",
+   "new": "pass",
+   "id": 197
+  },
+  {
+   "file": "src/gct/config.py",
+   "line": 105,
+   "kind": "number-plus-one",
+   "start": 6814,
+   "end": 6816,
+   "old": "32",
+   "new": "33",
+   "id": 198
+  },
+  {
+   "file": "src/gct/ask.py",
+   "line": 108,
+   "kind": "false-to-true",
+   "start": 5673,
+   "end": 5678,
+   "old": "False",
+   "new": "True",
+   "id": 199
+  }
+ ]
+}

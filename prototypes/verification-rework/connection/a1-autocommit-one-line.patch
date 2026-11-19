@@ -1,0 +1,12 @@
+diff --git a/src/gct/db.py b/src/gct/db.py
+index 8b671b6..74c6367 100644
+--- a/src/gct/db.py
++++ b/src/gct/db.py
+@@ -49,6 +49,6 @@ def connect() -> psycopg.Connection:
+     Requires the `vector` extension to already exist (created by migrations/0001_init.sql),
+     so run scripts/migrate.py first. The migration script itself connects WITHOUT this helper.
+     """
+-    conn = psycopg.connect(load_settings().database_url)
++    conn = psycopg.connect(load_settings().database_url, autocommit=True)
+     register_vector(conn)
+     return conn

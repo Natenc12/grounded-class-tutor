@@ -1,0 +1,1066 @@
+[
+ {
+  "id": 0,
+  "file": "src/gct/eval/scoring.py",
+  "line": 185,
+  "kind": "return-nothing",
+  "tests_caught": true,
+  "basic": 0,
+  "strict": 1,
+  "strict_msg": [
+   "reportUnusedVariable: Variable \"pairs\" is not accessed"
+  ]
+ },
+ {
+  "id": 1,
+  "file": "src/gct/providers/openai_provider.py",
+  "line": 70,
+  "kind": "negate-if",
+  "tests_caught": true,
+  "basic": 0,
+  "strict": 0,
+  "strict_msg": []
+ },
+ {
+  "id": 2,
+  "file": "src/gct/providers/openai_provider.py",
+  "line": 54,
+  "kind": "return-nothing",
+  "tests_caught": true,
+  "basic": 1,
+  "strict": 1,
+  "strict_msg": [
+   "reportReturnType: Type \"None\" is not assignable to return type \"int\"\n\u00a0\u00a0\"None\" is not assignable to"
+  ]
+ },
+ {
+  "id": 3,
+  "file": "src/gct/eval/scoring.py",
+  "line": 788,
+  "kind": "flip-comparison",
+  "tests_caught": true,
+  "basic": 0,
+  "strict": 0,
+  "strict_msg": []
+ },
+ {
+  "id": 4,
+  "file": "src/gct/eval/questions.py",
+  "line": 125,
+  "kind": "flip-comparison",
+  "tests_caught": true,
+  "basic": 0,
+  "strict": 0,
+  "strict_msg": []
+ },
+ {
+  "id": 5,
+  "file": "src/gct/eval/questions.py",
+  "line": 133,
+  "kind": "drop-not",
+  "tests_caught": true,
+  "basic": 0,
+  "strict": 1,
+  "strict_msg": [
+   "reportUnknownArgumentType: Argument type is unknown\n\u00a0\u00a0Argument corresponds to parameter \"page_or_slide\" in "
+  ]
+ },
+ {
+  "id": 6,
+  "file": "src/gct/jobs/worker.py",
+  "line": 574,
+  "kind": "return-nothing",
+  "tests_caught": true,
+  "basic": 1,
+  "strict": 1,
+  "strict_msg": [
+   "reportReturnType: Type \"None\" is not assignable to return type \"_LeaseHeartbeat\"\n\u00a0\u00a0\"None\" is not a"
+  ]
+ },
+ {
+  "id": 7,
+  "file": "src/gct/jobs/worker.py",
+  "line": 1090,
+  "kind": "delete-call",
+  "tests_caught": true,
+  "basic": 0,
+  "strict": 0,
+  "strict_msg": []
+ },
+ {
+  "id": 8,
+  "file": "src/gct/staging.py",
+  "line": 146,
+  "kind": "negate-if",
+  "tests_caught": true,
+  "basic": 0,
+  "strict": 0,
+  "strict_msg": []
+ },
+ {
+  "id": 9,
+  "file": "src/gct/jobs/worker.py",
+  "line": 1077,
+  "kind": "negate-if",
+  "tests_caught": true,
+  "basic": 0,
+  "strict": 0,
+  "strict_msg": []
+ },
+ {
+  "id": 10,
+  "file": "src/gct/ingest/pipeline.py",
+  "line": 128,
+  "kind": "true-to-false",
+  "tests_caught": false,
+  "basic": 0,
+  "strict": 0,
+  "strict_msg": []
+ },
+ {
+  "id": 11,
+  "file": "src/gct/api/limits.py",
+  "line": 211,
+  "kind": "flip-comparison",
+  "tests_caught": true,
+  "basic": 0,
+  "strict": 1,
+  "strict_msg": [
+   "reportUnnecessaryContains: Expression will always evaluate to False since the types \"Literal[34]\" and \"Lite"
+  ]
+ },
+ {
+  "id": 12,
+  "file": "src/gct/providers/active.py",
+  "line": 44,
+  "kind": "negate-if",
+  "tests_caught": true,
+  "basic": 0,
+  "strict": 0,
+  "strict_msg": []
+ },
+ {
+  "id": 13,
+  "file": "src/gct/api/limits.py",
+  "line": 138,
+  "kind": "number-plus-one",
+  "tests_caught": false,
+  "basic": 0,
+  "strict": 0,
+  "strict_msg": []
+ },
+ {
+  "id": 14,
+  "file": "src/gct/eval/scoring.py",
+  "line": 513,
+  "kind": "return-nothing",
+  "tests_caught": true,
+  "basic": 1,
+  "strict": 1,
+  "strict_msg": [
+   "reportReturnType: Type \"None\" is not assignable to return type \"bool\"\n\u00a0\u00a0\"None\" is not assignable t"
+  ]
+ },
+ {
+  "id": 15,
+  "file": "src/gct/classes.py",
+  "line": 98,
+  "kind": "drop-not",
+  "tests_caught": true,
+  "basic": 0,
+  "strict": 0,
+  "strict_msg": []
+ },
+ {
+  "id": 16,
+  "file": "src/gct/providers/standin.py",
+  "line": 87,
+  "kind": "number-plus-one",
+  "tests_caught": true,
+  "basic": 0,
+  "strict": 0,
+  "strict_msg": []
+ },
+ {
+  "id": 17,
+  "file": "src/gct/api/errors.py",
+  "line": 357,
+  "kind": "delete-call",
+  "tests_caught": true,
+  "basic": 0,
+  "strict": 1,
+  "strict_msg": [
+   "reportUnusedFunction: Function \"_api_error\" is not accessed"
+  ]
+ },
+ {
+  "id": 18,
+  "file": "src/gct/api/limits.py",
+  "line": 462,
+  "kind": "delete-call",
+  "tests_caught": true,
+  "basic": 0,
+  "strict": 0,
+  "strict_msg": []
+ },
+ {
+  "id": 19,
+  "file": "src/gct/jobs/queue.py",
+  "line": 398,
+  "kind": "flip-comparison",
+  "tests_caught": true,
+  "basic": 0,
+  "strict": 0,
+  "strict_msg": []
+ },
+ {
+  "id": 20,
+  "file": "src/gct/api/routers/ask.py",
+  "line": 89,
+  "kind": "number-plus-one",
+  "tests_caught": true,
+  "basic": 0,
+  "strict": 0,
+  "strict_msg": []
+ },
+ {
+  "id": 21,
+  "file": "src/gct/ingest/index.py",
+  "line": 284,
+  "kind": "delete-call",
+  "tests_caught": true,
+  "basic": 0,
+  "strict": 2,
+  "strict_msg": [
+   "reportUnusedVariable: Variable \"chunk_class_ids\" is not accessed",
+   "reportUnusedVariable: Variable \"cur\" is not accessed"
+  ]
+ },
+ {
+  "id": 22,
+  "file": "src/gct/jobs/queue.py",
+  "line": 523,
+  "kind": "return-nothing",
+  "tests_caught": true,
+  "basic": 1,
+  "strict": 1,
+  "strict_msg": [
+   "reportReturnType: Type \"None\" is not assignable to return type \"bool\"\n\u00a0\u00a0\"None\" is not assignable t"
+  ]
+ },
+ {
+  "id": 23,
+  "file": "src/gct/eval/questions.py",
+  "line": 183,
+  "kind": "remove-raise",
+  "tests_caught": true,
+  "basic": 0,
+  "strict": 2,
+  "strict_msg": [
+   "reportPossiblyUnboundVariable: \"row\" is possibly unbound",
+   "reportUnusedVariable: Variable \"err\" is not accessed"
+  ]
+ },
+ {
+  "id": 24,
+  "file": "src/gct/staging.py",
+  "line": 222,
+  "kind": "number-plus-one",
+  "tests_caught": true,
+  "basic": 0,
+  "strict": 0,
+  "strict_msg": []
+ },
+ {
+  "id": 25,
+  "file": "src/gct/providers/standin.py",
+  "line": 60,
+  "kind": "negate-if",
+  "tests_caught": true,
+  "basic": 0,
+  "strict": 0,
+  "strict_msg": []
+ },
+ {
+  "id": 26,
+  "file": "src/gct/api/limits.py",
+  "line": 351,
+  "kind": "negate-if",
+  "tests_caught": true,
+  "basic": 0,
+  "strict": 0,
+  "strict_msg": []
+ },
+ {
+  "id": 27,
+  "file": "src/gct/api/errors.py",
+  "line": 262,
+  "kind": "negate-if",
+  "tests_caught": true,
+  "basic": 0,
+  "strict": 0,
+  "strict_msg": []
+ },
+ {
+  "id": 28,
+  "file": "src/gct/eval/scoring.py",
+  "line": 138,
+  "kind": "remove-raise",
+  "tests_caught": false,
+  "basic": 1,
+  "strict": 1,
+  "strict_msg": [
+   "reportReturnType: Function with declared return type \"Outcome\" must return value on all code paths"
+  ]
+ },
+ {
+  "id": 29,
+  "file": "src/gct/config.py",
+  "line": 154,
+  "kind": "number-plus-one",
+  "tests_caught": false,
+  "basic": 0,
+  "strict": 0,
+  "strict_msg": []
+ },
+ {
+  "id": 30,
+  "file": "src/gct/classes.py",
+  "line": 114,
+  "kind": "flip-comparison",
+  "tests_caught": true,
+  "basic": 0,
+  "strict": 0,
+  "strict_msg": []
+ },
+ {
+  "id": 31,
+  "file": "src/gct/jobs/worker.py",
+  "line": 1013,
+  "kind": "delete-call",
+  "tests_caught": false,
+  "basic": 0,
+  "strict": 0,
+  "strict_msg": []
+ },
+ {
+  "id": 32,
+  "file": "src/gct/ingest/pipeline.py",
+  "line": 112,
+  "kind": "negate-if",
+  "tests_caught": true,
+  "basic": 0,
+  "strict": 0,
+  "strict_msg": []
+ },
+ {
+  "id": 33,
+  "file": "src/gct/eval/questions.py",
+  "line": 225,
+  "kind": "flip-comparison",
+  "tests_caught": true,
+  "basic": 0,
+  "strict": 1,
+  "strict_msg": [
+   "reportUnnecessaryContains: Expression will always evaluate to False since the types \"None\" and \"str\" have n"
+  ]
+ },
+ {
+  "id": 34,
+  "file": "src/gct/jobs/queue.py",
+  "line": 157,
+  "kind": "delete-call",
+  "tests_caught": true,
+  "basic": 0,
+  "strict": 0,
+  "strict_msg": []
+ },
+ {
+  "id": 35,
+  "file": "src/gct/eval/questions.py",
+  "line": 202,
+  "kind": "drop-not",
+  "tests_caught": true,
+  "basic": 0,
+  "strict": 1,
+  "strict_msg": [
+   "reportUnknownArgumentType: Argument type is unknown\n\u00a0\u00a0Argument corresponds to parameter \"expectation\" in fu"
+  ]
+ },
+ {
+  "id": 36,
+  "file": "src/gct/providers/active.py",
+  "line": 34,
+  "kind": "drop-not",
+  "tests_caught": true,
+  "basic": 0,
+  "strict": 0,
+  "strict_msg": []
+ },
+ {
+  "id": 37,
+  "file": "src/gct/api/limits.py",
+  "line": 299,
+  "kind": "return-nothing",
+  "tests_caught": true,
+  "basic": 1,
+  "strict": 2,
+  "strict_msg": [
+   "reportReturnType: Type \"None\" is not assignable to return type \"bool\"\n\u00a0\u00a0\"None\" is not assignable t",
+   "reportUnusedVariable: Variable \"subtype\" is not accessed"
+  ]
+ },
+ {
+  "id": 38,
+  "file": "src/gct/ingest/parse.py",
+  "line": 177,
+  "kind": "return-nothing",
+  "tests_caught": false,
+  "basic": 1,
+  "strict": 1,
+  "strict_msg": [
+   "reportReturnType: Type \"None\" is not assignable to return type \"str\"\n\u00a0\u00a0\"None\" is not assignable to"
+  ]
+ },
+ {
+  "id": 39,
+  "file": "src/gct/retriever/retrieve.py",
+  "line": 114,
+  "kind": "number-plus-one",
+  "tests_caught": true,
+  "basic": 0,
+  "strict": 0,
+  "strict_msg": []
+ },
+ {
+  "id": 40,
+  "file": "src/gct/jobs/queue.py",
+  "line": 406,
+  "kind": "drop-not",
+  "tests_caught": true,
+  "basic": 0,
+  "strict": 0,
+  "strict_msg": []
+ },
+ {
+  "id": 41,
+  "file": "src/gct/api/limits.py",
+  "line": 240,
+  "kind": "flip-comparison",
+  "tests_caught": true,
+  "basic": 0,
+  "strict": 0,
+  "strict_msg": []
+ },
+ {
+  "id": 42,
+  "file": "src/gct/jobs/worker.py",
+  "line": 1005,
+  "kind": "true-to-false",
+  "tests_caught": true,
+  "basic": 0,
+  "strict": 0,
+  "strict_msg": []
+ },
+ {
+  "id": 43,
+  "file": "src/gct/api/routers/files.py",
+  "line": 274,
+  "kind": "number-plus-one",
+  "tests_caught": true,
+  "basic": 0,
+  "strict": 0,
+  "strict_msg": []
+ },
+ {
+  "id": 44,
+  "file": "src/gct/config.py",
+  "line": 95,
+  "kind": "number-plus-one",
+  "tests_caught": false,
+  "basic": 0,
+  "strict": 0,
+  "strict_msg": []
+ },
+ {
+  "id": 45,
+  "file": "src/gct/api/limits.py",
+  "line": 241,
+  "kind": "return-nothing",
+  "tests_caught": true,
+  "basic": 0,
+  "strict": 1,
+  "strict_msg": [
+   "reportUnusedVariable: Variable \"value\" is not accessed"
+  ]
+ },
+ {
+  "id": 46,
+  "file": "src/gct/grounder/answer.py",
+  "line": 481,
+  "kind": "true-to-false",
+  "tests_caught": true,
+  "basic": 0,
+  "strict": 0,
+  "strict_msg": []
+ },
+ {
+  "id": 47,
+  "file": "src/gct/eval/scoring.py",
+  "line": 309,
+  "kind": "return-nothing",
+  "tests_caught": true,
+  "basic": 0,
+  "strict": 0,
+  "strict_msg": []
+ },
+ {
+  "id": 48,
+  "file": "src/gct/api/app.py",
+  "line": 49,
+  "kind": "negate-if",
+  "tests_caught": true,
+  "basic": 0,
+  "strict": 0,
+  "strict_msg": []
+ },
+ {
+  "id": 49,
+  "file": "src/gct/api/limits.py",
+  "line": 346,
+  "kind": "negate-if",
+  "tests_caught": true,
+  "basic": 0,
+  "strict": 0,
+  "strict_msg": []
+ },
+ {
+  "id": 50,
+  "file": "src/gct/staging.py",
+  "line": 135,
+  "kind": "remove-raise",
+  "tests_caught": true,
+  "basic": 0,
+  "strict": 1,
+  "strict_msg": [
+   "reportPossiblyUnboundVariable: \"encoded\" is possibly unbound"
+  ]
+ },
+ {
+  "id": 51,
+  "file": "src/gct/jobs/worker.py",
+  "line": 625,
+  "kind": "number-plus-one",
+  "tests_caught": true,
+  "basic": 0,
+  "strict": 0,
+  "strict_msg": []
+ },
+ {
+  "id": 52,
+  "file": "src/gct/api/limits.py",
+  "line": 297,
+  "kind": "return-nothing",
+  "tests_caught": true,
+  "basic": 1,
+  "strict": 1,
+  "strict_msg": [
+   "reportReturnType: Type \"None\" is not assignable to return type \"bool\"\n\u00a0\u00a0\"None\" is not assignable t"
+  ]
+ },
+ {
+  "id": 53,
+  "file": "src/gct/jobs/queue.py",
+  "line": 263,
+  "kind": "delete-call",
+  "tests_caught": true,
+  "basic": 0,
+  "strict": 0,
+  "strict_msg": []
+ },
+ {
+  "id": 54,
+  "file": "src/gct/api/errors.py",
+  "line": 341,
+  "kind": "number-plus-one",
+  "tests_caught": true,
+  "basic": 0,
+  "strict": 0,
+  "strict_msg": []
+ },
+ {
+  "id": 55,
+  "file": "src/gct/retriever/retrieve.py",
+  "line": 130,
+  "kind": "true-to-false",
+  "tests_caught": true,
+  "basic": 0,
+  "strict": 0,
+  "strict_msg": []
+ },
+ {
+  "id": 56,
+  "file": "src/gct/api/errors.py",
+  "line": 359,
+  "kind": "delete-call",
+  "tests_caught": true,
+  "basic": 0,
+  "strict": 1,
+  "strict_msg": [
+   "reportUnusedFunction: Function \"_validation\" is not accessed"
+  ]
+ },
+ {
+  "id": 57,
+  "file": "src/gct/grounder/answer.py",
+  "line": 367,
+  "kind": "return-nothing",
+  "tests_caught": true,
+  "basic": 1,
+  "strict": 1,
+  "strict_msg": [
+   "reportReturnType: Type \"None\" is not assignable to return type \"list[str]\"\n\u00a0\u00a0\"None\" is not assigna"
+  ]
+ },
+ {
+  "id": 58,
+  "file": "src/gct/providers/active.py",
+  "line": 22,
+  "kind": "remove-raise",
+  "tests_caught": true,
+  "basic": 0,
+  "strict": 0,
+  "strict_msg": []
+ },
+ {
+  "id": 59,
+  "file": "src/gct/retriever/retrieve.py",
+  "line": 150,
+  "kind": "return-nothing",
+  "tests_caught": true,
+  "basic": 1,
+  "strict": 1,
+  "strict_msg": [
+   "reportReturnType: Type \"None\" is not assignable to return type \"float\"\n\u00a0\u00a0\"None\" is not assignable "
+  ]
+ },
+ {
+  "id": 60,
+  "file": "src/gct/jobs/worker.py",
+  "line": 749,
+  "kind": "negate-if",
+  "tests_caught": true,
+  "basic": 0,
+  "strict": 0,
+  "strict_msg": []
+ },
+ {
+  "id": 61,
+  "file": "src/gct/providers/active.py",
+  "line": 66,
+  "kind": "delete-call",
+  "tests_caught": true,
+  "basic": 0,
+  "strict": 0,
+  "strict_msg": []
+ },
+ {
+  "id": 62,
+  "file": "src/gct/ingest/parse.py",
+  "line": 50,
+  "kind": "delete-call",
+  "tests_caught": false,
+  "basic": 0,
+  "strict": 0,
+  "strict_msg": []
+ },
+ {
+  "id": 63,
+  "file": "src/gct/staging.py",
+  "line": 241,
+  "kind": "delete-call",
+  "tests_caught": true,
+  "basic": 0,
+  "strict": 0,
+  "strict_msg": []
+ },
+ {
+  "id": 64,
+  "file": "src/gct/grounder/answer.py",
+  "line": 427,
+  "kind": "return-nothing",
+  "tests_caught": true,
+  "basic": 1,
+  "strict": 2,
+  "strict_msg": [
+   "reportReturnType: Type \"None\" is not assignable to return type \"GrounderResult\"\n\u00a0\u00a0\"None\" is not as",
+   "reportUnusedVariable: Variable \"state\" is not accessed"
+  ]
+ },
+ {
+  "id": 65,
+  "file": "src/gct/jobs/worker.py",
+  "line": 989,
+  "kind": "delete-call",
+  "tests_caught": false,
+  "basic": 0,
+  "strict": 0,
+  "strict_msg": []
+ },
+ {
+  "id": 66,
+  "file": "src/gct/providers/openai_provider.py",
+  "line": 76,
+  "kind": "negate-if",
+  "tests_caught": true,
+  "basic": 0,
+  "strict": 0,
+  "strict_msg": []
+ },
+ {
+  "id": 67,
+  "file": "src/gct/grounder/answer.py",
+  "line": 294,
+  "kind": "false-to-true",
+  "tests_caught": true,
+  "basic": 0,
+  "strict": 0,
+  "strict_msg": []
+ },
+ {
+  "id": 68,
+  "file": "src/gct/grounder/answer.py",
+  "line": 416,
+  "kind": "drop-not",
+  "tests_caught": true,
+  "basic": 0,
+  "strict": 0,
+  "strict_msg": []
+ },
+ {
+  "id": 69,
+  "file": "src/gct/ingest/parse.py",
+  "line": 135,
+  "kind": "remove-raise",
+  "tests_caught": false,
+  "basic": 0,
+  "strict": 1,
+  "strict_msg": [
+   "reportPossiblyUnboundVariable: \"text\" is possibly unbound"
+  ]
+ },
+ {
+  "id": 70,
+  "file": "src/gct/ingest/parse.py",
+  "line": 127,
+  "kind": "negate-if",
+  "tests_caught": true,
+  "basic": 0,
+  "strict": 0,
+  "strict_msg": []
+ },
+ {
+  "id": 71,
+  "file": "src/gct/grounder/answer.py",
+  "line": 293,
+  "kind": "negate-if",
+  "tests_caught": true,
+  "basic": 0,
+  "strict": 0,
+  "strict_msg": []
+ },
+ {
+  "id": 72,
+  "file": "src/gct/staging.py",
+  "line": 214,
+  "kind": "remove-raise",
+  "tests_caught": true,
+  "basic": 0,
+  "strict": 0,
+  "strict_msg": []
+ },
+ {
+  "id": 73,
+  "file": "src/gct/providers/standin.py",
+  "line": 47,
+  "kind": "flip-comparison",
+  "tests_caught": true,
+  "basic": 0,
+  "strict": 0,
+  "strict_msg": []
+ },
+ {
+  "id": 74,
+  "file": "src/gct/grounder/answer.py",
+  "line": 235,
+  "kind": "true-to-false",
+  "tests_caught": false,
+  "basic": 0,
+  "strict": 0,
+  "strict_msg": []
+ },
+ {
+  "id": 75,
+  "file": "src/gct/jobs/worker.py",
+  "line": 573,
+  "kind": "delete-call",
+  "tests_caught": true,
+  "basic": 0,
+  "strict": 0,
+  "strict_msg": []
+ },
+ {
+  "id": 76,
+  "file": "src/gct/grounder/answer.py",
+  "line": 480,
+  "kind": "false-to-true",
+  "tests_caught": true,
+  "basic": 0,
+  "strict": 0,
+  "strict_msg": []
+ },
+ {
+  "id": 77,
+  "file": "src/gct/jobs/worker.py",
+  "line": 400,
+  "kind": "drop-not",
+  "tests_caught": false,
+  "basic": 0,
+  "strict": 0,
+  "strict_msg": []
+ },
+ {
+  "id": 78,
+  "file": "src/gct/ingest/parse.py",
+  "line": 231,
+  "kind": "return-nothing",
+  "tests_caught": true,
+  "basic": 1,
+  "strict": 1,
+  "strict_msg": [
+   "reportReturnType: Type \"None\" is not assignable to return type \"list[ParsedUnit]\"\n\u00a0\u00a0\"None\" is not "
+  ]
+ },
+ {
+  "id": 79,
+  "file": "src/gct/jobs/worker.py",
+  "line": 762,
+  "kind": "return-nothing",
+  "tests_caught": true,
+  "basic": 1,
+  "strict": 1,
+  "strict_msg": [
+   "reportReturnType: Type \"None\" is not assignable to return type \"bool\"\n\u00a0\u00a0\"None\" is not assignable t"
+  ]
+ },
+ {
+  "id": 80,
+  "file": "src/gct/providers/active.py",
+  "line": 47,
+  "kind": "return-nothing",
+  "tests_caught": false,
+  "basic": 1,
+  "strict": 2,
+  "strict_msg": [
+   "reportReturnType: Type \"None\" is not assignable to return type \"Embeddings\"\n\u00a0\u00a0\"None\" is incompatib",
+   "reportUnusedImport: Import \"OpenAIEmbeddings\" is not accessed"
+  ]
+ },
+ {
+  "id": 81,
+  "file": "src/gct/eval/scoring.py",
+  "line": 508,
+  "kind": "number-plus-one",
+  "tests_caught": true,
+  "basic": 0,
+  "strict": 0,
+  "strict_msg": []
+ },
+ {
+  "id": 82,
+  "file": "src/gct/api/errors.py",
+  "line": 254,
+  "kind": "negate-if",
+  "tests_caught": true,
+  "basic": 0,
+  "strict": 0,
+  "strict_msg": []
+ },
+ {
+  "id": 83,
+  "file": "src/gct/retriever/retrieve.py",
+  "line": 191,
+  "kind": "remove-raise",
+  "tests_caught": true,
+  "basic": 0,
+  "strict": 0,
+  "strict_msg": []
+ },
+ {
+  "id": 84,
+  "file": "src/gct/jobs/queue.py",
+  "line": 601,
+  "kind": "number-plus-one",
+  "tests_caught": true,
+  "basic": 0,
+  "strict": 0,
+  "strict_msg": []
+ },
+ {
+  "id": 85,
+  "file": "src/gct/staging.py",
+  "line": 48,
+  "kind": "number-plus-one",
+  "tests_caught": true,
+  "basic": 0,
+  "strict": 0,
+  "strict_msg": []
+ },
+ {
+  "id": 86,
+  "file": "src/gct/ingest/chunk.py",
+  "line": 127,
+  "kind": "flip-comparison",
+  "tests_caught": true,
+  "basic": 0,
+  "strict": 0,
+  "strict_msg": []
+ },
+ {
+  "id": 87,
+  "file": "src/gct/grounder/answer.py",
+  "line": 285,
+  "kind": "negate-if",
+  "tests_caught": true,
+  "basic": 0,
+  "strict": 0,
+  "strict_msg": []
+ },
+ {
+  "id": 88,
+  "file": "src/gct/staging.py",
+  "line": 230,
+  "kind": "flip-comparison",
+  "tests_caught": true,
+  "basic": 0,
+  "strict": 0,
+  "strict_msg": []
+ },
+ {
+  "id": 89,
+  "file": "src/gct/staging.py",
+  "line": 213,
+  "kind": "negate-if",
+  "tests_caught": true,
+  "basic": 0,
+  "strict": 0,
+  "strict_msg": []
+ },
+ {
+  "id": 90,
+  "file": "src/gct/api/limits.py",
+  "line": 169,
+  "kind": "flip-comparison",
+  "tests_caught": true,
+  "basic": 0,
+  "strict": 0,
+  "strict_msg": []
+ },
+ {
+  "id": 91,
+  "file": "src/gct/db.py",
+  "line": 37,
+  "kind": "remove-raise",
+  "tests_caught": true,
+  "basic": 0,
+  "strict": 0,
+  "strict_msg": []
+ },
+ {
+  "id": 92,
+  "file": "src/gct/jobs/worker.py",
+  "line": 923,
+  "kind": "true-to-false",
+  "tests_caught": true,
+  "basic": 0,
+  "strict": 0,
+  "strict_msg": []
+ },
+ {
+  "id": 93,
+  "file": "src/gct/api/limits.py",
+  "line": 317,
+  "kind": "return-nothing",
+  "tests_caught": true,
+  "basic": 1,
+  "strict": 2,
+  "strict_msg": [
+   "reportReturnType: Type \"None\" is not assignable to return type \"Receive\"\n\u00a0\u00a0Type \"None\" is not assi",
+   "reportUnusedFunction: Function \"receive\" is not accessed"
+  ]
+ },
+ {
+  "id": 94,
+  "file": "src/gct/eval/scoring.py",
+  "line": 293,
+  "kind": "return-nothing",
+  "tests_caught": true,
+  "basic": 0,
+  "strict": 0,
+  "strict_msg": []
+ },
+ {
+  "id": 95,
+  "file": "src/gct/api/limits.py",
+  "line": 296,
+  "kind": "negate-if",
+  "tests_caught": true,
+  "basic": 0,
+  "strict": 0,
+  "strict_msg": []
+ },
+ {
+  "id": 96,
+  "file": "src/gct/api/limits.py",
+  "line": 215,
+  "kind": "flip-comparison",
+  "tests_caught": false,
+  "basic": 0,
+  "strict": 0,
+  "strict_msg": []
+ },
+ {
+  "id": 97,
+  "file": "src/gct/grounder/answer.py",
+  "line": 355,
+  "kind": "delete-call",
+  "tests_caught": true,
+  "basic": 0,
+  "strict": 0,
+  "strict_msg": []
+ },
+ {
+  "id": 98,
+  "file": "src/gct/eval/questions.py",
+  "line": 154,
+  "kind": "return-nothing",
+  "tests_caught": true,
+  "basic": 1,
+  "strict": 1,
+  "strict_msg": [
+   "reportReturnType: Type \"None\" is not assignable to return type \"list[str]\"\n\u00a0\u00a0\"None\" is not assigna"
+  ]
+ },
+ {
+  "id": 99,
+  "file": "src/gct/api/routers/ask.py",
+  "line": 200,
+  "kind": "return-nothing",
+  "tests_caught": true,
+  "basic": 1,
+  "strict": 1,
+  "strict_msg": [
+   "reportReturnType: Type \"None\" is not assignable to return type \"str\"\n\u00a0\u00a0\"None\" is not assignable to"
+  ]
+ }
+]

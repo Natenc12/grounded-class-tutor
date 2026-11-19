@@ -1,0 +1,90 @@
+controls: [(0, 0), (0, 0), (0, 0), (0, 0), (0, 0), (0, 0), (0, 0), (0, 0), (0, 0), (0, 0), (0, 0), (0, 0), (0, 0), (0, 0), (0, 0), (0, 0)]
+
+== sample A (audit's 100): 100 planted bugs run
+  full suite                                                86 / 100
+  (a) without tests/scripts                                 85 / 100
+      only tests/scripts                                     9 / 100
+  (b) outside-in only (tests/gct/api + tests/gct/ask)       42 / 100
+      only tests/gct/api                                    37 / 100
+      everything except api+ask                             65 / 100
+  (c) only db-marked tests                                  54 / 100
+      only non-db tests                                     69 / 100
+  (d) without tests/gct/jobs/test_worker.py                 81 / 100
+      without tests/gct/jobs (both files)                   78 / 100
+      without tests/gct/eval                                77 / 100
+      without tests/scripts and test_worker.py              80 / 100
+      coverage-minimal 132 tests                            72 / 100
+  lint (ruff check) alone: 10
+  missed by full suite: [(10, 'ingest/pipeline.py', 128, 'true-to-false'), (13, 'api/limits.py', 138, 'number-plus-one'), (28, 'eval/scoring.py', 138, 'remove-raise'), (29, 'config.py', 154, 'number-plus-one'), (31, 'jobs/worker.py', 1013, 'delete-call'), (38, 'ingest/parse.py', 177, 'return-nothing'), (44, 'config.py', 95, 'number-plus-one'), (62, 'ingest/parse.py', 50, 'delete-call'), (65, 'jobs/worker.py', 989, 'delete-call'), (69, 'ingest/parse.py', 135, 'remove-raise'), (74, 'grounder/answer.py', 235, 'true-to-false'), (77, 'jobs/worker.py', 400, 'drop-not'), (80, 'providers/active.py', 47, 'return-nothing'), (96, 'api/limits.py', 215, 'flip-comparison')]
+
+== sample B (fresh 100, seed 777): 100 planted bugs run
+  full suite                                                86 / 100
+  (a) without tests/scripts                                 85 / 100
+      only tests/scripts                                    17 / 100
+  (b) outside-in only (tests/gct/api + tests/gct/ask)       46 / 100
+      only tests/gct/api                                    42 / 100
+      everything except api+ask                             58 / 100
+  (c) only db-marked tests                                  53 / 100
+      only non-db tests                                     65 / 100
+  (d) without tests/gct/jobs/test_worker.py                 78 / 100
+      without tests/gct/jobs (both files)                   77 / 100
+      without tests/gct/eval                                79 / 100
+      without tests/scripts and test_worker.py              77 / 100
+      coverage-minimal 132 tests                            70 / 100
+  lint (ruff check) alone: 19
+  missed by full suite: [(104, 'providers/openai_provider.py', 38, 'number-plus-one'), (112, 'providers/standin.py', 23, 'number-plus-one'), (127, 'providers/standin.py', 59, 'swap-and-or'), (133, 'eval/questions.py', 69, 'true-to-false'), (138, 'jobs/worker.py', 583, 'return-nothing'), (139, 'retriever/retrieve.py', 54, 'true-to-false'), (140, 'staging.py', 43, 'number-plus-one'), (145, 'ingest/chunk.py', 41, 'number-plus-one'), (153, 'eval/questions.py', 124, 'remove-raise'), (177, 'retriever/retrieve.py', 190, 'flip-comparison'), (180, 'jobs/worker.py', 1009, 'delete-call'), (188, 'jobs/worker.py', 615, 'delete-call'), (195, 'providers/standin.py', 48, 'number-plus-one'), (198, 'config.py', 105, 'number-plus-one')]
+
+== sample A+B: 200 planted bugs run
+  full suite                                               172 / 200
+  (a) without tests/scripts                                170 / 200
+      only tests/scripts                                    26 / 200
+  (b) outside-in only (tests/gct/api + tests/gct/ask)       88 / 200
+      only tests/gct/api                                    79 / 200
+      everything except api+ask                            123 / 200
+  (c) only db-marked tests                                 107 / 200
+      only non-db tests                                    134 / 200
+  (d) without tests/gct/jobs/test_worker.py                159 / 200
+      without tests/gct/jobs (both files)                  155 / 200
+      without tests/gct/eval                               156 / 200
+      without tests/scripts and test_worker.py             157 / 200
+      coverage-minimal 132 tests                           142 / 200
+  lint (ruff check) alone: 29
+  missed by full suite: [(10, 'ingest/pipeline.py', 128, 'true-to-false'), (13, 'api/limits.py', 138, 'number-plus-one'), (28, 'eval/scoring.py', 138, 'remove-raise'), (29, 'config.py', 154, 'number-plus-one'), (31, 'jobs/worker.py', 1013, 'delete-call'), (38, 'ingest/parse.py', 177, 'return-nothing'), (44, 'config.py', 95, 'number-plus-one'), (62, 'ingest/parse.py', 50, 'delete-call'), (65, 'jobs/worker.py', 989, 'delete-call'), (69, 'ingest/parse.py', 135, 'remove-raise'), (74, 'grounder/answer.py', 235, 'true-to-false'), (77, 'jobs/worker.py', 400, 'drop-not'), (80, 'providers/active.py', 47, 'return-nothing'), (96, 'api/limits.py', 215, 'flip-comparison'), (104, 'providers/openai_provider.py', 38, 'number-plus-one'), (112, 'providers/standin.py', 23, 'number-plus-one'), (127, 'providers/standin.py', 59, 'swap-and-or'), (133, 'eval/questions.py', 69, 'true-to-false'), (138, 'jobs/worker.py', 583, 'return-nothing'), (139, 'retriever/retrieve.py', 54, 'true-to-false'), (140, 'staging.py', 43, 'number-plus-one'), (145, 'ingest/chunk.py', 41, 'number-plus-one'), (153, 'eval/questions.py', 124, 'remove-raise'), (177, 'retriever/retrieve.py', 190, 'flip-comparison'), (180, 'jobs/worker.py', 1009, 'delete-call'), (188, 'jobs/worker.py', 615, 'delete-call'), (195, 'providers/standin.py', 48, 'number-plus-one'), (198, 'config.py', 105, 'number-plus-one')]
+
+failing tests per caught bug: median 10.0 mean 22.0 min 1 max 162 | caught by exactly 1 test: 28 | by <=3: 61 | by >=10: 87
+
+per test file: bugs it catches / bugs ONLY it catches
+  tests/gct/api/test_limits.py                         36   14
+  tests/gct/jobs/test_worker.py                        35   13
+  tests/gct/api/test_ask_router.py                     31    4
+  tests/gct/eval/test_scoring.py                       27    7
+  tests/gct/api/test_files_router.py                   25    4
+  tests/gct/api/test_skeleton.py                       23    4
+  tests/gct/api/test_classes_router.py                 22    1
+  tests/gct/ingest/test_ceiling_through_worker.py      22    0
+  tests/scripts/test_ask_smoke.py                      20    0
+  tests/gct/ingest/test_pipeline.py                    20    0
+  tests/gct/providers/test_standin.py                  19    9
+  tests/gct/api/test_errors.py                         19    5
+  tests/gct/ask/test_ask.py                            17    3
+  tests/gct/grounder/test_answer.py                    13    1
+  tests/gct/test_staging.py                            11    5
+  tests/gct/jobs/test_queue.py                         11    1
+  tests/gct/eval/test_questions.py                      9    9
+  tests/scripts/test_http_smoke.py                      8    2
+  tests/gct/ingest/test_parse.py                        8    2
+  tests/gct/test_classes.py                             7    0
+  tests/gct/retriever/test_retrieve.py                  6    0
+  tests/gct/ingest/test_index.py                        5    0
+  tests/gct/ingest/test_chunk.py                        4    0
+  tests/gct/providers/test_openai_embeddings.py         3    3
+  tests/gct/test_ids.py                                 3    0
+  tests/gct/test_files.py                               3    0
+  tests/gct/api/test_openapi_snapshot.py                2    0
+  tests/gct/providers/test_openai_generation.py         1    1
+  tests/scripts/test_ingest_smoke.py                    1    0
+per dir, bugs only that dir catches: {'tests/gct/eval': 16, 'tests/gct/providers': 13, 'tests/gct/jobs': 17, 'tests/scripts': 2, 'tests/gct/api': 46, 'tests/gct/ask': 3, 'tests/gct/(top)': 5, 'tests/gct/ingest': 6, 'tests/gct/grounder': 1}
+
+smallest test set that catches everything caught in A: 37 tests; on the OTHER sample it catches 45 of 100 (full suite: 86 )
+
+smallest test set that catches everything caught in B: 38 tests; on the OTHER sample it catches 53 of 100 (full suite: 86 )

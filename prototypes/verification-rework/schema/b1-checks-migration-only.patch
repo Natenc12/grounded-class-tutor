@@ -1,0 +1,26 @@
+diff --git a/migrations/0004_cross_column_checks.sql b/migrations/0004_cross_column_checks.sql
+new file mode 100644
+index 0000000..4447a4a
+--- /dev/null
++++ b/migrations/0004_cross_column_checks.sql
+@@ -0,0 +1,20 @@
++-- EXPERIMENT (b): states the code argues are unreachable become states the schema refuses.
++-- Idempotent like 0001-0003 (drop-if-exists then add).
++
++-- files: a failure reason exists exactly when the file is failed.
++alter table files drop constraint if exists files_reason_iff_failed;
++alter table files add constraint files_reason_iff_failed
++    check ((status = 'failed') = (failed_reason is not null));
++
++-- jobs: a processing job has a lease (token + deadline); a queued job has no deadline.
++alter table jobs drop constraint if exists jobs_processing_has_lease;
++alter table jobs add constraint jobs_processing_has_lease
++    check (state <> 'processing' or (lease_token is not null and leased_until is not null));
++alter table jobs drop constraint if exists jobs_queued_has_no_deadline;
++alter table jobs add constraint jobs_queued_has_no_deadline
++    check (state <> 'queued' or leased_until is null);
++alter table jobs drop constraint if exists jobs_attempts_nonnegative;
++alter table jobs add constraint jobs_attempts_nonnegative check (attempts >= 0);
++
++-- jobs: one job per file - what `_bury`'s lease-guard argument "rests on, and the schema does not" say.
++create unique index if not exists jobs_one_per_file on jobs (file_id);

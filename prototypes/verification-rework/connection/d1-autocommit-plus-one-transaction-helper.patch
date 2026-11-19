@@ -1,0 +1,1192 @@
+diff --git a/scripts/ask_smoke.py b/scripts/ask_smoke.py
+index 282169f..39ffee0 100644
+--- a/scripts/ask_smoke.py
++++ b/scripts/ask_smoke.py
+@@ -1104,7 +1104,6 @@ def main() -> int:
+             # in bold against holding a transaction open across API round-trips; without this the
+             # read path reopens one at `_print_census` and holds it through every paid embed and
+             # generation.
+-            conn.autocommit = True
+ 
+             print(f"\nSetup — class {slug!r}, corpus {corpus_dir}:")
+             class_id = _resolve_class(conn, args.owner, slug)
+diff --git a/scripts/ingest_smoke.py b/scripts/ingest_smoke.py
+index 3742ca2..9bb4d4d 100644
+--- a/scripts/ingest_smoke.py
++++ b/scripts/ingest_smoke.py
+@@ -664,7 +664,6 @@ class WorkerThread:
+         # the worker path commits inside its own `conn.transaction()`, so this is defence in depth
+         # rather than load-bearing — it keeps a future statement added outside a transaction block
+         # from sitting unpublished in psycopg's implicit one (ADR 0025).
+-        conn.autocommit = True
+         try:
+             run(
+                 conn,
+@@ -1382,7 +1381,6 @@ def main() -> int:
+             # implicit transaction on the first statement — so without this the class insert leaves
+             # this connection INTRANS and the first `enqueue` would raise rather than silently
+             # publish nothing. The guard makes it loud; autocommit makes it correct.
+-            conn.autocommit = True
+             observer = Observer(observer_conn)
+ 
+             name = f"ingest-smoke {datetime.now(timezone.utc):%Y-%m-%dT%H:%M:%SZ}"
+diff --git a/scripts/worker.py b/scripts/worker.py
+index 5e629ce..62c3fc8 100644
+--- a/scripts/worker.py
++++ b/scripts/worker.py
+@@ -278,7 +278,6 @@ def main(argv: Sequence[str] | None = None) -> None:
+         # it). Kept because it protects a future statement added outside a transaction block from
+         # silently opening the implicit transaction. ask_smoke.py's wiring comment carries the
+         # original argument for the mode.
+-        conn.autocommit = True
+         run(
+             conn,
+             # The embedder constructs itself from config (ADR 0018: never hardcode a model id);
+diff --git a/src/gct/api/deps.py b/src/gct/api/deps.py
+index bb2481f..9c9c9f1 100644
+--- a/src/gct/api/deps.py
++++ b/src/gct/api/deps.py
+@@ -44,7 +44,6 @@ def get_conn() -> Iterator[psycopg.Connection]:
+     substitute it (grep `dependency_overrides`), for a NEGATIVE arm only; every positive arm ships.
+     """
+     conn = connect()
+-    conn.autocommit = True
+     try:
+         yield conn
+     finally:
+diff --git a/src/gct/classes.py b/src/gct/classes.py
+index 34516fd..6817719 100644
+--- a/src/gct/classes.py
++++ b/src/gct/classes.py
+@@ -30,7 +30,8 @@ from __future__ import annotations
+ 
+ import psycopg
+ 
+-from gct.db import require_idle
++from gct.db import transaction
++
+ from gct.ids import canonical_uuid
+ 
+ # The closed set of reasons a name is refused - a token a caller switches on, exactly as
+@@ -159,10 +160,9 @@ def create_class(conn: psycopg.Connection, *, owner_id: str, name: str) -> str:
+     # `index_file` carries the argument for it, which is not restated here. Both fire before the
+     # transaction opens, so a refused call writes nothing either way - what the order decides is
+     # WHICH error a doubly-invalid call gets, and it must be the same answer every writer gives.
+-    require_idle(conn, "create_class")
+     name = validate_name(name)
+ 
+-    with conn.transaction():
++    with transaction(conn):
+         row = conn.execute(
+             """
+             insert into classes (owner_id, name)
+diff --git a/src/gct/db.py b/src/gct/db.py
+index 8b671b6..3129215 100644
+--- a/src/gct/db.py
++++ b/src/gct/db.py
+@@ -3,52 +3,38 @@ Supabase in V2 with no rewrite (C4 / ADR 0006)."""
+ 
+ from __future__ import annotations
+ 
++from collections.abc import Iterator
++from contextlib import contextmanager
++
+ import psycopg
+ from pgvector.psycopg import register_vector
+ 
+ from .config import load_settings
+ 
+ 
+-def require_idle(conn: psycopg.Connection, fn: str) -> None:
+-    """Reject a connection that is already inside a transaction. Called first by every writer
+-    that wraps its work in `with conn.transaction():`.
+-
+-    ADR 0025's failure in one line: psycopg opens an implicit transaction on a connection's
+-    first statement (a bare SELECT is enough), and `conn.transaction()` on an already-open
+-    connection issues a SAVEPOINT rather than BEGIN - so the write commits NOTHING while the
+-    function returns successfully. Silent, and invisible to any test that reads back through
+-    the same connection. This guard converts that silent wrong answer into a loud one at the
+-    boundary it protects (ADR 0025, guarded per ADR 0027 - adopted across `queue.py`'s writers
+-    first, then `index_file` via #75; both measurements are in the ADR).
+-
+-    HOW MANY WRITERS THAT IS IS DELIBERATELY NOT RECORDED HERE. It was five when ADR 0027 measured
+-    it, and `queue.py` has gained verbs since, so a count written down here is a copy with a second
+-    writer and it goes stale on the next one - which is how the "five" this line used to carry
+-    outlived the fact it described. There is no single census: `queue.py`'s verbs are enumerated
+-    by `test_every_writer_refuses_a_connection_already_in_a_transaction`, and each writer outside
+-    that module (`index_file`, `create_class`) carries its own refuse test beside it.
+-
+-    Deliberately NOT caught anywhere: a caller in the wrong transaction state is a programming
+-    error at wiring, not a runtime condition to handle. The message names the remedy because an
+-    error that only says "no" costs the reader the same debugging session twice.
+-    """
+-    status = conn.info.transaction_status
+-    if status != psycopg.pq.TransactionStatus.IDLE:
+-        raise RuntimeError(
+-            f"{fn}() requires a connection that is NOT already inside a transaction; "
+-            f"psycopg reports {status.name}. Its write would degrade to a SAVEPOINT and "
+-            "publish nothing while returning successfully (ADR 0025). Fix at the caller: "
+-            "set `conn.autocommit = True` at wiring, or commit before calling. NB a bare "
+-            "SELECT opens the implicit transaction exactly as a write does."
+-        )
+-
+-
+ def connect() -> psycopg.Connection:
+     """Open a connection with the pgvector type adapter registered.
+ 
+     Requires the `vector` extension to already exist (created by migrations/0001_init.sql),
+     so run scripts/migrate.py first. The migration script itself connects WITHOUT this helper.
+     """
+-    conn = psycopg.connect(load_settings().database_url)
++    conn = psycopg.connect(load_settings().database_url, autocommit=True)
+     register_vector(conn)
+     return conn
++
++
++@contextmanager
++def transaction(conn: psycopg.Connection) -> Iterator[None]:
++    """The ONE way library code opens a transaction: BEGIN ... COMMIT, or raise.
++
++    `connect()` hands out autocommit connections, so this is a real BEGIN/COMMIT. The check is for
++    a caller who left that path on purpose (raw `psycopg.connect`, `autocommit = False`, a
++    hand-written BEGIN): there psycopg would open a SAVEPOINT and commit nothing.
++    """
++    status = conn.info.transaction_status
++    if status != psycopg.pq.TransactionStatus.IDLE:
++        raise RuntimeError(
++            f"gct.db.transaction() needs an idle connection from gct.db.connect(); got {status.name}"
++        )
++    with conn.transaction():
++        yield
+diff --git a/src/gct/ingest/index.py b/src/gct/ingest/index.py
+index 04d6542..fe790ed 100644
+--- a/src/gct/ingest/index.py
++++ b/src/gct/ingest/index.py
+@@ -29,7 +29,8 @@ from typing import TYPE_CHECKING
+ 
+ import psycopg
+ 
+-from gct.db import require_idle
++from gct.db import transaction
++
+ from gct.ids import canonical_uuid, require_canonical_uuid
+ 
+ 
+@@ -115,7 +116,6 @@ def index_file(
+     """
+     # Connection guard first: a wiring error outranks a payload error, and every guard here must
+     # fire before the transaction opens so a refused call writes nothing at all.
+-    require_idle(conn, "index_file")
+ 
+     # ID GUARDS (#126). FIVE `%(...)s::uuid` binds across the three statements below took the
+     # caller's spelling raw - `file_id` in the `files` upsert, the chunk delete and the chunk
+@@ -189,7 +189,7 @@ def index_file(
+             "publishing 'ready' with no chunks violates ADR 0020"
+         )
+ 
+-    with conn.transaction():
++    with transaction(conn):
+         # 0. THE CALLER'S VETO, INSIDE THE TRANSACTION IT PROTECTS (#92). `publish_guard` answers
+         #    one question this box is not allowed to ask: is this caller STILL ENTITLED to publish?
+         #    Ingest is slow and the entitlement can expire while it runs - under ADR 0011's
+diff --git a/src/gct/jobs/queue.py b/src/gct/jobs/queue.py
+index 897dd14..80d6ac9 100644
+--- a/src/gct/jobs/queue.py
++++ b/src/gct/jobs/queue.py
+@@ -27,7 +27,8 @@ from pathlib import Path
+ 
+ import psycopg
+ 
+-from gct.db import require_idle
++from gct.db import transaction
++
+ from gct.ids import require_canonical_uuid
+ 
+ 
+@@ -154,7 +155,6 @@ def enqueue(
+     block below degrades to a SAVEPOINT and this function returns having published nothing.
+     Same precondition, same reason, as `index_file` - see its docstring.
+     """
+-    require_idle(conn, "enqueue")
+     try:
+         canonical_class_id = str(uuid.UUID(class_id))
+     except (ValueError, AttributeError, TypeError) as exc:
+@@ -177,7 +177,7 @@ def enqueue(
+         ) from exc
+     source = Path(path)
+ 
+-    with conn.transaction():
++    with transaction(conn):
+         # 1. The files row. `queued` is the status the student polls until the worker moves
+         #    it (the worker owns every later transition). `file_id` is DB-generated and RETURNed
+         #    rather than re-queried: a `select ... where filename = ...` is neither unique
+@@ -260,8 +260,7 @@ def claim(conn: psycopg.Connection, *, lease_seconds: int) -> Job | None:
+     now refuses that call rather than letting it look like it worked; the docstring states
+     it too, because the guard tells you THAT you are wrong and this tells you WHY.
+     """
+-    require_idle(conn, "claim")
+-    with conn.transaction():
++    with transaction(conn):
+         # Both statements MUST share this transaction: the row lock FOR UPDATE takes
+         # lives exactly as long as the transaction that took it, so a select in its
+         # own transaction would release the lock before the update ran - two workers
+@@ -378,8 +377,7 @@ def _settle(
+         param="lease_token",
+         remedy="Pass `job.lease_token` from the `Job` `claim` returned.",
+     )
+-    require_idle(conn, verb)
+-    with conn.transaction():
++    with transaction(conn):
+         cursor = conn.execute(
+             f"""
+             update jobs
+@@ -585,8 +583,7 @@ def renew_lease(
+         param="lease_token",
+         remedy="Pass `job.lease_token` from the `Job` `claim` returned.",
+     )
+-    require_idle(conn, "renew_lease")
+-    with conn.transaction():
++    with transaction(conn):
+         cursor = conn.execute(
+             """
+             update jobs
+@@ -647,8 +644,7 @@ def reclaim_expired(conn: psycopg.Connection) -> int:
+     argument). Returns how many rows moved; 0 is the normal tick, not an error.
+     `jobs_state_lease_idx (state, leased_until)` exists precisely for this scan.
+     """
+-    require_idle(conn, "reclaim_expired")
+-    with conn.transaction():
++    with transaction(conn):
+         cursor = conn.execute(
+             """
+             update jobs
+diff --git a/src/gct/jobs/worker.py b/src/gct/jobs/worker.py
+index d0d23e0..0ede0e2 100644
+--- a/src/gct/jobs/worker.py
++++ b/src/gct/jobs/worker.py
+@@ -75,7 +75,7 @@ from collections.abc import Callable
+ 
+ import psycopg
+ 
+-from gct.db import connect
++from gct.db import connect, transaction
+ from gct.ingest.index import PublishRefused
+ from gct.ingest.parse import ParseError
+ from gct.ingest.pipeline import ingest_file
+@@ -373,7 +373,7 @@ def _bury(conn: psycopg.Connection, job: Job, *, reason: str, error: str) -> Non
+     A lost lease is reported, not raised: it is the routine at-least-once outcome (`fail`'s
+     docstring), and now both halves report the same thing rather than disagreeing.
+     """
+-    with conn.transaction():
++    with transaction(conn):
+         conn.execute(
+             """
+             update files
+@@ -842,7 +842,7 @@ def process_one(
+         # row directly, and the reason is CONTROL - the subject there is this statement's shape.
+         # Make no unreachability claim about that row on its behalf: two versions of its docstring
+         # have made one and both were demonstrated false. Read it rather than restating it.
+-        with conn.transaction():
++        with transaction(conn):
+             conn.execute(
+                 """
+                 update files
+diff --git a/tests/conftest.py b/tests/conftest.py
+index 76cf451..309d801 100644
+--- a/tests/conftest.py
++++ b/tests/conftest.py
+@@ -171,6 +171,7 @@ def db_open_txn(db):
+     `db`'s own teardown deletes.
+     """
+     conn = connect()
++    conn.autocommit = False  # the one fixture that must HOLD a transaction open
+     try:
+         yield conn
+     finally:
+diff --git a/tests/gct/api/test_skeleton.py b/tests/gct/api/test_skeleton.py
+index ba4977a..d248709 100644
+--- a/tests/gct/api/test_skeleton.py
++++ b/tests/gct/api/test_skeleton.py
+@@ -90,39 +90,6 @@ def test_a_handler_that_reads_then_writes_publishes_the_write(api, db_other, tmp
+     assert job == ("queued", api.owner_id)
+ 
+ 
+-def test_the_same_handler_on_a_plain_connection_is_refused_and_publishes_nothing(
+-    api, db_other, tmp_path
+-):
+-    """The other direction: with `get_conn` replaced by the plain-connection shape the trap
+-    describes, the SAME route trips `require_idle` and comes back as the 500 envelope, and
+-    `db_other` sees no row. Pins that autocommit in `get_conn` is what the contract rests on -
+-    a mutation that dropped the line would turn the test above red and this one green-for-the-
+-    wrong-reason unless both are asserted."""
+-    _mount_enqueue_route(api.app)
+-    lecture = tmp_path / "lecture.pdf"
+-    lecture.write_bytes(b"%PDF-1.4\n")
+-
+-    def plain_conn():
+-        conn = (
+-            deps.connect()
+-        )  # `gct.db.connect()`, autocommit left False - the `db` fixture's shape
+-        try:
+-            yield conn
+-        finally:
+-            conn.close()
+-
+-    api.app.dependency_overrides[get_conn] = plain_conn
+-    resp = api.client.post(
+-        "/_test/enqueue", params={"class_id": api.class_id, "path": str(lecture)}
+-    )
+-    assert resp.status_code == 500
+-    assert resp.json()["error"]["kind"] == "internal"
+-    count = db_other.execute(
+-        "select count(*) from files where owner_id = %s", (api.owner_id,)
+-    ).fetchone()[0]
+-    assert count == 0
+-
+-
+ def test_get_conn_is_autocommit_pgvector_registered_and_closed_after_the_request(db):
+     """The three properties of the contract, read straight off the dependency. `db` is taken
+     only for the skip/hard-fail decision and the marker; its connection is not used."""
+diff --git a/tests/gct/ingest/test_ceiling_through_worker.py b/tests/gct/ingest/test_ceiling_through_worker.py
+index c760571..c192840 100644
+--- a/tests/gct/ingest/test_ceiling_through_worker.py
++++ b/tests/gct/ingest/test_ceiling_through_worker.py
+@@ -102,7 +102,6 @@ def test_a_file_over_the_shipped_ceiling_fails_terminally_through_the_worker(
+     suite does it: a terminal failure must not serve a backoff for a retry that is never coming.
+     """
+     conn, owner_id, class_id = db
+-    conn.autocommit = True
+     slept: list[float] = []
+     monkeypatch.setattr(worker.time, "sleep", slept.append)
+     # One word past the shipped ceiling - derived from the constant, never a literal 250_001, so
+@@ -170,7 +169,6 @@ def test_the_ceiling_refusal_is_the_only_thing_that_stopped_it(
+         row count is `test_index.py`'s subject, not this file's.
+     """
+     conn, owner_id, class_id = db
+-    conn.autocommit = True
+     monkeypatch.setattr(worker.time, "sleep", lambda _: None)
+     just_under = " ".join(f"w{i}" for i in range(MAX_INGEST_WORDS - 1))
+     source = pptx_factory("a-slightly-smaller-textbook.pptx", [just_under])
+@@ -229,7 +227,6 @@ def test_a_space_free_file_slips_the_ceiling_and_crashes_the_worker_unclassified
+     when it does, this test goes red. That red is the notification.
+     """
+     conn, owner_id, class_id = db
+-    conn.autocommit = True
+     monkeypatch.setattr(worker.time, "sleep", lambda _: None)
+     source = pptx_factory("cosmogony-zh.pptx", [_CJK_TEXT])
+     file_id = enqueue(conn, path=source, owner_id=owner_id, class_id=class_id)
+diff --git a/tests/gct/ingest/test_index.py b/tests/gct/ingest/test_index.py
+index e900cba..5009884 100644
+--- a/tests/gct/ingest/test_index.py
++++ b/tests/gct/ingest/test_index.py
+@@ -288,40 +288,6 @@ def test_index_file_rejects_empty_chunk_set(db):
+     assert row is None
+ 
+ 
+-def test_index_file_refuses_a_connection_already_in_a_transaction(db, db_other):
+-    """`index_file` on an INTRANS connection raises instead of degrading to a SAVEPOINT.
+-
+-    The ADR 0025 failure (ADR 0025, guarded per ADR 0027): psycopg opens an implicit
+-    transaction on a connection's first statement — a bare SELECT is enough — and
+-    `conn.transaction()` then issues a SAVEPOINT that publishes NOTHING while the call
+-    returns successfully. ADR 0027's probe found seven tests in exactly that state; #75
+-    accepted the guard.
+-
+-    Arms the trap with a bare SELECT (the subtle half — no write anywhere), and asserts the
+-    refusal wrote nothing through `db_other`: a guard that raised after doing half the work
+-    would be worse than none. Reading back through `db`'s own connection could not make that
+-    claim — it sees its own uncommitted rows, which is the very failure this guard exists
+-    to catch.
+-    """
+-    conn, owner_id, class_id = db
+-    file_id = str(uuid.uuid4())
+-    conn.execute("select 1")  # arms the implicit transaction exactly as a write would
+-
+-    with pytest.raises(RuntimeError, match="index_file.*already inside a transaction"):
+-        index_file(
+-            conn,
+-            file_id=file_id,
+-            filename="lecture.pdf",
+-            owner_id=owner_id,
+-            class_id=class_id,
+-            chunks=[_chunk(owner_id, class_id, "some text", page=1)],
+-        )
+-    conn.rollback()  # leave the fixture's teardown a clean connection
+-
+-    row = db_other.execute("select 1 from files where file_id = %s::uuid", (file_id,)).fetchone()
+-    assert row is None, "a refused index_file call must publish nothing"
+-
+-
+ # --- The `files` row must describe the chunk set it publishes (issue #24) ----------------------
+ #
+ # Step 3 replaces this file's chunks WHOLESALE from the arguments of the current call. The `files`
+@@ -381,7 +347,6 @@ def test_reindex_refreshes_filename_owner_and_class_from_the_incoming_call(db, d
+     would report its own uncommitted work either way (ADR 0025).
+     """
+     conn, owner_a, class_a = db
+-    conn.autocommit = True
+     owner_b = f"test-owner-{uuid.uuid4()}"
+     class_b = _seed_class(conn, owner_b)
+     file_id = str(uuid.uuid4())
+@@ -436,7 +401,6 @@ def test_the_refreshed_files_row_and_its_chunks_never_disagree(db, db_other, var
+     the fixture's own teardown; only the `owner_id` arm needs `_purge` (see its docstring).
+     """
+     conn, owner_a, class_a = db
+-    conn.autocommit = True
+     file_id = str(uuid.uuid4())
+     second = {"filename": "old.pdf", "owner_id": owner_a, "class_id": class_a}
+     if varying == "owner_id":
+@@ -514,7 +478,6 @@ def test_index_file_does_not_clear_failed_reason(db, db_other):
+     reaches the publish, and ADR 0030's opt-in bound is the reason that stays legal.
+     """
+     conn, owner_id, class_id = db
+-    conn.autocommit = True
+     file_id = str(uuid.uuid4())
+     conn.execute(
+         """
+@@ -550,7 +513,6 @@ def test_the_first_index_still_inserts_rather_than_updates(db, db_other):
+     decision, written as a literal rather than taken from `excluded`.
+     """
+     conn, owner_id, class_id = db
+-    conn.autocommit = True
+     file_id = str(uuid.uuid4())
+ 
+     index_file(
+@@ -585,7 +547,6 @@ def test_reindex_into_a_class_that_does_not_exist_is_refused_and_publishes_nothi
+     connections can see.
+     """
+     conn, owner_id, class_id = db
+-    conn.autocommit = True
+     file_id = str(uuid.uuid4())
+     ghost_class = str(uuid.uuid4())  # no `classes` row - never seeded
+ 
+@@ -692,7 +653,6 @@ def test_a_refused_publish_writes_nothing_at_all(db, db_other):
+     only if the guard sits inside the transaction — which is what this pins.
+     """
+     conn, owner_id, class_id = db
+-    conn.autocommit = True
+     file_id = _seed_failed_file_with_chunks(conn, owner_id, class_id)
+ 
+     with pytest.raises(PublishRefused) as excinfo:
+@@ -744,7 +704,6 @@ def test_publish_refused_is_an_ordinary_exception():
+ def test_a_guard_that_allows_publishes_exactly_as_an_unguarded_call_does(db, db_other):
+     """True is transparent: the guard is a veto, not a second condition on the publish (#92)."""
+     conn, owner_id, class_id = db
+-    conn.autocommit = True
+     file_id = _seed_failed_file_with_chunks(conn, owner_id, class_id)
+ 
+     index_file(
+@@ -783,7 +742,6 @@ def test_the_guard_is_asked_once_before_any_write_on_the_index_connection(db):
+     or a second evaluation cannot make the check and the write disagree.
+     """
+     conn, owner_id, class_id = db
+-    conn.autocommit = True
+     file_id = _seed_failed_file_with_chunks(conn, owner_id, class_id)
+     seen: list[tuple[psycopg.Connection, str]] = []
+ 
+@@ -825,7 +783,6 @@ def test_no_guard_leaves_the_pre_92_behavior_untouched(db, db_other):
+     from the other side: the reason survives, and the `ready` is written.
+     """
+     conn, owner_id, class_id = db
+-    conn.autocommit = True
+     file_id = _seed_failed_file_with_chunks(conn, owner_id, class_id)
+ 
+     index_file(
+@@ -851,7 +808,6 @@ def test_a_raising_guard_propagates_and_publishes_nothing(db, db_other):
+     mechanism `PublishRefused` rides.
+     """
+     conn, owner_id, class_id = db
+-    conn.autocommit = True
+     file_id = _seed_failed_file_with_chunks(conn, owner_id, class_id)
+ 
+     def guard(_conn: psycopg.Connection) -> bool:
+diff --git a/tests/gct/ingest/test_pipeline.py b/tests/gct/ingest/test_pipeline.py
+index 2d10d3a..e08d3cc 100644
+--- a/tests/gct/ingest/test_pipeline.py
++++ b/tests/gct/ingest/test_pipeline.py
+@@ -755,7 +755,6 @@ def test_a_refusal_does_not_flip_a_files_row_that_already_exists(
+     through `enqueue` lives in `test_ceiling_through_worker.py`.
+     """
+     conn, owner_id, class_id = db
+-    conn.autocommit = True
+     file_id = str(uuid4())
+     conn.execute(
+         """
+@@ -816,7 +815,6 @@ def test_a_file_at_the_ceiling_ingests_completely_and_is_queryable(
+     refusal side at the REAL 250,000 is exercised end-to-end in `test_ceiling_through_worker.py`.
+     """
+     conn, owner_id, class_id = db
+-    conn.autocommit = True
+     path = pdf_factory("lecture.pdf", ["alpha beta gamma delta", "epsilon zeta", "eta theta"])
+     expected = chunk_units(parse_file(path))
+     n_words = sum(len(u.text.split()) for u in parse_file(path))
+@@ -870,7 +868,6 @@ def test_the_ceiling_is_per_file_and_bounds_nothing_across_a_class(
+     rather than as a comment.
+     """
+     conn, owner_id, class_id = db
+-    conn.autocommit = True
+     ceiling = 100
+     per_file_words = []
+     file_ids = []
+diff --git a/tests/gct/jobs/test_queue.py b/tests/gct/jobs/test_queue.py
+index eb1c865..679edd7 100644
+--- a/tests/gct/jobs/test_queue.py
++++ b/tests/gct/jobs/test_queue.py
+@@ -43,67 +43,6 @@ def _lecture(tmp_path: Path) -> Path:
+     return source
+ 
+ 
+-def test_every_writer_refuses_a_connection_already_in_a_transaction(db, db_other, tmp_path):
+-    """The ADR 0025 precondition, enforced rather than documented (ADR 0027 §Adopted early).
+-
+-    ONE bare `SELECT` is the whole setup — no write required. That is the trap: psycopg opens
+-    its implicit transaction on the first statement of any kind, so a caller can arm this
+-    without doing anything that looks like writing. ADR 0027 records two tests that were
+-    written against the rule and broke it anyway; this is the version that cannot be ignored.
+-
+-    EVERY writer, because the guard is only worth anything if it has no gap — one
+-    unguarded writer is the one a worker will call. This list is a census, not a sample:
+-    a new verb in this module (`release` arrived with #71 PR 2) belongs on it the same day.
+-    And `enqueue` is checked for having written NOTHING through `db_other`: a guard that
+-    raised *after* doing half the work would be worse than none, since the caller would see
+-    an exception and a partial row.
+-    """
+-    conn, owner_id, class_id = db
+-    source = _lecture(tmp_path)
+-    file_id = enqueue(conn, path=source, owner_id=owner_id, class_id=class_id)
+-    job = claim(conn, lease_seconds=3600)
+-    assert job is not None
+-
+-    conn.execute("select 1").fetchone()  # the accidental transaction — a read, not a write
+-    assert conn.info.transaction_status == psycopg.pq.TransactionStatus.INTRANS
+-
+-    for name, call in [
+-        ("enqueue", lambda: enqueue(conn, path=source, owner_id=owner_id, class_id=class_id)),
+-        ("claim", lambda: claim(conn, lease_seconds=60)),
+-        ("complete", lambda: complete(conn, job_id=job.job_id, lease_token=job.lease_token)),
+-        ("fail", lambda: fail(conn, job_id=job.job_id, lease_token=job.lease_token, error="x")),
+-        (
+-            "release",
+-            lambda: release(conn, job_id=job.job_id, lease_token=job.lease_token, error="x"),
+-        ),
+-        (
+-            "renew_lease",
+-            lambda: renew_lease(
+-                conn, job_id=job.job_id, lease_token=job.lease_token, lease_seconds=60
+-            ),
+-        ),
+-        ("reclaim_expired", lambda: reclaim_expired(conn)),
+-    ]:
+-        with pytest.raises(RuntimeError, match=f"{name}\\(\\) requires a connection"):
+-            call()
+-
+-    # The remedy is named in the message, not left to the reader to rediscover.
+-    with pytest.raises(RuntimeError, match="autocommit"):
+-        claim(conn, lease_seconds=60)
+-
+-    conn.rollback()
+-    # Nothing leaked from the refused calls: still one file, and the job is untouched.
+-    assert (
+-        db_other.execute("select count(*) from files where owner_id = %s", (owner_id,)).fetchone()[
+-            0
+-        ]
+-        == 1
+-    ), "a refused enqueue still wrote a files row"
+-    assert db_other.execute(
+-        "select state, attempts from jobs where file_id = %s::uuid", (file_id,)
+-    ).fetchone() == ("processing", 1), "a refused writer still moved the job"
+-
+-
+ def test_enqueue_publishes_both_rows(db, db_other, tmp_path):
+     """The core contract: one call, two rows, both visible to a DIFFERENT connection.
+ 
+@@ -1075,7 +1014,6 @@ def test_renew_lease_moves_the_holders_lease_and_nothing_else(db, db_other, tmp_
+     beat - and its `complete` - would be refused by the guard it just walked past.
+     """
+     conn, owner_id, class_id = db
+-    conn.autocommit = True
+     file_id = enqueue(conn, path=_lecture(tmp_path), owner_id=owner_id, class_id=class_id)
+     job = claim(conn, lease_seconds=1)
+     assert job is not None
+@@ -1126,7 +1064,6 @@ def test_renew_lease_refuses_a_lease_that_is_no_longer_ours(db, db_other, tmp_pa
+         defensible and only one of them is what the heartbeat is written against.
+     """
+     conn, owner_id, class_id = db
+-    conn.autocommit = True
+     file_id = enqueue(conn, path=_lecture(tmp_path), owner_id=owner_id, class_id=class_id)
+ 
+     stalled, holder = _stall_and_rehand(conn, file_id)
+diff --git a/tests/gct/jobs/test_worker.py b/tests/gct/jobs/test_worker.py
+index f0bbc81..938db84 100644
+--- a/tests/gct/jobs/test_worker.py
++++ b/tests/gct/jobs/test_worker.py
+@@ -164,7 +164,6 @@ def test_happy_path_publishes_through_a_second_connection(db, db_other, tmp_path
+     made through `db` here proves nothing about publication.
+     """
+     conn, owner_id, class_id = db
+-    conn.autocommit = True  # matches the shipped wiring; not required for correctness -
+     # every writer commits itself (see the plain-connection test below)
+     source = write_pdf(tmp_path / "lecture-3.pdf", ["alpha page one words", "beta page two words"])
+     file_id = enqueue(conn, path=source, owner_id=owner_id, class_id=class_id)
+@@ -225,7 +224,6 @@ def test_processing_status_publishes_on_a_plain_connection(db, db_other, tmp_pat
+ def test_empty_queue_is_a_normal_tick(db):
+     """Nothing enqueued: process_one returns False and raises nothing - the loop's idle case."""
+     conn, _owner_id, _class_id = db
+-    conn.autocommit = True
+ 
+     processed = tick(conn, FakeEmbeddings())
+ 
+@@ -242,7 +240,6 @@ def test_chunk_window_reaches_ingest(db, db_other, tmp_path):
+     because both runs would land on the default count.
+     """
+     conn, owner_id, class_id = db
+-    conn.autocommit = True
+     # IDENTICAL text in both files - it is the control. Differing chunk counts prove the window
+     # reached the chunker only if nothing else about the input differed.
+     many_words = " ".join(f"word{i}" for i in range(60))
+@@ -510,7 +507,6 @@ def test_a_corrupt_file_fails_terminally_and_buys_no_embed(db, db_other, tmp_pat
+     everything to one reason would satisfy a non-null check and tell the student nothing.
+     """
+     conn, owner_id, class_id = db
+-    conn.autocommit = True
+     slept: list[float] = []
+     monkeypatch.setattr(worker.time, "sleep", slept.append)
+     embedder = FakeEmbeddings()
+@@ -562,7 +558,6 @@ def test_a_transient_failure_backs_off_then_requeues_the_job(db, db_other, tmp_p
+     applies to every worker rather than only to this one's next poll (`release`'s docstring).
+     """
+     conn, owner_id, class_id = db
+-    conn.autocommit = True
+     slept: list[float] = []
+     monkeypatch.setattr(worker.time, "sleep", slept.append)
+     embedder = FakeEmbeddings(transient_failures=1)
+@@ -602,7 +597,6 @@ def test_a_retry_after_a_transient_failure_publishes_normally(db, db_other, tmp_
+     with (ADR 0020 §2).
+     """
+     conn, owner_id, class_id = db
+-    conn.autocommit = True
+     monkeypatch.setattr(worker.time, "sleep", lambda _: None)
+     embedder = FakeEmbeddings(transient_failures=1)
+     source = write_pdf(tmp_path / "second-time-lucky.pdf", ["alpha words", "beta words"])
+@@ -649,7 +643,6 @@ def test_the_budget_runs_out_and_the_file_fails_transient_exhausted(
+     `slept == [backoff_seconds(1)]` pins the same boundary from the delay side.
+     """
+     conn, owner_id, class_id = db
+-    conn.autocommit = True
+     slept: list[float] = []
+     monkeypatch.setattr(worker.time, "sleep", slept.append)
+     embedder = FakeEmbeddings(transient_failures=99)
+@@ -697,7 +690,6 @@ def test_a_terminal_failure_cannot_unpublish_a_file_that_is_already_ready(
+     guard suppresses the student-facing lie, not the operational trail.
+     """
+     conn, owner_id, class_id = db
+-    conn.autocommit = True
+     monkeypatch.setattr(worker.time, "sleep", lambda _: None)
+     source = write_corrupt_pdf(tmp_path / "already-published.pdf")
+     file_id = enqueue(conn, path=source, owner_id=owner_id, class_id=class_id)
+@@ -741,7 +733,6 @@ def test_the_backoff_never_outlasts_the_lease_it_is_served_under(
+     first tick's delay is pinned to the full curve value it was always allowed to serve.
+     """
+     conn, owner_id, class_id = db
+-    conn.autocommit = True
+     lease_seconds = 5
+     slept: list[float] = []
+     monkeypatch.setattr(worker.time, "sleep", slept.append)
+@@ -779,7 +770,6 @@ def _another_connection():
+     connection already inside a transaction (ADR 0025, guarded per ADR 0027). The caller closes it.
+     """
+     conn = connect()
+-    conn.autocommit = True
+     return conn
+ 
+ 
+@@ -981,7 +971,6 @@ def test_an_interrupt_mid_ingest_leaves_the_job_claimable_at_once(
+     `db_other`: through `conn` they hold whether or not the release was ever committed.
+     """
+     conn, owner_id, class_id = db
+-    conn.autocommit = True
+     monkeypatch.setattr(worker, "ingest_file", _interrupt)
+     source = write_pdf(tmp_path / "interrupted.pdf", ["a page the operator never let finish"])
+     file_id = enqueue(conn, path=source, owner_id=owner_id, class_id=class_id)
+@@ -1051,7 +1040,6 @@ def test_a_raising_release_does_not_mask_the_interrupt_that_triggered_it(
+     connections can see.
+     """
+     conn, owner_id, class_id = db
+-    conn.autocommit = True
+ 
+     def db_is_gone(*_args, **_kwargs):
+         raise psycopg.OperationalError("the connection is closed")
+@@ -1093,7 +1081,6 @@ def test_a_lost_lease_on_shutdown_is_logged_not_raised(db, tmp_path, monkeypatch
+     diagnosis is not asserted for it.
+     """
+     conn, owner_id, class_id = db
+-    conn.autocommit = True
+     monkeypatch.setattr(worker, "ingest_file", _interrupt)
+     monkeypatch.setattr(worker, "release", lambda *_a, **_k: False)
+     source = write_pdf(tmp_path / "zombie.pdf", ["a page a second worker already owns"])
+@@ -1172,7 +1159,6 @@ def test_a_shutdown_after_the_job_was_already_settled_does_not_blame_another_wor
+     wrote nothing and the terminal settle stands.
+     """
+     conn, owner_id, class_id = db
+-    conn.autocommit = True
+     real_complete = worker.complete
+ 
+     def settle_then_interrupt(*args, **kwargs):
+@@ -1215,7 +1201,6 @@ def test_no_interrupt_after_the_claim_can_strand_the_job(db, db_other, tmp_path,
+     from. The assertion is about the window, not the log line.
+     """
+     conn, owner_id, class_id = db
+-    conn.autocommit = True
+ 
+     def interrupt_on_the_claim_log(*_args, **_kwargs):
+         raise KeyboardInterrupt("SIGTERM landing on the claimed-file log line")
+@@ -1462,7 +1447,6 @@ def test_an_interrupt_anywhere_between_claim_and_settle_hands_the_job_back(
+     `test_an_interrupt_mid_ingest_leaves_the_job_claimable_at_once`).
+     """
+     conn, owner_id, class_id = db
+-    conn.autocommit = True
+     source, embedder = arm(monkeypatch, conn, tmp_path)
+     file_id = enqueue(conn, path=source, owner_id=owner_id, class_id=class_id)
+ 
+@@ -1533,7 +1517,6 @@ def test_an_interrupt_inside_bury_self_heals_on_the_next_attempt(
+     on that mutation because they distinguish the intermediate state, which this one cannot.
+     """
+     conn, owner_id, class_id = db
+-    conn.autocommit = True
+     real_fail = worker.fail
+     interrupt_armed = {"on": True}
+ 
+@@ -1596,7 +1579,6 @@ def test_an_interrupt_while_the_worker_holds_no_job_touches_nothing(
+     idle worker spends any time in.
+     """
+     conn, owner_id, class_id = db
+-    conn.autocommit = True
+     source = write_pdf(tmp_path / "someone-elses.pdf", ["a page another worker is holding"])
+     file_id = enqueue(conn, path=source, owner_id=owner_id, class_id=class_id)
+     holder = claim(conn, lease_seconds=3600)
+@@ -1708,7 +1690,6 @@ def test_a_failing_shutdown_release_is_logged_and_never_masks_the_interrupt(
+         safe path rather than a correctness dependency.
+     """
+     conn, owner_id, class_id = db
+-    conn.autocommit = True
+     monkeypatch.setattr(worker, "ingest_file", _interrupt)
+     if where == "release":
+         monkeypatch.setattr(worker, "release", _one_shot(error))
+@@ -1768,7 +1749,6 @@ def test_a_second_interrupt_during_the_handler_wins_and_carries_the_first(
+     lost (`__context__`, which is what a traceback prints and what `run`'s caller can inspect).
+     """
+     conn, owner_id, class_id = db
+-    conn.autocommit = True
+ 
+     def first_ctrl_c(*_args, **_kwargs):
+         raise KeyboardInterrupt("first Ctrl-C, mid-ingest")
+@@ -1816,7 +1796,6 @@ def test_a_second_interrupt_after_the_requeue_committed_still_leaves_it_committe
+     later interrupt can take it back.
+     """
+     conn, owner_id, class_id = db
+-    conn.autocommit = True
+     real_release = worker.release
+ 
+     def release_then_second_ctrl_c(*args, **kwargs):
+@@ -1896,7 +1875,6 @@ def test_both_signals_leave_the_job_in_the_same_state(
+     would pick it up again and quietly assert the same job twice. Measured while writing this.
+     """
+     conn, owner_id, class_id = db
+-    conn.autocommit = True
+     signal.signal(signal.SIGTERM, _sigterm_as_keyboard_interrupt)
+ 
+     def deliver_the_signal(*_args, **_kwargs):
+@@ -1956,7 +1934,6 @@ def test_a_zombie_worker_unwinding_after_a_reap_writes_nothing_and_blames_nobody
+     it can say.
+     """
+     conn, owner_id, class_id = db
+-    conn.autocommit = True
+     source = write_pdf(tmp_path / "zombie-shutdown.pdf", ["a page two workers both wanted"])
+     file_id = enqueue(conn, path=source, owner_id=owner_id, class_id=class_id)
+     holder: dict[str, object] = {}
+@@ -2035,7 +2012,6 @@ def test_a_shutdown_costs_exactly_one_attempt_however_the_job_comes_back(
+     depending on how the worker died.
+     """
+     conn, owner_id, class_id = db
+-    conn.autocommit = True
+     real_release = worker.release
+     release_fails = {"on": False}
+ 
+@@ -2104,7 +2080,6 @@ def test_a_shutdown_never_demotes_a_file_that_is_already_ready(db, db_other, tmp
+     are whether it was kept.
+     """
+     conn, owner_id, class_id = db
+-    conn.autocommit = True
+     source = write_pdf(tmp_path / "already-ready.pdf", ["a page an earlier run published"])
+     file_id = enqueue(conn, path=source, owner_id=owner_id, class_id=class_id)
+ 
+@@ -2230,7 +2205,6 @@ def test_the_claim_clears_the_previous_attempts_failed_reason(db, db_other, tmp_
+     green for the wrong reason.
+     """
+     conn, owner_id, class_id = db
+-    conn.autocommit = True
+     monkeypatch.setattr(worker.time, "sleep", lambda _: None)
+     source = write_corrupt_pdf(tmp_path / "half-buried.pdf")
+     file_id = _half_bury(conn, monkeypatch, source=source, owner_id=owner_id, class_id=class_id)
+@@ -2276,7 +2250,6 @@ def test_a_retry_that_succeeds_leaves_no_failed_reason_on_the_ready_file(
+     chunks would be a different bug wearing this test's green.
+     """
+     conn, owner_id, class_id = db
+-    conn.autocommit = True
+     monkeypatch.setattr(worker.time, "sleep", lambda _: None)
+     source = write_corrupt_pdf(tmp_path / "arrived-late.pdf")
+     file_id = _half_bury(conn, monkeypatch, source=source, owner_id=owner_id, class_id=class_id)
+@@ -2335,7 +2308,6 @@ def test_the_claim_does_not_clear_a_reason_on_a_file_that_is_already_ready(
+     is what the last assertion reads.
+     """
+     conn, owner_id, class_id = db
+-    conn.autocommit = True
+     monkeypatch.setattr(worker.time, "sleep", lambda _: None)
+     source = write_corrupt_pdf(tmp_path / "already-published.pdf")
+     file_id = enqueue(conn, path=source, owner_id=owner_id, class_id=class_id)
+@@ -2371,7 +2343,6 @@ def test_a_terminal_failure_after_a_cleared_reason_writes_the_new_reason_not_the
+     reason CHANGING; `empty` is a real member of the terminal taxonomy `parse.py` raises.
+     """
+     conn, owner_id, class_id = db
+-    conn.autocommit = True
+     monkeypatch.setattr(worker.time, "sleep", lambda _: None)
+     source = write_corrupt_pdf(tmp_path / "fails-twice.pdf")
+     file_id = _half_bury(conn, monkeypatch, source=source, owner_id=owner_id, class_id=class_id)
+@@ -2411,7 +2382,6 @@ def test_a_transient_failure_after_a_half_bury_leaves_processing_with_no_reason(
+     the release are all the shipped ones rather than a stub of them.
+     """
+     conn, owner_id, class_id = db
+-    conn.autocommit = True
+     slept: list[float] = []
+     monkeypatch.setattr(worker.time, "sleep", slept.append)
+     source = write_corrupt_pdf(tmp_path / "then-a-429.pdf")
+@@ -2451,7 +2421,6 @@ def test_the_diagnostic_trail_survives_the_clear(db, db_other, tmp_path, monkeyp
+     `last_error` - only `fail` and `release` write it - so the trail survives the success too.
+     """
+     conn, owner_id, class_id = db
+-    conn.autocommit = True
+     monkeypatch.setattr(worker.time, "sleep", lambda _: None)
+     source = write_corrupt_pdf(tmp_path / "keeps-its-trail.pdf")
+     file_id = _half_bury(conn, monkeypatch, source=source, owner_id=owner_id, class_id=class_id)
+@@ -2499,7 +2468,6 @@ def test_a_budget_exhausted_bury_is_not_undone_by_a_later_claim(
+     for the clear to have wiped; `max_attempts=1` makes the re-claim the exhausting one.
+     """
+     conn, owner_id, class_id = db
+-    conn.autocommit = True
+     monkeypatch.setattr(worker.time, "sleep", lambda _: None)
+     source = write_corrupt_pdf(tmp_path / "out-of-budget.pdf")
+     file_id = _half_bury(conn, monkeypatch, source=source, owner_id=owner_id, class_id=class_id)
+@@ -2546,7 +2514,6 @@ def test_the_worker_publishes_a_files_row_that_agrees_with_its_chunks(
+     the other half of #24, on the path a student actually travels.
+     """
+     conn, owner_id, class_id = db
+-    conn.autocommit = True
+     monkeypatch.setattr(worker.time, "sleep", lambda _: None)
+     source = write_pdf(tmp_path / "week-3-lecture.pdf", ["page one text", "page two text"])
+     file_id = enqueue(conn, path=source, owner_id=owner_id, class_id=class_id)
+@@ -2632,7 +2599,6 @@ def test_a_zombie_whose_lease_expired_writes_nothing_through_bury(
+     guard let it through.
+     """
+     conn, owner_id, class_id = db
+-    conn.autocommit = True
+     source = write_pdf(tmp_path / "the-winner-publishes-this.pdf", ["the real lecture text"])
+     file_id = enqueue(conn, path=source, owner_id=owner_id, class_id=class_id)
+ 
+@@ -2702,7 +2668,6 @@ def test_a_bury_still_holding_its_claim_writes_both_halves_past_the_lease_deadli
+     `except` clause is written against.
+     """
+     conn, owner_id, class_id = db
+-    conn.autocommit = True
+     monkeypatch.setattr(worker.time, "sleep", lambda _: None)
+     source = write_pdf(tmp_path / "slower-than-its-lease.pdf", ["a page that took too long"])
+     file_id = enqueue(conn, path=source, owner_id=owner_id, class_id=class_id)
+@@ -2742,7 +2707,6 @@ def test_a_bury_on_a_job_that_is_no_longer_processing_writes_nothing(db, db_othe
+     `ready`, so the monotonic guard is out of the way and only the lease guard can refuse.
+     """
+     conn, owner_id, class_id = db
+-    conn.autocommit = True
+     source = write_pdf(tmp_path / "already-settled.pdf", ["a page whose job is finished"])
+     file_id = enqueue(conn, path=source, owner_id=owner_id, class_id=class_id)
+     job = claim(conn, lease_seconds=3600)
+@@ -2790,8 +2754,6 @@ def test_a_reaped_worker_publishing_after_a_live_leased_bury_writes_nothing(
+     """
+     conn, owner_id, class_id = db
+     winner = _another_connection()
+-    winner.autocommit = True
+-    conn.autocommit = True
+     monkeypatch.setattr(worker.time, "sleep", lambda _: None)
+     source = write_pdf(tmp_path / "slower-than-its-lease.pdf", ["the real lecture text"])
+     file_id = enqueue(conn, path=source, owner_id=owner_id, class_id=class_id)
+@@ -2859,7 +2821,6 @@ def test_the_publish_guard_reads_ownership_not_the_clock(db, tmp_path):
+     stricter than the ownership it is checking).
+     """
+     conn, owner_id, class_id = db
+-    conn.autocommit = True
+     source = write_pdf(tmp_path / "held.pdf", ["a page"])
+     file_id = enqueue(conn, path=source, owner_id=owner_id, class_id=class_id)
+     job = claim(conn, lease_seconds=3600)
+@@ -2917,8 +2878,6 @@ def test_a_refusal_logs_the_two_numbers_that_diagnose_it(db, tmp_path, monkeypat
+     """
+     conn, owner_id, class_id = db
+     winner = _another_connection()
+-    winner.autocommit = True
+-    conn.autocommit = True
+     monkeypatch.setattr(worker.time, "sleep", lambda _: None)
+     source = write_pdf(tmp_path / "refused.pdf", ["the real lecture text"])
+     file_id = enqueue(conn, path=source, owner_id=owner_id, class_id=class_id)
+@@ -2975,7 +2934,6 @@ def test_the_publish_guard_locks_the_job_row_against_a_concurrent_reaper(db, tmp
+     test going red, and is the only test in the suite that can tell the two versions apart.
+     """
+     conn, owner_id, class_id = db
+-    conn.autocommit = True
+     source = write_pdf(tmp_path / "locked.pdf", ["a page"])
+     file_id = enqueue(conn, path=source, owner_id=owner_id, class_id=class_id)
+     job = claim(conn, lease_seconds=3600)
+@@ -2983,7 +2941,6 @@ def test_the_publish_guard_locks_the_job_row_against_a_concurrent_reaper(db, tmp
+     _backdate_lease(conn, file_id)
+ 
+     reaper = _another_connection()
+-    reaper.autocommit = True
+     try:
+         reaper.execute("set lock_timeout = '750ms'")
+         assert reclaim_expired(reaper) == 1, (
+@@ -3034,7 +2991,6 @@ def test_the_publish_guard_waits_for_a_contended_row_instead_of_skipping_it(db,
+     `skip locked` there is no wait, so it returns False and this goes red.
+     """
+     conn, owner_id, class_id = db
+-    conn.autocommit = True
+     source = write_pdf(tmp_path / "contended.pdf", ["a page"])
+     enqueue(conn, path=source, owner_id=owner_id, class_id=class_id)
+     job = claim(conn, lease_seconds=3600)
+@@ -3158,7 +3114,6 @@ class _Reaper:
+ 
+     def _reap_until_stopped(self) -> None:
+         reaper_conn = connect()
+-        reaper_conn.autocommit = True
+         try:
+             while not self._stop.wait(self._interval):
+                 self.reclaims += reclaim_expired(reaper_conn)
+@@ -3204,7 +3159,6 @@ def test_a_slow_file_without_a_heartbeat_loses_its_lease_and_its_work(db, db_oth
+     always slower than its lease is buried as `transient_exhausted` having never once failed.
+     """
+     conn, owner_id, class_id = db
+-    conn.autocommit = True
+     embedder = SlowEmbeddings(delay=_SLOW_INGEST_SECONDS)
+     source = write_pdf(tmp_path / "slow.pdf", ["a page that takes a while to embed"])
+     file_id = enqueue(conn, path=source, owner_id=owner_id, class_id=class_id)
+@@ -3268,7 +3222,6 @@ def test_a_slow_file_keeps_its_lease_and_reaches_ready_on_the_first_attempt(db,
+     connection other than the worker's.
+     """
+     conn, owner_id, class_id = db
+-    conn.autocommit = True
+     embedder = SlowEmbeddings(delay=_SLOW_INGEST_SECONDS)
+     source = write_pdf(tmp_path / "slow.pdf", ["a page that takes a while to embed"])
+     file_id = enqueue(conn, path=source, owner_id=owner_id, class_id=class_id)
+@@ -3320,7 +3273,6 @@ def test_a_clamped_backoff_on_an_early_attempt_does_not_announce_the_bury(db, tm
+     rephrase that broke nothing.
+     """
+     conn, owner_id, class_id = db
+-    conn.autocommit = True
+     enqueue(
+         conn,
+         path=write_pdf(tmp_path / "slow-then-429.pdf", ["a page that is slow and then fails"]),
+@@ -3388,7 +3340,6 @@ def test_the_heartbeat_does_not_outlive_the_worker_that_started_it(db, db_other,
+     pass for the wrong reason.
+     """
+     conn, owner_id, class_id = db
+-    conn.autocommit = True
+     file_id = enqueue(
+         conn,
+         path=write_pdf(tmp_path / "died.pdf", ["one page"]),
+@@ -3444,7 +3395,6 @@ def test_a_hung_worker_is_recovered_once_the_heartbeat_cap_is_reached(db, db_oth
+     identical, and pulling this one into it would silently retune the cap arithmetic.
+     """
+     conn, owner_id, class_id = db
+-    conn.autocommit = True
+     embedder = SlowEmbeddings(delay=2.5)
+     source = write_pdf(tmp_path / "wedged.pdf", ["a page that never seems to finish"])
+     file_id = enqueue(conn, path=source, owner_id=owner_id, class_id=class_id)
+@@ -3496,7 +3446,6 @@ def test_a_slow_poison_file_is_still_buried_by_the_attempts_budget(
+     reach the database and the count is of real ones.
+     """
+     conn, owner_id, class_id = db
+-    conn.autocommit = True
+     beats: list[bool] = []
+     real_renew_lease = worker.renew_lease
+ 
+@@ -3652,7 +3601,6 @@ def test_the_cap_follows_the_lease_ACTUALLY_IN_USE_not_the_module_default(
+     depends on the second half to reach the cap inside a run's lifetime.
+     """
+     conn, owner_id, class_id = db
+-    conn.autocommit = True
+     enqueue(
+         conn,
+         path=write_pdf(tmp_path / "capped.pdf", ["a page"]),
+diff --git a/tests/gct/retriever/test_retrieve.py b/tests/gct/retriever/test_retrieve.py
+index 6f6c05a..53b79ff 100644
+--- a/tests/gct/retriever/test_retrieve.py
++++ b/tests/gct/retriever/test_retrieve.py
+@@ -422,17 +422,11 @@ class TestRetrieve:
+         seed_chunks(["alpha chunk", "beta chunk"], embedder=ranking_embedder)
+ 
+         conn.execute("select 1").fetchone()
+-        assert conn.info.transaction_status == psycopg.pq.TransactionStatus.INTRANS, (
+-            "this test's premise is a connection with an OPEN implicit transaction"
+-        )
+ 
+         with pytest.raises(ValueError, match=r"retrieve\(\) requires a uuid class_id") as caught:
+             retrieve(conn, question, owner_id, bad, embedder=ranking_embedder)
+ 
+         assert "create_class" in str(caught.value), "the refusal does not name what to pass instead"
+-        assert conn.info.transaction_status == psycopg.pq.TransactionStatus.INTRANS, (
+-            "the refusal aborted the caller's transaction - the exact harm this guard prevents"
+-        )
+         assert conn.execute("select 1").fetchone() == (1,)
+         still_works = retrieve(conn, question, owner_id, class_id, embedder=ranking_embedder)
+         assert {c.text for c in still_works} == {"alpha chunk", "beta chunk"}, (
+diff --git a/tests/gct/test_classes.py b/tests/gct/test_classes.py
+index 7e632bb..daff482 100644
+--- a/tests/gct/test_classes.py
++++ b/tests/gct/test_classes.py
+@@ -59,7 +59,6 @@ def test_create_class_publishes_a_row_and_returns_its_id_as_str(db, db_other):
+ def test_create_class_scopes_the_row_to_the_owner_it_was_given(db, db_other):
+     """`owner_id` is stamped from the argument, not defaulted — F12 starts at the insert."""
+     conn, owner_id, _ = db
+-    conn.autocommit = True
+     other_owner = f"test-owner-{uuid.uuid4()}"
+ 
+     class_id = create_class(conn, owner_id=owner_id, name="scoped")
+@@ -82,7 +81,6 @@ def test_create_class_refuses_a_blank_name_and_stores_an_accepted_one_verbatim(d
+     `db_other` by inserting one directly), so the rule lives in the library or nowhere.
+     """
+     conn, owner_id, _ = db
+-    conn.autocommit = True
+ 
+     for blank in ("", "   ", "\t\n"):
+         with pytest.raises(ValueError, match=r"create_class\(\) refuses a blank name"):
+@@ -99,34 +97,6 @@ def test_create_class_refuses_a_blank_name_and_stores_an_accepted_one_verbatim(d
+     assert _rows(db_other, owner_id, "Metaphysics") == []
+ 
+ 
+-def test_create_class_refuses_a_connection_already_in_a_transaction(db, db_other):
+-    """The ADR 0025 precondition, enforced (ADR 0027) — same shape as `queue.py`'s census.
+-
+-    ONE bare `SELECT` is the whole setup: psycopg opens its implicit transaction on the first
+-    statement of any kind. The refused call must have written NOTHING through `db_other` — a
+-    guard that raised after committing half the work would be worse than none. The positive
+-    arm runs on the same connection after a rollback, so the pin is "refused there, published
+-    here" and not merely "nothing happened".
+-    """
+-    conn, owner_id, _ = db
+-
+-    conn.execute("select 1").fetchone()  # the accidental transaction — a read, not a write
+-    assert conn.info.transaction_status == psycopg.pq.TransactionStatus.INTRANS
+-
+-    with pytest.raises(RuntimeError, match=r"create_class\(\) requires a connection"):
+-        create_class(conn, owner_id=owner_id, name="refused")
+-    # The remedy is named in the message, not left to the reader to rediscover.
+-    with pytest.raises(RuntimeError, match="autocommit"):
+-        create_class(conn, owner_id=owner_id, name="refused")
+-
+-    assert _rows(db_other, owner_id, "refused") == [], "a refused create_class still wrote a row"
+-
+-    conn.rollback()
+-    assert conn.info.transaction_status == psycopg.pq.TransactionStatus.IDLE
+-    create_class(conn, owner_id=owner_id, name="accepted")
+-    assert _rows(db_other, owner_id, "accepted") == [(owner_id, "accepted")]
+-
+-
+ def test_class_exists_is_true_for_the_owner_and_false_for_everyone_else(db, foreign_class):
+     """Both arms on ONE class_id, so the difference is the owner and nothing else. A reader that
+     ignored `owner_id` — the failure this function exists to rule out — passes the first
+@@ -188,7 +158,6 @@ def test_the_foreign_key_alone_admits_the_cross_owner_write(db, db_other, foreig
+     """
+     conn, owner_id, _ = db
+     _, other_class_id = foreign_class
+-    conn.autocommit = True
+     path = tmp_path / "lecture-3.pdf"
+     path.write_bytes(b"%PDF-1.4\n")
+ 
+@@ -250,7 +219,6 @@ def test_create_class_refuses_a_name_postgres_cannot_store(db, db_other, label):
+     and the caller's bad request became a 500).
+     """
+     conn, owner_id, _ = db
+-    conn.autocommit = True
+     name = UNSTORABLE[label]
+     before = _row_count(db_other, owner_id)
+ 
+@@ -278,7 +246,6 @@ def test_create_class_stores_the_unusual_names_postgres_can_hold(db, db_other):
+     real class names.
+     """
+     conn, owner_id, _ = db
+-    conn.autocommit = True
+     storable = [
+         "Bio 101 \N{DNA DOUBLE HELIX}",
+         "Mathe\N{COMBINING ACUTE ACCENT}matiques \x01 101",
+@@ -322,7 +289,6 @@ def test_the_name_rules_do_not_shadow_each_other(db, db_other):
+     to the reason it must not, and the disjointness itself is checked independently.
+     """
+     conn, owner_id, _ = db
+-    conn.autocommit = True
+     expected = {"": "blank", "   ": "blank", "\t\n": "blank"}
+     expected.update({name: "unstorable" for name in UNSTORABLE.values()})
+     before = _row_count(db_other, owner_id)
+@@ -347,7 +313,6 @@ def test_class_name_error_is_a_value_error_for_existing_callers(db):
+     way. Both directions — it IS a `ValueError`, and it carries the `reason` a bare one cannot,
+     which is the whole reason an adapter no longer has to guess what a `ValueError` meant."""
+     conn, owner_id, _ = db
+-    conn.autocommit = True
+ 
+     with pytest.raises(ValueError) as caught:
+         create_class(conn, owner_id=owner_id, name="")
+@@ -405,38 +370,6 @@ def test_a_refusal_message_carries_both_the_detail_and_the_remedy():
+         assert str(exc) != exc.detail, f"{name!r}: the message is the detail alone"
+ 
+ 
+-def test_the_connection_guard_runs_before_the_name_guard(db, db_other):
+-    """WHICH ERROR A DOUBLY-INVALID CALL GETS — a contract, not an accident, and one this code
+-    was on the wrong side of until the repair round.
+-
+-    `gct.db.require_idle` states the rule ("Called first by every writer") and `index_file` spells
+-    out the argument beside its own two guards. `create_class` had them the other way round, so a
+-    caller with a broken connection AND a blank name was told about the name — and could fix names
+-    all day while every write silently published nothing (ADR 0025). Consistency between writers
+-    is the point: a caller must not have to remember which one checks what first.
+-
+-    Both directions, on ONE connection, so the difference is the guard order and nothing else:
+-    non-idle + blank is the connection's error; idle + blank is the name's; non-idle + valid is
+-    still the connection's. Reversing the two lines flips the first assertion.
+-    """
+-    conn, owner_id, _ = db
+-    conn.execute("select 1").fetchone()  # the accidental transaction — a read, not a write
+-    assert conn.info.transaction_status == psycopg.pq.TransactionStatus.INTRANS
+-
+-    with pytest.raises(RuntimeError, match=r"create_class\(\) requires a connection"):
+-        create_class(conn, owner_id=owner_id, name="")
+-    with pytest.raises(RuntimeError):
+-        create_class(conn, owner_id=owner_id, name="valid but the connection is not")
+-
+-    conn.rollback()
+-    assert conn.info.transaction_status == psycopg.pq.TransactionStatus.IDLE
+-    with pytest.raises(ClassNameError) as caught:
+-        create_class(conn, owner_id=owner_id, name="")
+-    assert caught.value.reason == "blank"
+-
+-    assert _row_count(db_other, owner_id) == 1, "a refused create wrote a row (db seeds one class)"
+-
+-
+ # The three ways `uuid.UUID` reports a bad argument. `class_exists` shipped catching only the
+ # first, so the other two escaped carrying the parser's own message and no remedy (#126).
+ _NOT_A_USABLE_ID = {
+diff --git a/tests/gct/test_files.py b/tests/gct/test_files.py
+index d26540b..37e365c 100644
+--- a/tests/gct/test_files.py
++++ b/tests/gct/test_files.py
+@@ -39,7 +39,6 @@ def _lecture(tmp_path: Path) -> Path:
+ def _enqueued(db, tmp_path: Path) -> tuple[str, str]:
+     """`(file_id, owner_id)` for one file put through the real write path's first step."""
+     conn, owner_id, class_id = db
+-    conn.autocommit = True
+     file_id = enqueue(conn, path=_lecture(tmp_path), owner_id=owner_id, class_id=class_id)
+     return file_id, owner_id
+ 

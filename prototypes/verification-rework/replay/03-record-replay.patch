@@ -1,0 +1,490 @@
+diff --git a/src/gct/providers/replay.py b/src/gct/providers/replay.py
+new file mode 100644
+index 0000000..98cb118
+--- /dev/null
++++ b/src/gct/providers/replay.py
+@@ -0,0 +1,230 @@
++"""Record a provider's real responses once; replay them for free ever after.
++
++PROTOTYPE. Two wrappers per interface, above the provider seam (ADR 0013), so they work for any
++provider: `Recording*` calls the wrapped provider and writes what it said to a cassette (a JSONL
++file meant to be committed); `Replay*` answers from the cassette and never touches a network.
++
++The cache key is a hash of the request itself: the model id plus the exact messages (or text).
++The messages contain the system prompt and the retrieved, chunked, labelled sources, so a change
++to the prompt, the model id, the chunking, the retrieval or the corpus changes the key. Replay
++then has no answer and raises `ReplayMiss`, saying which of those moved. Nothing can change what
++the model is asked without a fresh recording being made on purpose.
++
++One request may hold several responses, replayed in order: the grounder retries with identical
++messages, and a recording made with repeats keeps every sample.
++"""
++
++from __future__ import annotations
++
++import base64
++import hashlib
++import json
++import struct
++from collections import defaultdict
++from collections.abc import Sequence
++from pathlib import Path
++
++from gct.providers.base import Embeddings, Generation, Message
++
++GENERATE = "generate"
++EMBED = "embed"
++
++
++class ReplayMiss(RuntimeError):
++    """Replay was asked something the cassette does not hold. A re-record is needed."""
++
++
++def _sha(value: object) -> str:
++    canonical = json.dumps(value, sort_keys=True, ensure_ascii=False, separators=(",", ":"))
++    return hashlib.sha256(canonical.encode()).hexdigest()
++
++
++def generate_key(model_id: str, messages: Sequence[Message]) -> str:
++    return _sha([GENERATE, model_id, [[m["role"], m["content"]] for m in messages]])
++
++
++def embed_key(model_id: str, dim: int, text: str) -> str:
++    return _sha([EMBED, model_id, dim, text])
++
++
++def _pack(vector: Sequence[float]) -> str:
++    return base64.b64encode(struct.pack(f"<{len(vector)}f", *vector)).decode()
++
++
++def _unpack(packed: str) -> list[float]:
++    raw = base64.b64decode(packed)
++    return list(struct.unpack(f"<{len(raw) // 4}f", raw))
++
++
++class Cassette:
++    """Recorded responses, one JSON object per line, in the order they were recorded."""
++
++    def __init__(self, path: str | Path) -> None:
++        self.path = Path(path)
++        self.entries: list[dict] = []
++        if self.path.exists():
++            lines = self.path.read_text(encoding="utf-8").splitlines()
++            self.entries = [json.loads(line) for line in lines if line.strip()]
++        self._by_key: dict[str, list[dict]] = defaultdict(list)
++        for entry in self.entries:
++            self._by_key[entry["key"]].append(entry)
++        self._cursor: dict[str, int] = defaultdict(int)
++
++    def add(self, entry: dict) -> None:
++        self.entries.append(entry)
++        self._by_key[entry["key"]].append(entry)
++
++    def has(self, key: str) -> bool:
++        return key in self._by_key
++
++    def first(self, key: str) -> dict | None:
++        held = self._by_key.get(key)
++        return held[0] if held else None
++
++    def next(self, key: str) -> dict | None:
++        held = self._by_key.get(key, [])
++        position = self._cursor[key]
++        if position >= len(held):
++            return None
++        self._cursor[key] = position + 1
++        return held[position]
++
++    def of_kind(self, kind: str) -> list[dict]:
++        return [entry for entry in self.entries if entry["kind"] == kind]
++
++    def save(self) -> None:
++        self.path.parent.mkdir(parents=True, exist_ok=True)
++        lines = [json.dumps(e, sort_keys=True, ensure_ascii=False) for e in self.entries]
++        self.path.write_text("\n".join(lines) + "\n", encoding="utf-8")
++
++
++class RecordingGeneration:
++    def __init__(self, inner: Generation, cassette: Cassette) -> None:
++        self._inner = inner
++        self._cassette = cassette
++
++    @property
++    def model_id(self) -> str:
++        return self._inner.model_id
++
++    def generate(self, messages: Sequence[Message]) -> str:
++        response = self._inner.generate(messages)
++        self._cassette.add(
++            {
++                "kind": GENERATE,
++                "key": generate_key(self.model_id, messages),
++                "model_id": self.model_id,
++                "system_sha": _sha([m["content"] for m in messages if m["role"] == "system"]),
++                "response": response,
++            }
++        )
++        return response
++
++
++class ReplayGeneration:
++    """`misses` is how a caller finds out: the grounder turns ANY exception from `generate` into
++    a returned ERROR state (ADR 0016), so a `ReplayMiss` raised here never reaches the caller as
++    an exception. A replay run must end with `misses == []`.
++    """
++
++    def __init__(self, model_id: str, cassette: Cassette) -> None:
++        self._model_id = model_id
++        self._cassette = cassette
++        self.misses: list[str] = []
++
++    @property
++    def model_id(self) -> str:
++        return self._model_id
++
++    def generate(self, messages: Sequence[Message]) -> str:
++        key = generate_key(self._model_id, messages)
++        entry = self._cassette.next(key)
++        if entry is not None:
++            return entry["response"]
++        self.misses.append(self._why(key, messages))
++        raise ReplayMiss(self.misses[-1])
++
++    def _why(self, key: str, messages: Sequence[Message]) -> str:
++        recorded = self._cassette.of_kind(GENERATE)
++        remedy = f"Re-record {self._cassette.path} against the real models, and commit it."
++        if self._cassette.has(key):
++            return (
++                "this exact request was made more times than it was recorded (an extra retry, "
++                f"or more repeats than the recording holds). {remedy}"
++            )
++        models = sorted({entry["model_id"] for entry in recorded})
++        if self._model_id not in models:
++            return (
++                f"no answer was ever recorded from the model {self._model_id!r}; the recording "
++                f"holds {models}. If the model id was changed on purpose: {remedy}"
++            )
++        system_sha = _sha([m["content"] for m in messages if m["role"] == "system"])
++        if system_sha not in {entry["system_sha"] for entry in recorded}:
++            return f"the system prompt differs from the one that was recorded. {remedy}"
++        return (
++            "the question or the sources handed to the model differ from what was recorded "
++            f"(chunking, retrieval, k, embeddings or the corpus changed). {remedy}"
++        )
++
++
++class RecordingEmbeddings:
++    """Returns the vector exactly as replay will return it (32-bit), so both runs rank alike."""
++
++    def __init__(self, inner: Embeddings, cassette: Cassette) -> None:
++        self._inner = inner
++        self._cassette = cassette
++
++    @property
++    def model_id(self) -> str:
++        return self._inner.model_id
++
++    @property
++    def dim(self) -> int:
++        return self._inner.dim
++
++    def embed(self, texts: Sequence[str]) -> list[list[float]]:
++        out: list[list[float]] = []
++        for text, vector in zip(texts, self._inner.embed(texts), strict=True):
++            key = embed_key(self.model_id, self.dim, text)
++            packed = _pack(vector)
++            if not self._cassette.has(key):
++                self._cassette.add(
++                    {"kind": EMBED, "key": key, "model_id": self.model_id, "vector": packed}
++                )
++            out.append(_unpack(packed))
++        return out
++
++
++class ReplayEmbeddings:
++    def __init__(self, model_id: str, dim: int, cassette: Cassette) -> None:
++        self._model_id = model_id
++        self._dim = dim
++        self._cassette = cassette
++
++    @property
++    def model_id(self) -> str:
++        return self._model_id
++
++    @property
++    def dim(self) -> int:
++        return self._dim
++
++    def embed(self, texts: Sequence[str]) -> list[list[float]]:
++        out: list[list[float]] = []
++        for text in texts:
++            entry = self._cassette.first(embed_key(self._model_id, self._dim, text))
++            if entry is None:
++                models = sorted({e["model_id"] for e in self._cassette.of_kind(EMBED)})
++                why = (
++                    f"no vector was ever recorded from the model {self._model_id!r}; the "
++                    f"recording holds {models}"
++                    if self._model_id not in models
++                    else "this text was never embedded in the recording (the chunking, the "
++                    "corpus or a question changed)"
++                )
++                raise ReplayMiss(
++                    f"{why}: {text[:60]!r}. Re-record {self._cassette.path} against the real "
++                    "models, and commit it."
++                )
++            out.append(_unpack(entry["vector"]))
++        return out
+diff --git a/tests/gct/providers/test_replay.py b/tests/gct/providers/test_replay.py
+new file mode 100644
+index 0000000..d09b100
+--- /dev/null
++++ b/tests/gct/providers/test_replay.py
+@@ -0,0 +1,248 @@
++"""Record with the free stand-in models, replay with no model at all, through the real read path.
++
++What this proves is the mechanism: the same wrappers go round the real OpenAI providers
++unchanged. Each test that expects `ReplayMiss` is one of the changes that today passes the
++merge check unnoticed.
++"""
++
++from __future__ import annotations
++
++import uuid
++
++import pytest
++
++from gct.ask import ask
++from gct.classes import create_class
++from gct.eval.scoring import EvalRecord, compute_metrics
++from gct.grounder import answer as grounder
++from gct.grounder.answer import GrounderState
++from gct.ingest.chunk import chunk_units
++from gct.ingest.index import index_file
++from gct.ingest.parse import ParsedUnit
++from gct.ingest.pipeline import PreparedChunk
++from gct.providers.replay import (
++    Cassette,
++    RecordingEmbeddings,
++    RecordingGeneration,
++    ReplayEmbeddings,
++    ReplayGeneration,
++    ReplayMiss,
++)
++from gct.providers.standin import StandInEmbeddings, StandInGeneration
++
++PAGES = [
++    ParsedUnit(
++        "Residence time is how long, on average, a water molecule stays in one part of the "
++        "cycle. In the atmosphere it is about nine days. In a large lake it can be years.",
++        "hydrology-lecture-01.pdf",
++        1,
++    ),
++    ParsedUnit(
++        "A watershed is the area of land that drains to a single outlet. Ridges divide one "
++        "watershed from the next.",
++        "hydrology-lecture-01.pdf",
++        2,
++    ),
++    ParsedUnit(
++        "Groundwater is water held in the pores of rock and sediment below the surface. An "
++        "aquifer is a body of rock porous enough to store useful quantities of it.",
++        "hydrology-lecture-02.pdf",
++        1,
++    ),
++    ParsedUnit(
++        "Water policy: a basin cannot be budgeted without knowing what flows in and out of it. "
++        "Where withdrawals exceed recharge, water tables fall and wells go dry.",
++        "policy-slides.pptx",
++        3,
++    ),
++]
++
++QUESTIONS = [
++    ("in-1", "How long is residence time in the atmosphere?", "answer"),
++    ("in-2", "What is a watershed, and what divides one watershed from the next?", "answer"),
++    ("in-3", "What is an aquifer in groundwater?", "answer"),
++    ("out-1", "What were the main causes of the French Revolution?", "refuse"),
++    ("out-2", "How does photosynthesis convert sunlight into sugar?", "refuse"),
++]
++
++
++def build_class(db, embedder, name, **chunking):
++    conn, owner_id, _ = db
++    conn.commit()  # a read on this connection leaves a transaction open; writers refuse that
++    class_id = create_class(conn, owner_id=owner_id, name=name)
++    chunks = chunk_units(PAGES, **chunking)
++    vectors = embedder.embed([chunk.text for chunk in chunks])
++    by_file: dict[str, list[PreparedChunk]] = {}
++    for chunk, vector in zip(chunks, vectors, strict=True):
++        by_file.setdefault(chunk.file, []).append(
++            PreparedChunk(
++                text=chunk.text,
++                file=chunk.file,
++                page_or_slide=chunk.page_or_slide,
++                embedding=vector,
++                owner_id=owner_id,
++                class_id=class_id,
++                embedding_model_id=embedder.model_id,
++            )
++        )
++    for filename, prepared in by_file.items():
++        index_file(
++            conn,
++            file_id=str(uuid.uuid4()),
++            filename=filename,
++            owner_id=owner_id,
++            class_id=class_id,
++            chunks=prepared,
++        )
++    return class_id
++
++
++def run_suite(db, class_id, embedder, generator):
++    conn, owner_id, _ = db
++    return {
++        qid: ask(conn, question, owner_id, class_id, embedder=embedder, generator=generator)
++        for qid, question, _ in QUESTIONS
++    }
++
++
++def summary(results):
++    return {
++        qid: (
++            r.result.state,
++            r.result.answer_prose,
++            [(c.file, c.page_or_slide) for c in r.result.citations],
++            [(c.file, c.page_or_slide, round(c.score, 5)) for c in r.retrieved],
++        )
++        for qid, r in results.items()
++    }
++
++
++@pytest.fixture
++def recorded(db, tmp_path):
++    """A cassette recorded from the stand-in models, and what the suite returned while recording."""
++    cassette = Cassette(tmp_path / "eval.jsonl")
++    embedder = RecordingEmbeddings(StandInEmbeddings(), cassette)
++    generator = RecordingGeneration(StandInGeneration(), cassette)
++    results = run_suite(db, build_class(db, embedder, "recorded"), embedder, generator)
++    cassette.save()
++    return cassette.path, summary(results)
++
++
++def replayers(path, *, embed_model=StandInEmbeddings.model_id, model=StandInGeneration.model_id):
++    cassette = Cassette(path)
++    return (
++        ReplayEmbeddings(embed_model, StandInEmbeddings.dim, cassette),
++        ReplayGeneration(model, cassette),
++    )
++
++
++def test_replay_reproduces_the_recorded_run_with_no_model_present(db, recorded):
++    path, recorded_summary = recorded
++    embedder, generator = replayers(path)
++
++    replayed = run_suite(db, build_class(db, embedder, "replayed"), embedder, generator)
++
++    assert summary(replayed) == recorded_summary
++    assert generator.misses == []
++    metrics = compute_metrics(
++        [EvalRecord(expectation, replayed[qid].result.state) for qid, _, expectation in QUESTIONS]
++    )
++    assert metrics.grounded_pass_rate == 1.0
++    assert metrics.correct_refusal_rate == 1.0
++
++
++def test_a_misspelled_generation_model_id_cannot_replay(db, recorded):
++    path, _ = recorded
++    embedder, generator = replayers(path, model="standin-quoted-sentense-v1")
++    class_id = build_class(db, embedder, "replayed")
++
++    result = ask(db[0], QUESTIONS[0][1], db[1], class_id, embedder=embedder, generator=generator)
++
++    assert result.result.state is GrounderState.ERROR
++    assert "no answer was ever recorded from the model" in generator.misses[0]
++
++
++def test_a_misspelled_embedding_model_id_cannot_replay(db, recorded):
++    path, _ = recorded
++    embedder, _ = replayers(path, embed_model="standin-hashed-wrods-v1")
++
++    with pytest.raises(ReplayMiss, match="no vector was ever recorded from the model"):
++        build_class(db, embedder, "replayed")
++
++
++def test_an_edited_system_prompt_cannot_replay(db, recorded, monkeypatch):
++    path, _ = recorded
++    embedder, generator = replayers(path)
++    class_id = build_class(db, embedder, "replayed")
++    monkeypatch.setattr(
++        grounder,
++        "_SYSTEM_PROMPT",
++        grounder._SYSTEM_PROMPT.replace(
++            "Never add facts from outside them", "You may add well-known facts from outside them"
++        ),
++    )
++
++    result = ask(db[0], QUESTIONS[0][1], db[1], class_id, embedder=embedder, generator=generator)
++
++    assert result.result.state is GrounderState.ERROR
++    assert "the system prompt differs" in generator.misses[0]
++
++
++def test_a_changed_chunk_window_cannot_replay(db, recorded):
++    path, _ = recorded
++    embedder, _ = replayers(path)
++
++    with pytest.raises(ReplayMiss, match="never embedded in the recording"):
++        build_class(db, embedder, "replayed", size=12, overlap=2)
++
++
++def test_a_changed_k_cannot_replay(db, recorded):
++    path, _ = recorded
++    embedder, generator = replayers(path)
++    class_id = build_class(db, embedder, "replayed")
++
++    conn, owner_id, _ = db
++    result = ask(
++        conn, QUESTIONS[0][1], owner_id, class_id, embedder=embedder, generator=generator, k=2
++    )
++
++    assert result.result.state is GrounderState.ERROR
++    assert "the sources handed to the model differ" in generator.misses[0]
++
++
++def test_repeated_identical_requests_replay_in_recorded_order(tmp_path):
++    class Flaky:
++        model_id = "m"
++
++        def __init__(self):
++            self.replies = ["no marker at all", "Fine [S1].\nCOVERAGE: complete"]
++
++        def generate(self, messages):
++            return self.replies.pop(0)
++
++    cassette = Cassette(tmp_path / "c.jsonl")
++    recorder = RecordingGeneration(Flaky(), cassette)
++    messages = [{"role": "system", "content": "s"}, {"role": "user", "content": "u"}]
++    recorder.generate(messages), recorder.generate(messages)
++    cassette.save()
++
++    replay = ReplayGeneration("m", Cassette(cassette.path))
++
++    assert replay.generate(messages) == "no marker at all"
++    assert replay.generate(messages) == "Fine [S1].\nCOVERAGE: complete"
++    with pytest.raises(ReplayMiss, match="more times than it was recorded"):
++        replay.generate(messages)
++
++
++def test_the_recorded_suite_is_what_the_stand_ins_should_produce(recorded):
++    _, recorded_summary = recorded
++
++    states = {qid: row[0] for qid, row in recorded_summary.items()}
++
++    assert states == {
++        "in-1": GrounderState.GROUNDED,
++        "in-2": GrounderState.GROUNDED,
++        "in-3": GrounderState.GROUNDED,
++        "out-1": GrounderState.REFUSAL,
++        "out-2": GrounderState.REFUSAL,
++    }

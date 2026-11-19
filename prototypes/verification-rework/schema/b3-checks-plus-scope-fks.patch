@@ -1,0 +1,302 @@
+diff --git a/migrations/0004_cross_column_checks.sql b/migrations/0004_cross_column_checks.sql
+new file mode 100644
+index 0000000..4447a4a
+--- /dev/null
++++ b/migrations/0004_cross_column_checks.sql
+@@ -0,0 +1,20 @@
++-- EXPERIMENT (b): states the code argues are unreachable become states the schema refuses.
++-- Idempotent like 0001-0003 (drop-if-exists then add).
++
++-- files: a failure reason exists exactly when the file is failed.
++alter table files drop constraint if exists files_reason_iff_failed;
++alter table files add constraint files_reason_iff_failed
++    check ((status = 'failed') = (failed_reason is not null));
++
++-- jobs: a processing job has a lease (token + deadline); a queued job has no deadline.
++alter table jobs drop constraint if exists jobs_processing_has_lease;
++alter table jobs add constraint jobs_processing_has_lease
++    check (state <> 'processing' or (lease_token is not null and leased_until is not null));
++alter table jobs drop constraint if exists jobs_queued_has_no_deadline;
++alter table jobs add constraint jobs_queued_has_no_deadline
++    check (state <> 'queued' or leased_until is null);
++alter table jobs drop constraint if exists jobs_attempts_nonnegative;
++alter table jobs add constraint jobs_attempts_nonnegative check (attempts >= 0);
++
++-- jobs: one job per file - what `_bury`'s lease-guard argument "rests on, and the schema does not" say.
++create unique index if not exists jobs_one_per_file on jobs (file_id);
+diff --git a/migrations/0005_scope_agreement.sql b/migrations/0005_scope_agreement.sql
+new file mode 100644
+index 0000000..0aeb92d
+--- /dev/null
++++ b/migrations/0005_scope_agreement.sql
+@@ -0,0 +1,22 @@
++-- EXPERIMENT (b3): a row's owner/class cannot disagree with its parent's.
++-- files must live in a class of the SAME owner; chunks and jobs must carry their file's scope.
++create unique index if not exists classes_id_owner_key on classes (class_id, owner_id);
++create unique index if not exists files_id_scope_key on files (file_id, owner_id, class_id);
++
++alter table files drop constraint if exists files_class_same_owner_fk;
++alter table files add constraint files_class_same_owner_fk
++    foreign key (class_id, owner_id) references classes (class_id, owner_id);
++
++alter table chunks drop constraint if exists chunks_file_scope_fk;
++alter table chunks add constraint chunks_file_scope_fk
++    foreign key (file_id, owner_id, class_id) references files (file_id, owner_id, class_id)
++    on update cascade;
++
++alter table jobs drop constraint if exists jobs_file_scope_fk;
++alter table jobs add constraint jobs_file_scope_fk
++    foreign key (file_id, owner_id, class_id) references files (file_id, owner_id, class_id)
++    on update cascade;
++
++-- provenance is a positive page/slide NUMBER (ADR 0019 never-span), not free text
++alter table chunks drop constraint if exists chunks_page_is_a_number;
++alter table chunks add constraint chunks_page_is_a_number check (page_or_slide ~ '^[1-9][0-9]*$');
+diff --git a/src/gct/ingest/index.py b/src/gct/ingest/index.py
+index 04d6542..4707bf0 100644
+--- a/src/gct/ingest/index.py
++++ b/src/gct/ingest/index.py
+@@ -270,6 +270,7 @@ def index_file(
+                 owner_id   = excluded.owner_id,
+                 class_id   = excluded.class_id,
+                 status     = 'ready',
++                failed_reason = null,
+                 updated_at = now()
+             """,
+             {"file_id": file_id, "owner_id": owner_id, "class_id": class_id, "filename": filename},
+diff --git a/tests/gct/api/test_files_router.py b/tests/gct/api/test_files_router.py
+index 97727d4..48f5b85 100644
+--- a/tests/gct/api/test_files_router.py
++++ b/tests/gct/api/test_files_router.py
+@@ -483,21 +483,6 @@ def test_the_too_long_advice_names_the_bound_it_was_refused_by():
+     assert f"{MAX_INGEST_WORDS:,}-word" in files_router._FAILED_MESSAGE["too_long"]
+ 
+ 
+-def test_a_failed_row_with_no_reason_falls_back_instead_of_500(
+-    api, db_other, monkeypatch, tmp_path
+-):
+-    """The CHECK admits NULL, so `failed` with no reason is reachable, and a `KeyError` there
+-    would turn a real outcome into a 500 that tells the student nothing. The raw columns are
+-    returned beside the fallback, so nothing is hidden."""
+-    file_id = _upload_one(api, monkeypatch, tmp_path)
+-    _stamp(db_other, file_id, "failed", None)
+-
+-    body = api.client.get(f"/files/{file_id}").json()
+-
+-    assert (body["status"], body["failed_reason"]) == ("failed", None)
+-    assert body["message"] == files_router._UNKNOWN_FAILURE
+-
+-
+ def test_an_unknown_file_and_another_owners_file_are_the_same_404(
+     api, db_other, foreign_class, monkeypatch, tmp_path
+ ):
+diff --git a/tests/gct/ingest/test_index.py b/tests/gct/ingest/test_index.py
+index e900cba..a981d38 100644
+--- a/tests/gct/ingest/test_index.py
++++ b/tests/gct/ingest/test_index.py
+@@ -487,60 +487,6 @@ def test_the_refreshed_files_row_and_its_chunks_never_disagree(db, db_other, var
+             _purge(conn, second["owner_id"], file_id)
+ 
+ 
+-def test_index_file_does_not_clear_failed_reason(db, db_other):
+-    """`index_file` leaves `failed_reason` ALONE, and that is a decision, not an oversight.
+-
+-    The column has exactly one writer - `worker._bury` - and the worker also owns the CLEAR,
+-    inside its own `status = 'processing'` update at the claim. That keeps this box pure of
+-    job/queue/retry machinery (the PM-4 seam, ADR 0020) and keeps the column's set and unset
+-    halves with the same owner. Adding `failed_reason = null` to the `DO UPDATE` below would make
+-    the publisher a second writer for a column it knows nothing about, and this test is what goes
+-    red if someone "fixes" the omission.
+-
+-    Where the clear IS proven, so this test does not read as a bug being pinned:
+-    `test_the_claim_clears_the_previous_attempts_failed_reason` and
+-    `test_a_retry_that_succeeds_leaves_no_failed_reason_on_the_ready_file`, both in
+-    `tests/gct/jobs/test_worker.py`.
+-
+-    THE ROW IS SEEDED DIRECTLY, FOR CONTROL - NOT BECAUSE PRODUCTION CANNOT REACH IT. An earlier
+-    version of this docstring said the latter and #92 was the counterexample: a worker whose lease
+-    expired mid-ingest reached this function on a `('failed', <a reason>)` row with no claim of its
+-    own in between, because a second worker burys with a LIVE lease while the first is still
+-    working. #92 was resolved WITHOUT changing this statement - ADR 0030 refused that worker's
+-    publish by entitlement (`publish_guard`) instead of clearing the column here, and §3 records
+-    why. So the `("ready", "unparseable")` asserted below remains this statement's correct
+-    behavior, and is no longer a step of a live defect on the worker path. It still is one for an
+-    UNGUARDED caller, which is what this test is: passing no guard is exactly how a Slice 1 caller
+-    reaches the publish, and ADR 0030's opt-in bound is the reason that stays legal.
+-    """
+-    conn, owner_id, class_id = db
+-    conn.autocommit = True
+-    file_id = str(uuid.uuid4())
+-    conn.execute(
+-        """
+-        insert into files (file_id, owner_id, class_id, filename, status, failed_reason)
+-        values (%s::uuid, %s, %s::uuid, 'lecture.pdf', 'failed', 'unparseable')
+-        """,
+-        (file_id, owner_id, class_id),
+-    )
+-
+-    index_file(
+-        conn,
+-        file_id=file_id,
+-        filename="lecture.pdf",
+-        owner_id=owner_id,
+-        class_id=class_id,
+-        chunks=[_chunk(owner_id, class_id, "a passage", 1)],
+-    )
+-
+-    assert db_other.execute(
+-        "select status, failed_reason from files where file_id = %s::uuid", (file_id,)
+-    ).fetchone() == ("ready", "unparseable"), (
+-        "`index_file` published the file (correct) and also cleared a column it does not own "
+-        "(not correct) - the clear belongs to the worker's claim"
+-    )
+-
+-
+ def test_the_first_index_still_inserts_rather_than_updates(db, db_other):
+     """The INSERT branch is untouched by the refresh: a fresh `file_id` lands all four columns.
+ 
+@@ -816,32 +762,6 @@ def test_the_guard_is_asked_once_before_any_write_on_the_index_connection(db):
+     )
+ 
+ 
+-def test_no_guard_leaves_the_pre_92_behavior_untouched(db, db_other):
+-    """Omitting the guard publishes over a failure reason exactly as it always did (#92).
+-
+-    ADR 0030's opt-in bound, stated as a test rather than only as prose. Slice 1's direct callers
+-    pass no guard - they hold no lease and race no bury - and must not have acquired a new way to
+-    fail. It is also the exact behavior `test_index_file_does_not_clear_failed_reason` above pins
+-    from the other side: the reason survives, and the `ready` is written.
+-    """
+-    conn, owner_id, class_id = db
+-    conn.autocommit = True
+-    file_id = _seed_failed_file_with_chunks(conn, owner_id, class_id)
+-
+-    index_file(
+-        conn,
+-        file_id=file_id,
+-        filename="lecture.pdf",
+-        owner_id=owner_id,
+-        class_id=class_id,
+-        chunks=[_chunk(owner_id, class_id, "the new passage", 2)],
+-    )
+-
+-    assert db_other.execute(
+-        "select status, failed_reason from files where file_id = %s::uuid", (file_id,)
+-    ).fetchone() == ("ready", "transient_exhausted")
+-
+-
+ def test_a_raising_guard_propagates_and_publishes_nothing(db, db_other):
+     """A guard that BLOWS UP is not a guard that said yes (#92).
+ 
+diff --git a/tests/gct/jobs/test_worker.py b/tests/gct/jobs/test_worker.py
+index f0bbc81..e8e662d 100644
+--- a/tests/gct/jobs/test_worker.py
++++ b/tests/gct/jobs/test_worker.py
+@@ -2301,60 +2301,6 @@ def test_a_retry_that_succeeds_leaves_no_failed_reason_on_the_ready_file(
+     assert chunk_count > 0, "`ready` means the full chunk set is committed and queryable"
+ 
+ 
+-def test_the_claim_does_not_clear_a_reason_on_a_file_that_is_already_ready(
+-    db, db_other, tmp_path, monkeypatch
+-):
+-    """The clear is GOVERNED by `status <> 'ready'`, because it rides that one UPDATE.
+-
+-    THE SUBJECT HERE IS THE SQL'S SHAPE, AND THE ROW IS SET DIRECTLY RATHER THAN EARNED.
+-    `('ready', 'unparseable')` is what #24 removes from the SEQUENTIAL path - one attempt after
+-    another, which is every other test in this file - and #86's lease guard on `_bury` removed
+-    ONE of the two out-of-order paths that were producing it (the section at the bottom of this
+-    file drives that interleaving itself). The other - a bury by the worker that legitimately
+-    HOLDS the lease, then a publish by one whose lease expired - was closed at the publish
+-    instead, by the entitlement predicate `process_one` now hands `index_file` (#92, ADR 0030).
+-    A sequence of ticks used to earn `('ready', <a reason>)` through it and no longer does; the
+-    section at the bottom of this file drives that one too. See `_bury`'s docstring.
+-
+-    THE ROW IS STILL SET DIRECTLY, AND THE REASON IS CONTROL, NOT UNREACHABILITY. An earlier
+-    version of this docstring said no sequence of ticks earns it; a later one said none earns it
+-    with the job left CLAIMABLE. Both were false, and the second was demonstrated false the same
+-    way as the first - `_bury` commits its `files` write and calls `fail` in two separate
+-    transactions (see `_bury`), so a reaper landing in that gap leaves the reason committed and
+-    the job claimable. The subject here is one statement's SHAPE. Earning the row through a
+-    concurrency race would pin the same statement while making the test depend on an interleaving
+-    that has nothing to do with it; that interleaving is driven at the bottom of this file.
+-    What the test pins is that the clear cannot be lifted out into a second, unguarded
+-    `update files set failed_reason = null`: that version wipes the reason off a `ready` row,
+-    which is a row a zombie whose lease expired is entitled to be about to bury, and it widens
+-    the window between the two writes for no gain. Split the statement and this goes red; leave
+-    it riding the guarded UPDATE and the row is untouched.
+-
+-    The rest of the tick is the ordinary terminal path: the file is corrupt, so `_bury` runs and
+-    is itself stopped by its own identical `status <> 'ready'` guard. Both guards being present
+-    is what the last assertion reads.
+-    """
+-    conn, owner_id, class_id = db
+-    conn.autocommit = True
+-    monkeypatch.setattr(worker.time, "sleep", lambda _: None)
+-    source = write_corrupt_pdf(tmp_path / "already-published.pdf")
+-    file_id = enqueue(conn, path=source, owner_id=owner_id, class_id=class_id)
+-    conn.execute(
+-        "update files set status = 'ready', failed_reason = 'unparseable' where file_id = %s::uuid",
+-        (file_id,),
+-    )
+-
+-    assert tick(conn, FakeEmbeddings()) is True
+-
+-    assert _file_row(db_other, file_id) == ("ready", "unparseable"), (
+-        "the clear reached a `ready` row - it is not riding the guarded UPDATE any more"
+-    )
+-    (state,) = db_other.execute(
+-        "select state from jobs where file_id = %s::uuid", (file_id,)
+-    ).fetchone()
+-    assert state == "failed", "the jobs axis still records what this attempt did"
+-
+-
+ def test_a_terminal_failure_after_a_cleared_reason_writes_the_new_reason_not_the_old(
+     db, db_other, tmp_path, monkeypatch
+ ):
+diff --git a/tests/scripts/test_http_smoke.py b/tests/scripts/test_http_smoke.py
+index cf24934..86190b2 100644
+--- a/tests/scripts/test_http_smoke.py
++++ b/tests/scripts/test_http_smoke.py
+@@ -1168,8 +1168,9 @@ def test_the_files_census_counts_what_the_real_table_holds(db):
+         (owner_id, class_id, "lecture-01.pdf"),
+     ).fetchone()[0]
+     conn.execute(
+-        "insert into jobs (file_id, owner_id, class_id, state, leased_until) "
+-        "values (%s::uuid, %s, %s::uuid, 'processing', now() + interval '1 hour')",
++        "insert into jobs (file_id, owner_id, class_id, state, leased_until, lease_token) "
++        "values (%s::uuid, %s, %s::uuid, 'processing', now() + interval '1 hour', "
++        "gen_random_uuid())",
+         (file_id, owner_id, class_id),
+     )
+ 
+@@ -1321,10 +1322,15 @@ def test_the_claimable_query_counts_exactly_the_rows_the_real_worker_would_take(
+         ("processing", "now() + interval '1 hour'"),
+         ("done", None),
+     ):
++        job_file_id = conn.execute(
++            "insert into files (owner_id, class_id, filename) values (%s, %s::uuid, %s) "
++            "returning file_id::text",
++            (owner_id, class_id, f"{state}.pdf"),
++        ).fetchone()[0]
+         conn.execute(
+-            "insert into jobs (file_id, owner_id, class_id, state, leased_until) "
+-            f"values (%s::uuid, %s, %s::uuid, %s, {leased_until or 'null'})",
+-            (file_id, owner_id, class_id, state),
++            "insert into jobs (file_id, owner_id, class_id, state, leased_until, lease_token) "
++            f"values (%s::uuid, %s, %s::uuid, %s, {leased_until or 'null'}, gen_random_uuid())",
++            (job_file_id, owner_id, class_id, state),
+         )
+     conn.commit()
+ 
+@@ -1413,8 +1419,9 @@ def test_preflight_refuses_the_real_database_once_a_file_is_in_it(db, monkeypatc
+         (owner_id, class_id, "someone-elses-upload.pdf"),
+     ).fetchone()[0]
+     conn.execute(
+-        "insert into jobs (file_id, owner_id, class_id, state, leased_until) "
+-        "values (%s::uuid, %s, %s::uuid, 'processing', now() + interval '1 hour')",
++        "insert into jobs (file_id, owner_id, class_id, state, leased_until, lease_token) "
++        "values (%s::uuid, %s, %s::uuid, 'processing', now() + interval '1 hour', "
++        "gen_random_uuid())",
+         (file_id, owner_id, class_id),
+     )
+     conn.commit()

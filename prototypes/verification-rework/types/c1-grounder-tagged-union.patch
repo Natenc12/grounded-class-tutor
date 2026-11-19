@@ -1,0 +1,374 @@
+diff --git a/src/gct/api/routers/ask.py b/src/gct/api/routers/ask.py
+index d474cbe..ee926e3 100644
+--- a/src/gct/api/routers/ask.py
++++ b/src/gct/api/routers/ask.py
+@@ -51,6 +51,7 @@ from gct.grounder.answer import (
+     ERROR_KIND_PROVIDER_TRANSIENT,
+     Citation,
+     Coverage,
++    ErrorKind,
+     GrounderState,
+     Integrity,
+ )
+@@ -83,7 +84,7 @@ MAX_QUESTION_CHARS = 2000
+ # guard: `test_every_error_kind_has_a_status` derives the kind set by introspecting both producing
+ # modules and fails the moment one is added without a status here, which is what stops this map
+ # going quietly stale behind its own fallback.
+-_ERROR_STATUS = {
++_ERROR_STATUS: dict[ErrorKind, int] = {
+     ERROR_KIND_PROVIDER_TRANSIENT: 503,
+     ERROR_KIND_EMBEDDING_MISMATCH: 500,
+     ERROR_KIND_PROVIDER_TERMINAL: 500,
+@@ -114,7 +115,7 @@ _UNKNOWN_ERROR_STATUS = 500
+ # will find it. Withholding it from the client and never recording it anywhere would make that
+ # promise false. The retry count and the failing STEP that the transient sentence carried on the
+ # wire survive there too - the log line is the whole library message, unchanged.
+-_ERROR_MESSAGE_OVERRIDE = {
++_ERROR_MESSAGE_OVERRIDE: dict[ErrorKind, str] = {
+     ERROR_KIND_PROVIDER_TRANSIENT: "We could not reach the service that answers questions, or it "
+     "asked us to slow down. Nothing is wrong with your question or your materials - try again in "
+     "a moment. Whoever runs this instance can find the provider's own words in the server log.",
+@@ -364,32 +365,16 @@ def ask_question(
+ 
+     if result.state is GrounderState.ERROR:
+         kind = result.error.kind
+-        message = (
+-            _ERROR_MESSAGE_OVERRIDE.get(kind, result.error.message)
+-            if kind in _ERROR_STATUS
+-            else _UNKNOWN_ERROR_MESSAGE
+-        )
++        message = _ERROR_MESSAGE_OVERRIDE.get(kind, result.error.message)
+         if message is not result.error.message:
+-            # SUBSTITUTED, so the library's own sentence is going nowhere else. `ApiError` is a
+-            # HANDLED exception - `errors._api_error` renders it and returns - so nothing
+-            # re-raises afterwards the way an uncaught exception does, and without this line the
+-            # two sentences above would tell an operator to read a log nothing was written to.
+-            # The identity test, not `!=`, is what keeps this exact: a forwarding kind passes
+-            # `result.error.message` through unchanged and logs nothing, and a substitution that
+-            # happened to be equal to it would still be a substitution. `embedding_mismatch` is
+-            # the one such kind left - both provider kinds are substituted above - so a WARNING
+-            # here now means a provider spoke, not that any ERROR reached a client.
+             logger.warning(
+                 "POST /ask returned %s for a %s error; the message withheld from the client "
+                 "was: %s",
+-                _ERROR_STATUS.get(kind, _UNKNOWN_ERROR_STATUS),
++                _ERROR_STATUS[kind],
+                 kind,
+                 result.error.message,
+             )
+-        # `detail` stays null: the envelope documents it as optional STRUCTURE, and putting the
+-        # human sentence there would hand the first client to parse it prose where the schema
+-        # promised shape (`files.py` makes the same call, for the same reason).
+-        raise ApiError(_ERROR_STATUS.get(kind, _UNKNOWN_ERROR_STATUS), kind, message)
++        raise ApiError(_ERROR_STATUS[kind], kind, message)
+ 
+     return AskResponse(
+         state=result.state,
+diff --git a/src/gct/ask.py b/src/gct/ask.py
+index 27ce40e..0b19379 100644
+--- a/src/gct/ask.py
++++ b/src/gct/ask.py
+@@ -27,11 +27,10 @@ import psycopg
+ 
+ from gct.grounder.answer import (
+     ERROR_KIND_PROVIDER_TRANSIENT,
+-    Coverage,
++    ErrorKind,
++    Failed,
+     GrounderError,
+     GrounderResult,
+-    GrounderState,
+-    Integrity,
+     answer,
+ )
+ from gct.providers.base import Embeddings, Generation, TransientEmbeddingError
+@@ -48,7 +47,7 @@ from gct.retriever.retrieve import (
+ # A library caller switches on `state`; over HTTP this kind is a 500
+ # (`gct.api.routers.ask._ERROR_STATUS`), and telemetry uses it to tell a misconfigured corpus
+ # (re-index needed) from a flaky provider (retry might help).
+-ERROR_KIND_EMBEDDING_MISMATCH = "embedding_mismatch"
++ERROR_KIND_EMBEDDING_MISMATCH: ErrorKind = "embedding_mismatch"
+ 
+ 
+ @dataclass(frozen=True)
+@@ -90,25 +89,8 @@ class AskResult:
+     retrieval_ran: bool = True
+ 
+ 
+-def _retrieval_error(kind: str, message: str) -> GrounderResult:
+-    """A retrieval-side failure, shaped as the Grounder's transport-level ERROR (ADR 0016).
+-
+-    Field-for-field the same shape as `answer.py`'s private `_error()` - all six, for the reasons
+-    documented there.
+-
+-    A local twin rather than an import of another module's underscore-private helper: that would
+-    make its internals our dependency, and this is a handful of literal fields. If the ERROR shape
+-    changes, both sites change together - forced by `TestErrorShapeTwin` in `tests/gct/ask/`, which
+-    exists because the per-suite field assertions did NOT force it.
+-    """
+-    return GrounderResult(
+-        state=GrounderState.ERROR,
+-        answer_prose=None,
+-        citations=[],
+-        coverage=Coverage(complete=False, gaps=[]),
+-        integrity=Integrity(ok=True, reasons=[]),
+-        error=GrounderError(kind=kind, message=message),
+-    )
++def _retrieval_error(kind: ErrorKind, message: str) -> GrounderResult:
++    return Failed(error=GrounderError(kind=kind, message=message))
+ 
+ 
+ def ask(
+diff --git a/src/gct/grounder/answer.py b/src/gct/grounder/answer.py
+index 2045bf8..d2f1b26 100644
+--- a/src/gct/grounder/answer.py
++++ b/src/gct/grounder/answer.py
+@@ -37,8 +37,9 @@ from __future__ import annotations
+ 
+ import re
+ from collections.abc import Sequence
+-from dataclasses import dataclass
++from dataclasses import dataclass, field
+ from enum import Enum
++from typing import Literal
+ 
+ from gct.providers.base import Generation, Message, TransientGenerationError
+ from gct.retriever.retrieve import RetrievedChunk
+@@ -52,8 +53,9 @@ MAX_GENERATION_ATTEMPTS = 2
+ # status and what the screen says (`gct.api.routers.ask._ERROR_STATUS`; ADR 0015 ->
+ # *Answer-surface treatment*): a flaky provider (retried, still failed) is a 503 worth trying
+ # again, a misconfigured one (never worth retrying) is a 500 that is not the student's fault.
+-ERROR_KIND_PROVIDER_TRANSIENT = "provider_transient"
+-ERROR_KIND_PROVIDER_TERMINAL = "provider_terminal"
++ErrorKind = Literal["provider_transient", "provider_terminal", "embedding_mismatch"]
++ERROR_KIND_PROVIDER_TRANSIENT: ErrorKind = "provider_transient"
++ERROR_KIND_PROVIDER_TERMINAL: ErrorKind = "provider_terminal"
+ 
+ 
+ class GrounderState(str, Enum):
+@@ -120,25 +122,77 @@ class Integrity:
+ class GrounderError:
+     """Transport-level failure detail. Populated ONLY for state=ERROR (ADR 0016)."""
+ 
+-    kind: str
++    kind: ErrorKind
+     message: str
+ 
+ 
++_INTEGRITY_OK = Integrity(ok=True, reasons=[])
++_NO_COVERAGE = Coverage(complete=False, gaps=[])
++
++
+ @dataclass(frozen=True)
+-class GrounderResult:
+-    """What the Grounder returns - the shape the API adapter and eval runner consume.
++class Grounded:
++    """Whole question answered from the sources. Prose and citations are REQUIRED."""
++
++    answer_prose: str
++    citations: list[Citation]
++    coverage: Coverage
++    state: Literal[GrounderState.GROUNDED] = field(default=GrounderState.GROUNDED, init=False)
++    integrity: Integrity = field(default=_INTEGRITY_OK, init=False)
++    error: None = field(default=None, init=False)
++
++
++@dataclass(frozen=True)
++class Partial:
++    """Part answered, gaps listed in `coverage`."""
++
++    answer_prose: str
++    citations: list[Citation]
++    coverage: Coverage
++    state: Literal[GrounderState.PARTIAL] = field(default=GrounderState.PARTIAL, init=False)
++    integrity: Integrity = field(default=_INTEGRITY_OK, init=False)
++    error: None = field(default=None, init=False)
++
++
++@dataclass(frozen=True)
++class Refusal:
++    """Nothing supported. Cannot carry prose or citations - there is no field to put them in."""
++
++    coverage: Coverage
++    state: Literal[GrounderState.REFUSAL] = field(default=GrounderState.REFUSAL, init=False)
++    answer_prose: None = field(default=None, init=False)
++    citations: list[Citation] = field(default_factory=list, init=False)
++    integrity: Integrity = field(default=_INTEGRITY_OK, init=False)
++    error: None = field(default=None, init=False)
+ 
+-    PUBLIC CONTRACT (grounder.md Sec.Interface); issue #8's `ask()` binds to it. `state` is
+-    derived (see `_decide`) and callers switch on it. `answer_prose` is None whenever there is no
+-    prose to show - always for REFUSAL and ERROR.
+-    """
+ 
+-    state: GrounderState
++@dataclass(frozen=True)
++class IntegrityFlagged:
++    """The model's output broke the citation contract; `integrity.reasons` says how."""
++
+     answer_prose: str | None
+     citations: list[Citation]
+     coverage: Coverage
+     integrity: Integrity
+-    error: GrounderError | None
++    state: Literal[GrounderState.INTEGRITY_FLAGGED] = field(
++        default=GrounderState.INTEGRITY_FLAGGED, init=False
++    )
++    error: None = field(default=None, init=False)
++
++
++@dataclass(frozen=True)
++class Failed:
++    """Transport-level ERROR. The ONLY variant with an error, and it cannot be built without one."""
++
++    error: GrounderError
++    state: Literal[GrounderState.ERROR] = field(default=GrounderState.ERROR, init=False)
++    answer_prose: None = field(default=None, init=False)
++    citations: list[Citation] = field(default_factory=list, init=False)
++    coverage: Coverage = field(default=_NO_COVERAGE, init=False)
++    integrity: Integrity = field(default=_INTEGRITY_OK, init=False)
++
++
++GrounderResult = Grounded | Partial | Refusal | IntegrityFlagged | Failed
+ 
+ 
+ # --- The prompt (PROVISIONAL) ----------------------------------------------------------------
+@@ -326,7 +380,7 @@ def _parse(raw: str) -> _ParsedAnswer:
+     )
+ 
+ 
+-def _validate(parsed: _ParsedAnswer, n_sources: int) -> list[str]:
++def _validate(parsed: _ParsedAnswer, n_sources: int) -> Coverage | list[str]:
+     """⑤ The V1-STRUCTURAL ladder (ADR 0015). Returns failure reasons; empty means it passed.
+ 
+     Exactly three rungs, and the line under them is the honest V1/V3 split:
+@@ -364,7 +418,9 @@ def _validate(parsed: _ParsedAnswer, n_sources: int) -> list[str]:
+     elif parsed.coverage is None:
+         reasons.append("coverage marker missing or unparseable")
+ 
+-    return reasons
++    if reasons or parsed.coverage is None:
++        return reasons
++    return parsed.coverage
+ 
+ 
+ def _resolve(ordinals: Sequence[int], sources: dict[int, RetrievedChunk]) -> list[Citation]:
+@@ -389,7 +445,7 @@ def _resolve(ordinals: Sequence[int], sources: dict[int, RetrievedChunk]) -> lis
+     ]
+ 
+ 
+-def _decide(parsed: _ParsedAnswer, citations: list[Citation]) -> GrounderResult:
++def _decide(prose: str, coverage: Coverage, citations: list[Citation]) -> GrounderResult:
+     """⑧ Map a VALIDATED attempt onto its state (grounder.md decision table, rows 3-5).
+ 
+     Rows 1-2 (ERROR / INTEGRITY_FLAGGED) are decided by `answer()`, which is the only place that
+@@ -408,30 +464,11 @@ def _decide(parsed: _ParsedAnswer, citations: list[Citation]) -> GrounderResult:
+     AS THE MODEL WROTE IT rather than rewriting `complete` to False, so telemetry sees the actual
+     output; if the eval set shows this happening often, it is a prompt-tuning signal.
+     """
+-    # Non-None by construction: `_validate` fails any attempt whose marker didn't parse, and only
+-    # a passing attempt reaches here. If a future edit drops that rung, this raises AttributeError
+-    # on the next line - loud and immediate, which is the right direction for a fail-safe box.
+-    coverage = parsed.coverage
+-
+     if not citations:
+-        return GrounderResult(
+-            state=GrounderState.REFUSAL,
+-            answer_prose=None,  # REFUSAL carries no prose, by contract
+-            citations=[],
+-            coverage=coverage,
+-            integrity=Integrity(ok=True, reasons=[]),
+-            error=None,
+-        )
+-
+-    state = GrounderState.GROUNDED if coverage.complete else GrounderState.PARTIAL
+-    return GrounderResult(
+-        state=state,
+-        answer_prose=parsed.prose or None,
+-        citations=citations,
+-        coverage=coverage,
+-        integrity=Integrity(ok=True, reasons=[]),
+-        error=None,
+-    )
++        return Refusal(coverage=coverage)
++    if coverage.complete:
++        return Grounded(answer_prose=prose, citations=citations, coverage=coverage)
++    return Partial(answer_prose=prose, citations=citations, coverage=coverage)
+ 
+ 
+ def _empty_retrieval_refusal() -> GrounderResult:
+@@ -443,20 +480,14 @@ def _empty_retrieval_refusal() -> GrounderResult:
+     class is empty or un-ingested, NOT "nothing matched well enough" - see the Retriever's
+     no-floor consequence. It must decline cleanly rather than improvise.
+     """
+-    return GrounderResult(
+-        state=GrounderState.REFUSAL,
+-        answer_prose=None,
+-        citations=[],
++    return Refusal(
+         coverage=Coverage(
+-            complete=False,
+-            gaps=["no course material was retrieved for this question"],
+-        ),
+-        integrity=Integrity(ok=True, reasons=[]),
+-        error=None,
++            complete=False, gaps=["no course material was retrieved for this question"]
++        )
+     )
+ 
+ 
+-def _error(kind: str, message: str) -> GrounderResult:
++def _error(kind: ErrorKind, message: str) -> GrounderResult:
+     """A transport-level ERROR - distinct from REFUSAL, always (ADR 0016).
+ 
+     No prose, no citations, and `coverage.complete=False` with no gaps: we make NO claim about
+@@ -473,14 +504,7 @@ def _error(kind: str, message: str) -> GrounderResult:
+     `ask._retrieval_error` builds this identical shape on the retrieval side and points here for
+     every field - keep the two docstrings in sync with `TestErrorShapeTwin`, which compares all six.
+     """
+-    return GrounderResult(
+-        state=GrounderState.ERROR,
+-        answer_prose=None,
+-        citations=[],
+-        coverage=Coverage(complete=False, gaps=[]),
+-        integrity=Integrity(ok=True, reasons=[]),
+-        error=GrounderError(kind=kind, message=message),
+-    )
++    return Failed(error=GrounderError(kind=kind, message=message))
+ 
+ 
+ def _integrity_flagged(
+@@ -496,13 +520,11 @@ def _integrity_flagged(
+     Coverage falls back to `complete=False` when the marker itself was unparseable: with no
+     trustworthy statement about what was covered, "not complete" is the only safe default.
+     """
+-    return GrounderResult(
+-        state=GrounderState.INTEGRITY_FLAGGED,
++    return IntegrityFlagged(
+         answer_prose=parsed.prose or None,
+         citations=citations,
+-        coverage=parsed.coverage or Coverage(complete=False, gaps=[]),
++        coverage=parsed.coverage or _NO_COVERAGE,
+         integrity=Integrity(ok=False, reasons=reasons),
+-        error=None,
+     )
+ 
+ 
+@@ -584,13 +606,13 @@ def answer(
+ 
+         # 4/5. Parse, then validate structurally.
+         parsed = _parse(raw)
+-        reasons = _validate(parsed, len(sources))
+-        if not reasons:
++        verdict = _validate(parsed, len(sources))
++        if isinstance(verdict, Coverage):
+             # 7/8. Resolve and decide - the only path to GROUNDED / PARTIAL / REFUSAL.
+-            return _decide(parsed, _resolve(parsed.ordinals, sources))
++            return _decide(parsed.prose, verdict, _resolve(parsed.ordinals, sources))
+ 
+         # 6. Structural failure: remember it and retry (if the budget allows).
+-        last_parsed, last_reasons = parsed, reasons
++        last_parsed, last_reasons = parsed, verdict
+         last_transient = None
+ 
+     # Budget spent. The LAST attempt decides which failure we report (see the docstring).

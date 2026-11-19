@@ -1,0 +1,300 @@
+diff --git a/src/gct/grounder/quotes.py b/src/gct/grounder/quotes.py
+new file mode 100644
+index 0000000..d364a1a
+--- /dev/null
++++ b/src/gct/grounder/quotes.py
+@@ -0,0 +1,166 @@
++"""Verbatim-quote verification: a citation must come with words that are really on that page.
++
++PROTOTYPE. The model ends its reply with an evidence block, one line per supporting quote:
++
++    EVIDENCE:
++    [S1] "exact words copied from source 1"
++    [S3] "exact words copied ... from source 3"
++
++Code then checks, with no model, that each quote is a run of consecutive words in the source it
++is attributed to. A quote that is not there fails; a quote that is there but in a DIFFERENT
++source is named as such. What the student is shown is cut from the stored source text at the
++matched span, never the model's own string, so displayed evidence has never passed through a
++model.
++
++This does not prove the prose means what the quote says. It narrows what is left to check from
++"does this 250-word chunk support this answer" to "does this sentence say that".
++"""
++
++from __future__ import annotations
++
++import re
++import unicodedata
++from collections.abc import Mapping, Sequence
++from dataclasses import dataclass
++
++MIN_QUOTE_WORDS = 4
++
++_EVIDENCE_HEADER_RE = re.compile(r"^[ \t]*EVIDENCE[ \t]*:[ \t]*$", re.IGNORECASE | re.M)
++_EVIDENCE_LINE_RE = re.compile(r'^\[S(?P<ordinal>\d+)\][ \t]*["“](?P<quote>.+)["”]$')
++_WORD_RE = re.compile(r"[^\W_]+")
++_ELLIPSIS_RE = re.compile(r"\.{3,}|…")
++
++
++@dataclass(frozen=True)
++class Evidence:
++    ordinal: int
++    quote: str
++
++
++@dataclass(frozen=True)
++class VerifiedQuote:
++    ordinal: int
++    text: str  # sliced from the SOURCE, not from the model's reply
++    start: int
++    end: int
++
++
++@dataclass(frozen=True)
++class EvidenceCheck:
++    verified: list[VerifiedQuote]
++    reasons: list[str]
++
++
++def split_evidence(raw: str) -> tuple[str, list[Evidence], list[str]]:
++    """Cut the evidence block out of a reply: (reply without it, evidence, malformed lines).
++
++    The block runs from the `EVIDENCE:` line to the next line that is not an evidence line, so a
++    trailing `COVERAGE:` line stays in the returned text for the existing parser.
++    """
++    header = _EVIDENCE_HEADER_RE.search(raw)
++    if header is None:
++        return raw, [], []
++    evidence: list[Evidence] = []
++    malformed: list[str] = []
++    rest: list[str] = []
++    lines = raw[header.end() :].splitlines()
++    for position, line in enumerate(lines):
++        stripped = line.strip()
++        if not stripped:
++            continue
++        match = _EVIDENCE_LINE_RE.match(stripped)
++        if match:
++            evidence.append(Evidence(int(match.group("ordinal")), match.group("quote")))
++        elif stripped.startswith("[S"):
++            malformed.append(stripped)
++        else:
++            rest = lines[position:]
++            break
++    return "\n".join([raw[: header.start()].rstrip(), *rest]), evidence, malformed
++
++
++def _words(text: str) -> list[tuple[str, int, int]]:
++    """Comparable words with their character span in `text`.
++
++    Case, punctuation, whitespace and quote style are not evidence, so they do not count: a word
++    is a run of letters or digits, compared after Unicode compatibility folding.
++    """
++    return [
++        (unicodedata.normalize("NFKC", m.group()).casefold(), m.start(), m.end())
++        for m in _WORD_RE.finditer(text)
++    ]
++
++
++def _find(needle: Sequence[str], haystack: Sequence[str], start: int) -> int | None:
++    for at in range(start, len(haystack) - len(needle) + 1):
++        if haystack[at : at + len(needle)] == list(needle):
++            return at
++    return None
++
++
++def locate(quote: str, source: str) -> tuple[int, int] | None:
++    """The character span of `quote` in `source`, or None if its words are not there in order.
++
++    An ellipsis in the quote joins fragments: each must appear, in order, in the same source.
++    The span covers from the first fragment's first word to the last fragment's last word.
++    """
++    source_words = _words(source)
++    haystack = [word for word, _, _ in source_words]
++    cursor = 0
++    first: int | None = None
++    last = 0
++    for fragment in _ELLIPSIS_RE.split(quote):
++        needle = [word for word, _, _ in _words(fragment)]
++        if not needle:
++            continue
++        at = _find(needle, haystack, cursor)
++        if at is None:
++            return None
++        first = at if first is None else first
++        last = at + len(needle) - 1
++        cursor = last + 1
++    if first is None:
++        return None
++    return source_words[first][1], source_words[last][2]
++
++
++def check_evidence(
++    evidence: Sequence[Evidence],
++    cited: Sequence[int],
++    sources: Mapping[int, str],
++    *,
++    min_words: int = MIN_QUOTE_WORDS,
++) -> EvidenceCheck:
++    """Verify every quote against the source it names, and that every cited source has one."""
++    verified: list[VerifiedQuote] = []
++    reasons: list[str] = []
++    for item in evidence:
++        label = f"[S{item.ordinal}]"
++        source = sources.get(item.ordinal)
++        if source is None:
++            reasons.append(f"evidence names {label}, which was not among the sources provided")
++            continue
++        span = locate(item.quote, source)
++        if span is None:
++            elsewhere = sorted(o for o, text in sources.items() if locate(item.quote, text))
++            where = (
++                f"; those words are in {', '.join(f'[S{o}]' for o in elsewhere)} instead"
++                if elsewhere
++                else ""
++            )
++            reasons.append(f"quote attributed to {label} does not appear in that source{where}")
++            continue
++        quoted_words = len(_words(_ELLIPSIS_RE.sub(" ", item.quote)))
++        if quoted_words < min(min_words, len(_words(source))):
++            reasons.append(
++                f"quote attributed to {label} is {quoted_words} word(s); at least {min_words} "
++                "are needed to count as evidence"
++            )
++            continue
++        verified.append(VerifiedQuote(item.ordinal, source[span[0] : span[1]], *span))
++
++    supported = {quote.ordinal for quote in verified}
++    for ordinal in sorted(set(cited) - supported):
++        if ordinal in sources:
++            reasons.append(f"[S{ordinal}] is cited with no verified quote from that source")
++    return EvidenceCheck(verified=verified, reasons=reasons)
+diff --git a/tests/gct/grounder/test_quotes.py b/tests/gct/grounder/test_quotes.py
+new file mode 100644
+index 0000000..5975947
+--- /dev/null
++++ b/tests/gct/grounder/test_quotes.py
+@@ -0,0 +1,122 @@
++"""Hand-written cases for the verbatim-quote verifier. No model, no database."""
++
++from __future__ import annotations
++
++from gct.grounder.quotes import Evidence, check_evidence, locate, split_evidence
++
++SLIDE = (
++    "Cosmogony today: Evolution or Creation?\n"
++    "“Creation Science” reinterprets scientific results to argue that various myths in the "
++    "Book of Genesis and other select biblical passages are scientifically valid."
++)
++CRITIQUE = (
++    "Creation Science is not a science but a religious belief of a very specific kind. Its "
++    "advocates have adopted a statement of faith."
++)
++SOURCES = {1: CRITIQUE, 2: SLIDE}
++
++
++def reasons(evidence, cited, sources=SOURCES):
++    return check_evidence(evidence, cited, sources).reasons
++
++
++class TestLocate:
++    def test_exact_quote_is_found_and_the_span_slices_the_source(self):
++        span = locate("reinterprets scientific results to argue", SLIDE)
++        assert SLIDE[span[0] : span[1]] == "reinterprets scientific results to argue"
++
++    def test_case_punctuation_whitespace_and_quote_style_do_not_matter(self):
++        assert locate('"creation science"  REINTERPRETS\nscientific   results', SLIDE)
++
++    def test_one_changed_word_is_not_a_quote(self):
++        assert locate("reinterprets scientific findings to argue", SLIDE) is None
++
++    def test_a_dropped_negation_is_not_a_quote(self):
++        assert locate("Creation Science is a science", CRITIQUE) is None
++
++    def test_reordered_words_are_not_a_quote(self):
++        assert locate("scientific results reinterprets", SLIDE) is None
++
++    def test_ellipsis_joins_fragments_that_appear_in_order(self):
++        span = locate("reinterprets scientific results ... are scientifically valid", SLIDE)
++        assert SLIDE[span[0] : span[1]].endswith("scientifically valid")
++
++    def test_ellipsis_fragments_out_of_order_fail(self):
++        assert locate("are scientifically valid … reinterprets scientific results", SLIDE) is None
++
++    def test_a_quote_cannot_be_stitched_across_two_sources(self):
++        assert locate("a religious belief ... are scientifically valid", CRITIQUE) is None
++
++
++class TestCheckEvidence:
++    def test_a_real_quote_from_the_cited_source_passes(self):
++        check = check_evidence(
++            [Evidence(2, "reinterprets scientific results to argue")], [2], SOURCES
++        )
++        assert check.reasons == []
++        assert check.verified[0].text == "reinterprets scientific results to argue"
++
++    def test_a_fabricated_quote_fails(self):
++        assert reasons([Evidence(2, "claims the earth is six thousand years old")], [2]) == [
++            "quote attributed to [S2] does not appear in that source",
++            "[S2] is cited with no verified quote from that source",
++        ]
++
++    def test_a_real_quote_pinned_on_the_wrong_source_names_the_right_one(self):
++        [first, _] = reasons([Evidence(2, "not a science but a religious belief")], [2])
++        assert first == (
++            "quote attributed to [S2] does not appear in that source; those words are in [S1] "
++            "instead"
++        )
++
++    def test_a_citation_with_no_evidence_fails(self):
++        assert reasons([Evidence(2, "reinterprets scientific results to argue")], [1, 2]) == [
++            "[S1] is cited with no verified quote from that source"
++        ]
++
++    def test_a_two_word_quote_is_too_short_to_be_evidence(self):
++        [first, _] = reasons([Evidence(2, "Creation Science")], [2])
++        assert first.startswith("quote attributed to [S2] is 2 word(s)")
++
++    def test_a_source_shorter_than_the_minimum_can_be_quoted_whole(self):
++        assert check_evidence([Evidence(1, "Nine days.")], [1], {1: "Nine days."}).reasons == []
++
++    def test_evidence_for_a_label_that_was_never_provided_fails(self):
++        assert reasons([Evidence(7, "reinterprets scientific results to argue")], []) == [
++            "evidence names [S7], which was not among the sources provided"
++        ]
++
++    def test_shown_text_comes_from_the_source_not_from_the_model(self):
++        check = check_evidence(
++            [Evidence(2, "CREATION SCIENCE reinterprets scientific")], [2], SOURCES
++        )
++        assert check.verified[0].text == "Creation Science” reinterprets scientific"
++
++
++class TestSplitEvidence:
++    def test_block_is_cut_out_and_the_coverage_line_survives(self):
++        raw = (
++            "It reinterprets results [S2].\n"
++            "EVIDENCE:\n"
++            '[S2] "reinterprets scientific results to argue"\n'
++            "COVERAGE: complete"
++        )
++        text, evidence, malformed = split_evidence(raw)
++        assert text == "It reinterprets results [S2].\nCOVERAGE: complete"
++        assert evidence == [Evidence(2, "reinterprets scientific results to argue")]
++        assert malformed == []
++
++    def test_a_reply_with_no_block_is_returned_untouched(self):
++        assert split_evidence("Prose [S1].\nCOVERAGE: complete") == (
++            "Prose [S1].\nCOVERAGE: complete",
++            [],
++            [],
++        )
++
++    def test_an_unquoted_evidence_line_is_reported_not_guessed_at(self):
++        _, evidence, malformed = split_evidence("P [S1].\nEVIDENCE:\n[S1] no quotes here\n")
++        assert evidence == [] and malformed == ["[S1] no quotes here"]
++
++    def test_inner_quotation_marks_are_kept(self):
++        _, [item], _ = split_evidence('P [S2].\nEVIDENCE:\n[S2] "“Creation Science” reinterprets"')
++        assert item.quote == "“Creation Science” reinterprets"

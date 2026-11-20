@@ -1,0 +1,72 @@
+# Risk gate (issue #211): label every PR risk:low / risk:medium / risk:high from the paths it
+# changes, and fail the `risk-gate` check on a risk:high PR until the owner adds `owner-ok`.
+#
+# Why: the builder of a change (often an agent) must not grade its own risk. The tier comes only
+# from .github/risk/rules.txt. Adding or removing a label re-runs this check, so owner-ok turns
+# it green without a new push.
+#
+# Trust boundary. On `pull_request`, GitHub runs this workflow file from the PR's merge commit, so
+# a PR could rewrite any script it runs. To stop a PR from loosening the rules it is judged by,
+# the rules and the checker are checked out from the PR's BASE commit (main), never from the PR.
+# What this does not stop: a PR that edits THIS file. That always shows up in the diff as a change
+# to .github/workflows/risk-gate.yml, and is itself risk:high. Closing that gap needs
+# `pull_request_target`, which GitHub blocks by default in public repos from 2026-12-02; the
+# owner chose this design instead (plan for #211, 2026-11-20).
+#
+# Not done here: making `risk-gate` a required check. That is a branch-protection change the owner
+# makes after this merges.
+name: Risk gate
+
+on:
+  pull_request:
+    # labeled/unlabeled: owner-ok added or removed, or someone hand-edits a risk label.
+    # edited: the PR's base branch can change, which changes its files.
+    types: [opened, synchronize, reopened, edited, labeled, unlabeled]
+
+# Nothing by default; the one job below asks for exactly what it uses.
+permissions: {}
+
+# A newer event on the same PR supersedes an older, still-running check.
+concurrency:
+  group: risk-gate-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  risk-gate:
+    # This name is the check's name, and what branch protection will require. Do not rename.
+    name: risk-gate
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read # check out the rules
+      pull-requests: write # set the risk:* label
+    steps:
+      # Pinned to a commit SHA for the same reason as in ci.yml: a tag can be republished.
+      - name: Check out the rules from the branch this PR merges into
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          ref: ${{ github.event.pull_request.base.sha }}
+          path: base
+          persist-credentials: false
+
+      # Only for PRs whose base has no rules yet: the PR that adds this gate, or a PR aimed at a
+      # branch cut before it. Once the base has rules, the PR's own copy is never read.
+      - name: Check out this PR's rules (only when the base has none)
+        if: hashFiles('base/.github/risk/rules.txt') == ''
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          path: pr
+          persist-credentials: false
+
+      - name: Label by risk and gate on owner-ok
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          PR: ${{ github.event.pull_request.number }}
+        run: |
+          dir=base/.github/risk
+          if [ ! -f "$dir/rules.txt" ]; then
+            echo "::warning title=risk-gate::The base branch has no risk rules yet; using this PR's own copy."
+            dir=pr/.github/risk
+          fi
+          python3 "$dir/risk_gate.py" --rules "$dir/rules.txt" gate

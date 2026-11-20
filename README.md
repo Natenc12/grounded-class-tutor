@@ -16,7 +16,7 @@ materials. See [`eval/FINDINGS.md`](eval/FINDINGS.md) for what the live runs sho
 the bars it does not clear, are [ADR 0026](design/decisions/0026-spike-pass-1-verdict.md).
 
 **Slice 2 — Real write path: complete** — upload becomes a real job: queued → processing →
-ready/failed, at-least-once, reaper-safe, with no partially-indexed file ever visible.
+ready/failed, at-least-once, crash-safe with one worker, with no partially-indexed file ever visible.
 
 **Slice 3 — API adapter: complete** — a thin HTTP layer over the core: create a class, upload, poll
 status, ask. No business logic in the adapter; the whole loop is driven over HTTP by

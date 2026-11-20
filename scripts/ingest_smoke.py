@@ -1,104 +1,42 @@
-"""Slice 2 exit test — the write-path ceremony (issue #72).
+"""Slice 2 exit test — the write-path ceremony (issue #72), with exactly one worker (issue #187).
 
-Proves the ASYNC write path end to end, over REAL course materials and REAL embeddings, the way
-`scripts/ask_smoke.py` proved the read path at Slice 1 exit (#8). Nothing here is a new mechanism:
-it drives `enqueue` (#70) and `gct.jobs.worker.run` (#71) and asserts that the lifecycle ACTUALLY
-HAPPENED, rather than that the code paths exist.
+Proves the ASYNC write path end to end over real course materials, driving `enqueue` and real
+`scripts/worker.py` processes, and asserts that the lifecycle ACTUALLY HAPPENED:
 
-Three phases, each an acceptance claim from the issue, each run against the real queue:
+  1. LIFECYCLE — enqueue every corpus file, start the worker, and watch `queued -> processing ->
+     ready`. `processing` must be SEEN on the observer's connection, not inferred from the end.
+  2. TERMINAL FAILURE — a corrupt PDF lands `failed(unparseable)` with no retry spent (ADR 0020 §1).
+  3. CRASH — a worker is SIGKILLed mid-ingest and a fresh worker finishes the job: the file ends
+     `ready` once, with one chunk set the size of a clean ingest, and `attempts == 2`. A second
+     worker started while the first is alive waits for the worker lock and claims nothing.
 
-  1. LIFECYCLE — enqueue every corpus file, run the worker, and watch `queued -> processing ->
-     ready` happen. The gate is on the TRANSITIONS, not the end state: a file that reached `ready`
-     without anyone ever sighting `processing` would pass a naive end-state check while proving
-     nothing about the worker, so `processing` must have been SEEN on the observer's connection.
-  2. TERMINAL FAILURE — a corrupt PDF lands `failed(unparseable)` with ZERO retries spent
-     (ADR 0020 §1: bad input is exactly as bad on the next attempt, so the budget is not for it).
-  3. REAPER — a worker OUTRUNS a short lease while embedding a real file, a second worker's
-     reaper reclaims the job mid-flight, and the redelivered run leaves the file with ONE full
-     chunk set. At-least-once is made safe two ways, and since ADR 0030 this phase walks the
-     SECOND: a duplicate run is absorbed by `index_file`'s idempotent replace where the publisher
-     still holds its lease, and DISCARDED where it does not — the reaped worker's publish is
-     refused outright. Either way ONE full chunk set, and never by dedup logic (ADR 0011/0020).
-     The overrun is INDUCED, by a delay this script wraps around the real embedder
-     — see `_DelayedEmbeddings` for the decision and, more importantly, for the claim it gives up.
+Throughout, a SECOND connection samples the rows: no partial index may ever be visible.
 
-Running through all three, sampled on a SECOND connection: no partial index is ever visible — no
-sample ever reads `ready` against a chunk count that disagrees with the run that published it.
+Phase 3 holds the worker mid-ingest with `LOCK TABLE chunks IN SHARE MODE`, taken before the worker
+starts. Nothing before `index_file` writes `chunks`, so the worker claims, parses and embeds, opens
+the index transaction, writes `ready` uncommitted, and blocks on its chunk delete. It is killed
+there. The lock only decides WHEN; the claim, crash, requeue and redelivery are the real ones.
 
-A THIN peer caller (ADR 0009): this script wires providers, connections, threads and a poll loop,
-and prints. Every DECISION it observes is made in `gct` — the claim/lease/settle verbs are
-`gct.jobs.queue`'s, the retryable/terminal split and the reaper cadence are `gct.jobs.worker`'s,
-the all-or-nothing publish is `gct.ingest.index`'s. The one deliberate exception is the exit GATE,
-and it is the same exception `ask_smoke.py` argues for: a one-time slice-acceptance ceremony, which
-V3 will never re-execute, correctly lives in the script rather than being enshrined in the library.
-Setup VALIDITY rules (is this run stageable at all?) likewise stay here — they are facts about a
-corpus directory and a connection, which the core has no access to and no opinion about.
+Run (needs a migrated DB and the corpus files; costs money unless GCT_PROVIDERS=standin):
 
-THE WORKER RUNS ON A THREAD, NOT AS A SUBPROCESS, and that is what buys phase 3 (decided
-2026-09-01; the REASON was re-seated by #109 — read on). On a thread the lease is a PARAMETER, so
-the expiry is the queue's own: `claim` stamps it, the reaper compares it against the server clock,
-and nothing here touches the column. What this script supplies is the other side of the race — an
-embed slow enough to still be running when that lease elapses (`_DelayedEmbeddings`). Read the two
-together: the reclaim, the redelivery and the replace are real; the certainty that A is still
-working when the lease expires is arranged. SINCE ADR 0031 the slow embed is no longer sufficient
-on its own — a live worker renews its own lease — so the heartbeat CAP is threaded as a parameter
-too, on the same argument: see `PHASE_THREE_HEARTBEAT_CAP_SECONDS` for what this script sets and
-why.
+    GCT_PROVIDERS=standin uv run python scripts/ingest_smoke.py
+    uv run python scripts/ingest_smoke.py --max-files 2
+    uv run python scripts/ingest_smoke.py --verbose            # print every worker's log
 
-THE TIMING NUMBERS ARE NO LONGER WHAT BLOCKS A SUBPROCESS, and this paragraph used to say they
-were: `scripts/worker.py` had no CLI, so a subprocess was pinned to `DEFAULT_LEASE_SECONDS`. Since
-#109 it takes `--lease` and `--heartbeat-max`, so that half is gone. What remains is the OTHER half
-of the race, and it is not a number: `_DelayedEmbeddings` is an in-process object wrapped around
-the real embedder, `scripts/worker.py` constructs its embedder from config (ADR 0018), and no flag
-can hand a child process a wrapped one. A subprocess could therefore hold the short lease and still
-never overrun it, leaving `jobs.leased_until` written from outside as the only way to force the
-expiry — reaching into the queue's own state to fake the one fact the phase is about. That is the
-argument that survives, and it is why adding the CLI did not turn this script into a subprocess.
+Every run works in a FRESH class (`ingest-smoke <utc timestamp>`), so every run really ingests, and
+nothing is deleted. Worker processes inherit this environment (DATABASE_URL, GCT_PROVIDERS).
 
-`scripts/worker.py` is deliberately NOT imported (ADR 0009: the scripts are peers of the library,
-not of each other) — this file does its own wiring, exactly as that one does.
-
-ONE WORKER RUNS THE WHOLE CEREMONY, ON A SHORT LEASE, AND THAT IS SAFE — the fact the phase layout
-rests on. `reclaim_expired` is called only from `run`, between ticks (`gct/jobs/worker.py`, the
-reaper is in the loop and never in `process_one`), so a worker is never reaping while it is inside
-an ingest. A LONE worker therefore cannot reap its own in-flight job however short its lease is: by
-the time it next reaps, its own job is settled and `reclaim_expired` filters on `state =
-'processing'`. Phases 1 and 2 are consequently unaffected by the short lease — a file that outruns
-it still completes, because the settle verbs guard on state and token and never read the clock
-(ADR 0028 §Consequences). Phase 3 then only has to start a SECOND worker, after the first has
-claimed, to make the reaper real. This reasoning is a property of THAT loop being single-threaded —
-the same property ADR 0028 §5's safety argument rests on — so an edit that makes a worker
-concurrent invalidates this layout, not just this paragraph.
-
-Run (needs a migrated DB, `.env` secrets, and the corpus files present — this SPENDS MONEY):
-
-    uv run python scripts/ingest_smoke.py
-    uv run python scripts/ingest_smoke.py --max-files 2        # narrow the lifecycle phase
-    uv run python scripts/ingest_smoke.py --verbose            # print the worker's own log lines
-    uv run python scripts/ingest_smoke.py --lease 30           # a lease longer than the induced
-                                                               # delay: phase 3 then FAILS, which
-                                                               # is what proves its verdict is
-                                                               # about the run and not the code
-                                                               # path merely existing
-
-Every run works in a FRESH class (`ingest-smoke <utc timestamp>`), so every run genuinely enqueues
-and ingests. There is no convergence step and no skip: `ask_smoke.py` converges because it re-asks
-questions against a corpus it does not want to re-buy, while the thing THIS script measures is the
-ingest itself, and a run that reused an earlier one's `ready` rows would observe no transitions at
-all. The class id is printed so the rows stay inspectable afterwards; nothing is deleted.
-
-Exit codes, the `ask_smoke.py` idiom: 0 the gate passed · 1 the gate failed · 2 setup failed (no
-corpus, no API key, no reachable database).
+Exit codes: 0 the gate passed · 1 the gate failed · 2 setup failed (no corpus, no API key, no
+reachable database).
 """
 
 from __future__ import annotations
 
 import argparse
-import logging
-import threading
+import subprocess
+import sys
 import time
-from collections.abc import Callable, Iterable, Iterator, Sequence
-from contextlib import contextmanager
+from collections.abc import Callable, Iterable, Sequence
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -106,15 +44,11 @@ from tempfile import TemporaryDirectory
 from uuid import uuid4
 
 import psycopg
-from openai import OpenAIError
 
-from gct.config import load_settings
 from gct.db import connect
 from gct.ingest.chunk import CHUNK_OVERLAP_WORDS, CHUNK_SIZE_WORDS
-from gct.jobs.queue import enqueue
-from gct.jobs.worker import DEFAULT_LEASE_SECONDS, heartbeat_max_seconds_for, run
-from gct.providers.base import Embeddings
-from gct.providers.openai_provider import OpenAIEmbeddings
+from gct.jobs.queue import WORKER_LOCK_KEY, enqueue
+from gct.providers.active import require_usable, selected
 
 DEFAULT_OWNER = "nate-ingest-smoke"
 DEFAULT_CORPUS_DIR = "data/dogfood/religion"
@@ -124,50 +58,20 @@ DEFAULT_CORPUS_DIR = "data/dogfood/religion"
 # silent gap in the ceremony.
 CORPUS_GLOBS = ("*.pdf", "*.pptx")
 
-# How often the OBSERVER reads `files`/`jobs` on its own connection. Chosen against a real timed
-# run, not from theory (2026-09-01): on this corpus the fastest file ingests in ~0.6s and the
-# slowest in ~1.3s, so at 40ms every file's `processing` window is sampled fifteen times or more
-# even at the floor. It is not a correctness knob — see `Observer.sample`, which never INVENTS a
-# state — but a MISSED `processing` fails the gate by design (that is the issue's central
-# assertion), so the interval is what makes "the transitions were observed" a claim about the run
-# rather than about luck. Named here rather than buried in a default argument for that reason.
-OBSERVE_SECONDS = 0.04
+# How often the OBSERVER reads `files`/`jobs` on its own connection. A MISSED `processing` fails
+# the gate by design, so this must be well under the shortest `processing` window. With the free
+# stand-in embedder the smallest deck ingests in ~20ms (measured 2026-11-20); with OpenAI, ~0.6s.
+OBSERVE_SECONDS = 0.005
 
-# The worker's own poll interval, well under `DEFAULT_POLL_SECONDS`. Two reasons, both about the
-# ceremony rather than about production: a 2s tick would put ~2s of dead air between every file in
-# phase 1, and in phase 3 the reaper's tick is what closes the window between the lease expiring
-# and the redelivery starting — a slow tick spends the overrun the phase is built on.
+WORKER_SCRIPT = Path(__file__).resolve().parent / "worker.py"
+
+# Well under `DEFAULT_POLL_SECONDS`, so phase 1 has no dead air between files.
 WORKER_POLL_SECONDS = 0.05
 
-# The lease phase 3 overruns. One second is the floor `claim` can express (`lease_seconds` is an
-# int, and 0 would already have expired when the lease was granted — forcing the reclaim rather
-# than earning it), and `_validate_args` now enforces that floor rather than leaving it in prose.
-DEFAULT_SHORT_LEASE_SECONDS = 1
-
-# How long phase 3 pauses after each real embed call, to guarantee the overrun (`_DelayedEmbeddings`
-# carries the decision and what it gives up). Sized against the FASTEST file the ceremony can be
-# pointed at rather than the slowest, because `--max-files` may narrow the corpus to one small deck:
-# the quickest real file ingests in ~0.6s, so 3s puts even that run ~2.6s past the 1s lease, and the
-# reaper fires ~1.05s in with most of the ingest still to go. Wall cost is ~2x this, since phase 3
-# embeds the file twice — once in the run that loses the lease and once in the redelivery — which is
-# a few seconds on a ceremony that already spends longer than that on the corpus.
-PHASE_THREE_EMBED_DELAY_SECONDS = 3.0
-# The heartbeat cap worker A runs under, and WHY phase 3 has to set one at all (ADR 0031).
-# Since the lease is renewed by a live worker, a short `--lease` no longer stages a reclaim on
-# its own: worker A pushes its own `leased_until` forward every beat, so the lease it is
-# holding does not lapse while it works. It lapses when the BEATS stop, and the beats stop at
-# the cap — which ADR 0031 §5 makes a PARAMETER for callers who need the expiry sooner. This
-# script is such a caller, and DERIVING the cap is not enough to make it one: left unset, the
-# cap resolves to four times `--lease`, which at the default `--lease 1` is 4s — still longer
-# than the 3s induced delay, so the ingest finishes inside the beats and no reclaim happens.
-# Measured, not assumed: with the derivation and no explicit cap, phase 3 fails with
-# `attempts=1` and zero reaps, exactly as it did when the cap was a flat 3600s.
-#
-# UNDER THE INDUCED DELAY, not merely under the lease: the beats must stop while worker A is
-# still embedding, which is what makes the lease lapse under a RUNNING worker — the post-0031
-# shape of the scenario phase 3 has always staged. A cap of zero would disable the heartbeat
-# instead and stage the PRE-0031 scenario, which is not the one that ships.
-PHASE_THREE_HEARTBEAT_CAP_SECONDS = 1.0
+# Lines `gct.jobs.worker` logs that phase 3 reads (pinned against its source by the tests).
+LOCK_WAIT_LINE = "another worker holds the worker lock"
+CLAIM_LINE = ": claimed file"
+REQUEUE_LINE = "requeued"
 
 # How long a phase may take before the ceremony gives up waiting. Generous by an order of
 # magnitude against the timings above: this is a runaway guard so a wedged worker fails the gate
@@ -229,9 +133,8 @@ class Snapshot:
     server-side state, so a violation reported below is a violation of the system and not of the
     observer.
 
-    `job_state`/`attempts`/`last_error` ride along because the reaper case is only legible on the
-    JOB axis: a redelivery is an `attempts` bump, and which requeue path caused it is `last_error`
-    (see `reaper_evidence`).
+    `job_state`/`attempts`/`last_error` ride along because a redelivery is only legible on the JOB
+    axis: it is an `attempts` bump.
 
     Frozen and compared by value, which is what lets `Observer.sample` collapse an unchanged
     reading — the history is then a list of transitions rather than a few thousand duplicates.
@@ -481,38 +384,6 @@ def partial_index_sightings(history: Sequence[Snapshot]) -> list[Snapshot]:
     return [snapshot for snapshot in history if violates(snapshot)]
 
 
-def reaper_evidence(history: Sequence[Snapshot]) -> tuple[bool, str]:
-    """Did the reaper redeliver this job? `(verdict, what the DB says)`.
-
-    PURELY FROM THE DATABASE, deliberately, rather than from the worker's log line. Two facts
-    together identify the reaper as the requeuer, and neither is a message anyone can reword:
-
-      - `attempts` reached 2 or more. `claim` is the only writer that bumps it, so the job was
-        handed out twice — a redelivery happened.
-      - `last_error` is still null. It is written by every OTHER path back to `queued`: `release`
-        sets it on a transient failure, `fail` sets it on a bury. `reclaim_expired` is the one
-        requeue that writes no error at all, so a second delivery with a clean error column can
-        only have come from the reaper.
-
-    The observed status path is deliberately NOT part of this. The requeue and the re-claim happen
-    in the same `run` tick — reap, then claim, microseconds apart — so the `queued` window between
-    them is far below any honest poll interval, and gating on sighting it would make the phase a
-    coin flip. The worker's own `reaper:` warning is printed alongside as corroboration and is not
-    gated on; a log string is not evidence this script should hang a verdict on.
-    """
-    if not history:
-        return False, "no samples"
-    last = history[-1]
-    if last.attempts < 2:
-        return False, f"attempts={last.attempts} — the job was only ever delivered once"
-    if last.last_error is not None:
-        return False, (
-            f"attempts={last.attempts} but last_error={last.last_error!r} — the requeue came from "
-            "release/fail, not from the reaper"
-        )
-    return True, f"attempts={last.attempts}, last_error is null"
-
-
 def write_corrupt_pdf(directory: Path) -> Path:
     """Write phase 2's terminal input and return its path.
 
@@ -530,252 +401,83 @@ def write_corrupt_pdf(directory: Path) -> Path:
 # --- the worker under ceremony ------------------------------------------------------------------
 
 
-class _DelayedEmbeddings:
-    """The REAL embedder, with a switchable pause after each call. Phase 3's overrun, made certain.
-
-    WHY THIS EXISTS, AND WHAT IT GIVES UP (Nate's call, 2026-09-01). Phase 3 needs worker A to still
-    be embedding when its lease expires. Left to the corpus that was a 0.25s margin on a 1.25s
-    ingest against a 1s lease — reproducible on the day it was measured and one fast provider
-    response away from silently not happening. What phase 3 is FOR is the idempotent replace
-    absorbing a duplicate delivery; the overrun is the setup, not the claim. So the setup is made
-    certain and the claim is left alone: the lease expiry, the reaper's reclaim, the redelivery and
-    the all-or-nothing replace are all exactly as real as before, and only the timing stops being
-    luck.
-
-    Say the cost out loud, because it is a claim this ceremony can no longer make: the run no longer
-    demonstrates that a worker overran its lease UNPROMPTED. It demonstrates that when one does, the
-    reaper reclaims the job and the redelivery leaves one full chunk set. The first was never the
-    acceptance criterion; the second is.
-
-    IT LIVES HERE, NOT IN `gct` (ADR 0009). A delay knob on `gct.providers` or on the worker would
-    be library behaviour existing only to serve a ceremony — the wrong side of the seam. This is
-    wiring, and wiring is what a script is for.
-
-    IT PROXIES EVERYTHING IT DOES NOT OVERRIDE, and `model_id` is why that is a rule and not a
-    courtesy: `chunks.embedding_model_id` is stamped from `embedder.model_id` (ADR 0018), and the
-    Retriever asserts that stamp against the active embedder's. A wrapper that shadowed the
-    attribute would stamp the wrong value; one that dropped it would raise mid-ingest; one that
-    hardcoded it would make the guard compare a constant to itself. Delegation keeps the stamp the
-    real model's by construction.
-
-    IT CHANGES NOTHING ABOUT WHAT IS EMBEDDED. Same texts in, the real client's vectors back, one
-    inner call per outer call. The only difference is when `embed` returns.
-
-    SWITCHABLE RATHER THAN ALWAYS-ON, because worker A is a single long-lived thread holding ONE
-    embedder for all three phases (see the module docstring) — there is no seam at which to hand it
-    a different object mid-run. Disarmed, `embed` is a delegation and an `if`; phases 1 and 2 are
-    therefore unaffected in every way they could observe, and their timing remains part of no claim.
-    `delaying()` is what arms it, scoped to a block so it cannot be left on.
-    """
-
-    def __init__(self, inner: Embeddings) -> None:
-        self._inner = inner
-        self.delay_seconds = 0.0
-
-    def embed(self, texts: Sequence[str]) -> list[list[float]]:
-        vectors = self._inner.embed(texts)
-        # AFTER the real call, so the provider round trip still happens as promptly as it would
-        # unwrapped and the pause is purely additional. Per CALL, not per run: a file large enough
-        # to sub-batch pauses once per sub-batch, which only ever lengthens the overrun.
-        if self.delay_seconds:
-            time.sleep(self.delay_seconds)
-        return vectors
-
-    @contextmanager
-    def delaying(self, seconds: float) -> Iterator[None]:
-        """Arm the delay for the duration of a block, and disarm it however the block leaves."""
-        self.delay_seconds = seconds
-        try:
-            yield
-        finally:
-            self.delay_seconds = 0.0
-
-    def __getattr__(self, name: str):
-        # Reached only for attributes this class does not define — `model_id` above all. Goes
-        # through `__dict__` rather than `self._inner`, which would recurse into this method if it
-        # ever fired before `__init__` bound that name.
-        #
-        # KNOWN RESIDUAL, LEFT DELIBERATELY: this collapses a BROKEN attribute into a MISSING one.
-        # If a property on the real embedder raised `AttributeError`, the exception would propagate
-        # out of here, and Python's attribute protocol reads any `AttributeError` from `__getattr__`
-        # as "no such attribute" — so `hasattr(wrapper, name)` would be False for something that
-        # exists and is failing. Unreachable today: the attributes anything reads off an embedder
-        # (`model_id`, `dim`) are plain returns on `OpenAIEmbeddings`.
-        #
-        # Not fixed, because no fix is small. Telling the two apart means probing the inner TYPE
-        # before the call and re-raising the broken case as a non-`AttributeError` — a second
-        # exception type, a `vars()` fallback that `__slots__` breaks, and a change to what
-        # `hasattr` means on this object, all bought on speculation about a property that does not
-        # exist. The residual is written down instead, which is what makes it a decision rather than
-        # an oversight.
-        try:
-            inner = self.__dict__["_inner"]
-        except KeyError:  # pragma: no cover - only reachable mid-construction
-            raise AttributeError(name) from None
-        return getattr(inner, name)
+def worker_command(chunk_size: int, chunk_overlap: int) -> list[str]:
+    return [
+        sys.executable,
+        str(WORKER_SCRIPT),
+        "--poll",
+        str(WORKER_POLL_SECONDS),
+        "--chunk-size",
+        str(chunk_size),
+        "--chunk-overlap",
+        str(chunk_overlap),
+        "--log-level",
+        "INFO",
+    ]
 
 
-class WorkerThread:
-    """One `gct.jobs.worker.run` loop on a daemon thread, with its OWN connection.
+class WorkerProcess:
+    """One real `scripts/worker.py` process, with its output in a log file."""
 
-    ITS OWN CONNECTION, always: the worker writes on it constantly and the observer reads on
-    another, so sharing one would both serialise them and — worse — let the observer see a worker's
-    uncommitted work, which is the one thing the observer exists not to do.
-
-    DAEMON, and never stopped. `run` is an unbounded loop with no stop condition, and this ceremony
-    deliberately does not invent one: every phase waits for its files to reach a terminal state
-    before moving on, so a worker still alive at the next phase is an IDLE worker, and the phase
-    layout (see the module docstring) is built so an idle worker doing the next phase's work is
-    correct rather than interference. At exit the interpreter drops the thread.
-
-    A crash inside `run` is CAUGHT AND KEPT, not printed and forgotten. `threading`'s default
-    excepthook writes a traceback to stderr and the thread dies silently as far as the ceremony is
-    concerned — a worker that died on file 2 would then look exactly like a worker that is being
-    slow, and the phase would fail on a timeout with the wrong diagnosis. `BaseException` for the
-    same reason `process_one`'s guard uses it: `SystemExit` and `KeyboardInterrupt` are not
-    `Exception`, and a worker that took one still stopped working.
-    """
-
-    def __init__(
-        self,
-        name: str,
-        *,
-        embedder: Embeddings,
-        lease_seconds: int,
-        chunk_size: int,
-        chunk_overlap: int,
-        heartbeat_max_seconds: float | None = None,
-    ) -> None:
+    def __init__(self, name: str, log_dir: Path, *, chunk_size: int, chunk_overlap: int) -> None:
         self.name = name
-        self.lease_seconds = lease_seconds
-        self.heartbeat_max_seconds = heartbeat_max_seconds
-        self.error: BaseException | None = None
-        self._embedder = embedder
-        self._chunk_size = chunk_size
-        self._chunk_overlap = chunk_overlap
-        self._thread = threading.Thread(target=self._body, name=name, daemon=True)
+        self.log_path = log_dir / f"{name}.log"
+        self.command = worker_command(chunk_size, chunk_overlap)
+        self._proc: subprocess.Popen | None = None
+        self._ended_on_purpose = False
 
     def start(self) -> None:
-        self._thread.start()
+        with self.log_path.open("wb") as log:
+            self._proc = subprocess.Popen(self.command, stdout=log, stderr=subprocess.STDOUT)
 
-    def _body(self) -> None:
-        conn = connect()
-        # Autocommit, the same wiring and the same argument as `scripts/worker.py`: every writer on
-        # the worker path commits inside its own `conn.transaction()`, so this is defence in depth
-        # rather than load-bearing — it keeps a future statement added outside a transaction block
-        # from sitting unpublished in psycopg's implicit one (ADR 0025).
-        conn.autocommit = True
+    @property
+    def pid(self) -> int | None:
+        return None if self._proc is None else self._proc.pid
+
+    @property
+    def error(self) -> str | None:
+        """Why the process is gone, if it exited without being told to; otherwise None."""
+        if self._proc is None or self._ended_on_purpose:
+            return None
+        code = self._proc.poll()
+        if code is None:
+            return None
+        return f"{self.name} exited with code {code}: {' | '.join(self.log().splitlines()[-5:])}"
+
+    def log(self) -> str:
         try:
-            run(
-                conn,
-                # The embedder constructs itself from config (ADR 0018: never hardcode a model id)
-                # and is SHARED with every other worker here, which is safe because it holds a
-                # stateless client. The chunk window is threaded explicitly because the names are
-                # provisional spike parameters (ADR 0019).
-                embedder=self._embedder,
-                chunk_size=self._chunk_size,
-                chunk_overlap=self._chunk_overlap,
-                lease_seconds=self.lease_seconds,
-                # Threaded for the same reason `lease_seconds` is: the expiry stays the
-                # QUEUE's, and this script only chooses when it becomes reachable within a
-                # run's lifetime (`PHASE_THREE_HEARTBEAT_CAP_SECONDS`).
-                heartbeat_max_seconds=self.heartbeat_max_seconds,
-                poll_seconds=WORKER_POLL_SECONDS,
-            )
-        except BaseException as exc:
-            self.error = exc
-        finally:
-            conn.close()
+            return self.log_path.read_text(errors="replace")
+        except FileNotFoundError:
+            return ""
 
+    def wait_for_log(self, text: str, *, timeout: float) -> bool:
+        deadline = time.monotonic() + timeout
+        while text not in self.log():
+            if self.error is not None or time.monotonic() >= deadline:
+                return False
+            time.sleep(OBSERVE_SECONDS)
+        return True
 
-class ReaperLog(logging.Handler):
-    """Counts the worker module's own `reaper:` warnings, for the printout only.
+    def kill(self) -> int:
+        """SIGKILL: no handler runs and nothing unwinds. Returns the exit status."""
+        self._ended_on_purpose = True
+        self._proc.kill()
+        return self._proc.wait()
 
-    Deciding where a library's events go is the application's call and this script is the
-    application (ADR 0009), so a handler here is the wiring, not a hook into the library. It is
-    CORROBORATION and nothing more: `reaper_evidence` is what the gate reads, and it reads the
-    database. Counting a log message is the kind of assertion that goes green forever after
-    somebody rewords the message, which is why the verdict does not rest on it.
-    """
-
-    def __init__(self) -> None:
-        super().__init__(level=logging.WARNING)
-        self.reaps = 0
-
-    def emit(self, record: logging.LogRecord) -> None:
-        if record.getMessage().startswith("reaper:"):
-            self.reaps += 1
+    def stop(self) -> None:
+        """SIGTERM and wait (SIGKILL if it hangs). Safe before `start` and safe twice."""
+        self._ended_on_purpose = True
+        if self._proc is None or self._proc.poll() is not None:
+            return
+        self._proc.terminate()
+        try:
+            self._proc.wait(timeout=10)
+        except subprocess.TimeoutExpired:
+            self._proc.kill()
+            self._proc.wait()
 
 
 # --- phases -------------------------------------------------------------------------------------
-
-
-def _cap_in_use(worker: WorkerThread, lease_seconds: int) -> float:
-    """The cap worker A is ACTUALLY beating under - read off the worker, never off a constant.
-
-    `_overrun_remedy` used to read `PHASE_THREE_HEARTBEAT_CAP_SECONDS` directly, which made its
-    heartbeat branch dead as shipped (1.0 is never >= the 3s delay) and, worse, meant that if the
-    phase-3 wiring ever regressed the remedy would fall through to "the delay is not reaching the
-    worker" - a confident instruction to go looking for a bug that is not there, which that
-    function's own docstring calls worse than no remedy at all. Reading the worker is what makes
-    the diagnosis about the run rather than about what the file says the run should be.
-
-    `None` means the worker took `run`'s default, which resolves from the lease (ADR 0031 §5), so
-    that is what this resolves too - one derivation, not a second copy of it.
-    """
-    if worker.heartbeat_max_seconds is not None:
-        return float(worker.heartbeat_max_seconds)
-    return heartbeat_max_seconds_for(lease_seconds)
-
-
-def _overrun_remedy(lease_seconds: int, heartbeat_max_seconds: float) -> str:
-    """What to change when phase 3's ingest finished inside its lease.
-
-    THE ARGUMENT HERE CHANGED WHEN THE DELAY DID (2026-09-01), and the old one is gone rather than
-    left standing beside the new: it told the reader to point `--corpus-dir` at a wordier corpus,
-    because back then the overrun depended on the file being slow enough to embed. It no longer
-    does. `_DelayedEmbeddings` puts `PHASE_THREE_EMBED_DELAY_SECONDS` between the embed and the
-    return, so any file overruns any lease shorter than that and corpus size stopped being a lever.
-    A remedy naming the wrong variable is worse than none — it is a confident instruction to change
-    something that cannot help.
-
-    A THIRD CAUSE ARRIVED WITH THE HEARTBEAT (ADR 0031), and it is the one a reader is now most
-    likely to hit, because it fires with every knob on this script set correctly. A live worker
-    renews its own lease, so the lease alone no longer expires under it: the beats have to stop
-    first. If `PHASE_THREE_HEARTBEAT_CAP_SECONDS` is at or above the induced delay, worker A beats
-    for the whole ingest and nothing ever expires. It is checked FIRST because it is invisible in
-    the two numbers the old message printed — a run with `--lease 1` against a 3s delay looks
-    correctly configured and still cannot reclaim.
-
-    Three things can now produce this fault, and they have different fixes:
-      - the heartbeat cap was raised to or above the induced delay, so the beats outlast the
-        ingest and the lease never lapses;
-      - the lease was raised above the induced delay (`--lease 30` does this on purpose — it is the
-        documented negative control that proves the phase's verdict is about the run);
-      - the delay never reached the worker, i.e. the embedder worker A is holding is not the wrapper
-        this phase armed. That is a wiring bug in this script, not a knob.
-    """
-    if heartbeat_max_seconds >= PHASE_THREE_EMBED_DELAY_SECONDS:
-        return (
-            f"the heartbeat cap ({heartbeat_max_seconds:.1f}s) is at or above the "
-            f"{PHASE_THREE_EMBED_DELAY_SECONDS:.0f}s induced delay, so worker A renewed its own "
-            "lease for the whole ingest and nothing expired (ADR 0031). Lower "
-            "PHASE_THREE_HEARTBEAT_CAP_SECONDS below the delay — --lease alone cannot stage a "
-            "reclaim against a live worker"
-        )
-    if lease_seconds >= PHASE_THREE_EMBED_DELAY_SECONDS:
-        return (
-            f"--lease is {lease_seconds}s and the induced embed delay is only "
-            f"{PHASE_THREE_EMBED_DELAY_SECONDS:.0f}s, so the ingest fits inside the lease. Lower "
-            f"--lease below the delay (the default {DEFAULT_SHORT_LEASE_SECONDS}s is what the "
-            "ceremony is built around)"
-        )
-    return (
-        f"--lease ({lease_seconds}s) is under the {PHASE_THREE_EMBED_DELAY_SECONDS:.0f}s induced "
-        f"delay and the heartbeat cap ({heartbeat_max_seconds:.1f}s) is under it too, "
-        "so the ingest should not have fit inside the lease: the delay is not reaching the worker. "
-        "Check that worker A was handed the same `_DelayedEmbeddings` this phase arms"
-    )
 
 
 def _terminal(snapshot: Snapshot) -> bool:
@@ -809,8 +511,8 @@ def _settled(snapshot: Snapshot) -> bool:
     return _terminal(snapshot) and snapshot.job_state in ("done", "failed")
 
 
-def _first_death(workers: Sequence[WorkerThread]) -> BaseException | None:
-    """The exception that killed the first dead worker, or None while they are all alive."""
+def _first_death(workers: Sequence[WorkerProcess]) -> object | None:
+    """Why the first dead worker died, or None while they are all alive."""
     for worker in workers:
         if worker.error is not None:
             return worker.error
@@ -821,24 +523,13 @@ def _await(
     observer: Observer,
     predicate: Callable[[dict[str, Snapshot]], bool],
     *,
-    workers: Sequence[WorkerThread],
+    workers: Sequence[WorkerProcess],
     stalled: str,
 ) -> str | None:
     """Wait for `predicate` — but stop the moment a worker dies. None on success, else why not.
 
-    ONE WRITER FOR "STOP WAITING", used by all three phases, because the failure it exists to
-    prevent was a phase-shaped one and would have come back per phase. `WorkerThread` catches a
-    crash so the ceremony can diagnose it, but catching it is only half the mechanism: the caught
-    exception has to be READ somewhere that can act on it. It was read once, in `main`, AFTER every
-    phase had run — so a worker that died on the first file left all three phases waiting out
-    `PHASE_TIMEOUT_SECONDS` against a queue nothing was serving, and the ceremony reported a
-    lifecycle failure fifteen minutes later with the wrong cause on top of the right one. The
-    diagnosis existed and arrived too late to be a diagnosis.
-
-    Folding the check into the PREDICATE rather than polling it separately is what makes it prompt:
-    the observer is already sampling every `OBSERVE_SECONDS`, so a death is noticed on the next
-    tick, using the loop that is already running. Phase 3 already did this for worker B, one wait
-    too late; this is that move made general and made early.
+    The check is folded into the PREDICATE, so a death is noticed on the observer's next tick
+    rather than after the whole phase has timed out against a queue nothing is serving.
 
     A DEATH IS REPORTED AHEAD OF A TIMEOUT, deliberately, because both are true at once when a
     worker dies during a wait that would also have expired, and only one of them is the cause. The
@@ -874,7 +565,7 @@ def _print_history(label: str, history: Sequence[Snapshot]) -> None:
 def _phase_lifecycle(
     conn: psycopg.Connection,
     observer: Observer,
-    worker: WorkerThread,
+    worker: WorkerProcess,
     *,
     owner_id: str,
     class_id: str,
@@ -888,8 +579,7 @@ def _phase_lifecycle(
     becomes a coin toss between the observer's next read and the worker's next poll, which is a
     flake with a 1-in-20 face and no defect behind it.
 
-    The worker is NOT stopped afterwards; it serves phases 2 and 3 too. The module docstring
-    carries why one long-lived worker on a short lease is the right shape for all three.
+    The worker is NOT stopped afterwards; it serves phase 2 too, and `main` stops it after that.
     """
     print(f"\nPhase 1 — lifecycle over {len(corpus)} real corpus file(s):")
     file_ids: dict[str, Path] = {}
@@ -900,7 +590,7 @@ def _phase_lifecycle(
         print(f"  enqueued {path.name} -> file_id={file_id}")
 
     worker.start()
-    print(f"  worker A started: lease {worker.lease_seconds}s, poll {WORKER_POLL_SECONDS}s")
+    print(f"  worker A started (pid {worker.pid}), poll {WORKER_POLL_SECONDS}s")
 
     stalled = _await(
         observer,
@@ -955,7 +645,7 @@ def _lifecycle_faults(path_seen: Sequence[str], history: Sequence[Snapshot]) -> 
 def _phase_terminal_failure(
     conn: psycopg.Connection,
     observer: Observer,
-    worker: WorkerThread,
+    worker: WorkerProcess,
     *,
     owner_id: str,
     class_id: str,
@@ -1013,173 +703,245 @@ def _phase_terminal_failure(
     return not faults
 
 
-def _phase_reaper(
-    conn: psycopg.Connection,
-    observer: Observer,
-    reaper_log: ReaperLog,
-    worker: WorkerThread,
+def crash_faults(
+    history: Sequence[Snapshot],
     *,
-    owner_id: str,
-    class_id: str,
-    target: Path,
-    embedder: _DelayedEmbeddings,
-    lease_seconds: int,
-    chunk_size: int,
-    chunk_overlap: int,
-) -> bool:
-    """An induced lease overrun, a real reclaim, and one full chunk set at the end.
+    at_kill: Snapshot,
+    chunk_set: tuple[int, int],
+    clean: tuple[int, int] | None,
+) -> list[str]:
+    """Everything wrong with phase 3's file. Empty means it passed.
 
-    WHAT IS ARRANGED AND WHAT IS NOT, in one place, because this is the phase where the difference
-    matters. `jobs.leased_until` is never written by this script: worker A takes a real
-    `lease_seconds` lease from `claim`, and the reaper compares it against the server's clock like
-    any other. What is arranged is that A is STILL EMBEDDING when that moment arrives — the embed
-    is padded by `PHASE_THREE_EMBED_DELAY_SECONDS` (`_DelayedEmbeddings`), so the overrun happens
-    every run instead of most runs. Worker B is started only AFTER A has been observed to claim, so
-    the ordering is a fact and not a race, and B's first reaping tick past the expiry reclaims a job
-    that is genuinely still being worked.
-
-    So the phase no longer demonstrates that a worker overran its lease UNPROMPTED. It demonstrates
-    the thing the issue actually asks for: that when a lease expires under a running worker, the
-    reaper reclaims it, the job is redelivered, and the file ends with ONE full chunk set.
-
-    HOW it ends that way changed with ADR 0030, and the docstring said the old way for a while:
-    the reaped worker's publish is now REFUSED rather than absorbed, so the redelivered run's
-    publish is the only one that ever lands. A real replace-on-redelivery — a second publish
-    landing over a full set — is demonstrated by
-    `tests/gct/jobs/test_worker.py::test_a_reclaimed_job_reruns_and_leaves_one_chunk_set`, not
-    here.
-
-    Bounded to exactly one redelivery, which is what makes this a phase and not a ping-pong: B
-    takes the default lease, so when A finishes and reaps in its turn, B's lease is nowhere near
-    expiry and there is nothing to take back. A's `complete` then returns False — the lease it
-    lost — and the job settles once, under B.
-
-    ON #92, EXPLICITLY. This phase walks the neighbourhood of the `ready`-carries-no-reason
-    interleaving — closed by ADR 0030's publish guard, which `process_one` supplies and this
-    phase's workers therefore run under. Reaching that state needs a BURY between the reclaim and
-    the reaped worker's publish. This phase produces no bury at all — the redelivered run succeeds
-    — so it neither reaches the state nor exercises the guard that now refuses it. Nothing below
-    reads `failed_reason` on a `ready` row, on purpose, and the reason survives the fix: an
-    assertion that passed HERE would be read as evidence about an invariant this phase never put
-    under stress. `tests/gct/jobs/test_worker.py` is where that guard is demonstrated.
+    `at_kill` is read after the second worker stopped and just before the SIGKILL, so it shows both
+    that the first worker was mid-ingest and that the second claimed nothing. `chunk_set` and
+    `clean` are `(chunks, distinct chunks)` for this file and for phase 1's ingest of the same file.
     """
-    print(
-        f"\nPhase 3 — reaper: a {PHASE_THREE_EMBED_DELAY_SECONDS:.0f}s induced embed delay "
-        f"against a real {lease_seconds}s lease:"
-    )
-    # ARMED AROUND THE WHOLE PHASE, not just the enqueue. Worker A is already running and holds this
-    # very object (there is no seam at which to swap its embedder mid-run), so arming has to happen
-    # before A can claim and stay on until the redelivery has finished — worker B embeds through the
-    # same wrapper. The block disarms it however this phase leaves, so nothing after phase 3 pays
-    # for it.
-    with embedder.delaying(PHASE_THREE_EMBED_DELAY_SECONDS):
-        return _reaper_body(
-            conn,
-            observer,
-            reaper_log,
-            worker,
-            owner_id=owner_id,
-            class_id=class_id,
-            target=target,
-            embedder=embedder,
-            lease_seconds=lease_seconds,
-            chunk_size=chunk_size,
-            chunk_overlap=chunk_overlap,
-        )
-
-
-def _reaper_body(
-    conn: psycopg.Connection,
-    observer: Observer,
-    reaper_log: ReaperLog,
-    worker: WorkerThread,
-    *,
-    owner_id: str,
-    class_id: str,
-    target: Path,
-    embedder: _DelayedEmbeddings,
-    lease_seconds: int,
-    chunk_size: int,
-    chunk_overlap: int,
-) -> bool:
-    """Phase 3 with the delay already armed — split out so the arming is one unmissable line."""
-    file_id = enqueue(conn, path=target, owner_id=owner_id, class_id=class_id)
-    observer.watch(file_id)
-    print(f"  enqueued {target.name} -> file_id={file_id}")
-
-    reaps_before = reaper_log.reaps
-    stalled = _await(
-        observer,
-        lambda current: current[file_id].job_state == "processing",
-        workers=(worker,),
-        stalled="worker A never claimed the job; nothing to overrun",
-    )
-    if stalled is not None:
-        print(f"  {stalled}")
-        return False
-    print(f"  worker A claimed it — starting worker B (lease {DEFAULT_LEASE_SECONDS}s)")
-
-    worker_b = WorkerThread(
-        "worker-B",
-        embedder=embedder,
-        lease_seconds=DEFAULT_LEASE_SECONDS,
-        chunk_size=chunk_size,
-        chunk_overlap=chunk_overlap,
-    )
-    worker_b.start()
-
-    stalled = _await(
-        observer,
-        lambda current: current[file_id].job_state in ("done", "failed"),
-        workers=(worker, worker_b),
-        stalled="the job never settled",
-    )
-    history = observer.history(file_id)
-    _print_history(f"{target.name}: {' -> '.join(status_path(history))}", history)
-    if stalled is not None:
-        print(f"  {stalled}")
-        return False
-
-    final = history[-1]
-    reaped, evidence = reaper_evidence(history)
     faults: list[str] = []
-    if not reaped:
+    seen_at_kill = (at_kill.file_status, at_kill.job_state, at_kill.attempts, at_kill.chunks)
+    if seen_at_kill != ("processing", "processing", 1, 0):
         faults.append(
-            f"no reclaim happened ({evidence}) — the ingest finished inside the {lease_seconds}s "
-            f"lease, so nothing expired. "
-            f"{_overrun_remedy(lease_seconds, _cap_in_use(worker, lease_seconds))}"
+            f"not mid-ingest on its first claim when killed: files.status={at_kill.file_status} "
+            f"jobs.state={at_kill.job_state} attempts={at_kill.attempts} chunks={at_kill.chunks}"
         )
+    final = history[-1]
+    path = status_path(history)
     if final.file_status != "ready":
         faults.append(f"ended {final.file_status!r}, not 'ready'")
+    if path.count("ready") != 1:
+        faults.append(f"reached 'ready' {path.count('ready')} time(s), not once")
     if final.job_state != "done":
         faults.append(f"jobs.state={final.job_state!r}, not 'done'")
-    if not final.chunks:
-        faults.append("the redelivered run left no chunks at all")
-    for before, after in illegal_transitions(status_path(history)):
+    if final.attempts != 2:
+        faults.append(f"attempts={final.attempts}, not 2 (the killed claim and the finished one)")
+    for before, after in illegal_transitions(path):
         faults.append(transition_fault(before, after))
-    # THE at-least-once claim: two deliveries, ONE chunk set. `partial_index_sightings` reads
-    # "full" off the largest count this file ever carried, so two runs that published different
-    # sized sets — a duplicate appended rather than replaced, a half-written set published — land
-    # here as a violation. This checks the OUTCOME, and since ADR 0030 that is all it can check:
-    # the reaped worker is refused, so the redelivered publish lands on a file carrying no chunks
-    # and replaces nothing. The replace mechanism itself (ADR 0011/0020, never dedup logic) is
-    # demonstrated by test_a_reclaimed_job_reruns_and_leaves_one_chunk_set, not by this ceremony.
     for sighting in partial_index_sightings(history):
         faults.append(
-            f"redelivery left a partial or disagreeing index: status={sighting.file_status} "
-            f"chunks={sighting.chunks}"
+            f"partial index visible: status={sighting.file_status} chunks={sighting.chunks}"
+        )
+    total, distinct = chunk_set
+    if total == 0:
+        faults.append("no chunks after recovery")
+    if clean is None:
+        faults.append("no clean ingest of this file from phase 1 to compare the chunk set against")
+    elif chunk_set != clean:
+        faults.append(
+            f"{total} chunks ({distinct} distinct) after recovery, but a clean ingest of the same "
+            f"file has {clean[0]} ({clean[1]} distinct)"
+        )
+    return faults
+
+
+def waiter_faults(log: str) -> list[str]:
+    """What is wrong with the log of a worker started while another held the lock."""
+    faults: list[str] = []
+    if LOCK_WAIT_LINE not in log:
+        faults.append("the second worker never logged that it was waiting for the worker lock")
+    if CLAIM_LINE in log:
+        faults.append("the second worker claimed a job while another worker held the lock")
+    return faults
+
+
+def _blocked_lock_holder(conn: psycopg.Connection, blocker_pid: int) -> tuple[int, str] | None:
+    """`(backend pid, query)` of the worker-lock holder, if it is waiting on `blocker_pid`."""
+    row = conn.execute(
+        """
+        select a.pid, a.query
+        from pg_locks l join pg_stat_activity a using (pid)
+        where l.locktype = 'advisory' and l.granted
+          and l.classid = 0 and l.objid = %(key)s and l.objsubid = 1
+          and %(blocker)s = any(pg_blocking_pids(a.pid))
+        """,
+        {"key": WORKER_LOCK_KEY, "blocker": blocker_pid},
+    ).fetchone()
+    return None if row is None else (int(row[0]), row[1])
+
+
+def _backend_alive(conn: psycopg.Connection, pid: int) -> bool:
+    return bool(
+        conn.execute(
+            "select exists (select 1 from pg_stat_activity where pid = %s)", (pid,)
+        ).fetchone()[0]
+    )
+
+
+def _chunk_set(conn: psycopg.Connection, file_id: str) -> tuple[int, int]:
+    """`(chunks, distinct chunks)` for one file. A duplicated set shows up in the first number."""
+    row = conn.execute(
+        """
+        select count(*), count(distinct (page_or_slide, text))
+        from chunks where file_id = %s::uuid
+        """,
+        (file_id,),
+    ).fetchone()
+    return int(row[0]), int(row[1])
+
+
+def _clean_chunk_set(
+    conn: psycopg.Connection, class_id: str, path: Path, *, exclude: str
+) -> tuple[int, int] | None:
+    """The chunk set an earlier, uninterrupted ingest of `path` in this class published."""
+    row = conn.execute(
+        """
+        select file_id::text from files
+        where class_id = %s::uuid and staging_ref = %s and status = 'ready'
+          and file_id <> %s::uuid
+        order by created_at limit 1
+        """,
+        (class_id, str(path.resolve()), exclude),
+    ).fetchone()
+    return None if row is None else _chunk_set(conn, row[0])
+
+
+def _log_line(log: str, text: str) -> str | None:
+    """The last line of a worker log containing `text`, without its timestamp."""
+    for line in reversed(log.splitlines()):
+        if text in line:
+            return line.split(" ", 2)[-1]
+    return None
+
+
+def _wait_for(check: Callable[[], bool], *, timeout: float) -> bool:
+    deadline = time.monotonic() + timeout
+    while not check():
+        if time.monotonic() >= deadline:
+            return False
+        time.sleep(OBSERVE_SECONDS)
+    return True
+
+
+def _phase_crash(
+    conn: psycopg.Connection,
+    observer: Observer,
+    *,
+    owner_id: str,
+    class_id: str,
+    target: Path,
+    log_dir: Path,
+    chunk_size: int,
+    chunk_overlap: int,
+) -> bool:
+    """SIGKILL a real worker mid-ingest, start a fresh one, and check the job finished once."""
+    print(f"\nPhase 3 — crash recovery with real worker processes, on {target.name}:")
+    workers: list[WorkerProcess] = []
+
+    def spawn(name: str) -> WorkerProcess:
+        worker = WorkerProcess(name, log_dir, chunk_size=chunk_size, chunk_overlap=chunk_overlap)
+        workers.append(worker)
+        worker.start()
+        return worker
+
+    lock_conn = connect()
+    try:
+        lock_conn.execute("lock table chunks in share mode")
+        lock_pid = lock_conn.info.backend_pid
+        file_id = enqueue(conn, path=target, owner_id=owner_id, class_id=class_id)
+        observer.watch(file_id)
+        print(f"  enqueued -> file_id={file_id}; chunks table SHARE-locked by backend {lock_pid}")
+
+        first = spawn("worker-1")
+        holder: list[tuple[int, str]] = []
+
+        def mid_index(current: dict[str, Snapshot]) -> bool:
+            if current[file_id].file_status != "processing":
+                return False
+            found = _blocked_lock_holder(conn, lock_pid)
+            if found:
+                holder.append(found)
+            return found is not None
+
+        stalled = _await(
+            observer,
+            mid_index,
+            workers=(first,),
+            stalled="worker-1 never reached the index transaction",
+        )
+        if stalled is not None:
+            print(f"  {stalled}")
+            return False
+        backend_pid, query = holder[-1]
+        print(
+            f"  worker-1 (pid {first.pid}) is mid-ingest: its backend {backend_pid} holds the "
+            f"worker lock and is blocked on `{query.strip().splitlines()[0]}`"
         )
 
-    for message in faults:
-        print(f"      FAIL — {message}")
-    if not faults:
-        print(f"      reclaimed and redelivered: {evidence}")
-        print(f"      one full chunk set after two deliveries: chunks={final.chunks}")
-    print(
-        f"      corroboration (not gated on): the worker logged "
-        f"{reaper_log.reaps - reaps_before} 'reaper:' warning(s) during this phase"
-    )
-    return not faults
+        second = spawn("worker-2")
+        second.wait_for_log(LOCK_WAIT_LINE, timeout=PHASE_TIMEOUT_SECONDS)
+        second.stop()
+        waiter_log = second.log()
+        for text in (LOCK_WAIT_LINE, CLAIM_LINE):
+            if _log_line(waiter_log, text):
+                print(f"  worker-2 (pid {second.pid}): {_log_line(waiter_log, text)}")
+
+        at_kill = observer.sample()[file_id]
+        status = first.kill()
+        print(
+            f"  SIGKILLed worker-1 (exit {status}) at files.status={at_kill.file_status} "
+            f"jobs.state={at_kill.job_state} attempts={at_kill.attempts} chunks={at_kill.chunks}"
+        )
+        lock_conn.rollback()
+        if not _wait_for(lambda: not _backend_alive(conn, backend_pid), timeout=30):
+            print(f"  backend {backend_pid} outlived its killed worker; the lock was never freed")
+            return False
+        after = observer.sample()[file_id]
+        print(
+            f"  backend {backend_pid} ended with it, publishing nothing: files.status="
+            f"{after.file_status} jobs.state={after.job_state} chunks={after.chunks}"
+        )
+
+        third = spawn("worker-3")
+        stalled = _await(
+            observer,
+            lambda current: _settled(current[file_id]),
+            workers=(third,),
+            stalled="the orphaned job never settled after the restart",
+        )
+        history = observer.history(file_id)
+        _print_history(f"{target.name}: {' -> '.join(status_path(history))}", history)
+        if stalled is not None:
+            print(f"  {stalled}")
+            return False
+        requeued = _log_line(third.log(), REQUEUE_LINE)
+        if requeued:
+            print(f"  worker-3 (pid {third.pid}): {requeued}")
+
+        chunk_set = _chunk_set(conn, file_id)
+        clean = _clean_chunk_set(conn, class_id, target, exclude=file_id)
+        faults = waiter_faults(waiter_log) + crash_faults(
+            history, at_kill=at_kill, chunk_set=chunk_set, clean=clean
+        )
+        for message in faults:
+            print(f"      FAIL — {message}")
+        if not faults:
+            print(
+                f"      ready once · attempts={history[-1].attempts} · chunks={chunk_set[0]} "
+                f"({chunk_set[1]} distinct), same as the clean ingest's {clean[0]}"
+            )
+        return not faults
+    finally:
+        for worker in workers:
+            worker.stop()
+        lock_conn.close()
 
 
 # --- setup + wiring -----------------------------------------------------------------------------
@@ -1239,48 +1001,20 @@ def _create_class(conn: psycopg.Connection, owner_id: str, name: str) -> str:
 
 
 def _validate_args(args: argparse.Namespace) -> None:
-    """Refuse flag values the ceremony argues elsewhere are impossible. Raises `SetupError`.
+    """Refuse flag values argparse accepts and the ceremony cannot use. Raises `SetupError`.
 
-    ARGPARSE ENFORCES TYPES, NOT RANGES, and every range this ceremony depends on was argued in
-    prose and checked nowhere — which is the same defect twice:
-
-    `--max-files 0` reads as UNSET, because `files[:max_files] if max_files else files` treats 0 as
-    falsy. A run that asked for no files silently got the whole corpus. `--max-files -1` is worse
-    than useless: it drops the LAST file, which after sorting is the one with the most words, so it
-    quietly removes the file phase 3 is most likely to need and then fails phase 3 for a reason the
-    output does not contain.
-
-    `--lease 0` and below are refused for the reason `_overrun_remedy` and this module's docstring
-    both already give: a zero-second lease expires at the instant it is granted, so phase 3 would
-    "pass" on an expiry nobody earned — forcing the reclaim by another name, and the exact thing the
-    thread design exists to avoid. The argument was written in three places and enforced in none,
-    which made it a comment rather than a rule.
-
-    A SETUP error, not a gate failure: a run configured this way was never stageable, and calling it
-    a bad RESULT would report the write path misbehaving for a typo in a flag.
+    `--max-files 0` would read as UNSET (`files[:0] if 0 else files`) and ingest everything, and a
+    negative value silently drops files from the end of the sorted corpus.
     """
     if args.max_files is not None and args.max_files < 1:
         raise SetupError(
             f"--max-files must be at least 1 (got {args.max_files}); omit it to use the whole "
             "corpus. 0 is not 'no files' — it reads as unset and silently ingests all of them"
         )
-    if args.lease < DEFAULT_SHORT_LEASE_SECONDS:
-        raise SetupError(
-            f"--lease must be at least {DEFAULT_SHORT_LEASE_SECONDS}s (got {args.lease}). A lease "
-            "of 0 or less has already expired when `claim` grants it, so phase 3's reclaim would "
-            "be forced rather than earned — which is precisely what the thread design exists to "
-            "avoid"
-        )
 
 
 def _build_parser() -> argparse.ArgumentParser:
-    """The CLI surface, separated from parsing so a test can read what the flags actually SAY.
-
-    Split out after `--max-files`' help described phase 3 as running on "the largest file of that
-    subset" when the code picked a different one — a help string and its code disagreeing, with
-    nothing able to notice. Help text is documentation that ships inside the program; it drifts
-    exactly like a comment and, unlike a comment, a user acts on it.
-    """
+    """The CLI surface, separated from parsing so a test can read what the flags actually SAY."""
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--owner", default=DEFAULT_OWNER, help="owner_id every row is scoped to")
     parser.add_argument(
@@ -1292,23 +1026,12 @@ def _build_parser() -> argparse.ArgumentParser:
         default=None,
         metavar="N",
         help="enqueue only the first N corpus files in phase 1 (default: all of them). Phase 3 "
-        "still runs, on the FIRST file of that subset — its overrun is induced, so which file it "
-        "picks no longer affects whether the lease expires",
-    )
-    parser.add_argument(
-        "--lease",
-        type=int,
-        default=DEFAULT_SHORT_LEASE_SECONDS,
-        help=f"lease worker A holds, in seconds (default and floor {DEFAULT_SHORT_LEASE_SECONDS}). "
-        f"Phase 3 induces a {PHASE_THREE_EMBED_DELAY_SECONDS:.0f}s embed delay, so this must be "
-        "shorter than that delay. File ingest speed is NOT a constraint here: it stopped "
-        "being one when the overrun became induced rather than earned from the corpus",
+        "runs on the FIRST file of that subset and compares its chunks with phase 1's ingest of it",
     )
     parser.add_argument(
         "--verbose",
         action="store_true",
-        help="also print the worker's own INFO log lines (claims, durations, reaps) interleaved "
-        "with the ceremony's output",
+        help="print every worker process's own log at the end of the run",
     )
     parser.add_argument(
         "--chunk-size",
@@ -1331,26 +1054,18 @@ def _parse_args() -> argparse.Namespace:
 
 def main() -> int:
     args = _parse_args()
-    print("Slice 2 exit test — the write path, over real course materials and real embeddings.")
+    print("Slice 2 exit test — the write path, over real course materials, with one worker.")
 
     try:
         _validate_args(args)
         corpus = _corpus_files(Path(args.corpus_dir), args.max_files)
-
-        # The key check is explicit because absence never raises: `load_settings()` defaults a
-        # missing key to "", which the client ACCEPTS at construction, so the failure would
-        # otherwise surface as an AuthenticationError inside a worker THREAD, mid-phase — where it
-        # reads as a gate failure ("the write path misbehaved") for a run that never validly
-        # started. Same conversion, same argument, as `ask_smoke.main`.
-        if not load_settings().openai_api_key:
-            raise SetupError("OPENAI_API_KEY is empty — set it in .env (CLAUDE.md, Local dev)")
+        # Checked here because the workers are separate processes: a missing key would otherwise
+        # surface as a dead worker mid-phase, which reads as a gate failure.
         try:
-            # Wrapped ONCE, here, and handed to worker A and to phase 3 as the same object — which
-            # is what makes phase 3 able to arm it (`_DelayedEmbeddings`). Disarmed it is a
-            # delegation and an `if`, so phases 1 and 2 embed exactly as they would unwrapped.
-            embedder = _DelayedEmbeddings(OpenAIEmbeddings())
-        except OpenAIError as err:
-            raise SetupError(f"cannot construct the OpenAI embedder: {err}") from err
+            require_usable()
+            providers = selected()
+        except RuntimeError as err:
+            raise SetupError(str(err)) from err
         try:
             conn = connect()
             observer_conn = connect()
@@ -1359,95 +1074,63 @@ def main() -> int:
                 f"cannot connect to Postgres (DATABASE_URL — is the server up?): {err}"
             ) from err
 
-        # The library only EMITS events; deciding where they go is the application's call, and this
-        # script is the application (ADR 0009). Default WARNING so the worker's reaper line and any
-        # transient-failure line land in the transcript beside the ceremony's own output — those
-        # are the ones that explain a surprising result — while the per-file INFO chatter rides
-        # `--verbose`.
-        logging.basicConfig(
-            level=logging.INFO if args.verbose else logging.WARNING,
-            format="      | %(levelname)s %(name)s: %(message)s",
-        )
-        reaper_log = ReaperLog()
-        # `run.__module__` rather than the string "gct.jobs.worker": the module names its logger
-        # `getLogger(__name__)`, so deriving it from the function this script already imports keeps
-        # the two the same value by construction. A hardcoded name would go quietly deaf the day
-        # the module moved — and a handler that receives nothing looks exactly like a reaper that
-        # never fired.
-        logging.getLogger(run.__module__).addHandler(reaper_log)
-
         with conn, observer_conn, TemporaryDirectory(prefix="gct-ingest-smoke-") as tmp:
-            # Autocommit on the ENQUEUE connection: `enqueue` refuses a connection already inside a
-            # transaction (`require_idle`; ADR 0025, guarded per ADR 0027), and psycopg opens the
-            # implicit transaction on the first statement — so without this the class insert leaves
-            # this connection INTRANS and the first `enqueue` would raise rather than silently
-            # publish nothing. The guard makes it loud; autocommit makes it correct.
+            # `enqueue` refuses a connection inside a transaction (`require_idle`;
+            # ADR 0025, guarded per ADR 0027), and the class insert would otherwise leave one open.
             conn.autocommit = True
             observer = Observer(observer_conn)
+            log_dir = Path(tmp)
 
             name = f"ingest-smoke {datetime.now(timezone.utc):%Y-%m-%dT%H:%M:%SZ}"
             class_id = _create_class(conn, args.owner, name)
             print(f"\nSetup — owner {args.owner!r}, class {name!r} (class_id={class_id})")
             print(f"  corpus {args.corpus_dir}: {len(corpus)} file(s)")
             print(f"  chunk window {args.chunk_size}/{args.chunk_overlap} words")
+            print(f"  providers: {providers}; workers run {WORKER_SCRIPT}")
 
-            worker_a = WorkerThread(
-                "worker-A",
-                embedder=embedder,
-                lease_seconds=args.lease,
-                chunk_size=args.chunk_size,
-                chunk_overlap=args.chunk_overlap,
-                heartbeat_max_seconds=PHASE_THREE_HEARTBEAT_CAP_SECONDS,
+            worker_a = WorkerProcess(
+                "worker-A", log_dir, chunk_size=args.chunk_size, chunk_overlap=args.chunk_overlap
             )
-            # The phases run in order and are written as three statements rather than one dict
-            # literal: they SHARE a worker and a queue, so their order is a precondition, not a
-            # presentation choice, and burying it in evaluation order would hide that. Every phase
-            # runs even when an earlier one failed — a ceremony that stopped at the first fault
-            # would report one line where the whole picture is what a reader needs.
+            # Every phase runs even when an earlier one failed, so the whole picture is printed.
             results: dict[str, bool] = {}
-            results["1 lifecycle"] = _phase_lifecycle(
+            try:
+                results["1 lifecycle"] = _phase_lifecycle(
+                    conn,
+                    observer,
+                    worker_a,
+                    owner_id=args.owner,
+                    class_id=class_id,
+                    corpus=corpus,
+                )
+                results["2 terminal failure"] = _phase_terminal_failure(
+                    conn,
+                    observer,
+                    worker_a,
+                    owner_id=args.owner,
+                    class_id=class_id,
+                    corrupt=write_corrupt_pdf(log_dir),
+                )
+                # `_await` catches a death during a wait; this catches one between phases.
+                death = _first_death((worker_a,))
+                if death is not None:
+                    print(f"\n  worker A died: {death!r}")
+                    results["worker A survived"] = False
+            finally:
+                # Phase 3 starts its own workers, and only one may hold the worker lock.
+                worker_a.stop()
+            results["3 crash recovery"] = _phase_crash(
                 conn,
                 observer,
-                worker_a,
-                owner_id=args.owner,
-                class_id=class_id,
-                corpus=corpus,
-            )
-            results["2 terminal failure"] = _phase_terminal_failure(
-                conn,
-                observer,
-                worker_a,
-                owner_id=args.owner,
-                class_id=class_id,
-                corrupt=write_corrupt_pdf(Path(tmp)),
-            )
-            results["3 reaper"] = _phase_reaper(
-                conn,
-                observer,
-                reaper_log,
-                worker_a,
                 owner_id=args.owner,
                 class_id=class_id,
                 target=corpus[0],
-                embedder=embedder,
-                lease_seconds=args.lease,
+                log_dir=log_dir,
                 chunk_size=args.chunk_size,
                 chunk_overlap=args.chunk_overlap,
             )
-            # A worker that CRASHED is a gate failure, not a setup failure, and the split is
-            # `SetupError`'s: the ceremony was staged, the write path ran, and it fell over — a
-            # result, however bad.
-            #
-            # A BACKSTOP NOW, NOT THE DIAGNOSIS. `_await` reads the same flag inside every phase's
-            # wait, so a worker that dies while anything is being waited on is caught there, in the
-            # phase it broke, within one `OBSERVE_SECONDS`. This line covers the remaining sliver —
-            # a death BETWEEN phases, with nothing waiting — and keeps the gate honest about it. It
-            # used to be the only reader, which is why the ceremony could spend three full phase
-            # timeouts before mentioning that its worker had been dead the whole time.
-            death = _first_death((worker_a,))
-            if death is not None:
-                print(f"\n  worker A died: {death!r}")
-                results["worker A survived"] = False
+            if args.verbose:
+                for log in sorted(log_dir.glob("*.log")):
+                    print(f"\n--- {log.name} ---\n{log.read_text(errors='replace')}", end="")
 
             return _print_gate(results)
 
@@ -1464,7 +1147,8 @@ def _print_gate(results: dict[str, bool]) -> int:
     verdict = "PASS" if passed else "FAIL"
     print(
         f"{verdict} — exit gate (observed queued->processing->ready · terminal failure with no "
-        "retry spent · reaper redelivery leaving one full chunk set · no partial index sighted)"
+        "retry spent · SIGKILLed worker's job finished once by a fresh worker, attempts=2, one "
+        "chunk set · a second worker waited for the lock · no partial index sighted)"
     )
     return EXIT_OK if passed else EXIT_GATE_FAILED
 

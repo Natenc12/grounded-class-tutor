@@ -19,15 +19,16 @@ from pathlib import Path
 import psycopg
 import pytest
 
+from gct.db import connect
 from gct.jobs.queue import (
-    Job,
     claim,
     complete,
     enqueue,
     fail,
-    reclaim_expired,
+    holds_worker_lock,
     release,
-    renew_lease,
+    requeue_orphans,
+    try_acquire_worker_lock,
 )
 
 
@@ -43,25 +44,12 @@ def _lecture(tmp_path: Path) -> Path:
     return source
 
 
-def test_every_writer_refuses_a_connection_already_in_a_transaction(db, db_other, tmp_path):
-    """The ADR 0025 precondition, enforced rather than documented (ADR 0027 §Adopted early).
-
-    ONE bare `SELECT` is the whole setup — no write required. That is the trap: psycopg opens
-    its implicit transaction on the first statement of any kind, so a caller can arm this
-    without doing anything that looks like writing. ADR 0027 records two tests that were
-    written against the rule and broke it anyway; this is the version that cannot be ignored.
-
-    EVERY writer, because the guard is only worth anything if it has no gap — one
-    unguarded writer is the one a worker will call. This list is a census, not a sample:
-    a new verb in this module (`release` arrived with #71 PR 2) belongs on it the same day.
-    And `enqueue` is checked for having written NOTHING through `db_other`: a guard that
-    raised *after* doing half the work would be worse than none, since the caller would see
-    an exception and a partial row.
-    """
-    conn, owner_id, class_id = db
+def test_every_writer_refuses_a_connection_already_in_a_transaction(worker_db, db_other, tmp_path):
+    """ADR 0025/0027. A census of this module's writers: a new verb belongs on it the same day."""
+    conn, owner_id, class_id = worker_db
     source = _lecture(tmp_path)
     file_id = enqueue(conn, path=source, owner_id=owner_id, class_id=class_id)
-    job = claim(conn, lease_seconds=3600)
+    job = claim(conn)
     assert job is not None
 
     conn.execute("select 1").fetchone()  # the accidental transaction — a read, not a write
@@ -69,27 +57,18 @@ def test_every_writer_refuses_a_connection_already_in_a_transaction(db, db_other
 
     for name, call in [
         ("enqueue", lambda: enqueue(conn, path=source, owner_id=owner_id, class_id=class_id)),
-        ("claim", lambda: claim(conn, lease_seconds=60)),
-        ("complete", lambda: complete(conn, job_id=job.job_id, lease_token=job.lease_token)),
-        ("fail", lambda: fail(conn, job_id=job.job_id, lease_token=job.lease_token, error="x")),
-        (
-            "release",
-            lambda: release(conn, job_id=job.job_id, lease_token=job.lease_token, error="x"),
-        ),
-        (
-            "renew_lease",
-            lambda: renew_lease(
-                conn, job_id=job.job_id, lease_token=job.lease_token, lease_seconds=60
-            ),
-        ),
-        ("reclaim_expired", lambda: reclaim_expired(conn)),
+        ("try_acquire_worker_lock", lambda: try_acquire_worker_lock(conn)),
+        ("requeue_orphans", lambda: requeue_orphans(conn)),
+        ("claim", lambda: claim(conn)),
+        ("complete", lambda: complete(conn, job_id=job.job_id)),
+        ("fail", lambda: fail(conn, job_id=job.job_id, error="x")),
+        ("release", lambda: release(conn, job_id=job.job_id, error="x")),
     ]:
         with pytest.raises(RuntimeError, match=f"{name}\\(\\) requires a connection"):
             call()
 
-    # The remedy is named in the message, not left to the reader to rediscover.
     with pytest.raises(RuntimeError, match="autocommit"):
-        claim(conn, lease_seconds=60)
+        claim(conn)
 
     conn.rollback()
     # Nothing leaked from the refused calls: still one file, and the job is untouched.
@@ -140,12 +119,12 @@ def test_enqueue_publishes_both_rows(db, db_other, tmp_path):
     )
 
     job_row = db_other.execute(
-        "select file_id::text, owner_id, class_id::text, state, attempts, leased_until, last_error "
+        "select file_id::text, owner_id, class_id::text, state, attempts, last_error "
         "from jobs where file_id = %s::uuid",
         (file_id,),
     ).fetchone()
     assert job_row is not None, "the jobs row was not published to another connection"
-    assert job_row == (file_id, owner_id, class_id, "queued", 0, None, None)
+    assert job_row == (file_id, owner_id, class_id, "queued", 0, None)
 
 
 def test_enqueue_returns_the_id_of_the_row_it_wrote(db, db_other, tmp_path):
@@ -195,7 +174,7 @@ def test_enqueue_is_atomic_when_the_jobs_insert_fails(db, db_other, tmp_path, mo
 
     This is the invariant the docstring leads with, and the one whose violation is silent: a
     committed `files` row with no `jobs` row is a file stuck in `queued` that no worker will ever
-    claim, that no reaper will ever notice, and that the student watches forever.
+    claim, and that the student watches forever.
 
     The failure is INJECTED here, unlike `test_index.py`'s all-or-nothing tests, which get
     Postgres itself to reject a wrong-dimension vector mid-write and monkeypatch nothing. There
@@ -413,18 +392,9 @@ def test_enqueue_refuses_a_class_id_that_is_not_even_a_string(db, db_other, tmp_
     ), "a refused enqueue published a files row"
 
 
-def test_claim_returns_the_oldest_queued_job(db, db_other, tmp_path):
-    """FIFO by `created_at`: the job that has waited longest wins — and the other is untouched.
-
-    Enqueueing two jobs in order cannot prove the ORDER BY: rows inserted microseconds apart
-    come back in insertion order from a plain scan anyway, so the test would stay green with the
-    clause deleted. The SECOND enqueue is therefore backdated an hour — only ordering by
-    `created_at` finds it.
-
-    The sibling assertion (first job still `queued`, no lease) is the half that catches a
-    too-broad UPDATE: a WHERE that matches more than the one selected row would stamp both.
-    """
-    conn, owner_id, class_id = db
+def test_claim_returns_the_oldest_queued_job(worker_db, db_other, tmp_path):
+    """The second enqueue is backdated, so only ORDER BY created_at finds it."""
+    conn, owner_id, class_id = worker_db
     source = _lecture(tmp_path)
     first = enqueue(conn, path=source, owner_id=owner_id, class_id=class_id)
     second = enqueue(conn, path=source, owner_id=owner_id, class_id=class_id)
@@ -432,9 +402,9 @@ def test_claim_returns_the_oldest_queued_job(db, db_other, tmp_path):
         "update jobs set created_at = created_at - interval '1 hour' where file_id = %s::uuid",
         (second,),
     )
-    conn.commit()  # `claim` must start OUTSIDE a transaction (its docstring; ADR 0025)
+    conn.commit()  # `claim` must start OUTSIDE a transaction (ADR 0025)
 
-    job = claim(conn, lease_seconds=60)
+    job = claim(conn)
 
     assert job is not None
     assert job.file_id == second, "claim did not follow created_at to the oldest job"
@@ -446,743 +416,292 @@ def test_claim_returns_the_oldest_queued_job(db, db_other, tmp_path):
     assert job.job_id == stored_job_id
 
     untouched = db_other.execute(
-        "select state, attempts, leased_until from jobs where file_id = %s::uuid", (first,)
+        "select state, attempts from jobs where file_id = %s::uuid", (first,)
     ).fetchone()
-    assert untouched == ("queued", 0, None), "claim touched a job it did not return"
+    assert untouched == ("queued", 0), "claim touched a job it did not return"
 
 
-def test_claim_hands_back_the_path_so_the_worker_needs_no_second_query(db, tmp_path):
-    """`Job.staging_ref` is what makes the ADR 0025 precondition survive contact with a worker.
-
-    `claim` leaving the connection IDLE is worth nothing on its own: `ingest_file` needs a
-    `path`, and if the worker has to fetch it, that bare SELECT reopens psycopg's implicit
-    transaction and `index_file` degrades to a SAVEPOINT that publishes nothing. Measured
-    before this field existed: a real PDF through that flow wrote 62 chunks, `files.status`
-    `ready` and `jobs.state` `done`, all invisible to a second connection.
-
-    So the assertion that matters is not just "the field is populated" — it is that the
-    connection is STILL IDLE at the moment the worker has everything it needs. Those two
-    assertions together are the contract; either alone can hold while the other fails.
-    """
-    conn, owner_id, class_id = db
+def test_claim_hands_back_the_path_with_the_connection_still_idle(worker_db, tmp_path):
+    """A SELECT for the path after `claim` would reopen a transaction (ADR 0025)."""
+    conn, owner_id, class_id = worker_db
     source = _lecture(tmp_path)
     enqueue(conn, path=source, owner_id=owner_id, class_id=class_id)
 
-    job = claim(conn, lease_seconds=60)
+    job = claim(conn)
 
     assert job is not None
-    assert job.staging_ref == str(source.resolve()), (
-        "claim must hand back the same absolute path enqueue stored — the worker opens this"
-    )
-    assert conn.info.transaction_status == psycopg.pq.TransactionStatus.IDLE, (
-        "the worker now has path + scope + ids with the connection still outside a "
-        "transaction — that pairing is the whole point of carrying staging_ref (ADR 0025)"
-    )
+    assert job.staging_ref == str(source.resolve())
+    assert conn.info.transaction_status == psycopg.pq.TransactionStatus.IDLE
 
 
-def test_claim_does_not_lock_the_files_row_it_reads(db, db_open_txn, tmp_path):
-    """`for update OF J` — the join must not lock `files`, only `jobs`.
-
-    An unqualified `for update` across the join would lock the matching `files` row for the
-    life of claim's transaction. That row is not the queue's to hold: under at-least-once,
-    #71's `index_file` upserts it from another connection moments later. Nothing in the happy
-    path notices, which is exactly why this is pinned — the mutation (dropping `of j`) leaves
-    every other test in this file green. The fact is the ABSENCE of other coverage, not a
-    tally: a count written here goes stale the next time anyone adds a test, and had.
-
-    The frozen second connection takes the `files` row lock FIRST. If claim's SELECT wanted
-    that row too it would block and hit the timeout; wanting only the `jobs` row, it sails past.
-    """
-    conn, owner_id, class_id = db
+def test_claim_does_not_block_on_a_locked_files_row(worker_db, db_open_txn, tmp_path):
+    """`index_file` upserts the files row from elsewhere; claim must not need its lock."""
+    conn, owner_id, class_id = worker_db
     file_id = enqueue(conn, path=_lecture(tmp_path), owner_id=owner_id, class_id=class_id)
     held = db_open_txn.execute(
         "select file_id from files where file_id = %s::uuid for update", (file_id,)
     ).fetchone()
-    assert held is not None, "the frozen worker never got the files lock — the test is not testing"
+    assert held is not None
 
     conn.execute("set lock_timeout = '2s'")
     conn.commit()  # `set` opened an implicit transaction; claim must start outside one
 
-    job = claim(conn, lease_seconds=60)
+    job = claim(conn)
 
-    assert job is not None and job.file_id == file_id, (
-        "claim blocked on (or skipped) a job whose FILES row was locked — the row lock is "
-        "too broad; `for update of j` is what keeps it to the jobs row"
-    )
+    assert job is not None and job.file_id == file_id
 
 
-def test_claim_publishes_the_lease_before_returning(db, db_other, tmp_path):
-    """The commit-before-return contract (decided 2026-08-11), pinned from both sides.
-
-    Through `db_other`: the processing state, the attempts bump, and a lease inside
-    (now, now + lease_seconds] are visible to a DIFFERENT connection with no commit from this
-    test — so `claim` published them itself. A lease only this connection can see is not a
-    lease; `reclaim_expired` and every other worker read it from elsewhere.
-
-    On `db`'s own connection: transaction status is back to IDLE. That is `index_file`'s
-    ADR 0025 precondition — a claim that returned INTRANS would make the worker's very next
-    ingest on this connection publish nothing while reporting success, and #74 deliberately
-    left that unguarded at runtime.
-
-    Also pins that `files.status` still reads `queued`: every transition after `queued` on
-    that axis belongs to the worker, so claim writing it would be a second writer.
-    """
-    conn, owner_id, class_id = db
+def test_claim_publishes_processing_and_leaves_files_status_alone(worker_db, db_other, tmp_path):
+    conn, owner_id, class_id = worker_db
     file_id = enqueue(conn, path=_lecture(tmp_path), owner_id=owner_id, class_id=class_id)
 
-    job = claim(conn, lease_seconds=300)
+    job = claim(conn)
 
     assert job is not None
-    assert conn.info.transaction_status == psycopg.pq.TransactionStatus.IDLE, (
-        "claim returned with a transaction still open — the next ingest on this "
-        "connection would degrade to a savepoint and publish nothing (ADR 0025)"
-    )
-    published = db_other.execute(
-        """
-        select state, attempts, leased_until > now(),
-               leased_until <= now() + make_interval(secs => %(lease_seconds)s)
-        from jobs where job_id = %(job_id)s::uuid
-        """,
-        {"lease_seconds": 300, "job_id": job.job_id},
-    ).fetchone()
-    assert published == ("processing", 1, True, True), (
-        "the claim was not published to another connection, or the lease is not "
-        "inside (now, now + lease_seconds]"
-    )
-    file_status = db_other.execute(
-        "select status from files where file_id = %s::uuid", (file_id,)
-    ).fetchone()[0]
-    assert file_status == "queued", "claim wrote files.status — that axis belongs to the worker"
-
-
-def test_claim_on_an_empty_queue_returns_none(db):
-    """Empty is the poll loop's most common outcome — a result, not an error.
-
-    (If this ever fails with a Job, look for stray `queued` rows in the local `jobs` table —
-    claim is deliberately unscoped, so leftovers from a crashed run are visible to it.)
-
-    The IDLE check matters on this path too: the None branch still opened a read transaction,
-    and leaving it open would trip ADR 0025 on the tick that DOES find a job.
-    """
-    conn, _, _ = db
-
-    assert claim(conn, lease_seconds=60) is None
     assert conn.info.transaction_status == psycopg.pq.TransactionStatus.IDLE
-
-
-def test_claim_skips_a_job_a_concurrent_claimer_holds_locked(db, db_open_txn, tmp_path):
-    """Two workers, one job, zero double-claims — the SKIP LOCKED half of ADR 0011.
-
-    Exactly ONE job is enqueued, so the test cannot pass because two claimers happened to be
-    handed different jobs — with one job there is no accidental way through. `db_open_txn`
-    plays a worker frozen mid-claim: it holds the row lock claim's SELECT takes, in a
-    transaction that has not committed. (`db_other` cannot play this part — it is autocommit,
-    so its locks die inside the statement that takes them; see the fixture docstring.)
-
-    The lock_timeout is mutation insurance, not contract: with SKIP LOCKED deleted from the
-    source the second claim BLOCKS on the held lock, and without the timeout that mutation
-    would hang the suite instead of failing it.
-    """
-    conn, owner_id, class_id = db
-    file_id = enqueue(conn, path=_lecture(tmp_path), owner_id=owner_id, class_id=class_id)
-
-    held = db_open_txn.execute(
-        "select job_id from jobs where file_id = %s::uuid for update", (file_id,)
-    ).fetchone()
-    assert held is not None, "the frozen worker never got the lock — the test is not testing"
-
-    conn.execute("set lock_timeout = '2s'")
-    conn.commit()  # `set` opened an implicit transaction; claim must start outside one
-
-    assert claim(conn, lease_seconds=60) is None, (
-        "claim was handed a job another worker holds locked — SKIP LOCKED is not doing its job"
-    )
-
-    db_open_txn.rollback()  # the frozen worker dies; its lock releases
-    job = claim(conn, lease_seconds=60)
-    assert job is not None and job.file_id == file_id, (
-        "the None above was not about the lock — the job should be claimable once it releases"
-    )
-
-
-def _stall_and_rehand(conn, file_id: str) -> tuple[Job, Job]:
-    """Claim, let the lease expire, reap, re-claim — the `(stalled, holder)` pair at the heart
-    of every at-least-once test in this file.
-
-    Named because it is the branch's central scenario and was spelled out four different ways.
-    Both jobs are returned because which one a test needs differs: the STALLED one is the
-    zombie whose writes must be refused, the HOLDER is the run that must survive them. They
-    share a `job_id` and differ in `lease_token` — that difference is the whole point, so the
-    assertion that they do is here rather than repeated at every call site.
-    """
-    stalled = claim(conn, lease_seconds=3600)
-    assert stalled is not None
-    _backdate_lease(conn, file_id)
-    assert reclaim_expired(conn) == 1
-    holder = claim(conn, lease_seconds=3600)
-    assert holder is not None and holder.job_id == stalled.job_id, "the same job came back around"
-    assert holder.lease_token != stalled.lease_token, (
-        "claim must mint a FRESH token per claim - reusing it would make the guard decorative"
-    )
-    return stalled, holder
-
-
-def _backdate_lease(conn, file_id: str) -> None:
-    """Push a claimed job's lease an hour into the past — a worker that died mid-job.
-
-    Expiry is simulated by editing the timestamp rather than claiming with a tiny
-    `lease_seconds` and sleeping: no wall-clock wait, and the lease is unambiguously
-    expired rather than racing the test's own speed. Commits, so `reclaim_expired`
-    starts outside a transaction (its contract; ADR 0025).
-    """
-    conn.execute(
-        "update jobs set leased_until = now() - interval '1 hour' where file_id = %s::uuid",
-        (file_id,),
-    )
-    conn.commit()
-
-
-def test_reclaim_expired_requeues_only_the_expired_lease(db, db_other, tmp_path):
-    """The WHERE's precision, from both sides: expired requeued, live lease untouched.
-
-    The untouched half is the one the handoff warns is easy to skip: a too-broad WHERE
-    yanks a job from a healthy worker mid-run, and a test with only expired jobs in the
-    table would never notice. So one lease is pushed into the past and one is live, and
-    the assertions are about BOTH.
-
-    Also pins what reclaim writes (through `db_other` — publication, not computation):
-    state back to `queued`, lease CLEARED, and `attempts` NOT reset — the crashed run
-    spent an attempt, and zeroing the trail would hand a poison file a fresh budget
-    after every crash.
-    """
-    conn, owner_id, class_id = db
-    source = _lecture(tmp_path)
-    first = enqueue(conn, path=source, owner_id=owner_id, class_id=class_id)
-    second = enqueue(conn, path=source, owner_id=owner_id, class_id=class_id)
-    crashed = claim(conn, lease_seconds=3600)
-    healthy = claim(conn, lease_seconds=3600)
-    assert crashed is not None and crashed.file_id == first
-    assert healthy is not None and healthy.file_id == second
-    _backdate_lease(conn, first)
-
-    moved = reclaim_expired(conn)
-
-    assert moved == 1, "exactly one lease was expired, so exactly one row moves"
-    assert conn.info.transaction_status == psycopg.pq.TransactionStatus.IDLE
-    requeued = db_other.execute(
-        "select state, leased_until, attempts from jobs where job_id = %s::uuid",
-        (crashed.job_id,),
-    ).fetchone()
-    assert requeued == ("queued", None, 1), (
-        "the expired job must be republished as queued, lease cleared, attempts KEPT"
-    )
-    untouched = db_other.execute(
-        "select state, leased_until is not null from jobs where job_id = %s::uuid",
-        (healthy.job_id,),
-    ).fetchone()
-    assert untouched == ("processing", True), (
-        "reclaim touched a live lease — it just yanked a job from a healthy worker"
-    )
-
-
-def test_reclaim_expired_leaves_terminal_states_alone(db, db_other, tmp_path):
-    """`state = 'processing'` in the WHERE is load-bearing: done jobs stay done.
-
-    `complete`/`fail` never clear `leased_until`, so every terminal row carries an
-    expired lease forever. A reclaim that filtered on the lease alone would resurrect
-    the entire job history back to `queued` on every tick — infinite reprocessing.
-    The terminal row here is written directly (state='done', stale lease left in
-    place), which is exactly the shape `complete` will publish.
-    """
-    conn, owner_id, class_id = db
-    file_id = enqueue(conn, path=_lecture(tmp_path), owner_id=owner_id, class_id=class_id)
-    job = claim(conn, lease_seconds=3600)
-    assert job is not None
-    conn.execute("update jobs set state = 'done' where job_id = %s::uuid", (job.job_id,))
-    conn.commit()
-    _backdate_lease(conn, file_id)
-
-    assert reclaim_expired(conn) == 0, "a terminal job with a stale lease was resurrected"
-
-    state = db_other.execute(
-        "select state from jobs where job_id = %s::uuid", (job.job_id,)
-    ).fetchone()[0]
-    assert state == "done"
-
-
-def test_attempts_accumulate_across_a_claim_reclaim_claim_cycle(db, db_other, tmp_path):
-    """The retry trail: claim → crash → reclaim → claim again reads as attempt 2.
-
-    This is the budget #71 spends. Each half of the guarantee lives in a different
-    function — `claim` bumps, `reclaim_expired` preserves — and only the cycle
-    exercises them together: a reset hiding in reclaim passes every single-function
-    test and still hands a poison file an infinite budget.
-    """
-    conn, owner_id, class_id = db
-    file_id = enqueue(conn, path=_lecture(tmp_path), owner_id=owner_id, class_id=class_id)
-
-    first_try = claim(conn, lease_seconds=3600)
-    assert first_try is not None and first_try.attempts == 1
-    _backdate_lease(conn, file_id)
-    assert reclaim_expired(conn) == 1
-
-    second_try = claim(conn, lease_seconds=3600)
-
-    assert second_try is not None
-    assert second_try.job_id == first_try.job_id, "the same job came back around"
-    assert second_try.attempts == 2, "the reclaim reset the attempts trail"
-    published = db_other.execute(
-        "select attempts from jobs where job_id = %s::uuid", (second_try.job_id,)
-    ).fetchone()[0]
-    assert published == 2
-
-
-def test_a_zombie_worker_cannot_overwrite_the_run_that_won(db, db_other, tmp_path):
-    """Only the current leaseholder may finish a job — the two-condition guard in `_settle`.
-
-    The scenario `reclaim_expired`'s own docstring predicts, driven end to end: worker A
-    claims, stalls past its lease, the reaper re-queues, worker B claims the SAME job and
-    succeeds. Then A wakes up and calls `fail` — with the job_id it was legitimately handed.
-    Every argument here is correct; nothing is malformed. Without that guard the row ends
-    `failed` for a file that was ingested successfully, and `jobs.state` becomes permanently
-    wrong about a run that worked.
-
-    WHAT THIS TEST DOES AND DOES NOT PIN, because the distinction is easy to lose: it drives
-    the whole sequence end to end, which is its value — but it survives dropping EITHER half of
-    the guard on its own, because here the winner has already FINISHED, so the state condition
-    alone refuses the zombie and so does the token condition alone. The halves are pinned
-    individually elsewhere: `test_complete_and_fail_distinguish_a_lost_lease_from_a_job_that_
-    never_existed` for the state half, and `test_release_refuses_a_job_another_worker_now_holds`
-    — where the winner is still RUNNING — for the token. Do not read this as coverage of either.
-
-    Both directions are asserted, because they cost differently. A zombie `fail` over a
-    genuine success is the damaging one; a zombie `complete` over a genuine failure is the
-    mirror, and a guard that only covered `fail` would pass a one-sided test forever.
-    """
-    conn, owner_id, class_id = db
-    file_id = enqueue(conn, path=_lecture(tmp_path), owner_id=owner_id, class_id=class_id)
-    zombie, winner = _stall_and_rehand(conn, file_id)
-
-    complete(conn, job_id=winner.job_id, lease_token=winner.lease_token)  # the run that holds it
-    fail(
-        conn,
-        job_id=zombie.job_id,
-        lease_token=zombie.lease_token,
-        error="zombie woke up long after losing its lease",
-    )
-
-    survived = db_other.execute(
-        "select state, last_error from jobs where job_id = %s::uuid", (winner.job_id,)
-    ).fetchone()
-    assert survived == ("done", None), (
-        "a worker whose lease had already been reclaimed overwrote the terminal state of the "
-        "run that won — jobs.state now reports `failed` for a file that ingested fine"
-    )
-
-    # The mirror: a zombie `complete` must not bury a genuine failure either.
-    second = enqueue(conn, path=_lecture(tmp_path), owner_id=owner_id, class_id=class_id)
-    ghost, retry = _stall_and_rehand(conn, second)
-    assert ghost.file_id == second
-
-    fail(conn, job_id=retry.job_id, lease_token=retry.lease_token, error="the real run failed")
-    complete(conn, job_id=ghost.job_id, lease_token=ghost.lease_token)
-
     assert db_other.execute(
-        "select state, last_error from jobs where job_id = %s::uuid", (retry.job_id,)
-    ).fetchone() == ("failed", "the real run failed"), (
-        "a zombie's `complete` buried the real run's failure — the student would be told the "
-        "file is fine while nothing was indexed"
-    )
-
-
-def test_complete_and_fail_distinguish_a_lost_lease_from_a_job_that_never_existed(
-    db, db_other, tmp_path
-):
-    """Writing nothing has two causes, and reporting them identically is the defect.
-
-    A lost lease is ROUTINE — the state guard makes it so, and a reaper reclaiming a slow
-    worker is a normal poll cycle, not an error. Raising on it would turn ordinary operation
-    into an exception. So: `False`.
-
-    An unknown `job_id` is a PROGRAMMING ERROR — the caller believes a job finished that does
-    not exist, and the cost of staying quiet is a re-ingest per lease expiry until #71's retry
-    budget terminal-fails the file for a reason unrelated to what went wrong. So: `LookupError`.
-
-    Both are pinned for BOTH functions. A three-way split that held for `complete` and not
-    `fail` would be read as meaning something, and the `fail` direction is the one that
-    discards evidence — the error message goes nowhere if nothing is written.
-    """
-    conn, owner_id, class_id = db
-    file_id = enqueue(conn, path=_lecture(tmp_path), owner_id=owner_id, class_id=class_id)
-    job = claim(conn, lease_seconds=3600)
-    assert job is not None
-
-    # 1. The happy path returns True — this call is the one that finished it.
-    assert complete(conn, job_id=job.job_id, lease_token=job.lease_token) is True
-
-    # 2. A second call writes nothing: the row is no longer `processing`. Not an error.
-    assert complete(conn, job_id=job.job_id, lease_token=job.lease_token) is False, (
-        "a worker that no longer holds the lease must be told so, not told it succeeded"
-    )
-    assert fail(conn, job_id=job.job_id, lease_token=job.lease_token, error="too late") is False
-    assert db_other.execute(
-        "select state, last_error from jobs where job_id = %s::uuid", (job.job_id,)
-    ).fetchone() == ("done", None), "a False return still wrote something"
-
-    # 3. A job_id naming nothing at all is loud, on both paths.
-    ghost = str(uuid.uuid4())
-    with pytest.raises(LookupError, match=ghost):
-        complete(conn, job_id=ghost, lease_token=str(uuid.uuid4()))
-    with pytest.raises(LookupError, match=ghost):
-        fail(conn, job_id=ghost, lease_token=str(uuid.uuid4()), error="into the void")
-
-    # The raise must not leave the connection mid-transaction — every writer here owes
-    # `index_file` an IDLE connection (ADR 0025), and an exception path is the easiest
-    # place to lose that.
-    assert conn.info.transaction_status == psycopg.pq.TransactionStatus.IDLE
-
-    # And the real fail path still returns True and records its message.
-    second = enqueue(conn, path=_lecture(tmp_path), owner_id=owner_id, class_id=class_id)
-    live = claim(conn, lease_seconds=3600)
-    assert live is not None and live.file_id == second
-    assert (
-        fail(conn, job_id=live.job_id, lease_token=live.lease_token, error="parse blew up") is True
-    )
-    assert file_id != second
-
-
-def test_complete_publishes_done_and_touches_only_its_job(db, db_other, tmp_path):
-    """Terminal success is published, scoped to ONE job, and leaves `files.status` alone.
-
-    The sibling job is the test's teeth: with a single row in the table, a `complete`
-    that lost its WHERE clause — every job marked done — would still pass. The
-    `files.status` assertion pins the two-axes split one more time: flipping the
-    student-facing status to `ready` is `index_file`'s job, inside the same
-    transaction as the chunk insert, never the queue's.
-    """
-    conn, owner_id, class_id = db
-    source = _lecture(tmp_path)
-    first = enqueue(conn, path=source, owner_id=owner_id, class_id=class_id)
-    second = enqueue(conn, path=source, owner_id=owner_id, class_id=class_id)
-    job = claim(conn, lease_seconds=3600)
-    assert job is not None and job.file_id == first
-
-    complete(conn, job_id=job.job_id, lease_token=job.lease_token)
-
-    assert conn.info.transaction_status == psycopg.pq.TransactionStatus.IDLE
-    done = db_other.execute(
-        "select state, last_error from jobs where job_id = %s::uuid", (job.job_id,)
-    ).fetchone()
-    assert done == ("done", None), "complete was not published, or invented an error"
-    sibling = db_other.execute(
-        "select state from jobs where file_id = %s::uuid", (second,)
-    ).fetchone()[0]
-    assert sibling == "queued", "complete touched a job it was not given"
-    file_status = db_other.execute(
-        "select status from files where file_id = %s::uuid", (first,)
-    ).fetchone()[0]
-    assert file_status == "queued", "complete wrote files.status — that axis belongs to the worker"
-
-
-def test_fail_publishes_failed_with_the_error_and_keeps_attempts(db, db_other, tmp_path):
-    """Terminal failure carries its evidence: the message survives, and so does the trail.
-
-    `last_error` is the free-text WHY a human reads off a dead job; `attempts` is how
-    many tries it burned. A `fail` that dropped either would leave a corpse with no
-    autopsy. Scoping teeth again via the untouched sibling.
-    """
-    conn, owner_id, class_id = db
-    source = _lecture(tmp_path)
-    first = enqueue(conn, path=source, owner_id=owner_id, class_id=class_id)
-    second = enqueue(conn, path=source, owner_id=owner_id, class_id=class_id)
-    job = claim(conn, lease_seconds=3600)
-    assert job is not None and job.file_id == first
-
-    fail(
-        conn,
-        job_id=job.job_id,
-        lease_token=job.lease_token,
-        error="embed exploded: dimension mismatch",
-    )
-
-    assert conn.info.transaction_status == psycopg.pq.TransactionStatus.IDLE
-    dead = db_other.execute(
-        "select state, last_error, attempts from jobs where job_id = %s::uuid", (job.job_id,)
-    ).fetchone()
-    assert dead == ("failed", "embed exploded: dimension mismatch", 1), (
-        "fail was not published with its error and the attempts trail intact"
-    )
-    sibling = db_other.execute(
-        "select state, last_error from jobs where file_id = %s::uuid", (second,)
-    ).fetchone()
-    assert sibling == ("queued", None), "fail touched a job it was not given"
-
-
-def test_release_requeues_the_job_and_keeps_the_attempts_it_burned(db, db_other, tmp_path):
-    """The non-terminal outcome: claimable again, with the retry trail intact (#71 PR 2).
-
-    Three things have to be true together, and each one is a different bug if it is not:
-      - `state` back to `queued`, PUBLISHED — a release visible only to the releasing
-        connection strands the job in `processing` for every other reader (ADR 0025);
-      - `leased_until` cleared — a requeued row carrying a live lease is a lie about a worker
-        that no longer holds it, and unlike `complete`/`fail` this row is going somewhere a
-        reader acts on;
-      - `attempts` NOT given back — it is the budget the worker counts against, and a release
-        that decremented it would hand a poison file an unlimited retry allowance, the same
-        failure `reclaim_expired` avoids by not resetting it.
-    The re-claim at the end is the one that proves it: the job comes back with attempts == 2,
-    so the budget is genuinely spending down across claims rather than resetting each time.
-    """
-    conn, owner_id, class_id = db
-    source = _lecture(tmp_path)
-    first = enqueue(conn, path=source, owner_id=owner_id, class_id=class_id)
-    second = enqueue(conn, path=source, owner_id=owner_id, class_id=class_id)
-    job = claim(conn, lease_seconds=3600)
-    assert job is not None and job.file_id == first
-
-    assert (
-        release(
-            conn,
-            job_id=job.job_id,
-            lease_token=job.lease_token,
-            error="transient: provider said 429",
-        )
-        is True
-    )
-
-    assert conn.info.transaction_status == psycopg.pq.TransactionStatus.IDLE
-    requeued = db_other.execute(
-        """
-        select state, leased_until, last_error, attempts
-        from jobs where job_id = %s::uuid
-        """,
-        (job.job_id,),
-    ).fetchone()
-    assert requeued == ("queued", None, "transient: provider said 429", 1), (
-        "release must publish a claimable row that still remembers what it cost"
-    )
-    # Scoping teeth, same as complete/fail: with one row in the table a lost WHERE clause
-    # would pass. The sibling's `last_error` is the half that catches a stray UPDATE.
-    sibling = db_other.execute(
-        "select state, last_error from jobs where file_id = %s::uuid", (second,)
-    ).fetchone()
-    assert sibling == ("queued", None), "release touched a job it was not given"
-    # `files.status` is the other axis and stays where #71's worker left it — release is queue
-    # machinery and writes nothing a student sees.
-    assert (
-        db_other.execute("select status from files where file_id = %s::uuid", (first,)).fetchone()[
-            0
-        ]
-        == "queued"
-    ), "release wrote files.status — that axis belongs to the worker"
-
-    again = claim(conn, lease_seconds=3600)
-    assert again is not None and again.job_id == job.job_id
-    assert again.attempts == 2, "the retry budget did not spend down across the release"
-
-
-def test_release_distinguishes_a_lost_lease_from_a_job_that_never_existed(db, db_other, tmp_path):
-    """The same three-way split `complete` and `fail` make, for the same reasons.
-
-    Kept symmetrical deliberately: a worker handles all three outcomes in one place, and a
-    split that differed for the requeue path would be read as meaning something. The lost-lease
-    direction matters more here than for `fail` — a zombie whose lease expired dragging a
-    FINISHED job back to `queued` would re-ingest a file that is already `ready`, paying the
-    embedding bill again for nothing.
-    """
-    conn, owner_id, class_id = db
-    enqueue(conn, path=_lecture(tmp_path), owner_id=owner_id, class_id=class_id)
-    job = claim(conn, lease_seconds=3600)
-    assert job is not None
-    assert complete(conn, job_id=job.job_id, lease_token=job.lease_token) is True
-
-    assert (
-        release(conn, job_id=job.job_id, lease_token=job.lease_token, error="too late") is False
-    ), "a zombie must not be able to resurrect the job the winning run finished"
-    assert db_other.execute(
-        "select state, last_error from jobs where job_id = %s::uuid", (job.job_id,)
-    ).fetchone() == ("done", None), "a False return still wrote something"
-
-    ghost = str(uuid.uuid4())
-    with pytest.raises(LookupError, match=ghost):
-        release(conn, job_id=ghost, lease_token=str(uuid.uuid4()), error="into the void")
-    assert conn.info.transaction_status == psycopg.pq.TransactionStatus.IDLE
-
-
-def test_release_refuses_a_job_another_worker_now_holds(db, db_other, tmp_path):
-    """The half the lost-lease test above does NOT cover: the winner is still RUNNING.
-
-    `test_release_distinguishes_a_lost_lease_from_a_job_that_never_existed` proves a zombie
-    cannot resurrect a job the winner already FINISHED - there the row reads `done`, so any
-    guard at all refuses it. This is the other, likelier shape: worker B claimed the job
-    seconds ago and is still embedding, so the row reads `processing` again. Under the
-    state-only guard that shipped in #70/#71 PR 1 the zombie's write passed - measured, not
-    argued: it returned True and left the row `queued` with B's lease erased.
-
-    That is the expensive direction, and it is why `release` is the verb the token was added
-    for: it is the one that puts a job back into circulation rather than ending it.
-    migrations/0002_lease_token.sql carries what that costs — not restated here, because
-    three copies of one argument is three places for it to drift.
-
-    The sibling assertions matter as much as the return value: a guard that refused the write
-    but had already clobbered `leased_until` or `last_error` would satisfy `is False` and still
-    have taken B's lease away.
-    """
-    conn, owner_id, class_id = db
-    file_id = enqueue(conn, path=_lecture(tmp_path), owner_id=owner_id, class_id=class_id)
-
-    stalled, holder = _stall_and_rehand(conn, file_id)
-
-    # The stalled worker wakes up mid-ingest, hits a transient error, and hands "its" job back.
-    assert (
-        release(
-            conn,
-            job_id=stalled.job_id,
-            lease_token=stalled.lease_token,
-            error="stale worker's transient error",
-        )
-        is False
-    ), "a worker whose lease was reclaimed requeued a job another worker is running"
-
-    state, leased_until, last_error = db_other.execute(
-        "select state, leased_until, last_error from jobs where job_id = %s::uuid",
-        (holder.job_id,),
-    ).fetchone()
-    assert state == "processing", "the holder's job was dragged back into the claimable pool"
-    assert leased_until is not None, "the holder's lease was erased by a worker that lost it"
-    assert last_error is None, "a refused release still wrote its error over the holder's row"
-
-    # And the current holder is unaffected - it can still settle its own job normally.
-    assert (
-        release(conn, job_id=holder.job_id, lease_token=holder.lease_token, error="transient: 429")
-        is True
-    ), "the token guard refused the worker that actually holds the lease"
-
-
-def test_renew_lease_moves_the_holders_lease_and_nothing_else(db, db_other, tmp_path):
-    """The verb behind the heartbeat: a live holder buys more lease (ADR 0031).
-
-    Claimed with a SHORT lease and renewed with a longer one, so the assertion is that
-    `leased_until` moved FORWARD rather than merely that it is non-null - a no-op UPDATE would
-    satisfy the weaker version. Read through `db_other`, because the point of the call is that
-    another connection - `reclaim_expired`, running in some other process - can see the renewal;
-    a renewal only this connection could see is exactly the ADR 0025 failure that changes nothing
-    while returning True.
-
-    The sibling columns are the other half. A renewal that also bumped `attempts` would spend the
-    retry budget on staying alive, which is the inverse of the defect ADR 0031 removes; one that
-    minted a fresh `lease_token` would invalidate the very worker doing the renewing, and its next
-    beat - and its `complete` - would be refused by the guard it just walked past.
-    """
-    conn, owner_id, class_id = db
-    conn.autocommit = True
-    file_id = enqueue(conn, path=_lecture(tmp_path), owner_id=owner_id, class_id=class_id)
-    job = claim(conn, lease_seconds=1)
-    assert job is not None
-
-    before = db_other.execute(
-        "select leased_until from jobs where job_id = %s::uuid", (job.job_id,)
-    ).fetchone()[0]
-
-    assert (
-        renew_lease(conn, job_id=job.job_id, lease_token=job.lease_token, lease_seconds=3600)
-        is True
-    )
-
-    leased_until, attempts, lease_token, state = db_other.execute(
-        "select leased_until, attempts, lease_token::text, state from jobs where job_id = %s::uuid",
-        (job.job_id,),
-    ).fetchone()
-    assert leased_until > before, "the renewal is not visible to the connection that reaps"
-    assert attempts == 1, "a renewal must not spend an attempt - `claim` is the only bumper"
-    assert lease_token == job.lease_token, "a renewal must not mint a token its own worker lacks"
-    assert state == "processing", "a renewal must not move the job off the state it guards on"
+        "select state, attempts from jobs where job_id = %s::uuid", (job.job_id,)
+    ).fetchone() == ("processing", 1), "the claim was not published to another connection"
     assert (
         db_other.execute(
             "select status from files where file_id = %s::uuid", (file_id,)
         ).fetchone()[0]
         == "queued"
-    ), "queue.py may not touch `files` - the worker owns every status after `queued`"
+    ), "claim wrote files.status - that axis belongs to the worker"
 
 
-def test_renew_lease_refuses_a_lease_that_is_no_longer_ours(db, db_other, tmp_path):
-    """Three ways a beat can be too late, one answer to all three: False, and nothing written.
+def test_claim_on_an_empty_queue_returns_none(worker_db):
+    # A Job here means stray `queued` rows in the local `jobs` table: claim is unscoped.
+    conn, _, _ = worker_db
 
-    The three are the whole reachable space of "not ours", and they are here together because a
-    guard that caught two of them would look identical in every column the first two touch:
-      - the job was RE-HANDED OUT - `_stall_and_rehand`'s zombie, the likeliest shape and the
-        expensive one. The state half alone cannot see it: after the reclaim and the re-claim the
-        row reads `processing` again, so only the token says the holder changed. Without it a
-        stalled worker would push the lease of the run that now owns the job further out on every
-        beat, indefinitely - a dead claim renewing itself onto a live one.
-      - the job was SETTLED under us - `complete` here, and the state half is what refuses it. A
-        heartbeat racing its own worker's settle verb must not drag a terminal row back under a
-        lease that `reclaim_expired` would then find nothing wrong with.
-      - the job DOES NOT EXIST. This is the one place the shape departs from `complete`/`fail`/
-        `release`, which raise `LookupError` on an orphan `job_id` as a programming error. A beat
-        has one correct response to every answer but True - stop beating - so a vanished row and a
-        re-handed-out lease are the same fact to it, and raising it across a thread boundary would
-        buy a traceback nobody can act on. Pinned, because "returns False" and "raises" are both
-        defensible and only one of them is what the heartbeat is written against.
-    """
+    assert claim(conn) is None
+    assert conn.info.transaction_status == psycopg.pq.TransactionStatus.IDLE
+
+
+def test_claim_without_the_worker_lock_raises_and_takes_nothing(db, db_other, tmp_path):
     conn, owner_id, class_id = db
-    conn.autocommit = True
     file_id = enqueue(conn, path=_lecture(tmp_path), owner_id=owner_id, class_id=class_id)
 
-    stalled, holder = _stall_and_rehand(conn, file_id)
-    held_until = db_other.execute(
-        "select leased_until from jobs where job_id = %s::uuid", (holder.job_id,)
-    ).fetchone()[0]
+    with pytest.raises(RuntimeError, match=r"claim\(\) needs the worker lock"):
+        claim(conn)
 
-    assert (
-        renew_lease(
-            conn, job_id=stalled.job_id, lease_token=stalled.lease_token, lease_seconds=3600
-        )
-        is False
-    ), "a reclaimed worker renewed a lease the current holder owns"
-    leased_until, token = db_other.execute(
-        "select leased_until, lease_token::text from jobs where job_id = %s::uuid",
-        (holder.job_id,),
-    ).fetchone()
-    assert leased_until == held_until, "a refused renewal still moved the holder's lease"
-    assert token == holder.lease_token, "a refused renewal still touched the holder's token"
+    assert conn.info.transaction_status == psycopg.pq.TransactionStatus.IDLE
+    assert db_other.execute(
+        "select state, attempts from jobs where file_id = %s::uuid", (file_id,)
+    ).fetchone() == ("queued", 0)
 
-    # Settled under us: the row is terminal, and the state half is the only guard that sees it.
-    assert complete(conn, job_id=holder.job_id, lease_token=holder.lease_token) is True
-    assert (
-        renew_lease(conn, job_id=holder.job_id, lease_token=holder.lease_token, lease_seconds=3600)
-        is False
-    ), "a beat that outran its own worker's `complete` re-leased a finished job"
-    assert (
+
+def test_a_second_connection_cannot_take_the_worker_lock_while_the_first_holds_it(
+    worker_db, db_other
+):
+    conn, _, _ = worker_db
+
+    assert try_acquire_worker_lock(db_other) is False
+    assert holds_worker_lock(db_other) is False
+    assert holds_worker_lock(conn) is True
+
+
+def test_the_worker_lock_is_released_when_the_holding_connection_closes(db, db_other):
+    holder = connect()
+    try:
+        assert try_acquire_worker_lock(holder) is True
+        assert try_acquire_worker_lock(db_other) is False
+    finally:
+        holder.close()
+
+    assert try_acquire_worker_lock(db_other) is True
+
+
+def test_requeue_orphans_moves_only_processing_jobs_back_to_queued(worker_db, db_other, tmp_path):
+    conn, owner_id, class_id = worker_db
+    source = _lecture(tmp_path)
+    orphan_file = enqueue(conn, path=source, owner_id=owner_id, class_id=class_id)
+    done_file = enqueue(conn, path=source, owner_id=owner_id, class_id=class_id)
+    waiting_file = enqueue(conn, path=source, owner_id=owner_id, class_id=class_id)
+    orphan = claim(conn)
+    finished = claim(conn)
+    assert orphan is not None and orphan.file_id == orphan_file
+    assert finished is not None and finished.file_id == done_file
+    assert complete(conn, job_id=finished.job_id) is True
+
+    assert requeue_orphans(conn) == 1
+
+    assert conn.info.transaction_status == psycopg.pq.TransactionStatus.IDLE
+    states = dict(
         db_other.execute(
-            "select state from jobs where job_id = %s::uuid", (holder.job_id,)
-        ).fetchone()[0]
-        == "done"
+            "select file_id::text, (state, attempts)::text from jobs where owner_id = %s",
+            (owner_id,),
+        ).fetchall()
     )
-
-    # No such job. False, NOT LookupError - the departure from the settle verbs.
-    assert (
-        renew_lease(
-            conn, job_id=str(uuid.uuid4()), lease_token=str(uuid.uuid4()), lease_seconds=3600
-        )
-        is False
-    ), "a beat on a vanished job must be a routine `stop beating`, not an exception in a thread"
+    assert states == {
+        orphan_file: "(queued,1)",
+        done_file: "(done,1)",
+        waiting_file: "(queued,0)",
+    }
 
 
-# THE FOUR VERBS THAT TAKE IDS FROM A CALLER RATHER THAN FROM A QUERY, and the two ids each of
-# them takes. Parametrized as data so a fifth verb cannot be added without a row here: the guard
-# these pin is `require_canonical_uuid` at every id-taking boundary (#126), and the settle verbs
-# were the set that sentence claimed and did not cover.
+def test_requeue_orphans_without_the_worker_lock_raises_and_moves_nothing(db, db_other, tmp_path):
+    conn, owner_id, class_id = db
+    file_id = enqueue(conn, path=_lecture(tmp_path), owner_id=owner_id, class_id=class_id)
+    db_other.execute("update jobs set state = 'processing' where file_id = %s::uuid", (file_id,))
+
+    with pytest.raises(RuntimeError, match=r"requeue_orphans\(\) needs the worker lock"):
+        requeue_orphans(conn)
+
+    assert conn.info.transaction_status == psycopg.pq.TransactionStatus.IDLE
+    assert db_other.execute(
+        "select state from jobs where file_id = %s::uuid", (file_id,)
+    ).fetchone() == ("processing",)
+
+
+def test_a_crashed_workers_job_is_requeued_and_claimed_again_as_attempt_2(db, db_other, tmp_path):
+    conn, owner_id, class_id = db
+    file_id = enqueue(conn, path=_lecture(tmp_path), owner_id=owner_id, class_id=class_id)
+
+    crashed = connect()
+    try:
+        assert try_acquire_worker_lock(crashed)
+        first_try = claim(crashed)
+        assert first_try is not None and first_try.file_id == file_id
+        assert first_try.attempts == 1
+    finally:
+        crashed.close()  # never settles
+
+    assert try_acquire_worker_lock(conn), "the crashed worker's lock outlived its connection"
+    assert requeue_orphans(conn) == 1
+    second_try = claim(conn)
+
+    assert second_try is not None and second_try.job_id == first_try.job_id
+    assert second_try.attempts == 2
+    assert db_other.execute(
+        "select state, attempts from jobs where job_id = %s::uuid", (second_try.job_id,)
+    ).fetchone() == ("processing", 2)
+
+
+def test_complete_and_fail_return_false_for_a_settled_job_and_raise_for_an_unknown_one(
+    worker_db, db_other, tmp_path
+):
+    conn, owner_id, class_id = worker_db
+    enqueue(conn, path=_lecture(tmp_path), owner_id=owner_id, class_id=class_id)
+    job = claim(conn)
+    assert job is not None
+
+    assert complete(conn, job_id=job.job_id) is True
+    assert complete(conn, job_id=job.job_id) is False
+    assert fail(conn, job_id=job.job_id, error="too late") is False
+    assert db_other.execute(
+        "select state, last_error from jobs where job_id = %s::uuid", (job.job_id,)
+    ).fetchone() == ("done", None), "a False return still wrote something"
+
+    ghost = str(uuid.uuid4())
+    with pytest.raises(LookupError, match=ghost):
+        complete(conn, job_id=ghost)
+    with pytest.raises(LookupError, match=ghost):
+        fail(conn, job_id=ghost, error="into the void")
+    assert conn.info.transaction_status == psycopg.pq.TransactionStatus.IDLE
+
+    second = enqueue(conn, path=_lecture(tmp_path), owner_id=owner_id, class_id=class_id)
+    live = claim(conn)
+    assert live is not None and live.file_id == second
+    assert fail(conn, job_id=live.job_id, error="parse blew up") is True
+
+
+def test_complete_publishes_done_and_touches_only_its_job(worker_db, db_other, tmp_path):
+    conn, owner_id, class_id = worker_db
+    source = _lecture(tmp_path)
+    first = enqueue(conn, path=source, owner_id=owner_id, class_id=class_id)
+    second = enqueue(conn, path=source, owner_id=owner_id, class_id=class_id)
+    job = claim(conn)
+    assert job is not None and job.file_id == first
+
+    complete(conn, job_id=job.job_id)
+
+    assert conn.info.transaction_status == psycopg.pq.TransactionStatus.IDLE
+    assert db_other.execute(
+        "select state, last_error from jobs where job_id = %s::uuid", (job.job_id,)
+    ).fetchone() == ("done", None)
+    assert db_other.execute(
+        "select state from jobs where file_id = %s::uuid", (second,)
+    ).fetchone() == ("queued",), "complete touched a job it was not given"
+    assert db_other.execute(
+        "select status from files where file_id = %s::uuid", (first,)
+    ).fetchone() == ("queued",), "complete wrote files.status - that axis belongs to the worker"
+
+
+def test_fail_publishes_failed_with_the_error_and_keeps_attempts(worker_db, db_other, tmp_path):
+    conn, owner_id, class_id = worker_db
+    source = _lecture(tmp_path)
+    first = enqueue(conn, path=source, owner_id=owner_id, class_id=class_id)
+    second = enqueue(conn, path=source, owner_id=owner_id, class_id=class_id)
+    job = claim(conn)
+    assert job is not None and job.file_id == first
+
+    fail(conn, job_id=job.job_id, error="embed exploded: dimension mismatch")
+
+    assert conn.info.transaction_status == psycopg.pq.TransactionStatus.IDLE
+    assert db_other.execute(
+        "select state, last_error, attempts from jobs where job_id = %s::uuid", (job.job_id,)
+    ).fetchone() == ("failed", "embed exploded: dimension mismatch", 1)
+    assert db_other.execute(
+        "select state, last_error from jobs where file_id = %s::uuid", (second,)
+    ).fetchone() == ("queued", None), "fail touched a job it was not given"
+
+
+def test_release_requeues_the_job_and_keeps_the_attempts_it_burned(worker_db, db_other, tmp_path):
+    conn, owner_id, class_id = worker_db
+    source = _lecture(tmp_path)
+    first = enqueue(conn, path=source, owner_id=owner_id, class_id=class_id)
+    second = enqueue(conn, path=source, owner_id=owner_id, class_id=class_id)
+    job = claim(conn)
+    assert job is not None and job.file_id == first
+
+    assert release(conn, job_id=job.job_id, error="transient: provider said 429") is True
+
+    assert conn.info.transaction_status == psycopg.pq.TransactionStatus.IDLE
+    assert db_other.execute(
+        "select state, last_error, attempts from jobs where job_id = %s::uuid", (job.job_id,)
+    ).fetchone() == ("queued", "transient: provider said 429", 1)
+    assert db_other.execute(
+        "select state, last_error from jobs where file_id = %s::uuid", (second,)
+    ).fetchone() == ("queued", None), "release touched a job it was not given"
+    assert db_other.execute(
+        "select status from files where file_id = %s::uuid", (first,)
+    ).fetchone() == ("queued",), "release wrote files.status - that axis belongs to the worker"
+
+    again = claim(conn)
+    assert again is not None and again.job_id == job.job_id
+    assert again.attempts == 2, "the retry budget did not spend down across the release"
+
+
+def test_release_returns_false_for_a_settled_job_and_raises_for_an_unknown_one(
+    worker_db, db_other, tmp_path
+):
+    conn, owner_id, class_id = worker_db
+    enqueue(conn, path=_lecture(tmp_path), owner_id=owner_id, class_id=class_id)
+    job = claim(conn)
+    assert job is not None
+    assert complete(conn, job_id=job.job_id) is True
+
+    assert release(conn, job_id=job.job_id, error="too late") is False
+    assert db_other.execute(
+        "select state, last_error from jobs where job_id = %s::uuid", (job.job_id,)
+    ).fetchone() == ("done", None), "a False return still wrote something"
+
+    ghost = str(uuid.uuid4())
+    with pytest.raises(LookupError, match=ghost):
+        release(conn, job_id=ghost, error="into the void")
+    assert conn.info.transaction_status == psycopg.pq.TransactionStatus.IDLE
+
+
+# Parametrized as data so a new settle verb cannot be added without a row here (#126).
 _SETTLE_VERBS = {
     "complete": lambda conn, **ids: complete(conn, **ids),
     "fail": lambda conn, **ids: fail(conn, error="boom", **ids),
     "release": lambda conn, **ids: release(conn, error="boom", **ids),
-    "renew_lease": lambda conn, **ids: renew_lease(conn, lease_seconds=3600, **ids),
 }
 
-# STRICT, so this is not the "spellings Postgres refuses" set `enqueue` is parametrized over: two
-# of these three cast cleanly and are still refused here. That is the point of the strict shape -
-# both ids come back out of `claim`'s `Job`, so any other spelling is an upstream bug (`gct.ids`).
+# STRICT: two of these cast cleanly in Postgres and are still refused, because `job_id` comes back
+# out of `claim`'s `Job`, so any other spelling is an upstream bug (`gct.ids`).
 _NOT_CANONICAL = {
     "urn": lambda u: u.urn,
     "braced": lambda u: f"{{{u}}}",
@@ -1192,36 +711,17 @@ _NOT_CANONICAL = {
 
 
 @pytest.mark.parametrize("verb", sorted(_SETTLE_VERBS))
-@pytest.mark.parametrize("param", ["job_id", "lease_token"])
 @pytest.mark.parametrize("spelling", sorted(_NOT_CANONICAL))
-def test_the_settle_verbs_refuse_a_non_canonical_id_and_leave_the_connection_alone(
-    db, db_other, tmp_path, verb, param, spelling
+def test_the_settle_verbs_refuse_a_non_canonical_job_id_and_leave_the_connection_alone(
+    worker_db, db_other, tmp_path, verb, spelling
 ):
-    """A remedy-naming `ValueError`, not an opaque `InvalidTextRepresentation` out of the cast.
-
-    Both ids are bound into `%(...)s::uuid`, so before the guard a `urn:uuid:` spelling reached
-    Postgres and came back as a driver error naming a type, not an action. The remedy names what
-    to pass - the `Job` `claim` returned - because a caller holding some other spelling has no
-    other way to get the right one.
-
-    The three assertions after the raise are the measurement behind "refused early costs nothing":
-    the refusal happens in front of `require_idle` and the `conn.transaction()` block, so the
-    connection is still IDLE, still answering, and the job it names is untouched. Read through
-    `db_other` for that last one - `db`'s own connection would show the same row either way.
-    """
-    conn, owner_id, class_id = db
+    conn, owner_id, class_id = worker_db
     file_id = enqueue(conn, path=_lecture(tmp_path), owner_id=owner_id, class_id=class_id)
-    conn.commit()
-    job = claim(conn, lease_seconds=3600)
+    job = claim(conn)
     assert job is not None
-    conn.commit()
 
-    ids = {"job_id": job.job_id, "lease_token": job.lease_token}
-    ids[param] = _NOT_CANONICAL[spelling](uuid.UUID(ids[param]))
-
-    expected = rf"{verb}\(\) requires a canonical uuid {param}"
-    with pytest.raises(ValueError, match=expected) as caught:
-        _SETTLE_VERBS[verb](conn, **ids)
+    with pytest.raises(ValueError, match=rf"{verb}\(\) requires a canonical uuid job_id") as caught:
+        _SETTLE_VERBS[verb](conn, job_id=_NOT_CANONICAL[spelling](uuid.UUID(job.job_id)))
 
     assert "claim" in str(caught.value), "the refusal does not name what to pass instead"
     assert conn.info.transaction_status == psycopg.pq.TransactionStatus.IDLE

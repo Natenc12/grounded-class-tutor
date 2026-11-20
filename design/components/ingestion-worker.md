@@ -24,16 +24,13 @@ spike within the fixed contract, not here.
 - **Up — enqueue side (API adapter):** `POST /files` stages bytes to file staging (ADR 0010), creates
   `file(status=queued)`, and **enqueues** a job `{ file_id, owner_id, class_id }` across the ADR 0011
   `enqueue`/`claim` boundary. Returns fast; the worker runs async.
-- **In — job queue (ADR 0011):** the worker **claims** a job (at-least-once; a lease/reaper reclaims a
-  job stuck in `processing` past timeout — a **silent** worker's, since a live one renews its own
-  lease while it works, ADR 0028, the lease's meaning amended per ADR 0031). *One lease past the
-  claim* is therefore no longer the recovery timeout for every stall: a worker that is alive but
-  making no progress goes silent only when its heartbeat hits the cap, so its job comes back one
-  lease after its LAST beat rather than at 900 s — the figure, its derivation and the trade are
-  ADR 0031 §5 and §Consequences, which own it. A worker that DIED is unchanged: an unwind hands
-  the job back at once, a `SIGKILL` stops the beats with the process and the lease lapses on
-  schedule. Processing is
-  **idempotent** (ADR 0020), so redelivery and reclaim are safe with zero dedup logic.
+- **In — job queue (ADR 0011):** the worker **claims** a job (at-least-once). **Exactly one worker
+  runs** (#205): `claim` refuses a connection that does not hold the Postgres advisory worker lock.
+  On start the worker waits for that lock (retrying every few seconds, never exiting), then puts
+  every job still `processing` back to `queued` — with one worker, such a job was left by a crash
+  or stop — and only then claims. Nothing times out and nothing takes a job away from a running
+  worker. Processing is **idempotent** (ADR 0020), so redelivery after a crash is safe with zero
+  dedup logic.
 - **Down — file staging (ADR 0010):** reads the staged bytes to parse.
 - **Down — model provider layer:** calls `Embeddings.embed(texts) → vectors` (+ `model_id`, `dim`)
   (ADR 0013). The active embedder's `model_id` is **stamped onto every chunk** (`embedding_model_id`,
@@ -47,7 +44,7 @@ spike within the fixed contract, not here.
 Not a request/response function — a **job consumer** with a durable effect. The contract is the job
 shape it claims, the row set it writes, and the status transitions it guarantees.
 ```
-Job{ job_id, file_id, owner_id, class_id, attempts, staging_ref, lease_token }  # across the ADR 0011 boundary
+Job{ job_id, file_id, owner_id, class_id, attempts, staging_ref }  # across the ADR 0011 boundary
 
 Effect on commit (ready):
   chunks := [ Chunk{ chunk_id, file_id, owner_id, class_id,
@@ -62,15 +59,11 @@ Guarantee: a file's chunks are ALL-from-one-successful-run or ABSENT (ADR 0020).
 The written `Chunk` shape is exactly what the Retriever selects and hands up — the write path and read
 path meet on this row. `page_or_slide` is **scalar** by the never-span rule (ADR 0019).
 
-**The `Job` shape carries four fields beyond the identity triple, and `staging_ref` is the
+**The `Job` shape carries three fields beyond the identity triple, and `staging_ref` is the
 load-bearing one.** `job_id` and `attempts` are the queue handle and the retry trail the queue module
-owns. `lease_token` is the worker's proof that it still holds the lease it was handed: `claim` mints a
-fresh uuid per claim, and `complete`/`fail`/`release` match on it, so a worker whose lease expired and
-whose job was re-handed out is **refused** rather than allowed to write over the run that now holds it.
-The state alone could not say that — `processing` is equally true of a job re-handed to someone else,
-which let a stalled worker's `release` return a job another worker was still embedding to `queued`
-(migrations/0002_lease_token.sql carries the sequence). `staging_ref` is here because of step 1's
-ADR 0025 precondition, not for convenience: a worker
+owns. There is no ownership token: with one worker no other run can hold the job, so
+`complete`/`fail`/`release` take only `job_id` and match on `state = 'processing'` (#205).
+`staging_ref` is here because of step 1's ADR 0025 precondition, not for convenience: a worker
 that had to look the path up would run a statement *after* its claim committed, and a bare `SELECT`
 reopens psycopg's implicit transaction exactly as a write does — putting the connection back `INTRANS`
 and degrading step 6's transaction to a SAVEPOINT that publishes nothing. Handing the path over at
@@ -84,7 +77,7 @@ Slow/external work runs with **no transaction open**; the transaction is a short
 *complete, valid* row set is in hand (ADR 0020).
 
 > **The claim transaction must COMMIT before step 2 begins (ADR 0025, guarded per ADR 0027).**
-> Leasing the job is a write, so it opens a transaction on the worker's connection; carrying that
+> Claiming the job is a write, so it opens a transaction on the worker's connection; carrying that
 > transaction into the pipeline used to degrade step 6's `conn.transaction()` to a mere SAVEPOINT
 > that published nothing, silently. The index write now REFUSES that call outright
 > (`gct.db.require_idle` raises before anything is written), so the failure is loud on the first
@@ -94,11 +87,10 @@ Slow/external work runs with **no transaction open**; the transaction is a short
 > Slice 1's runner does this with `conn.autocommit = True`; a worker may instead commit the claim
 > explicitly.
 >
-> Why the rule is sharper than tidiness: ADR 0020 makes the reaper safe by arguing a crash-mid-
-> `processing` job "committed nothing" — under savepoint nesting a *successful* run had also
-> committed nothing, so success and crash stopped being distinguishable by DB state, the only
-> signal the reaper reads. The guard is what makes that state unreachable rather than merely
-> forbidden.
+> Why the rule is sharper than tidiness: ADR 0020 makes requeueing a crashed job safe by arguing a
+> crash-mid-`processing` job "committed nothing" — under savepoint nesting a *successful* run had
+> also committed nothing, so success and crash stopped being distinguishable by DB state. The
+> guard is what makes that state unreachable rather than merely forbidden.
 
 1. **Claim** the job (ADR 0011); set `status=processing`, **and commit it** — see the note above.
 2. **Parse** staged bytes → text + structure (pypdf / python-pptx / `unstructured` — tooling is a
@@ -112,9 +104,9 @@ Slow/external work runs with **no transaction open**; the transaction is a short
    self-contained/embeddable, maps to **exactly one** page/slide (**never spans**). *Strategy /
    size / overlap = spike.*
 4. **Embed** all chunks via `Embeddings.embed` (ADR 0013); attach vectors + stamp `embedding_model_id`
-   (ADR 0018). Provider 429 / timeout / transient 5xx → **transient failure** → retry w/ backoff
-   (budget, backoff + lease: **ADR 0028**). *No DB write yet — a failure here leaves the DB
-   untouched.*
+   (ADR 0018). Provider 429 / timeout / transient 5xx → **transient failure** → back off (2 s, 4 s,
+   … capped at 60 s) and hand the job back, within a budget of 5 attempts (#205, replacing ADR 0028).
+   *No DB write yet — a failure here leaves the DB untouched.*
    - **Sub-batching is the adapter's job, not the worker's (PM-1 / correctness floor).** A real deck can
      produce more chunks than the provider's per-request cap (OpenAI: 2048 inputs / ~300k tokens); a single
      over-cap `embed()` call is a **hard failure**, not a throughput issue. The `Embeddings` adapter
@@ -146,11 +138,11 @@ Slow/external work runs with **no transaction open**; the transaction is a short
 |---|---|---|
 | **Unparseable / password-protected / unsupported / zero-text file** | terminal | → `failed(reason)` immediately, **skip retry**; actionable reason surfaced via `GET /files/:id` (ADR 0020) |
 | **Input past the configured word ceiling** | terminal | → `failed(reason=too_long)` immediately, **skip retry**; refused BEFORE the embed call, so nothing is bought and nothing is written. Counted in words, not bytes/pages/chunks (ADR 0020, terminal set extended per ADR 0029) |
-| **Embedding provider 429 / timeout / transient 5xx** | transient | retry w/ backoff up to budget → else `failed(reason=transient_exhausted)`. DB untouched until success (ADR 0020 §1, budget numbers per ADR 0028) |
-| **DB connection error mid-job** | infra | propagates uncaught — the worker crashes. Nothing classifies psycopg errors, and a handler wide enough to catch a blip absorbs every programming error with it, putting a wrong `failed_reason` in front of a student. The run committed nothing, the lease expires, the reaper requeues, and the `attempts` budget bounds the loop (ADR 0020 §1, DB-blip class amended per ADR 0028) |
-| **Ingest slower than its lease** | normal | **not a failure** — the worker renews its own lease from a separate thread on a separate connection while it works, so a slow file reaches `ready` on attempt 1 and the reaper never sees it. Before this it was reaped mid-flight, its publish refused, its work discarded and one `attempts` spent per overrun — a file always slower than its lease was buried as `transient_exhausted` having never failed (ADR 0028, the lease's meaning amended per ADR 0031). The beats stop at a bounded cap, so a **wedged** worker still returns to the reaper and to the `attempts` budget — later than before, and by an amount ADR 0031 §Consequences states and derives. Not restated here: it is one number with one writer, and a copy in this table would drift the first time the cap or the lease is retuned |
-| **Worker crash mid-`processing`** | infra | committed nothing (tx not reached); job → `queued`, **zero cleanup** (ADR 0011/0020). Which writer requeues it turns on whether the stack unwound: any death that raises — Ctrl-C, the SIGTERM `scripts/worker.py` routes onto the same unwind, an unclassified exception — is handed back by the worker's own shutdown release and is claimable **at once**; `SIGKILL`/OOM/power loss run no handler, so those wait out the lease and the reaper collects them (ADR 0028 §Consequences, shutdown-release bullet) |
-| **Duplicate job delivery** (at-least-once) | infra | safe **for the chunk set** — idempotent replace re-does the same delete-then-insert; no dedup needed (ADR 0020). A redelivered run is now **discarded rather than absorbed**: the publish asks the worker's lease predicate first and is refused if the job moved on, so a reaped worker cannot republish `ready` over a live-leased bury's reason (#92, ADR 0030; the invariant below, and `reclaim_expired`'s corrected docstring) |
+| **Embedding provider 429 / timeout / transient 5xx** | transient | retry w/ backoff up to budget → else `failed(reason=transient_exhausted)`. DB untouched until success (ADR 0020 §1; budget and backoff in step 4) |
+| **DB connection error mid-job** | infra | propagates uncaught — the worker crashes. Nothing classifies psycopg errors, and a handler wide enough to catch a blip absorbs every programming error with it, putting a wrong `failed_reason` in front of a student. The run committed nothing; the job stays `processing` until the worker restarts and requeues it, and the `attempts` budget bounds the loop (ADR 0020 §1) |
+| **Slow ingest** | normal | **not a failure** — nothing times out, so a slow file reaches `ready` on attempt 1 however long it takes. The cost: a **wedged** worker (alive, making no progress) is not detected; the queue waits until someone stops the worker, and the restart requeues the job (#205) |
+| **Worker crash mid-`processing`** | infra | committed nothing (tx not reached); **zero cleanup** (ADR 0011/0020). The job stays `processing` until the worker next starts, takes the lock and requeues it — after a hard crash it may first wait for Postgres to drop the dead session's lock. Every kind of death is handled the same way (Ctrl-C, SIGTERM, an unclassified exception, `SIGKILL`/OOM). The claim already counted the attempt, so a crash costs one, and a job that crashes the worker every time is buried `transient_exhausted` once the budget is spent (#205) |
+| **Duplicate job delivery** (at-least-once) | infra | safe — idempotent replace re-does the same delete-then-insert; no dedup needed (ADR 0020). With one worker, a job is redelivered only after a crash, never while another run of it is live (#205) |
 | **Re-index of an already-`ready` file** | normal | old full set stays queryable until COMMIT, then swapped atomically — never flickers empty/partial |
 | **Partial embed then failure** | transient | nothing committed; retry reprocesses from scratch (accepted re-embed cost, ADR 0020) |
 | **Index write handed a connection already inside a transaction** | programming error | the index write **raises `RuntimeError` before opening the transaction** — nothing is written. The alternative was a SAVEPOINT that publishes nothing while reporting success (ADR 0025, guarded per ADR 0027); the error names the remedy (autocommit at wiring, or commit first) |
@@ -160,9 +152,7 @@ Slow/external work runs with **no transaction open**; the transaction is a short
 
 These are what the box is BUILT to hold, and all of them are enforced today. Any that is not
 must be marked **NOT YET HELD** inline, with the issue that owns it — an invariant this section
-silently over-claimed would be worse than one it admits to. None carries that mark at present;
-the last to (#92) was closed by ADR 0030, and its entry below records the bound that closure
-does and does not reach.
+silently over-claimed would be worse than one it admits to. None carries that mark at present.
 
 - **Provenance is born at parse and never lost** — every chunk carries `(file, page_or_slide)`;
   honor-point ① of the citation spine (F2, ADR 0019).
@@ -177,31 +167,16 @@ does and does not reach.
   and the box now ENFORCES that: `index_file` refuses a non-IDLE connection before writing anything
   (ADR 0025, guarded per ADR 0027). §Internal approach step 1 states the precondition and what it
   costs a worker to get wrong.
-- **A `ready` file carries no failure reason** — held for the worker path, and **the bound is
-  part of the invariant, not a footnote to it** (ADR 0030). `status='ready'` and a non-null
-  `failed_reason` must not coexist. The reason is the actionable message F3 puts in front of a
-  student (ADR 0020 §1), so a queryable file wearing one contradicts the answers it is already
-  grounding — the same trust cost as a partial index, reached through the status column instead of
-  the corpus. **All three of its interleavings are now closed.** At-least-once redelivery reaches
-  the row from more than one direction (ADR 0011), and the three are partitioned by where the bury
-  falls relative to the PUBLISHER's claim — the bury is the only writer that sets the reason, the
-  claim's `processing` write the only one that clears it. Either the publisher claimed *after* the
-  bury, and its clear removes the reason on the way past (**#24**); or it was already past its
-  claim, and then the burier either **lost** its lease, which the terminal write refuses on the
-  same guard the job settle verbs use (**#86**), or still **held** it — in which case the PUBLISH
-  is the write with no entitlement, and it is now refused too (**#92**). The third was reachable
-  and demonstrated by execution until ADR 0030; #86 neither introduced it nor widened it.
-  **What closed it was symmetry, not repair.** `index_file` was the only write to `files` that
-  read no lease, so it took a caller-supplied predicate it evaluates inside its own transaction —
-  `_settle`'s two ownership conditions plus `FOR UPDATE`, supplied by `process_one`. A reaped
-  worker's publish raises `PublishRefused` and writes nothing; its finished work is thrown away.
-  Clearing `failed_reason` in the publish was the alternative and ADR 0030 §3 records why it lost.
-  **THE BOUND: the predicate is opt-in.** A caller that passes none is unguarded by construction —
-  correct for Slice 1's direct callers, which hold no lease and race no bury, and a trap for any
-  future caller that acquires one. `process_one` is the only guarded caller today, so this
-  invariant is a claim about the WORKER path and not about `index_file` in isolation.
+- **A `ready` file carries no failure reason** — held for the worker path. `status='ready'` and a
+  non-null `failed_reason` must not coexist: the reason is the actionable message F3 puts in front
+  of a student (ADR 0020 §1), so a queryable file wearing one contradicts the answers it is already
+  grounding. Three things hold it. One worker means a bury and a publish never run at the same
+  time (#205) — that is what closes #92, which needed two runs of one job at once. The claim's
+  `processing` write clears a reason an earlier bury left (#24). And every worker write to `files`
+  is guarded `status <> 'ready'`, so a bury never lands on a published file. **The bound:** a
+  direct `index_file` caller running beside the worker is not covered.
 - **Idempotent by construction** — reprocessing a file fully replaces its chunk set; safe under
-  at-least-once delivery + lease/reaper reclaim, no dedup keys (ADR 0011/0020).
+  at-least-once delivery and the start-up requeue, no dedup keys (ADR 0011/0020).
 - **Transaction wraps the write, not the work** — never held across embedding-API calls (ADR 0020).
 - **`embedding_model_id` stamped at index time** — the value the Retriever asserts against; index- and
   query-time embeddings must be the identical model+version (ADR 0018/0005).
@@ -227,8 +202,9 @@ does and does not reach.
 - **Terminal-reason taxonomy** — V1 ships a small enumerated set (unparseable / protected / unsupported
   / empty / too_long); richer taxonomy is a clean V2 extension (ADR 0020, terminal set extended per
   ADR 0029).
-- **Throughput / batching (N6)** — embed-call batch *sizing* + worker concurrency are tuning, not
-  contract; revisit with real corpus sizes. (Staying *under* the provider cap is contract, owned by the
+- **Throughput / batching (N6)** — embed-call batch *sizing* is tuning, not contract; revisit with
+  real corpus sizes. Exactly one worker is a design choice (#205); more would need multi-worker
+  coordination back. (Staying *under* the provider cap is contract, owned by the
   adapter — see pipeline §4 / PM-1.) Broker-based queue is the V2 substrate swap (ADR 0011).
 - **Checkpointed resume** — V2 turn-on if retry re-embed cost is ever shown to hurt (ADR 0020/0004).
 - **Eval hooks** — emit parse/chunk counts + failure/retry telemetry for the spike + N1 measurement

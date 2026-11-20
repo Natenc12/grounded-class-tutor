@@ -69,7 +69,7 @@ atomic replace (ADR 0020), read by the Retriever. This row is where the write pa
 
 ## `jobs`
 The **execution substrate** (ADR 0011) — one ingestion job per file. Distinct layer from
-`files.status`: this row is the queue/lease/retry mechanism; the job's outcome *drives* `files.status`.
+`files.status`: this row is the queue/retry mechanism; the job's outcome *drives* `files.status`.
 | column | type | notes |
 |---|---|---|
 | `job_id` | uuid PK | |
@@ -77,21 +77,20 @@ The **execution substrate** (ADR 0011) — one ingestion job per file. Distinct 
 | `owner_id` / `class_id` | id / uuid | carried for scope; written onto the chunks |
 | `state` | enum | `queued · processing · done · failed` (queue-level; not the same axis as `files.status`) |
 | `attempts` | int | retry count vs the ADR 0028 budget (transient only; terminal skips retries, ADR 0020). Counts CLAIMS, so a crash costs one exactly as a caught 429 does — and the last claim on a transient-doomed job exists only to bury it (ADR 0028 §1) |
-| `leased_until` | timestamptz \| null | visibility timeout; a `processing` job past this is reclaimed → `queued` by the reaper (ADR 0011) |
 | `last_error` | text \| null | diagnostics for the most recent failure |
-| `lease_token` | uuid \| null | proof of holding, minted per `claim`; the settle verbs match on it so a worker whose lease was reclaimed cannot write over the run that now holds the job. Cleared by the reaper — the lease and its proof die together |
 | `created_at` / `updated_at` | timestamptz | |
 
 **Why two status axes (`files.status` vs `jobs.state`) are not redundant:** `files.status` is the
 *published domain state* the user sees and the `ready ⟺ chunks committed` invariant guards;
-`jobs.state` is the *at-least-once claim/lease/retry machinery*. Idempotent replace (ADR 0020) makes
-redelivery and reaper reclaim safe, so the two can diverge transiently (a job re-`processing` while
+`jobs.state` is the *at-least-once claim/retry machinery*. Exactly one worker runs (#205); it
+holds a database lock, and on start it puts any `processing` job back to `queued`. Idempotent replace
+(ADR 0020) makes that rerun safe, so the two can diverge transiently (a job re-`processing` while
 the file is still `queued`) without corruption.
 
 ## Indexes (V1)
 - `chunks.embedding` — pgvector ANN index (ivfflat/hnsw; parameters are tuning, not contract).
 - `chunks (owner_id, class_id)` — the retrieval scope filter (F6/F12).
-- `files (class_id)`, `jobs (state, leased_until)` — status listing + reaper scan.
+- `files (class_id)`, `jobs (state, created_at)` — status listing + oldest-queued-first claim.
 
 ## Cross-cutting invariants (consolidated)
 - **`owner_id` on every row** — app-level filter V1 → RLS enforcement V3, same seam (F12/N8/F13).

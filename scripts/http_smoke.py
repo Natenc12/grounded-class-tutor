@@ -61,14 +61,14 @@ reporting a hang. That is the difference between a harness that tells you what b
 tells you it waited.
 
 IT REFUSES A DATABASE IT DOES NOT OWN, and that is a cost guard rather than tidiness. The worker
-this launches is the real one: it polls `jobs` in whatever `DATABASE_URL` names and claims
-anything it finds there, so a run that uploads nothing still ingests — and bills for — somebody
-else's file. `preflight` refuses up front unless `files` is empty (`--dedicated-database` is the
-operator's word in place of that evidence), because a queue that is merely empty AT THE INSTANT OF
-THE CHECK is not the same promise: a lease lapsing a second later hands that job straight to this
-harness's worker, which is what #138 measured. Its docstring is the writer of what the check does
-and does not cover. Everything this harness itself enqueues happens after both children are up, so
-the guard never sees a file the run is responsible for.
+this launches is the real one: it polls `jobs` in whatever `DATABASE_URL` names and claims anything
+it finds there, so a run that uploads nothing still ingests — and bills for — somebody else's file.
+`preflight` refuses up front unless `files` is empty (`--dedicated-database` is the operator's word
+in place of that evidence), because a queue that is merely empty AT THE INSTANT OF THE CHECK is not
+the same promise: a job released back to `queued` a second later goes straight to this harness's
+worker, which is what #138 measured. Its docstring is the writer of what the check does and does
+not cover. Everything this harness itself enqueues happens after both children are up, so the guard
+never sees a file the run is responsible for.
 
 A THIN PEER CALLER STILL (ADR 0009), and the ceremony is where that is worth restating. It makes
 no product judgement of its own: what a cited answer IS, what a refusal is, and what a terminal
@@ -82,7 +82,7 @@ Usage:
     uv run python scripts/http_smoke.py --dedicated-database   # only if nothing else writes there
     uv run python scripts/http_smoke.py --ready-timeout 90 --ingest-timeout 300
     uv run python scripts/http_smoke.py --corpus my-lecture.pdf --question "What is a watershed?"
-    uv run python scripts/http_smoke.py -- --poll 0.5 --lease 60
+    uv run python scripts/http_smoke.py -- --poll 0.5
 """
 
 from __future__ import annotations
@@ -138,13 +138,14 @@ PROBE_HTTP_TIMEOUT_SECONDS = 2.0
 # How long a child gets between SIGTERM and SIGKILL. Signal delivery is not preemptive, and the
 # worker's stop path is the one that needs the room: `scripts/worker.py`'s handler raises on the
 # main thread, so a process blocked in a C call (an embedding request in flight) unwinds only when
-# that call returns. Past this the harness stops waiting and kills, which costs the lease — the
-# reaper collects it (ADR 0011; SIGKILL runs no handler, as `_interrupt` records).
+# that call returns. Past this the harness stops waiting and kills; the job it was on stays
+# `processing` until the next worker start requeues it (`requeue_orphans`).
 TERMINATE_GRACE_SECONDS = 10.0
 
 # What the harness waits for in the worker's log to call its startup done. `gct.jobs.worker.run`
-# logs this at INFO immediately after the lease/heartbeat numbers are resolved and before the
-# first tick, so seeing it means connect() returned and the embedder was constructed.
+# logs this at INFO after it holds the worker lock and has requeued orphans, before the first
+# tick, so seeing it means connect() returned, the embedder was constructed and no other worker
+# holds the lock.
 WORKER_STARTED_TOKEN = "worker started"
 
 # How much of a child's log a failure message carries. The whole file stays on disk (the path is
@@ -163,16 +164,14 @@ EXIT_FAILED = 1
 EXIT_SETUP = 2
 
 # The rows the worker this harness launches would take if it found them: `claim` selects
-# `state = 'queued'` (`src/gct/jobs/queue.py`), and its own first tick calls `reclaim_expired`,
-# which turns a `processing` row whose lease has lapsed back into a queued one. So both belong in
-# the same question — "is there work here that is not ours?" — and asking only about `queued`
-# would miss a row this harness itself is about to requeue. `count(*) over ()` is the total before
-# `limit`, so one statement answers how many there are and names the first few.
+# `state = 'queued'` (`src/gct/jobs/queue.py`), and before its first claim `run` calls
+# `requeue_orphans`, which turns EVERY `processing` row back into a queued one (one worker, so
+# any `processing` row is orphaned). So both belong in the same question. `count(*) over ()` is
+# the total before `limit`, so one statement answers how many there are and names the first few.
 _WORK_THE_WORKER_WOULD_CLAIM = """
     select count(*) over () as waiting, job_id::text, file_id::text, state
     from jobs
-    where state = 'queued'
-       or (state = 'processing' and leased_until < now())
+    where state in ('queued', 'processing')
     order by created_at
     limit 3
 """
@@ -193,7 +192,7 @@ _WORK_THE_WORKER_WOULD_CLAIM = """
 # dropped, because it promised something it cannot deliver. `files.status` is not a proxy for "can
 # still move": `index_file` flips `files.status` to `ready` INSIDE the index transaction
 # (`src/gct/ingest/index.py`) and `process_one` settles the job only afterwards, so a kill between
-# them leaves a `ready` file over a job still `processing` under a lease — sorted into the settled
+# them leaves a `ready` file over a job still `processing` — sorted into the settled
 # bucket, exactly backwards. And four live rows push a fifth past `limit 3` whatever the bucket
 # does. Both were driven, not argued.
 #
@@ -295,7 +294,7 @@ def preflight(*, dedicated_database: bool = False) -> None:
     `pg_restore --disable-triggers` does — suspends the constraint, and a `jobs` row can outlive
     its file. What holds even then is the second mechanism, inside the claim itself:
     `gct.jobs.queue.claim` inner-joins `files` (`join files f using (file_id)`), so a job whose
-    file is gone is reclaimable but never claimable. Between them the conclusion survives — an
+    file is gone can be requeued but never claimed. Between them the conclusion survives — an
     empty `files` leaves the launched worker nothing it can take — but a reader deleting this
     check needs the mechanism, not the slogan, because the slogan is what fails the moment
     somebody restores a dump.
@@ -307,8 +306,7 @@ def preflight(*, dedicated_database: bool = False) -> None:
     are this run's. "This run costs only its own work" is therefore a property of the database
     being nobody else's. An empty `files` is EVIDENCE of that; `--dedicated-database` is only the
     operator's word for it, and passing it drops the evidence and leaves the queue check alone —
-    which #138 measured to be blind to exactly the case that matters, a `processing` row whose
-    lease lapses one second after the check passed.
+    which cannot see a row that becomes `queued` one second after the check passed.
 
     The first two are checked HERE rather than left to the children because of where they land
     otherwise. A missing key makes uvicorn exit during startup and an unreachable database makes
@@ -347,14 +345,9 @@ def preflight(*, dedicated_database: bool = False) -> None:
     freely against a database this check accepts — which on a dev machine is NOT the one `.env`
     names, and the remedy there is a scratch `DATABASE_URL`, not the flag.
 
-    `--dedicated-database` IS NOT THE WAY PAST A REFUSAL ON A DATABASE YOU DO NOT OWN, and the
-    temptation is worth naming because it is the shortest thing to type when a launch is refused.
-    Measured in this ticket's verification round, with the flag and a foreign `processing` job
-    whose lease lapsed inside the ~2.3s launch window: the launched worker reaped it, claimed it,
-    and left it `queued` with `attempts` 0 → 1 — one retry of the ADR 0011 budget spent on
-    somebody else's file, by a `--launch-only` run that uploaded nothing. The flag is a statement
-    that nothing else writes here. Where that statement is false it buys back exactly the hazard
-    #138 is about.
+    `--dedicated-database` IS NOT THE WAY PAST A REFUSAL ON A DATABASE YOU DO NOT OWN. The flag is
+    a statement that nothing else writes here; where that statement is false it buys back exactly
+    the hazard #138 is about.
 
     ORDERING, FOR THE CEREMONY (#109 PR 3): this runs ONCE, before either child exists, and the
     ceremony's own upload happens after `launched()` has yielded. A file this run enqueues can
@@ -409,7 +402,7 @@ def preflight(*, dedicated_database: bool = False) -> None:
             f"{present} row(s), for example: {rows}{more}. This smoke launches the REAL worker, "
             "which claims from the whole `jobs` table (ADR 0011) and cannot be told which files "
             "belong to this run, so any of those rows that becomes claimable while the gate runs "
-            "— a lease lapsing under the reaper, a job released back to `queued`, a retry — is "
+            "— a job released back to `queued`, a retry, a new upload — is "
             "ingested and billed to a run that uploaded nothing. Point `DATABASE_URL` at an "
             "empty database, or re-create this one (`dropdb` + `createdb`, then "
             "`uv run python scripts/migrate.py`); a previous full run of this smoke leaves its "
@@ -542,10 +535,10 @@ def _spawned(
 def stop(child: Child, grace: float = TERMINATE_GRACE_SECONDS) -> int:
     """SIGTERM the child's group, then SIGKILL it if it is still there. Returns the exit status.
 
-    SIGTERM first because both children do something useful with it — `scripts/worker.py` hands
-    its in-flight job back rather than stranding it for a lease (#82), and uvicorn finishes its
-    shutdown — and SIGKILL after `grace` because a harness whose teardown can hang is not a
-    teardown. Signalling the GROUP rather than the pid is what makes the second half total.
+    SIGTERM first because both children do something useful with it — `scripts/worker.py` unwinds
+    and closes its connection (#82), and uvicorn finishes its shutdown — and SIGKILL after `grace`
+    because a harness whose teardown can hang is not a teardown. Signalling the GROUP rather than
+    the pid is what makes the second half total.
     """
     if child.process.poll() is None:
         _signal_group(child, signal.SIGTERM)
@@ -1351,7 +1344,7 @@ def _build_parser() -> argparse.ArgumentParser:
         nargs="*",
         metavar="WORKER_ARG",
         help="everything after `--` is handed to scripts/worker.py unread "
-        "(e.g. `... -- --poll 0.5 --lease 60`). A worker --log-level above INFO is the one "
+        "(e.g. `... -- --poll 0.5`). A worker --log-level above INFO is the one "
         "thing refused here: it silences the line readiness waits for",
     )
     return parser
@@ -1397,15 +1390,15 @@ def _worker_log_level(worker_args: Sequence[str]) -> str | None:
 
     Reads the tokens the way the worker's own parser will. Two behaviours are copied on purpose
     and neither is decorative: argparse accepts any UNAMBIGUOUS PREFIX of a long option, so
-    `--lo WARNING` reaches `--log-level` on that CLI (`--l` is ambiguous with `--lease` and is
-    refused there), and a repeated option takes its LAST value. A scan that matched only the full
+    `--l WARNING` reaches `--log-level` on that CLI (no other worker flag starts with `--l`), and
+    a repeated option takes its LAST value. A scan that matched only the full
     spelling, or only the first occurrence, would wave through exactly the spellings that still
     silence the probe.
     """
     found: str | None = None
     for index, token in enumerate(worker_args):
         name, sets_inline, inline = token.partition("=")
-        if not (name.startswith("--") and len(name) >= 4 and "--log-level".startswith(name)):
+        if not (name.startswith("--") and len(name) >= 3 and "--log-level".startswith(name)):
             continue
         if sets_inline:
             found = inline
@@ -1484,7 +1477,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     one and claims whatever `jobs` holds, so somebody else's file can be ingested — and billed
     for — by a run that uploaded nothing. `preflight` refuses a database whose `files` table is
     not empty, which is not a narrower version of the old queue check but a different question:
-    nothing that exists can be reaped, released or retried into this worker's reach for the length
+    nothing that exists can be requeued, released or retried into this worker's reach for the length
     of the gate. That conclusion needs two mechanisms and not just the foreign key — the absolute
     reading of it was falsified here — and `preflight`'s docstring is the writer of both. What no
     check closes is a row that ARRIVES mid-run — a second API process, another `enqueue` — and

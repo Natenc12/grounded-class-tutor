@@ -19,7 +19,7 @@ of which are the ones a student actually experiences:
      it is measured rather than reasoned.
 
 WHY IT LIVES IN `tests/gct/ingest/` rather than beside the worker's own suite: the subject is the
-ceiling, which is `ingest/`'s. `tests/gct/jobs/test_worker.py` owns the claim/lease/retry
+ceiling, which is `ingest/`'s. `tests/gct/jobs/test_worker.py` owns the claim/retry
 machinery and takes its own local stubs; this file imports `gct.jobs` as a CALLER and asserts
 nothing about the queue that is not downstream of the ceiling firing. It also inherits
 `tests/gct/ingest/conftest.py`'s file factories and embedder stubs, which is the other half of the
@@ -43,7 +43,7 @@ import pytest
 from gct.config import MAX_INGEST_WORDS
 from gct.ingest.chunk import CHUNK_OVERLAP_WORDS, CHUNK_SIZE_WORDS
 from gct.jobs import worker
-from gct.jobs.queue import enqueue
+from gct.jobs.queue import enqueue, requeue_orphans
 from gct.jobs.worker import process_one
 
 # The same 260,000-character, zero-space Chinese text `test_pipeline.py` pins the blind spot with.
@@ -75,7 +75,7 @@ def tick(conn, embedder, **overrides):
 
 
 def test_a_file_over_the_shipped_ceiling_fails_terminally_through_the_worker(
-    pptx_factory, counting_embedder, db, db_other, monkeypatch
+    pptx_factory, counting_embedder, worker_db, db_other, monkeypatch
 ):
     """queued -> processing -> failed(`too_long`), zero retries, zero chunks, zero paid calls.
 
@@ -101,7 +101,7 @@ def test_a_file_over_the_shipped_ceiling_fails_terminally_through_the_worker(
     `sleep` is stubbed and asserted empty for the same reason the corrupt-file test in the worker
     suite does it: a terminal failure must not serve a backoff for a retry that is never coming.
     """
-    conn, owner_id, class_id = db
+    conn, owner_id, class_id = worker_db
     conn.autocommit = True
     slept: list[float] = []
     monkeypatch.setattr(worker.time, "sleep", slept.append)
@@ -141,7 +141,7 @@ def test_a_file_over_the_shipped_ceiling_fails_terminally_through_the_worker(
 
 
 def test_the_ceiling_refusal_is_the_only_thing_that_stopped_it(
-    pptx_factory, counting_embedder, db, db_other, monkeypatch
+    pptx_factory, counting_embedder, worker_db, db_other, monkeypatch
 ):
     """The control for the test above: the SAME deck, one word short of the ceiling, ingests.
 
@@ -169,7 +169,7 @@ def test_the_ceiling_refusal_is_the_only_thing_that_stopped_it(
         and the ceiling check are byte-identical between the two; only the row count changes, and
         row count is `test_index.py`'s subject, not this file's.
     """
-    conn, owner_id, class_id = db
+    conn, owner_id, class_id = worker_db
     conn.autocommit = True
     monkeypatch.setattr(worker.time, "sleep", lambda _: None)
     just_under = " ".join(f"w{i}" for i in range(MAX_INGEST_WORDS - 1))
@@ -192,7 +192,7 @@ def test_the_ceiling_refusal_is_the_only_thing_that_stopped_it(
 
 
 def test_a_space_free_file_slips_the_ceiling_and_crashes_the_worker_unclassified(
-    pptx_factory, token_limit_embedder, db, db_other, monkeypatch
+    pptx_factory, token_limit_embedder, worker_db, db_other, monkeypatch
 ):
     """PINNED, NOT FIXED - the end-to-end verdict on the ceiling's blind spot, and it is LOUD.
 
@@ -218,9 +218,8 @@ def test_a_space_free_file_slips_the_ceiling_and_crashes_the_worker_unclassified
         WRONG reason for this cause, and is the reason the taxonomy has (ADR 0020 §Open records
         that a richer taxonomy is a V2 extension).
       - so the failure is loud to an OPERATOR (a crashing worker, a stack trace) and quiet to the
-        STUDENT (a spinner, then a misleading reason). The crash now hands the job back at once
-        rather than after the lease elapses (#82), so the budget is spent through faster - the
-        student reaches the wrong reason sooner, not a different one.
+        STUDENT (a spinner, then a misleading reason). The crashed job stays `processing` until
+        the worker restarts and `requeue_orphans` puts it back (#187).
 
     None of that is a defect introduced by #43 - the pipeline behaves identically for any input
     one chunk too large for one request, and the blind spot is inherited from ADR 0019's
@@ -228,7 +227,7 @@ def test_a_space_free_file_slips_the_ceiling_and_crashes_the_worker_unclassified
     (ADR 0029's parked upgrade) turns this whole path into a clean `too_long` before any call, and
     when it does, this test goes red. That red is the notification.
     """
-    conn, owner_id, class_id = db
+    conn, owner_id, class_id = worker_db
     conn.autocommit = True
     monkeypatch.setattr(worker.time, "sleep", lambda _: None)
     source = pptx_factory("cosmogony-zh.pptx", [_CJK_TEXT])
@@ -246,14 +245,11 @@ def test_a_space_free_file_slips_the_ceiling_and_crashes_the_worker_unclassified
         "no reason is guessed for an unclassified error - the file is left mid-flight, which "
         "is the honest state and NOT an actionable one"
     )
-    state, attempts, leased_until = db_other.execute(
-        "select state, attempts, leased_until from jobs where file_id = %s::uuid", (file_id,)
+    state, attempts = db_other.execute(
+        "select state, attempts from jobs where file_id = %s::uuid", (file_id,)
     ).fetchone()
-    assert (state, attempts, leased_until) == ("queued", 1, None), (
-        "an unclassified crash hands the job back instead of leaving it under a live lease - #82's "
-        "trigger set is any worker death, not only a signal (ADR 0028 §4's crash stance is intact: "
-        "the exception still propagates, it is only the lease that is returned first)"
-    )
+    assert (state, attempts) == ("processing", 1), "a crash leaves the job for the next start"
+    assert requeue_orphans(conn) == 1
     (chunk_count,) = db_other.execute(
         "select count(*) from chunks where file_id = %s::uuid", (file_id,)
     ).fetchone()

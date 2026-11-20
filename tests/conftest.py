@@ -119,6 +119,15 @@ def db():
 
 
 @pytest.fixture
+def worker_db(db):
+    """`db`, with its connection holding the worker lock. Only the lock holder may claim (#187)."""
+    from gct.jobs.queue import try_acquire_worker_lock
+
+    assert try_acquire_worker_lock(db[0]), "another connection already holds the worker lock"
+    yield db
+
+
+@pytest.fixture
 def db_other(db):
     """A SECOND connection to the same database — the only way to prove a write was PUBLISHED.
 

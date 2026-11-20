@@ -3,8 +3,8 @@ real one cannot.
 
 The dogfood corpus under `data/dogfood/` is Nate's own course materials and is gitignored, so a
 CI runner has no `.pdf`/`.pptx` to enqueue and `ingest_smoke.py` stops at setup. That gate checks
-the WRITE PATH — queued → processing → ready, a corrupt file landing `failed(unparseable)`, a
-lease reclaim — and none of that depends on what the documents say. So CI gets a generated
+the WRITE PATH — queued → processing → ready, a corrupt file landing `failed(unparseable)` — and
+none of that depends on what the documents say. So CI gets a generated
 corpus: a few multi-page PDFs and slide decks of plain prose, long enough to chunk, built with
 the same libraries the ingest tests use for their fixtures (`reportlab`, `python-pptx`).
 

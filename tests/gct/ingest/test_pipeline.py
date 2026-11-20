@@ -155,7 +155,7 @@ def test_ingest_file_embed_failure_leaves_db_untouched(pdf_factory, db):
     (`test_a_transient_failure_backs_off_then_requeues_the_job`).
 
     SCOPE - this pins the WRITE-ORDER half only. The other half is the caller's connection state
-    (ADR 0020, publication claim amended per ADR 0025): a worker that leases a job and then ingests
+    (ADR 0020, publication claim amended per ADR 0025): a worker that claims a job and then ingests
     on the SAME connection gets a savepoint rather than a transaction, so `ingest_file` returns
     reporting success while having published nothing. ADR 0025 records why no single-connection test
     can catch that - this one included. A green here is not cover for it."""

@@ -1,21 +1,19 @@
 """Tests for `scripts/worker.py` - its SIGTERM wiring (issue #82) and its CLI (issue #109).
 
-WHY A SCRIPT HAS TESTS AT ALL, when ADR 0009 calls the scripts thin peer callers that usually
-earn none: this one now carries a signal handler, and a handler that is never REGISTERED fails
-in total silence. `signal.signal(SIGTERM, ...)` is one line, it has no return value anyone
-checks, and deleting it changes nothing any other test can see - the worker keeps working, the
-library's shutdown guard keeps passing its own tests, and the only symptom is that a
-`kill`ed worker strands its job for fifteen minutes again. That is exactly the shape of defect
-`test_ask_smoke.py` was written for: invisible from reading, visible only from running.
+WHY A SCRIPT HAS TESTS AT ALL, when ADR 0009 calls the scripts thin peer callers that usually earn
+none: this one now carries a signal handler, and a handler that is never REGISTERED fails in total
+silence. `signal.signal(SIGTERM, ...)` is one line, it has no return value anyone checks, and
+deleting it changes nothing any other test can see - the worker keeps working, and the only symptom
+is that a `kill`ed worker dies without unwinding or closing its connection. That is exactly the
+shape of defect `test_ask_smoke.py` was written for: invisible from reading, visible only from
+running.
 
 Everything here is offline and free - no DB, no provider, no network. `main()` is driven with
 `connect`, `run` and `build_embedder` all stubbed, so nothing constructs a real client and
 nothing reaches Postgres.
 
-What is deliberately NOT here: a test that the released job is actually claimable afterwards.
-That is the library's decision and it is covered where it lives, on a real connection through a
-second one - `test_an_interrupt_mid_ingest_leaves_the_job_claimable_at_once`
-(tests/gct/jobs/test_worker.py). This file only proves the signal reaches that path.
+What is deliberately NOT here: a test that a stopped worker's job is claimable after a restart.
+That is the library's decision (`requeue_orphans`) and it is covered in tests/gct/jobs/.
 
 THE CLI TESTS OBSERVE `run`'s KEYWORD ARGUMENTS, NEVER A POLL LOOP. `run` is a `while True`
 against Postgres, so the only honest thing to assert here is what this script HANDED it -
@@ -75,10 +73,9 @@ def restore_sigterm():
 def test_the_sigterm_handler_raises_the_interrupt_the_guard_unwinds_on():
     """SIGTERM has to arrive as an EXCEPTION or none of the shutdown path exists.
 
-    Python's default disposition for SIGTERM kills the interpreter inside the C handler: no
-    frame unwinds, no `finally` runs, and `process_one`'s guard never sees anything. Raising is
-    the whole mechanism, and `KeyboardInterrupt` specifically is what makes SIGTERM and Ctrl-C
-    one path rather than two.
+    Python's default disposition for SIGTERM kills the interpreter inside the C handler: no frame
+    unwinds and no `finally` runs. Raising is the whole mechanism, and `KeyboardInterrupt`
+    specifically is what makes SIGTERM and Ctrl-C one path rather than two.
 
     The signal number travels into the message because the two are indistinguishable at the
     catch site otherwise, and an operator reading a log wants to know whether the worker was
@@ -124,7 +121,7 @@ def test_main_registers_the_handler_for_sigterm(monkeypatch, restore_sigterm):
 
     assert signal.getsignal(signal.SIGTERM) is worker_script._interrupt, (
         "a SIGTERM'd worker takes Python's default disposition - dead in the C handler, no "
-        "unwind, and its job stranded under a live lease for the full 15 minutes"
+        "unwind and no connection close"
     )
     assert closed == [True], "the connection must be closed even on the shutdown path"
 
@@ -347,26 +344,12 @@ def _spy_on_run(monkeypatch, *, connected: list[bool] | None = None) -> dict:
 def test_no_flags_runs_exactly_what_it_ran_before_the_cli_existed(monkeypatch, restore_sigterm):
     """A CLI must not change the no-argument behaviour it was added to, and this reads WHY.
 
-    Compared against `run`'s OWN SIGNATURE DEFAULTS rather than against numbers written here.
-    That is the assertion that survives a retune: if someone shortens `DEFAULT_LEASE_SECONDS`,
-    a test pinning 900 goes red for a change that was correct, while this one keeps asking the
-    real question - does a flagless start still run the library's defaults?
+    Compared against `run`'s OWN SIGNATURE DEFAULTS rather than against numbers written here, so
+    a correct retune of the library does not redden it. A default retyped as a literal that still
+    agrees with the library passes here; the retune tests below catch that.
 
-    WHAT THIS TEST DOES NOT CATCH, measured rather than assumed: a default retyped as a literal
-    that still AGREES with the library. Replacing `default=DEFAULT_LEASE_SECONDS` with
-    `default=900` leaves THIS test green; `default=901` turns it red. So the comparison catches a
-    default that has DRIFTED - the retyped literal's eventual symptom, one library retune later -
-    and not the retyping itself. The retyping is caught elsewhere in this file, by
-    `test_a_retuned_library_constant_reaches_the_flagless_worker`, which retunes the library and
-    checks the worker follows - and `test_the_real_script_entry_point_follows_a_retune`, which
-    asks the same question of the real subprocess. Either is why `default=900` reddens the FILE
-    while leaving this test green.
-
-    THE ABSENT KEYS ARE HALF THE TEST. `max_attempts` and `heartbeat_fraction` are deliberately
-    not flags - the retry budget is ratified policy (ADR 0028 §1) and the beat cadence is derived
-    from the lease on purpose (ADR 0031 §5) - so this script must not pass them at all. Passing
-    them "with the default value" would look identical today and freeze the library's own
-    defaults into a script the next retune would not reach.
+    THE ABSENT KEY IS HALF THE TEST. `max_attempts` is deliberately not a flag - the retry budget
+    is ratified policy (ADR 0028 §1) - so this script must not pass it at all.
     """
     seen = _spy_on_run(monkeypatch)
 
@@ -377,18 +360,12 @@ def test_no_flags_runs_exactly_what_it_ran_before_the_cli_existed(monkeypatch, r
         for name, p in inspect.signature(worker_lib.run).parameters.items()
         if p.default is not inspect.Parameter.empty
     }
-    assert seen["lease_seconds"] == defaults["lease_seconds"]
     assert seen["poll_seconds"] == defaults["poll_seconds"]
-    assert seen["heartbeat_max_seconds"] == defaults["heartbeat_max_seconds"]
     assert seen["chunk_size"] == CHUNK_SIZE_WORDS
     assert seen["chunk_overlap"] == CHUNK_OVERLAP_WORDS
     assert "max_attempts" not in seen, (
         "the script now passes the retry budget itself - a library retune of "
         "DEFAULT_MAX_ATTEMPTS would no longer reach the worker (ADR 0028 §1)"
-    )
-    assert "heartbeat_fraction" not in seen, (
-        "the script now passes the beat cadence itself - the fraction is derived from the lease "
-        "on purpose so the two cannot drift (ADR 0031 §5)"
     )
 
 
@@ -397,45 +374,34 @@ def test_every_flag_reaches_the_loop_that_the_defect_said_it_could_not(
 ):
     """The defect #109 names, inverted: a non-default value must arrive at `run`, not be ignored.
 
-    On the base tree `main()` took no arguments at all, so `--lease 30` was not "rejected" - it
-    was accepted by the shell, dropped by Python, and the worker polled on the 15-minute default
-    while the caller believed otherwise. Silence is what made it worth a ticket: a flag that
-    errors is a typo, a flag that is ignored is a wrong belief about a running process.
+    On the base tree `main()` took no arguments at all, so a flag was accepted by the shell,
+    dropped by Python, and the worker ran on the default while the caller believed otherwise.
 
-    All five at once, and no value here equals the default OF THE PARAMETER IT IS PASSED AS, so
-    a stub echoing that parameter's default cannot pass. Not a stronger claim than that: `0.25`
-    is `DEFAULT_HEARTBEAT_FRACTION`, which an earlier draft of this sentence overlooked while
-    asserting the values shared no digits with any library default. It is passed as `--poll`,
-    whose default is 2.0, so the pin holds - but only the narrow reading was ever true.
+    All three at once, and no value here equals the default of the parameter it is passed as, so
+    a stub echoing that parameter's default cannot pass.
     """
     seen = _spy_on_run(monkeypatch)
 
     worker_script.main(
         [
-            "--lease",
-            "37",
             "--poll",
             "0.25",
             "--chunk-size",
             "111",
             "--chunk-overlap",
             "7",
-            "--heartbeat-max",
-            "1.5",
         ]
     )
 
-    assert seen["lease_seconds"] == 37
     assert seen["poll_seconds"] == 0.25
     assert seen["chunk_size"] == 111
     assert seen["chunk_overlap"] == 7
-    assert seen["heartbeat_max_seconds"] == 1.5
 
 
 def _load_worker_fresh():
     """A SECOND, independent load of `scripts/worker.py`, so its module-level `from` imports rebind.
 
-    `from gct.jobs.worker import DEFAULT_LEASE_SECONDS` copies the value at import time, and this
+    `from gct.jobs.worker import DEFAULT_POLL_SECONDS` copies the value at import time, and this
     file imported the script once at collection. Patching the library constant afterwards cannot
     reach that copy - so a test about a RETUNE has to re-execute the module under the patch.
     """
@@ -448,7 +414,6 @@ def _load_worker_fresh():
 @pytest.mark.parametrize(
     ("module_name", "constant", "kwarg", "retuned"),
     [
-        ("gct.jobs.worker", "DEFAULT_LEASE_SECONDS", "lease_seconds", 613),
         ("gct.jobs.worker", "DEFAULT_POLL_SECONDS", "poll_seconds", 3.25),
         ("gct.ingest.chunk", "CHUNK_SIZE_WORDS", "chunk_size", 271),
         ("gct.ingest.chunk", "CHUNK_OVERLAP_WORDS", "chunk_overlap", 19),
@@ -465,10 +430,10 @@ def test_a_retuned_library_constant_reaches_the_flagless_worker(
 
     THREE SOURCE-READING DRAFTS PRECEDED THIS AND ALL THREE WERE BROKEN BY EXECUTION, which is
     why the approach changed rather than the pattern being tightened a fourth time. Draft 1 asked
-    that each `default=` be an `ast.Name`; a module-local `DEFAULT_LEASE_SECONDS = 900` satisfied
+    that each `default=` be an `ast.Name`; a module-local `DEFAULT_POLL_SECONDS = 2.0` satisfied
     it. Draft 2 also required the name to appear in a `from gct...` import; leaving the import in
     place and rebinding the name afterwards satisfied it. Draft 3 also forbade the name from
-    being a `Store` target anywhere in the file; `parser.set_defaults(lease=900)` is neither an
+    being a `Store` target anywhere in the file; `parser.set_defaults(poll=2.0)` is neither an
     `add_argument` call nor an assignment to that name, and argparse applies it anyway - and
     moving the registration into a module-level helper took it out of the inspected function
     entirely. Each draft closed the previous counterexample and left the next one open, because a
@@ -544,11 +509,9 @@ def test_the_flag_set_is_closed_on_the_parser_that_actually_parses(monkeypatch, 
     assert exposed == {
         "-h",
         "--help",
-        "--lease",
         "--poll",
         "--chunk-size",
         "--chunk-overlap",
-        "--heartbeat-max",
         "--log-level",
     }
 
@@ -565,7 +528,7 @@ def test_the_real_script_entry_point_follows_a_retune(tmp_path):
     They all import the module under a different name and drive `main` IN-PROCESS - some with
     `[]`, some with flags - so the two lines that run when an operator types
     `python scripts/worker.py` are never executed by any of them. The gap is not
-    theoretical: planting `main(sys.argv[1:] or ["--lease", "900"])` in that block leaves the
+    theoretical: planting `main(sys.argv[1:] or ["--poll", "2.0"])` in that block leaves the
     whole suite green while the real flagless command ignores a retuned library.
 
     RUN WITH NO ARGUMENTS, which is the point and was the second draft of this test. A first
@@ -588,7 +551,7 @@ import gct.db
 import gct.jobs.worker as w
 import gct.providers.openai_provider as prov
 
-w.DEFAULT_LEASE_SECONDS = 613
+w.DEFAULT_POLL_SECONDS = 6.13
 gct.db.connect = lambda: types.SimpleNamespace(autocommit=False, close=lambda: None)
 prov.OpenAIEmbeddings = lambda: None
 
@@ -620,23 +583,19 @@ w.run = _fake_run
             if line.startswith("RUN_KWARGS ")
         )
     )
-    # The WHOLE kwarg set, not just the retuned one. A first draft asserted only the lease, and a
-    # mutant appending `--heartbeat-max 3600` in the `__main__` guard sailed past it - resolving
-    # in the script the cap ADR 0031 5 says must be derived from the lease in use.
+    # The WHOLE kwarg set, not just the retuned one, so an extra flag appended in the
+    # `__main__` guard is caught too.
     assert handed == {
         "chunk_size": CHUNK_SIZE_WORDS,
         "chunk_overlap": CHUNK_OVERLAP_WORDS,
-        "lease_seconds": 613,
-        "poll_seconds": worker_lib.DEFAULT_POLL_SECONDS,
-        "heartbeat_max_seconds": None,
+        "poll_seconds": 6.13,
     }, (
         "the REAL flagless entry point handed `run` something the library did not supply. Every "
         "other test in this file drives `main` IN-PROCESS and so never executes the `__main__` "
         f"guard this one runs through. Got: {handed}"
     )
 
-    # ...and the number an operator READS. A previous defeat route left `--help` advertising 900
-    # while the loop ran something else, so the printed default earns its own assertion.
+    # ...and the number an operator READS: `--help` must advertise the retuned default.
     helped = subprocess.run(
         [sys.executable, str(_SCRIPT), "--help"],
         cwd=_SCRIPT.parent.parent,
@@ -646,44 +605,12 @@ w.run = _fake_run
         timeout=120,
     )
     assert helped.returncode == 0, helped.stderr
-    assert "613" in helped.stdout and "900" not in helped.stdout
-
-
-def test_a_heartbeat_cap_under_one_poll_interval_is_accepted_on_purpose(
-    monkeypatch, restore_sigterm
-):
-    """`_validate` declares this combination legal and nothing else in the suite pins it.
-
-    Measured: before this test existed, adding a rule to `_validate` refusing a cap below one
-    poll interval left all 17 tests of the day green. WHY no such rule belongs is `_validate`'s
-    own docstring's argument and is not restated here.
-
-    THE OTHER SHAPE `_validate` declares legal, a cap below the LEASE, is deliberately not
-    retested here: `test_every_flag_reaches_the_loop_that_the_defect_said_it_could_not` already
-    passes a 1.5s cap against a 37s lease, so a rule refusing that reddens the suite without
-    help. An earlier draft of this test covered it anyway, and the extra half added no coverage
-    while carrying an assertion comparing two values the same call had just passed - satisfiable
-    by construction, which is the shape of pin this file exists to avoid.
-
-    Asserted as an ACCEPTANCE - the value reaching `run` - rather than as "no SystemExit": a
-    parser that swallowed the flag would also not raise.
-    """
-    seen = _spy_on_run(monkeypatch)
-
-    worker_script.main(["--heartbeat-max", "1.0"])
-
-    assert seen["poll_seconds"] == worker_lib.DEFAULT_POLL_SECONDS, (
-        "this test is only meaningful while the cap it passes is UNDER the default poll"
-    )
-    assert seen["heartbeat_max_seconds"] == 1.0
-    assert seen["heartbeat_max_seconds"] < seen["poll_seconds"]
+    assert "6.13" in helped.stdout and "2.0" not in helped.stdout
 
 
 @pytest.mark.parametrize(
     ("argv", "remedy"),
     [
-        (["--lease", "0"], "--lease must be at least 1 second"),
-        (["--lease", "-5"], "--lease must be at least 1 second"),
         (["--poll", "0"], "--poll must be a finite number greater than 0"),
         (["--poll", "-1"], "--poll must be a finite number greater than 0"),
         # `nan` and `inf` parse as floats and reach `time.sleep`. `nan` is the sharp one: no
@@ -693,8 +620,6 @@ def test_a_heartbeat_cap_under_one_poll_interval_is_accepted_on_purpose(
         (["--poll", "inf"], "--poll must be a finite number greater than 0"),
         (["--chunk-overlap", "250", "--chunk-size", "250"], "--chunk-overlap must be at least 0"),
         (["--chunk-overlap", "-1"], "--chunk-overlap must be at least 0"),
-        (["--heartbeat-max", "0"], "--heartbeat-max must be a finite number greater than 0"),
-        (["--heartbeat-max", "nan"], "--heartbeat-max must be a finite number greater than 0"),
     ],
 )
 def test_an_unrunnable_value_is_refused_before_anything_is_opened(

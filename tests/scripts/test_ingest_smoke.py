@@ -3,7 +3,7 @@
 WHY A CEREMONY SCRIPT HAS TESTS AT ALL, when ADR 0009 calls the scripts thin peer callers that
 usually earn none: `ingest_smoke.py` is the thing that decides whether Slice 2 shipped, and almost
 every way for it to be wrong is a way for it to go GREEN. A `partial_index_sightings` that returns
-`[]` for the wrong reason, a `reaper_evidence` that says yes to a plain retry, an
+`[]` for the wrong reason, a `crash_faults` that passes a run with no redelivery, an
 `illegal_transitions` whose table quietly permits everything — each one still prints PASS, and the
 run that would have caught it costs real money and cannot be run in CI. That is the same shape of
 defect `test_ask_smoke.py` and `test_worker_script.py` were written for: invisible from reading,
@@ -23,11 +23,9 @@ asserting against a reason nothing produces any more.
 from __future__ import annotations
 
 import importlib.util
-import logging
 import sys
 import time
 import uuid
-from contextlib import contextmanager
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -121,7 +119,7 @@ def test_a_bury_followed_by_a_later_claim_is_legal():
     """`failed -> processing` is PERMITTED, and deliberately so.
 
     `_bury` writes `files` before `jobs`, so a crash between the two leaves a `failed` file under a
-    still-claimable job; the reaper requeues it and the next claim's `processing` write is what
+    still-claimable job; a later claim picks it up and that claim's `processing` write is what
     recovers the row. A table that forbade this transition would report the recovery path as a
     defect.
     """
@@ -159,11 +157,7 @@ def test_a_clean_first_ingest_shows_no_partial_index():
 def test_a_redelivery_that_replaced_the_set_shows_no_partial_index():
     """Two publishes of the same file under the same window are the same size — that is idempotence.
 
-    This WAS phase 3's shape, and is still a shape this reader must handle. Since ADR 0030 the
-    reaped worker's publish is refused, so the ceremony's phase 3 produces one publish rather than
-    two — but `partial_index_sightings` reads any history it is handed, not a phase-3-only one, so
-    the two-publish case stays covered here. Both sightings carry the full count, and the count in
-    between never dips.
+    Both sightings carry the full count, and the count in between never dips.
     """
     history = [
         snapshot("queued", 0),
@@ -213,40 +207,6 @@ def test_a_file_that_never_published_has_nothing_partial_about_it():
     assert smoke.partial_index_sightings(history) == []
 
 
-# --- the reaper's fingerprint -------------------------------------------------------------------
-
-
-def test_one_delivery_is_not_a_reclaim():
-    reaped, why = smoke.reaper_evidence([snapshot("ready", 62, job_state="done")])
-    assert not reaped
-    assert "delivered once" in why
-
-
-def test_a_redelivery_with_a_clean_error_column_is_the_reaper():
-    """`attempts >= 2` says a redelivery happened; a null `last_error` says the reaper caused it.
-
-    Every other route back to `queued` writes that column — `release` on a transient failure, `fail`
-    on a bury — so the reaper is the only requeue that leaves it untouched. Together the two
-    columns identify the writer without reading a single log line.
-    """
-    reaped, why = smoke.reaper_evidence([snapshot("ready", 62, job_state="done", attempts=2)])
-    assert reaped
-    assert "attempts=2" in why
-
-
-def test_a_retry_after_a_transient_failure_is_not_the_reaper():
-    """The test that stops phase 3 from passing on the wrong mechanism.
-
-    A 429 mid-embed also produces `attempts == 2`, and a check that only counted deliveries would
-    call that a reclaim and print PASS for a run in which no lease ever expired. `release` writes
-    `last_error`, so the two are distinguishable — but only if something looks.
-    """
-    history = [snapshot("ready", 62, job_state="done", attempts=2, last_error="transient: 429")]
-    reaped, why = smoke.reaper_evidence(history)
-    assert not reaped
-    assert "not from the reaper" in why
-
-
 # --- the lifecycle gate itself ------------------------------------------------------------------
 
 
@@ -274,9 +234,8 @@ def test_a_fully_observed_lifecycle_has_no_faults():
 def test_a_ready_file_whose_job_never_settled_is_a_fault():
     """`ready` on the file axis and `processing` on the job axis is a job nobody completed.
 
-    It is a legal INTERMEDIATE reading under at-least-once — phase 3 sees it, while the winner is
-    still working — but as a FINAL reading it means the lease was lost and nothing ever settled the
-    job, which the happy path must not do.
+    It is a legal INTERMEDIATE reading (between `index_file`'s commit and `complete`), but as a
+    FINAL reading it means nothing ever settled the job, which the happy path must not do.
     """
     history = [
         snapshot("queued", 0, job_state="queued", attempts=0),
@@ -462,15 +421,18 @@ class ScriptedObserver:
 class StubWorker:
     """A worker that records that it was started and never runs anything."""
 
-    def __init__(self, *args, lease_seconds=1, heartbeat_max_seconds=None, **kwargs):
-        self.lease_seconds = lease_seconds
-        self.heartbeat_max_seconds = heartbeat_max_seconds
+    def __init__(self, *args, **kwargs):
+        self.pid = 4242
         self.error = None
+        self.stopped = False
         self.started = False
         self.started_after_samples = None
 
     def start(self):
         self.started = True
+
+    def stop(self):
+        self.stopped = True
 
 
 @pytest.fixture
@@ -513,56 +475,6 @@ def buried_history():
             last_error="unparseable: could not read PDF",
         ),
     ]
-
-
-def reclaimed_history(chunks=62):
-    """A history that passes phase 3: two deliveries, one full chunk set, no error recorded."""
-    return [
-        snapshot("queued", 0, job_state="queued", attempts=0),
-        snapshot("processing", 0),
-        snapshot("processing", 0, attempts=2),
-        snapshot("ready", chunks, attempts=2),
-        snapshot("ready", chunks, job_state="done", attempts=2),
-    ]
-
-
-class FakeDelayGate:
-    """Stands in for `_DelayedEmbeddings`: records what phase 3 armed, and that it disarmed."""
-
-    def __init__(self):
-        self.armed_with = None
-        self.delay_seconds = 0.0
-
-    @contextmanager
-    def delaying(self, seconds):
-        self.armed_with = seconds
-        self.delay_seconds = seconds
-        try:
-            yield
-        finally:
-            self.delay_seconds = 0.0
-
-
-def run_reaper_phase(
-    observer, monkeypatch, *, target="Livingston Cosmogony.pdf", reaps=0, worker=None, gate=None
-):
-    """Drive `_phase_reaper` with worker B and the delay gate stubbed out."""
-    monkeypatch.setattr(smoke, "WorkerThread", StubWorker)
-    log = smoke.ReaperLog()
-    log.reaps = reaps
-    return smoke._phase_reaper(
-        None,
-        observer,
-        log,
-        worker or StubWorker(),
-        owner_id="o",
-        class_id="c",
-        target=Path(target),
-        embedder=gate or FakeDelayGate(),
-        lease_seconds=1,
-        chunk_size=250,
-        chunk_overlap=40,
-    )
 
 
 # --- phase 1's verdict --------------------------------------------------------------------------
@@ -771,68 +683,6 @@ def test_phase_two_fails_when_nothing_actionable_was_recorded(stub_enqueue, caps
     assert "nothing actionable was recorded" in capsys.readouterr().out
 
 
-# --- phase 3's verdict --------------------------------------------------------------------------
-
-
-def test_phase_three_passes_a_real_reclaim_and_one_full_chunk_set(
-    monkeypatch, stub_enqueue, capsys
-):
-    observer = ScriptedObserver(reclaimed_history())
-    assert run_reaper_phase(observer, monkeypatch) is True
-    out = capsys.readouterr().out
-    assert "reclaimed and redelivered: attempts=2" in out
-    assert "one full chunk set after two deliveries: chunks=62" in out
-
-
-def test_phase_three_fails_when_no_lease_was_ever_reclaimed(monkeypatch, stub_enqueue, capsys):
-    """THE phase-3 claim. A run that ingested cleanly on the first delivery proves nothing about
-    the reaper, and must not be able to report PASS."""
-    once = [
-        snapshot("queued", 0, job_state="queued", attempts=0),
-        snapshot("processing", 0),
-        snapshot("ready", 62, job_state="done"),
-    ]
-    assert run_reaper_phase(ScriptedObserver(once), monkeypatch) is False
-    assert "no reclaim happened" in capsys.readouterr().out
-
-
-def test_phase_three_fails_when_the_redelivery_left_a_disagreeing_index(
-    monkeypatch, stub_enqueue, capsys
-):
-    """At-least-once is safe by IDEMPOTENT REPLACE, not by dedup — this is where that is checked.
-
-    Two deliveries that published different-sized sets means the second appended rather than
-    replaced. Delete the invariant check and this run reports PASS with a doubled corpus.
-    """
-    doubled = reclaimed_history()
-    doubled[-1] = snapshot("ready", 124, job_state="done", attempts=2)
-    assert run_reaper_phase(ScriptedObserver(doubled), monkeypatch) is False
-    assert "partial or disagreeing index" in capsys.readouterr().out
-
-
-def test_phase_three_fails_when_the_redelivered_job_was_buried(monkeypatch, stub_enqueue, capsys):
-    """A redelivery that ends `failed` has settled — the phase must judge it, not wait for `done`.
-
-    A predicate that only accepts `done` sits out the full timeout on this history and reports a
-    hang, which tells a reader the opposite of what happened.
-    """
-    buried = reclaimed_history()
-    buried[-1] = snapshot(
-        "failed", 0, failed_reason="transient_exhausted", job_state="failed", attempts=2
-    )
-    assert run_reaper_phase(ScriptedObserver(buried), monkeypatch) is False
-    out = capsys.readouterr().out
-    assert "TIMED OUT" not in out
-    assert "not 'ready'" in out
-
-
-def test_phase_three_reports_only_the_reaps_from_its_own_phase(monkeypatch, stub_enqueue, capsys):
-    """The corroboration line is phase-scoped. Reported as a running total it silently credits
-    phase 3 with every reap the run ever logged."""
-    assert run_reaper_phase(ScriptedObserver(reclaimed_history()), monkeypatch, reaps=5) is True
-    assert "logged 0 'reaper:' warning(s)" in capsys.readouterr().out
-
-
 # --- the exit code itself -----------------------------------------------------------------------
 
 
@@ -971,54 +821,6 @@ def test_phase_two_fails_fast_when_its_worker_died(stub_enqueue, capsys):
     assert "a worker died" in capsys.readouterr().out
 
 
-def test_phase_three_does_not_start_worker_B_until_A_has_claimed(monkeypatch, stub_enqueue):
-    """The ordering IS the mechanism. Start B first and B wins the claim on its long lease, A never
-    holds the job, nothing ever expires, and the reaper case quietly stops being demonstrated."""
-    observer = ScriptedObserver(reclaimed_history())
-    started_at: list[int] = []
-
-    class RecordingWorker(StubWorker):
-        def start(self):
-            started_at.append(observer.samples)
-            super().start()
-
-    monkeypatch.setattr(smoke, "WorkerThread", RecordingWorker)
-    log = smoke.ReaperLog()
-    assert (
-        smoke._phase_reaper(
-            None,
-            observer,
-            log,
-            StubWorker(),
-            owner_id="o",
-            class_id="c",
-            target=Path("Livingston Cosmogony.pdf"),
-            embedder=FakeDelayGate(),
-            lease_seconds=1,
-            chunk_size=250,
-            chunk_overlap=40,
-        )
-        is True
-    )
-    # B was constructed and started only after the observer had actually seen A holding the job.
-    assert started_at == [1]
-
-
-def test_phase_three_fails_when_the_history_shows_an_impossible_transition(
-    monkeypatch, stub_enqueue, capsys
-):
-    """`ready` is absorbing. A redelivery that unpublished a `ready` file is a real violation, and
-    phase 3 checks legality for the same reason phase 1 does."""
-    unpublished = [
-        snapshot("queued", 0, job_state="queued", attempts=0),
-        snapshot("processing", 0),
-        snapshot("ready", 62, attempts=2),
-        snapshot("failed", 0, job_state="failed", attempts=2),
-    ]
-    assert run_reaper_phase(ScriptedObserver(unpublished), monkeypatch) is False
-    assert "no legal path reaches" in capsys.readouterr().out
-
-
 # --- which illegal pairs a MISSED sighting could explain ------------------------------------------
 
 
@@ -1074,7 +876,7 @@ def test_the_two_kinds_of_illegal_pair_do_not_get_the_same_sentence():
 def args(**overrides):
     from argparse import Namespace
 
-    return Namespace(**{"max_files": None, "lease": smoke.DEFAULT_SHORT_LEASE_SECONDS, **overrides})
+    return Namespace(**{"max_files": None, **overrides})
 
 
 def test_max_files_zero_is_refused_rather_than_read_as_unset():
@@ -1086,25 +888,14 @@ def test_max_files_zero_is_refused_rather_than_read_as_unset():
 
 def test_a_negative_max_files_is_refused():
     """`files[:-1]` silently drops the last file, so a run asks for a corpus and quietly gets a
-    different one — and pays for it. Phase 3 is no longer the victim (it takes `corpus[0]` and its
-    overrun is induced), which makes this purely about a flag meaning something other than it says:
-    a narrowed run and an unnarrowed one stop being comparable, for no error anyone sees."""
+    different one — and pays for it."""
     with pytest.raises(smoke.SetupError, match="at least 1"):
         smoke._validate_args(args(max_files=-1))
 
 
-@pytest.mark.parametrize("lease", [0, -5])
-def test_a_lease_at_or_below_zero_is_refused(lease):
-    """Three places in this repo argue 1s is the floor and that 0 would be "forcing the expiry by
-    another name". Argparse enforced none of them, so phase 3 would have passed on a lease that had
-    already expired when `claim` granted it."""
-    with pytest.raises(smoke.SetupError, match="forced rather than earned"):
-        smoke._validate_args(args(lease=lease))
-
-
-def test_the_documented_defaults_and_the_negative_control_both_validate():
+def test_the_documented_defaults_validate():
     smoke._validate_args(args())
-    smoke._validate_args(args(max_files=1, lease=30))
+    smoke._validate_args(args(max_files=1))
 
 
 # --- claims made in prose that the code has to keep -----------------------------------------------
@@ -1140,165 +931,6 @@ def test_the_max_files_help_describes_the_file_phase_three_actually_takes():
     assert "largest" not in help_text
 
 
-def test_the_lease_help_names_the_constraint_that_is_actually_live():
-    """The retired rule, and a test that could not catch it keeping the flag.
-
-    The help said `--lease` "must be shorter than the slowest file's ingest". That rule died when
-    the overrun became induced: the live constraint is `PHASE_THREE_EMBED_DELAY_SECONDS`. On a
-    corpus whose slowest file takes 5s a reader would follow the printed instruction, pick
-    `--lease 4`, and watch phase 3 fail with a remedy contradicting the help they had just read.
-
-    The old assertion was `str(DEFAULT_SHORT_LEASE_SECONDS) in help` — and the help f-string
-    INTERPOLATES that constant, so it held for every value of it and for every word around it. A
-    test whose expectation is computed from the same source as the thing under test cannot fail.
-    What can fail is a NEGATIVE assertion on the retired wording and a positive one on a literal
-    the author has to type, which is the shape its `--max-files` sibling already had.
-
-    This is the drift `_build_parser` was split out to catch, catching it.
-    """
-    help_text = _help_for("--lease")
-    assert "embed delay" in help_text
-    assert "floor" in help_text
-    assert "slowest file" not in help_text
-
-
-# --- the induced delay ----------------------------------------------------------------------------
-#
-# `_DelayedEmbeddings` is the one place this ceremony ARRANGES something rather than observing it,
-# which makes it the one place a quiet mistake would be least visible: every phase would still pass,
-# and phase 3's verdict would be about a wrapper instead of about the write path. The tests below
-# are what keep the wrapper honest about being a pass-through with a pause and nothing else.
-
-
-class RecordingEmbedder:
-    """A stand-in for the real embedder: deterministic vectors, and it counts its calls.
-
-    `model_id` is present and NOT the wrapper's business — the trap the proxy test is about.
-    """
-
-    model_id = "text-embedding-3-small"
-
-    def __init__(self):
-        self.calls: list[list[str]] = []
-
-    def embed(self, texts):
-        self.calls.append(list(texts))
-        return [[float(len(text))] * 3 for text in texts]
-
-
-def test_the_delay_wrapper_proxies_model_id_to_the_real_embedder():
-    """ADR 0018's stamp runs through this attribute, so the wrapper must not own it.
-
-    `chunks.embedding_model_id` is stamped from `embedder.model_id` — "the model that ACTUALLY
-    produced the stored vectors" — and the Retriever asserts that stamp against the active
-    embedder's. Three ways a wrapper breaks that, all silent until they are not: SHADOW the
-    attribute and every chunk the ceremony writes is stamped with a lie; DROP it and the ingest
-    raises mid-run; HARDCODE it and the Retriever's guard compares a constant to itself and can
-    never fire (config.py says so in as many words). Delegation is the only one of the four that
-    keeps the stamp the real model's by construction, so it is asserted rather than assumed.
-    """
-    inner = RecordingEmbedder()
-    assert smoke._DelayedEmbeddings(inner).model_id == inner.model_id
-
-
-def test_the_delay_wrapper_proxies_an_attribute_it_has_never_heard_of():
-    """The proxy is general, not a special case for `model_id`.
-
-    A wrapper that forwarded exactly the one attribute someone remembered would break the next
-    thing the pipeline reads off an embedder, and it would break it inside a paid run.
-    """
-    inner = RecordingEmbedder()
-    inner.dimensions = 1536
-    assert smoke._DelayedEmbeddings(inner).dimensions == 1536
-
-
-def test_an_attribute_neither_side_has_still_raises_attribute_error():
-    """The proxy must not turn a typo into something that looks like a value."""
-    wrapped = smoke._DelayedEmbeddings(RecordingEmbedder())
-    with pytest.raises(AttributeError):
-        # Bound to a name only to keep ruff's B018 quiet; the access is the whole test.
-        _ = wrapped.no_such_thing
-
-
-def test_the_delay_wrapper_changes_nothing_about_what_is_embedded():
-    """Same texts in, the real client's vectors back, ONE inner call per outer call.
-
-    The call count is half the assertion and the easier half to lose: a wrapper that retried, or
-    that embedded once to time it and once for real, would double the ceremony's bill and still
-    return correct-looking vectors.
-    """
-    inner = RecordingEmbedder()
-    wrapped = smoke._DelayedEmbeddings(inner)
-    texts = ["alpha beta", "gamma"]
-
-    assert wrapped.embed(texts) == inner.embed(texts)
-    assert inner.calls == [texts, texts]  # one per embed() call, ours and the control's
-
-
-def test_the_delay_is_not_applied_until_it_is_armed():
-    """Phases 1 and 2 run through this object disarmed, so disarmed has to cost nothing.
-
-    Worker A holds ONE embedder for the whole run — there is no seam at which to hand it a different
-    object mid-run — so "phases 1 and 2 are unaffected" is a claim about this branch being false,
-    not about them holding a different embedder.
-    """
-    wrapped = smoke._DelayedEmbeddings(RecordingEmbedder())
-    started = time.perf_counter()
-    wrapped.embed(["alpha"])
-    assert time.perf_counter() - started < 0.05
-
-
-def test_arming_the_delay_actually_pauses_the_embed():
-    """The whole point of the wrapper, measured rather than assumed.
-
-    A short delay, because what is under test is that the sleep happens at all — the real
-    `PHASE_THREE_EMBED_DELAY_SECONDS` is sized against the lease, and asserting on it here would buy
-    nothing but three seconds of test time.
-    """
-    wrapped = smoke._DelayedEmbeddings(RecordingEmbedder())
-    with wrapped.delaying(0.05):
-        started = time.perf_counter()
-        wrapped.embed(["alpha"])
-        elapsed = time.perf_counter() - started
-    assert elapsed >= 0.05
-
-
-def test_the_delay_is_disarmed_even_when_the_block_raises():
-    """Phase 3 is the only phase that should pay for the delay.
-
-    If an exception could leave it armed, a failing phase 3 would slow every later embed in the
-    process — and the ceremony would look like it had a performance problem rather than a fault.
-    """
-    wrapped = smoke._DelayedEmbeddings(RecordingEmbedder())
-    with pytest.raises(ZeroDivisionError):
-        with wrapped.delaying(3.0):
-            raise ZeroDivisionError
-    assert wrapped.delay_seconds == 0.0
-
-
-def test_phase_three_arms_the_delay_it_advertises(monkeypatch, stub_enqueue):
-    """The wiring assertion: the phase must arm the constant it names in its own output.
-
-    Armed with the wrong value — or not armed at all — phase 3 goes back to depending on the corpus
-    being slow enough, which is the flake this change exists to remove, and nothing else in the
-    suite would notice.
-    """
-    gate = FakeDelayGate()
-    assert run_reaper_phase(ScriptedObserver(reclaimed_history()), monkeypatch, gate=gate) is True
-    assert gate.armed_with == smoke.PHASE_THREE_EMBED_DELAY_SECONDS
-    assert gate.delay_seconds == 0.0  # and disarmed on the way out
-
-
-def test_the_induced_delay_is_longer_than_the_lease_it_has_to_outrun():
-    """The one arithmetic relationship phase 3 rests on, stated where it can go red.
-
-    The delay is what guarantees the overrun; a default lease raised past it, or a delay trimmed
-    below it, silently returns the phase to hoping the corpus is slow. `_overrun_remedy` says the
-    same thing to a human at runtime — this says it to CI.
-    """
-    assert smoke.PHASE_THREE_EMBED_DELAY_SECONDS > smoke.DEFAULT_SHORT_LEASE_SECONDS
-
-
 # --- the small guards that only fire on an input nothing normally produces ----------------------
 #
 # Every function below is one line of defence against an EMPTY or unusual history, which is exactly
@@ -1310,29 +942,6 @@ def test_the_induced_delay_is_longer_than_the_lease_it_has_to_outrun():
 def test_an_unsampled_file_has_no_partial_index_rather_than_an_exception():
     """`max()` over an empty history raises, and the caller is already on a failure path."""
     assert smoke.partial_index_sightings([]) == []
-
-
-def test_an_unsampled_file_is_not_evidence_of_a_reclaim():
-    """`history[-1]` on an empty list raises, and "no samples" is the honest answer anyway."""
-    reaped, why = smoke.reaper_evidence([])
-    assert not reaped
-    assert why == "no samples"
-
-
-def test_the_reaper_log_counts_the_reaper_and_nothing_else():
-    """It is corroboration, so a counter that counted the WRONG warnings would print a plausible
-    number beside a verdict that never depended on it — the least likely thing anyone re-derives."""
-    log = smoke.ReaperLog()
-    reaper = logging.LogRecord(
-        "gct.jobs.worker", logging.WARNING, __file__, 1, "reaper: 1 job", (), None
-    )
-    other = logging.LogRecord(
-        "gct.jobs.worker", logging.WARNING, __file__, 1, "job x: lease lost", (), None
-    )
-    log.emit(reaper)
-    log.emit(other)
-    log.emit(reaper)
-    assert log.reaps == 2
 
 
 def test_the_printed_history_shows_a_failure_reason_when_there_is_one(capsys):
@@ -1402,74 +1011,6 @@ def test_phase_one_checks_the_no_partial_index_invariant():
     ]
     faults = smoke._lifecycle_faults(smoke.status_path(history), history)
     assert any("partial index visible" in fault for fault in faults)
-
-
-# --- the remedy phase 3 offers --------------------------------------------------------------------
-
-
-def test_the_remedy_tells_a_long_lease_to_come_down():
-    """`--lease 30` is the documented negative control, so its remedy has to name the flag."""
-    remedy = smoke._overrun_remedy(30, smoke.PHASE_THREE_HEARTBEAT_CAP_SECONDS)
-    assert "Lower --lease" in remedy
-    assert "not reaching the worker" not in remedy
-
-
-def test_the_remedy_blames_the_heartbeat_when_the_heartbeat_is_what_held_the_lease():
-    """The branch that exists for the regression this remedy was rewritten after (ADR 0031).
-
-    Phase 3 stages a reclaim by letting the BEATS stop mid-ingest, so the cap - not `--lease` - is
-    the knob that makes the scenario reachable. A cap at or above the induced delay means worker A
-    renewed its own lease for the whole ingest and nothing ever expired, with `--lease` set
-    perfectly correctly. That is what the phase's failure looked like when the heartbeat first
-    landed, and the remedy printed then sent the reader after a wiring bug that was not there.
-
-    THE CAP IS READ OFF THE WORKER, WHICH IS WHY THIS TEST PASSES ONE. Reading
-    `PHASE_THREE_HEARTBEAT_CAP_SECONDS` instead made this branch dead as shipped - 1.0 is never
-    >= the 3s delay - so the remedy could only ever be checked in a state the script cannot
-    produce. The value here is the one the regression actually leaves behind: `run`'s module
-    default, which is what a `WorkerThread` gets when nobody threads a cap to it.
-    """
-    remedy = smoke._overrun_remedy(
-        smoke.DEFAULT_SHORT_LEASE_SECONDS,
-        smoke.heartbeat_max_seconds_for(smoke.DEFAULT_LEASE_SECONDS),
-    )
-    assert "heartbeat cap" in remedy
-    assert "PHASE_THREE_HEARTBEAT_CAP_SECONDS" in remedy
-    assert "not reaching the worker" not in remedy, (
-        "the delay IS reaching the worker - the beats are what held the lease open"
-    )
-    assert "Lower --lease" not in remedy, (
-        "--lease alone cannot stage a reclaim against a live worker"
-    )
-
-
-def test_the_cap_in_use_is_read_off_the_worker_and_not_off_the_module_constant():
-    """`_cap_in_use` is the one writer for "what is worker A actually beating under".
-
-    A `None` on the worker means it took `run`'s default, which ADR 0031 §5 resolves from the
-    lease - so this resolves it the same way rather than keeping a second copy of that rule.
-    """
-
-    class _W:
-        def __init__(self, cap):
-            self.heartbeat_max_seconds = cap
-
-    assert smoke._cap_in_use(_W(1.0), 1) == 1.0
-    assert smoke._cap_in_use(_W(None), 60) == smoke.heartbeat_max_seconds_for(60)
-    assert smoke._cap_in_use(_W(None), 60) != smoke.heartbeat_max_seconds_for(
-        smoke.DEFAULT_LEASE_SECONDS
-    ), "the module default leaking through is the defect this resolver exists to prevent"
-
-
-def test_the_remedy_for_a_lease_already_under_the_delay_names_the_wiring_and_not_a_knob():
-    """Below the induced delay there is no knob left: an ingest that still fit inside the lease
-    means worker A is not embedding through the wrapper phase 3 armed. Telling the reader to change
-    a flag here would be a confident instruction to change something that cannot help."""
-    remedy = smoke._overrun_remedy(
-        smoke.DEFAULT_SHORT_LEASE_SECONDS, smoke.PHASE_THREE_HEARTBEAT_CAP_SECONDS
-    )
-    assert "not reaching the worker" in remedy
-    assert "Lower --lease" not in remedy
 
 
 # --- the real Observer ----------------------------------------------------------------------------
@@ -1624,13 +1165,8 @@ def test_the_snapshot_query_ignores_a_file_that_has_no_job_row(db, db_other):
 
 
 def test_a_missing_api_key_exits_setup_before_anything_is_wired(monkeypatch, capsys):
-    """Exit 2, and BEFORE a connection or a thread exists — the ordering is the point.
-
-    `load_settings()` defaults a missing key to `""`, which the OpenAI client accepts at
-    construction, so an absent key does not announce itself: unchecked, it surfaces as an
-    `AuthenticationError` raised inside a worker THREAD, mid-phase, where `WorkerThread` catches it
-    and the ceremony reports a failed lifecycle. That is exit 1 — "the write path misbehaved" —
-    for a run that was never stageable. The check converts it to what it is.
+    """Exit 2, and BEFORE a connection or a worker exists. Unchecked, a missing key would surface
+    as a dead worker process mid-phase, which reads as a gate failure (exit 1).
 
     Driven through `main` rather than through the branch, because what is asserted is that the check
     is reached and that its sense is the right way round: a check that aborted on a PRESENT key
@@ -1638,8 +1174,9 @@ def test_a_missing_api_key_exits_setup_before_anything_is_wired(monkeypatch, cap
     """
     monkeypatch.setattr(sys, "argv", ["ingest_smoke.py"])
     monkeypatch.setattr(smoke, "_corpus_files", lambda corpus_dir, max_files: [Path("a.pdf")])
+    monkeypatch.delenv("GCT_PROVIDERS", raising=False)
     monkeypatch.setattr(
-        smoke, "load_settings", lambda: SimpleNamespace(openai_api_key="", database_url="")
+        "gct.providers.active.load_settings", lambda: SimpleNamespace(openai_api_key="")
     )
     # Nothing may reach Postgres: if the key check is skipped or inverted, this is what it hits.
     monkeypatch.setattr(
@@ -1666,46 +1203,26 @@ class FakeConn:
 
 
 @pytest.fixture
-def quiet_worker_logger():
-    """Put `gct.jobs.worker`'s handlers back after a test that drives `main`.
-
-    `main` attaches a `ReaperLog` to that logger and never detaches it — correct for a script that
-    exits afterwards, and a leak inside a test process where several tests call `main`. Restoring
-    keeps a handler from one test counting records emitted during another.
-    """
-    logger = logging.getLogger(smoke.run.__module__)
-    previous = list(logger.handlers)
-    try:
-        yield
-    finally:
-        logger.handlers = previous
-
-
-@pytest.fixture
 def drivable_main(monkeypatch):
     """Stub `main`'s wiring down to nothing, leaving its own control flow real.
 
-    Everything replaced here is something `main` merely CONNECTS — the corpus listing, the settings,
-    the provider client, the two connections, the class row, the worker, the three phases. What is
+    Everything replaced here is something `main` merely CONNECTS — the corpus listing, the provider
+    check, the two connections, the class row, the worker, the three phases. What is
     left running is the part that is `main`'s alone and is reachable no other way: the order it does
     things in, and what it does with the results afterwards.
     """
     monkeypatch.setattr(sys, "argv", ["ingest_smoke.py"])
     monkeypatch.setattr(smoke, "_corpus_files", lambda corpus_dir, max_files: [Path("a.pdf")])
-    monkeypatch.setattr(
-        smoke, "load_settings", lambda: SimpleNamespace(openai_api_key="sk-test", database_url="")
-    )
-    monkeypatch.setattr(smoke, "OpenAIEmbeddings", RecordingEmbedder)
+    monkeypatch.setattr(smoke, "require_usable", lambda: None)
+    monkeypatch.setattr(smoke, "selected", lambda: "standin")
     monkeypatch.setattr(smoke, "connect", FakeConn)
     monkeypatch.setattr(smoke, "_create_class", lambda conn, owner_id, name: "class-1")
-    for phase in ("_phase_lifecycle", "_phase_terminal_failure", "_phase_reaper"):
+    for phase in ("_phase_lifecycle", "_phase_terminal_failure", "_phase_crash"):
         monkeypatch.setattr(smoke, phase, lambda *a, **kw: True)
     return monkeypatch
 
 
-def test_a_worker_that_died_between_phases_still_fails_the_gate(
-    drivable_main, quiet_worker_logger, capsys
-):
+def test_a_worker_that_died_between_phases_still_fails_the_gate(drivable_main, capsys):
     """The last remaining reader of `worker_a.error`, and the only one nothing else covers.
 
     `_await` catches a death DURING a wait, in the phase it broke, and that path is well pinned. The
@@ -1717,7 +1234,7 @@ def test_a_worker_that_died_between_phases_still_fails_the_gate(
     Invert this line and the suite was green — which is to say the backstop's own comment was the
     only thing asserting it existed.
     """
-    drivable_main.setattr(smoke, "WorkerThread", DeadWorker)
+    drivable_main.setattr(smoke, "WorkerProcess", DeadWorker)
 
     assert smoke.main() == smoke.EXIT_GATE_FAILED
     out = capsys.readouterr().out
@@ -1725,15 +1242,13 @@ def test_a_worker_that_died_between_phases_still_fails_the_gate(
     assert "worker A survived: FAIL" in out
 
 
-def test_a_run_whose_worker_survived_every_phase_exits_zero(
-    drivable_main, quiet_worker_logger, capsys
-):
+def test_a_run_whose_worker_survived_every_phase_exits_zero(drivable_main, capsys):
     """The control for the test above: same wiring, a live worker, and the gate must pass.
 
     Without it, a backstop that reported EVERY worker as dead would satisfy the assertion above and
     fail every real run — the inverted mutant caught in only one direction.
     """
-    drivable_main.setattr(smoke, "WorkerThread", StubWorker)
+    drivable_main.setattr(smoke, "WorkerProcess", StubWorker)
 
     assert smoke.main() == smoke.EXIT_OK
     out = capsys.readouterr().out
@@ -1761,10 +1276,7 @@ def test_a_ready_file_whose_job_has_not_settled_yet_is_not_something_to_stop_wai
     assert smoke._terminal(mid_publish) is True
     assert smoke._settled(mid_publish) is False
     assert smoke._settled(snapshot("ready", 37, job_state="done")) is True
-    # `queued` too, and it is not hypothetical: `_release_on_shutdown`'s docstring names the
-    # interrupt landing "in the millisecond between `index_file`'s commit and `complete`", which
-    # hands the job back and leaves exactly ('ready', 'queued'). Pinning the two endpoints without
-    # the SET lets a predicate admit `queued` and reintroduce this whole bug.
+    # `queued` too: pinning the two endpoints without the SET lets a predicate admit `queued`.
     assert smoke._settled(snapshot("ready", 37, job_state="queued")) is False
 
 
@@ -1780,3 +1292,212 @@ def test_a_failed_file_whose_job_has_not_settled_yet_is_not_something_to_stop_wa
     assert smoke._terminal(mid_bury) is True
     assert smoke._settled(mid_bury) is False
     assert smoke._settled(snapshot("failed", 0, job_state="failed")) is True
+
+
+def test_main_stops_worker_A_before_the_crash_phase_starts_its_own(drivable_main):
+    """Only one worker may hold the worker lock, so worker A must be gone before phase 3."""
+    workers: list[StubWorker] = []
+
+    class Recording(StubWorker):
+        def __init__(self, *args, **kwargs):
+            super().__init__(*args, **kwargs)
+            workers.append(self)
+
+    def crash_phase(*args, **kwargs):
+        assert workers and workers[0].stopped
+        return True
+
+    drivable_main.setattr(smoke, "WorkerProcess", Recording)
+    drivable_main.setattr(smoke, "_phase_crash", crash_phase)
+    assert smoke.main() == smoke.EXIT_OK
+
+
+# --- phase 3: crash recovery ----------------------------------------------------------------------
+
+
+def killed_at():
+    """Phase 3's reading just before the SIGKILL: first claim, mid-ingest, nothing public."""
+    return snapshot("processing", 0, attempts=1)
+
+
+def recovered_history(chunks=37):
+    return [
+        snapshot("queued", 0, job_state="queued", attempts=0),
+        snapshot("processing", 0, attempts=1),
+        snapshot("processing", 0, job_state="queued", attempts=1),
+        snapshot("processing", 0, attempts=2),
+        snapshot("ready", chunks, job_state="done", attempts=2),
+    ]
+
+
+def crash(history=None, *, at_kill=None, chunk_set=(37, 37), clean=(37, 37)):
+    return smoke.crash_faults(
+        history or recovered_history(),
+        at_kill=at_kill or killed_at(),
+        chunk_set=chunk_set,
+        clean=clean,
+    )
+
+
+def test_a_clean_crash_recovery_has_no_faults():
+    assert crash() == []
+
+
+def test_a_job_delivered_only_once_is_not_a_crash_recovery():
+    history = recovered_history()
+    history[-1] = snapshot("ready", 37, job_state="done", attempts=1)
+    assert any("attempts=1, not 2" in fault for fault in crash(history))
+
+
+def test_an_extra_delivery_is_a_fault():
+    history = recovered_history()
+    history[-1] = snapshot("ready", 37, job_state="done", attempts=3)
+    assert any("attempts=3, not 2" in fault for fault in crash(history))
+
+
+def test_a_doubled_chunk_set_is_a_fault():
+    faults = crash(chunk_set=(74, 37))
+    assert any("74 chunks (37 distinct) after recovery" in fault for fault in faults)
+
+
+def test_a_short_chunk_set_is_a_fault():
+    assert any("a clean ingest of the same file has 37" in f for f in crash(chunk_set=(20, 20)))
+
+
+def test_without_a_clean_ingest_to_compare_against_the_phase_fails():
+    assert any("no clean ingest" in fault for fault in crash(clean=None))
+
+
+def test_no_chunks_after_recovery_is_a_fault():
+    assert "no chunks after recovery" in crash(chunk_set=(0, 0), clean=(0, 0))
+
+
+@pytest.mark.parametrize(
+    "at_kill",
+    [
+        snapshot("ready", 37, job_state="processing", attempts=1),  # already published
+        snapshot("processing", 0, attempts=2),  # the second worker claimed it
+        snapshot("processing", 12, attempts=1),  # chunks visible before the commit
+        snapshot("queued", 0, job_state="processing", attempts=1),  # ingest never started
+    ],
+)
+def test_a_kill_that_did_not_land_mid_ingest_on_the_first_claim_is_a_fault(at_kill):
+    assert any("not mid-ingest on its first claim" in fault for fault in crash(at_kill=at_kill))
+
+
+def test_a_file_that_ended_failed_after_the_crash_is_a_fault():
+    history = recovered_history()
+    history[-1] = snapshot(
+        "failed", 0, failed_reason="transient_exhausted", job_state="failed", attempts=2
+    )
+    faults = crash(history, chunk_set=(0, 0))
+    assert "ended 'failed', not 'ready'" in faults
+    assert "jobs.state='failed', not 'done'" in faults
+
+
+def test_reaching_ready_twice_is_a_fault():
+    history = recovered_history()
+    history[-1:] = [
+        snapshot("ready", 37, attempts=2),
+        snapshot("processing", 37, attempts=2),
+        snapshot("ready", 37, job_state="done", attempts=2),
+    ]
+    faults = crash(history)
+    assert "reached 'ready' 2 time(s), not once" in faults
+    assert any("no legal path reaches" in fault for fault in faults)
+
+
+def test_a_partial_index_during_recovery_is_a_fault():
+    history = recovered_history()
+    history.insert(-1, snapshot("processing", 12, attempts=2))
+    assert any("partial index visible" in fault for fault in crash(history))
+
+
+WAITING = (
+    "2026-11-20 10:00:00,000 WARNING gct.jobs.worker: another worker holds the worker lock - "
+    "retrying in 5s\n"
+)
+CLAIMED = "2026-11-20 10:00:01,000 INFO gct.jobs.worker: job j: claimed file f (attempt 2/5)\n"
+
+
+def test_a_second_worker_that_waited_and_claimed_nothing_passes():
+    assert smoke.waiter_faults(WAITING) == []
+
+
+def test_a_second_worker_that_never_waited_for_the_lock_fails():
+    assert any("never logged" in fault for fault in smoke.waiter_faults(""))
+
+
+def test_a_second_worker_that_claimed_a_job_fails():
+    assert any("claimed a job" in fault for fault in smoke.waiter_faults(WAITING + CLAIMED))
+
+
+def test_the_log_lines_phase_3_reads_are_ones_the_worker_really_logs():
+    """Phase 3 reads the worker's log, so a reworded message must go red here, not pass silently."""
+    import inspect
+
+    from gct.jobs import worker as worker_lib
+
+    source = inspect.getsource(worker_lib)
+    for line in (smoke.LOCK_WAIT_LINE, smoke.CLAIM_LINE, smoke.REQUEUE_LINE):
+        assert line in source
+
+
+def test_a_log_line_is_found_and_its_timestamp_dropped():
+    assert smoke._log_line(WAITING + CLAIMED, smoke.CLAIM_LINE) == (
+        "INFO gct.jobs.worker: job j: claimed file f (attempt 2/5)"
+    )
+    assert smoke._log_line(WAITING, smoke.CLAIM_LINE) is None
+
+
+# --- the worker process -------------------------------------------------------------------------
+
+
+def test_the_worker_command_is_one_scripts_worker_py_accepts():
+    """The flags cross a process boundary, so nothing else checks the worker still takes them."""
+    spec = importlib.util.spec_from_file_location("worker_script_for_smoke", smoke.WORKER_SCRIPT)
+    worker_script = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(worker_script)
+
+    command = smoke.worker_command(300, 50)
+    assert command[:2] == [sys.executable, str(smoke.WORKER_SCRIPT)]
+    parsed = worker_script._build_parser().parse_args(command[2:])
+    assert parsed.poll == smoke.WORKER_POLL_SECONDS
+    assert (parsed.chunk_size, parsed.chunk_overlap) == (300, 50)
+    # The phases read INFO lines (claims), so the worker must log at INFO.
+    assert parsed.log_level == "INFO"
+
+
+def fake_worker(tmp_path, code):
+    worker = smoke.WorkerProcess("w", tmp_path, chunk_size=250, chunk_overlap=40)
+    worker.command = [sys.executable, "-c", code]
+    return worker
+
+
+def test_a_killed_worker_is_not_reported_as_dead_on_its_own(tmp_path):
+    worker = fake_worker(tmp_path, "import time; print('up', flush=True); time.sleep(30)")
+    worker.start()
+    try:
+        assert worker.wait_for_log("up", timeout=10)
+        assert worker.error is None
+        assert worker.kill() == -9
+        assert worker.error is None
+    finally:
+        worker.stop()
+
+
+def test_a_worker_that_exits_by_itself_is_reported_with_its_last_words(tmp_path):
+    worker = fake_worker(tmp_path, "import sys; print('no database'); sys.exit(3)")
+    worker.start()
+    assert not worker.wait_for_log("never printed", timeout=10)
+    assert "exited with code 3" in worker.error
+    assert "no database" in worker.error
+
+
+def test_stopping_a_worker_is_safe_before_start_and_twice(tmp_path):
+    worker = fake_worker(tmp_path, "import time; time.sleep(30)")
+    worker.stop()
+    worker.start()
+    worker.stop()
+    worker.stop()
+    assert worker.error is None

@@ -7,27 +7,22 @@ THE FLAGS ARE WIRING, NOT POLICY, and that is what keeps them on the right side 
 LIBRARY-SOURCED default below is the library's own constant, read by name and never retyped as a
 literal - the same one-writer rule ADR 0018 states for the model id, applied to the queue's
 numbers. So a run with no flags calls `run` with the library's own numbers, and retuning one moves
-this script with it instead of leaving a stale copy behind. (Of the five FLAG-DERIVED values this
-script passes to `run` - it also passes the connection and the embedder - `run` defaults three;
-`chunk_size` and `chunk_overlap` are REQUIRED of every caller, so for those two this script
-supplies the chunker's constant rather than echoing a default.) Two flags are deliberately not
-library-sourced and `_build_parser` says why: `--log-level` defaults to a script-local constant
-because the level is the application's call (ADR 0009), and `--heartbeat-max` defaults to `None`
-because `run` must derive the cap from the lease in use (ADR 0031 5).
+this script with it instead of leaving a stale copy behind. (`chunk_size` and `chunk_overlap` are
+REQUIRED of every caller, so for those two this script supplies the chunker's constant rather than
+echoing a default.) `--log-level` is the one flag that
+is deliberately not library-sourced: the level is the application's call (ADR 0009).
 
 WHY A CLI AT ALL. ADR 0011's PM-3 addendum mandates a separate OS process, but until #109 this
 `main()` took no arguments, so a subprocess was pinned to the module defaults and a caller that
-needed a different lease had no way to ask for one. This did NOT convert
-`scripts/ingest_smoke.py` to a subprocess, and its own docstring is the single writer of why it
-stays on a thread - do not restate that argument here.
-`--heartbeat-max` is here for the same reason and no other: since ADR 0031 a live
-worker renews its own lease, so `--lease` alone can no longer stage an expiry (`ingest_smoke`'s
-`PHASE_THREE_HEARTBEAT_CAP_SECONDS` carries that argument).
+needed a different poll interval had no way to ask for one. `scripts/ingest_smoke.py` and
+`scripts/http_smoke.py` start this script as a real subprocess.
+
+Exactly one worker may run (issue #187): `run` waits for the worker lock before it claims.
 
 Usage:
     uv run python scripts/worker.py
-    uv run python scripts/worker.py --lease 30 --poll 0.5
-    uv run python scripts/worker.py --log-level WARNING     # only reaps and failures, for a
+    uv run python scripts/worker.py --poll 0.5
+    uv run python scripts/worker.py --log-level WARNING     # only retries and failures, for a
                                                             # worker left running unattended
 """
 
@@ -40,7 +35,7 @@ from types import FrameType
 
 from gct.db import connect
 from gct.ingest.chunk import CHUNK_OVERLAP_WORDS, CHUNK_SIZE_WORDS
-from gct.jobs.worker import DEFAULT_LEASE_SECONDS, DEFAULT_POLL_SECONDS, run
+from gct.jobs.worker import DEFAULT_POLL_SECONDS, run
 from gct.providers.active import build_embedder
 
 # The level `main` configures when nothing asks for another one. Named rather than inlined
@@ -54,30 +49,26 @@ _LOG_LEVELS = ("DEBUG", "INFO", "WARNING", "ERROR")
 def _interrupt(signum: int, _frame: FrameType | None) -> None:
     """Turn SIGTERM into the unwind Ctrl-C already produces (issue #82).
 
-    ROUTING, NOT DECIDING - the ADR 0009 line this file has to stay on. What a stopped worker
-    does about its in-flight job is `gct.jobs.worker`'s call, and it has to be: the `Job` and
-    its `lease_token` are locals of `process_one`, invisible from here. All this does is make
-    SIGTERM arrive as an exception on the same stack SIGINT already does, so
-    `_release_on_shutdown` runs for both.
+    ROUTING, NOT DECIDING - the ADR 0009 line this file has to stay on. All this does is make
+    SIGTERM arrive as an exception on the same stack SIGINT already does, so the run unwinds and
+    the connection closes for both.
 
     Python's DEFAULT SIGTERM disposition is what makes this necessary: the interpreter dies in
     the C handler, no frame unwinds, and no `except`/`finally` anywhere in the process runs.
     SIGINT is the special case - the interpreter already raises `KeyboardInterrupt` for it -
     and this makes the two signals equal rather than inventing a second shutdown path.
 
-    `KeyboardInterrupt` rather than a bespoke class or `SystemExit`, for two reasons: the guard
-    in `gct.jobs.worker` catches `BaseException` so any of them would reach it, and the `except`
-    below already says what this process does about an operator-requested stop - exits quietly,
-    no traceback, status 0. A separate type would need that statement written twice.
+    `KeyboardInterrupt` rather than a bespoke class or `SystemExit`: the `except` below already
+    says what this process does about an operator-requested stop - exits quietly, no traceback,
+    status 0. A separate type would need that statement written twice.
 
     Signal delivery is not preemptive: CPython runs the handler between bytecodes in the main
     thread, so one blocked in a C call (psycopg waiting on a socket, `time.sleep` serving a
-    backoff) unwinds when that call returns rather than instantly. Late is fine - `release` only
-    needs the process to still be alive to make its one write.
+    backoff) unwinds when that call returns rather than instantly.
 
-    SIGKILL is NOT in scope and cannot be: `kill -9`, an OOM kill and a power cut run no handler
-    at all. Those still cost the full lease, and the reaper is still the only thing that
-    collects them.
+    A job in flight when the worker stops stays `processing`; the next start puts it back with
+    `requeue_orphans`. The same holds for SIGKILL, an OOM kill or a power cut, which run no
+    handler at all.
     """
     raise KeyboardInterrupt(f"signal {signum}")
 
@@ -88,41 +79,15 @@ def _build_parser() -> argparse.ArgumentParser:
     Split out for the reason `ingest_smoke._build_parser` gives: help text is documentation that
     ships inside the program, it drifts exactly like a comment, and unlike a comment a user acts
     on it. Every LIBRARY-SOURCED `default=` here is an imported name, so a help string that
-    interpolates one cannot go stale. The two that are not - `--log-level`, whose level is the
-    application's call under ADR 0009 and has no library constant to import, and
-    `--heartbeat-max`, which must stay `None` so `run` derives the cap from the lease in use
-    (ADR 0031 §5) - are the two exceptions, and they are the ones listed in the module docstring
-    above. `--heartbeat-max` states its derivation in its own `help=`; `--log-level`'s reason is
-    in `main`'s comment beside `basicConfig`, not in its help, because an operator choosing a
-    level does not need the ADR.
+    interpolates one cannot go stale. `--log-level` is the exception: its level is the
+    application's call under ADR 0009 and has no library constant to import.
 
-    WHAT IS DELIBERATELY NOT A FLAG. `run` also takes `max_attempts` and `heartbeat_fraction`,
-    and both are left off:
-
-      - `max_attempts` is the retry BUDGET, a ratified policy number (ADR 0028 §1) rather than a
-        deployment knob. A flag would let an operator quietly run a worker that gives up sooner
-        or later than the ADR specifies, and the resulting `transient_exhausted` on a student's
-        file would be unattributable to anything in the row.
-      - `heartbeat_fraction` is the beat CADENCE, and the cadence is deliberately derived from
-        the lease so the two cannot drift (`heartbeat_interval`, ADR 0031 §5). A caller that
-        wants a shorter beat already gets one by shortening `--lease`. The cap is different -
-        it is the number `ingest_smoke` had to thread by hand to reach an expiry - so the cap
-        gets a flag and the fraction does not.
-
-    Neither has ever been threaded by any SCRIPT in the tree, though the tests thread both. The
-    bar for a flag here is a demonstrated caller outside the suite, not the existence of a
-    parameter.
+    WHAT IS DELIBERATELY NOT A FLAG: `max_attempts`, the retry BUDGET, a ratified policy number
+    (ADR 0028 §1) rather than a deployment knob. A flag would let an operator quietly run a worker
+    that gives up sooner or later than the ADR specifies, and the resulting `transient_exhausted`
+    on a student's file would be unattributable to anything in the row.
     """
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    parser.add_argument(
-        "--lease",
-        type=int,
-        default=DEFAULT_LEASE_SECONDS,
-        metavar="SECONDS",
-        help=f"how long a claim holds a job before the reaper may take it (default "
-        f"{DEFAULT_LEASE_SECONDS}, the library's own constant). Shortening it also shortens the "
-        "heartbeat beat and cap, which derive from it",
-    )
     parser.add_argument(
         "--poll",
         type=float,
@@ -147,21 +112,11 @@ def _build_parser() -> argparse.ArgumentParser:
         "constant). Must be less than --chunk-size",
     )
     parser.add_argument(
-        "--heartbeat-max",
-        type=float,
-        default=None,
-        metavar="SECONDS",
-        help="cap on how long ONE job may keep renewing its lease (default: derived from "
-        "--lease by the library, HEARTBEAT_CAP_LEASES leases). Pass a value only to make a "
-        "lease lapse inside a run's lifetime - that is what staging a reclaim needs since "
-        "ADR 0031",
-    )
-    parser.add_argument(
         "--log-level",
         choices=_LOG_LEVELS,
         default=DEFAULT_LOG_LEVEL,
         help=f"level for the root logger (default {DEFAULT_LOG_LEVEL}). WARNING leaves only "
-        "reaps and failures, for a worker left running unattended whose log is read after the "
+        "retries and failures, for a worker left running unattended whose log is read after the "
         "fact; DEBUG adds the client libraries' own lines, since `gct` itself emits nothing "
         "below INFO. The start-of-loop line is INFO, so anything WATCHING for it needs that",
     )
@@ -184,35 +139,9 @@ def _validate(parser: argparse.ArgumentParser, args: argparse.Namespace) -> None
     not be ingested", for every file the worker claims, with nothing in the row pointing back at
     the flag. Refusing at startup costs one line and cannot reach a student at all.
 
-    `--lease 0` or less has already expired when `claim` grants it, so the reaper may hand the
-    job to a second worker while the first is still embedding - a double embed, which is money,
-    and the exact race the lease exists to prevent.
-
     `--poll 0` spins a hot loop against Postgres; a negative value raises inside `time.sleep`
     on the first empty tick, i.e. after the worker has reported itself started.
-
-    WHAT IS NOT REFUSED, deliberately: a `--heartbeat-max` below `--lease`, or below one poll
-    interval. Neither is a fault, and both are pinned by tests so neither can be tightened away
-    silently.
-
-    A short cap has a real caller: `ingest_smoke` passes one to `run` on purpose. (To `run`, not
-    to this CLI - that script does its own wiring and never invokes this one, ADR 0009.) WHY a
-    particular
-    cap stages what that script needs is `scripts/ingest_smoke.py`'s argument, stated beside
-    `PHASE_THREE_HEARTBEAT_CAP_SECONDS`. Do not restate it here: two drafts of this paragraph
-    did, and both got it wrong in a different way, because the condition is about that script's
-    induced delay and not about any number this file can see.
-
-    The poll case needs no caller to be left legal: the poll governs how long an EMPTY tick
-    sleeps and has no bearing on how long one job may keep renewing, so a rule relating them
-    would be invented rather than derived.
     """
-    if args.lease < 1:
-        parser.error(
-            f"--lease must be at least 1 second (got {args.lease}); omit it for the library "
-            "default. A lease of 0 or less has already expired when `claim` grants it, so the "
-            "reaper can hand the job to a second worker mid-embed"
-        )
     if not math.isfinite(args.poll) or args.poll <= 0:
         parser.error(
             f"--poll must be a finite number greater than 0 (got {args.poll}); omit it for the "
@@ -227,15 +156,6 @@ def _validate(parser: argparse.ArgumentParser, args: argparse.Namespace) -> None
             "constants. The chunker refuses this window, and the worker reads that refusal as a "
             "transient fault: every file it claims is retried the whole budget and then marked "
             "`failed` for the student"
-        )
-    if args.heartbeat_max is not None and (
-        not math.isfinite(args.heartbeat_max) or args.heartbeat_max <= 0
-    ):
-        parser.error(
-            f"--heartbeat-max must be a finite number greater than 0 (got {args.heartbeat_max}); "
-            "omit it to let "
-            "the library derive the cap from --lease. A cap of 0 or less means the lease is "
-            "never renewed at all, which is the pre-ADR-0031 behaviour and not a configuration"
         )
 
 
@@ -287,23 +207,13 @@ def main(argv: Sequence[str] | None = None) -> None:
             embedder=build_embedder(),
             chunk_size=args.chunk_size,
             chunk_overlap=args.chunk_overlap,
-            lease_seconds=args.lease,
             poll_seconds=args.poll,
-            # `None` PASSED THROUGH rather than resolved here, and that is the whole point of
-            # the flag's default. `run` derives the cap from the lease actually in use; a script
-            # that substituted `DEFAULT_HEARTBEAT_MAX_SECONDS` would pin it to the DEFAULT
-            # lease's cap, so `--lease 60` would beat for 3600s - sixty leases where ADR 0031 §5
-            # specifies four. That exact drift is recorded beside `HEARTBEAT_CAP_LEASES` as
-            # having already happened once.
-            heartbeat_max_seconds=args.heartbeat_max,
         )
     except KeyboardInterrupt:
         # Ctrl-C, or the SIGTERM `_interrupt` routes onto the same stack. Either way the run
-        # committed nothing (ADR 0020), and `process_one`'s shutdown guard has already handed
-        # the in-flight job back to `queued` on the way out, so the next start claims it at once
-        # instead of waiting out its lease (ADR 0028 §Consequences, shutdown-release bullet).
-        # Nothing left to do here but exit quietly: an operator who stopped the worker does not
-        # need a traceback, and the exception has already done its work upstream. A signal that
+        # committed nothing (ADR 0020). A job in flight stays `processing` and the next start
+        # requeues it (`requeue_orphans`). Nothing left to do here but exit quietly: an operator
+        # who stopped the worker does not need a traceback. A signal that
         # arrived during startup reaches here too, with no job claimed and `run` never entered.
         pass
     finally:

@@ -314,7 +314,7 @@ def stub_children(monkeypatch):
 
 
 class _StopBeforeTheFirstTick(Exception):
-    """Raised out of the reaper so `run` cannot enter its `while True` against a real database."""
+    """Raised out of the first tick so `run` cannot loop against a real database."""
 
 
 def test_the_token_the_harness_waits_for_is_the_one_the_library_actually_logs(monkeypatch, caplog):
@@ -331,20 +331,21 @@ def test_the_token_the_harness_waits_for_is_the_one_the_library_actually_logs(mo
 
       - the token appears in the FORMATTED message, since the child's log is text;
       - the record is INFO, which is what `scripts/worker.py`'s default level emits;
-      - it is emitted BEFORE the first tick - the reaper raises here, and the record already
+      - it is emitted BEFORE the first tick - the tick raises here, and the record already
         exists - which is why "the worker logged it" means startup finished rather than "a job
         was processed". A line logged after the first `claim` would make readiness wait on the
         queue having work in it.
 
-    `reclaim_expired` is stubbed rather than the connection: `run`'s first statement through
-    that name is the reaper, and stubbing it makes the stop deterministic instead of depending
-    on which attribute a fake connection happens to fail on first.
+    The lock, the orphan requeue and the tick are stubbed rather than the connection, so the
+    stop is deterministic. No orphans, so the only line before the banner would be a warning.
     """
 
-    def _reaper_that_stops_the_loop(_conn):
+    def _first_tick_stops_the_loop(_conn, **_kwargs):
         raise _StopBeforeTheFirstTick
 
-    monkeypatch.setattr(worker_lib, "reclaim_expired", _reaper_that_stops_the_loop)
+    monkeypatch.setattr(worker_lib, "try_acquire_worker_lock", lambda _conn: True)
+    monkeypatch.setattr(worker_lib, "requeue_orphans", lambda _conn: 0)
+    monkeypatch.setattr(worker_lib, "process_one", _first_tick_stops_the_loop)
 
     with caplog.at_level(logging.INFO, logger="gct.jobs.worker"):
         with pytest.raises(_StopBeforeTheFirstTick):
@@ -668,10 +669,10 @@ def test_every_usage_line_in_the_docstring_is_one_the_whole_cli_accepts():
         ["--log-level", "WARNING"],
         ["--log-level=WARNING"],
         ["--log-level", "ERROR"],
-        # argparse accepts any unambiguous prefix, and `--lo` is one on the worker's CLI
-        # (verified against that parser: `--l` is ambiguous with `--lease`, `--lo` is not). A
-        # guard matching only the full spelling would wave exactly this through.
+        # argparse accepts any unambiguous prefix; on the worker's CLI `--l` is already one. A
+        # guard matching only the full spelling would wave exactly these through.
         ["--lo", "WARNING"],
+        ["--l", "WARNING"],
         # Last one wins, the way argparse resolves a repeated option.
         ["--log-level", "INFO", "--log-level", "WARNING"],
     ],
@@ -698,8 +699,7 @@ def test_a_worker_log_level_above_info_is_refused_at_the_boundary(spelling):
     [
         (["--log-level", "INFO"], "the level the probe reads"),
         (["--log-level", "DEBUG"], "below INFO: the line is still emitted"),
-        (["--poll", "0.5", "--lease", "60"], "nothing about logging at all"),
-        (["--lease", "60"], "a flag whose name starts the same way as the refused one"),
+        (["--poll", "0.5", "--chunk-size", "200"], "nothing about logging at all"),
         # An invalid LEVEL is the worker's own parser's message to write; answering it here would
         # put a second writer on the list of valid levels.
         (["--log-level", "LOUD"], "not a level at all - refused downstream, not here"),
@@ -724,10 +724,10 @@ def test_everything_after_the_double_dash_reaches_the_worker_and_nothing_else_do
     business guessing which of two CLIs an unknown flag belongs to.
     """
     args = http_smoke._build_parser().parse_args(
-        ["--ready-timeout", "5", "--", "--poll", "0.5", "--lease", "60"]
+        ["--ready-timeout", "5", "--", "--poll", "0.5", "--chunk-size", "200"]
     )
     assert args.ready_timeout == 5.0
-    assert args.worker_args == ["--poll", "0.5", "--lease", "60"]
+    assert args.worker_args == ["--poll", "0.5", "--chunk-size", "200"]
 
     assert http_smoke._build_parser().parse_args([]).worker_args == []
 
@@ -1028,7 +1028,7 @@ def test_preflight_refuses_a_database_holding_files_this_run_did_not_put_there(
     The queue check in front of this one asks what is claimable AT THIS INSTANT, which is a
     promise about a moment and not about the run. This one asks whether the database holds
     anything at all, and `jobs.file_id references files(file_id)` is what makes that the stronger
-    question: no file, no job, so nothing can be reaped, released or retried into the launched
+    question: no file, no job, so nothing can be requeued, released or retried into the launched
     worker's reach for the whole length of the gate.
 
     The message is asserted, not just the raise. This refusal blocks a run - including the second
@@ -1156,20 +1156,20 @@ def test_the_files_census_counts_what_the_real_table_holds(db):
 
     The stubbed tests above would ratify a typo in `filename` or `file_id` forever - the fake
     connection answers whatever it was handed, whatever the statement said. And the state that
-    matters for #138 is one no stub can represent honestly: a `processing` file whose job holds
-    an UNEXPIRED lease, which the claimable predicate scores at zero and this one at one.
+    matters for #138 is one no stub can represent honestly: a finished file whose job is `done`,
+    which the claimable predicate scores at zero and this one at one.
     """
     conn, owner_id, class_id = db
     before, _ = http_smoke.existing_files(conn)
 
     file_id = conn.execute(
         "insert into files (owner_id, class_id, filename, status) "
-        "values (%s, %s::uuid, %s, 'processing') returning file_id::text",
+        "values (%s, %s::uuid, %s, 'ready') returning file_id::text",
         (owner_id, class_id, "lecture-01.pdf"),
     ).fetchone()[0]
     conn.execute(
-        "insert into jobs (file_id, owner_id, class_id, state, leased_until) "
-        "values (%s::uuid, %s, %s::uuid, 'processing', now() + interval '1 hour')",
+        "insert into jobs (file_id, owner_id, class_id, state) "
+        "values (%s::uuid, %s, %s::uuid, 'done')",
         (file_id, owner_id, class_id),
     )
 
@@ -1299,10 +1299,9 @@ def test_the_claimable_query_counts_exactly_the_rows_the_real_worker_would_take(
 
     Two things only a real database can answer. That the statement is valid at all - the stubbed
     tests above would ratify a typo in a column name forever. And that the predicate matches what
-    `gct.jobs.queue.claim` and `reclaim_expired` actually do: a `queued` row is claimable, and so
-    is a `processing` row whose lease has lapsed, because the worker's own first tick reaps it
-    back to `queued`. A live lease belongs to a worker that is still working, and a `done` row is
-    finished; neither is this harness's business.
+    `gct.jobs.queue.claim` and `requeue_orphans` actually do: a `queued` row is claimable, and so
+    is any `processing` row, because the launched worker requeues every one before its first
+    claim. `done` and `failed` rows are finished; neither is this harness's business.
 
     Counted as a DELTA against whatever the database already held, so the assertion is about the
     four rows this test inserted rather than about the machine being pristine.
@@ -1315,22 +1314,17 @@ def test_the_claimable_query_counts_exactly_the_rows_the_real_worker_would_take(
         "values (%s, %s::uuid, %s, 'queued') returning file_id::text",
         (owner_id, class_id, "already-waiting.pdf"),
     ).fetchone()[0]
-    for state, leased_until in (
-        ("queued", None),
-        ("processing", "now() - interval '1 hour'"),
-        ("processing", "now() + interval '1 hour'"),
-        ("done", None),
-    ):
+    for state in ("queued", "processing", "done", "failed"):
         conn.execute(
-            "insert into jobs (file_id, owner_id, class_id, state, leased_until) "
-            f"values (%s::uuid, %s, %s::uuid, %s, {leased_until or 'null'})",
+            "insert into jobs (file_id, owner_id, class_id, state) "
+            "values (%s::uuid, %s, %s::uuid, %s)",
             (file_id, owner_id, class_id, state),
         )
     conn.commit()
 
     after, sample = http_smoke.claimable_jobs(conn)
     assert after - before == 2, (
-        "of a queued row, an expired lease, a live lease and a finished job, exactly two are "
+        "of a queued, a processing, a done and a failed job, exactly two are "
         f"claimable by the worker this harness launches; the query counted {after - before}"
     )
     assert sample, "the query named none of the rows it counted"
@@ -1372,8 +1366,8 @@ def test_preflight_refuses_the_real_database_once_a_job_is_waiting_in_it(db, mon
     named = [
         row[0]
         for row in conn.execute(
-            "select job_id::text from jobs where state = 'queued' "
-            "or (state = 'processing' and leased_until < now()) order by created_at limit 3"
+            "select job_id::text from jobs where state in ('queued', 'processing') "
+            "order by created_at limit 3"
         ).fetchall()
     ]
     assert job_id in named, "the plant is not in the window this predicate samples; test is stale"
@@ -1386,11 +1380,9 @@ def test_preflight_refuses_the_real_database_once_a_file_is_in_it(db, monkeypatc
     """The #138 guard, end to end, over a real row and a SECOND connection.
 
     The companion to the test above and the one that matters for #138, because the row it plants
-    is invisible to the queue predicate BY CONSTRUCTION: `processing` with a lease that has not
-    expired matches neither `state = 'queued'` nor `leased_until < now()`. On `main` at `b13e147`
-    that state passed `preflight` clean and the launched worker then reaped the lapsed lease and
-    claimed the file. Here the census sees it, because the census asks a question about the
-    database rather than about the queue.
+    is invisible to the queue predicate BY CONSTRUCTION: a `ready` file whose job is `done`. Here
+    the census sees it, because the census asks a question about the database rather than about
+    the queue.
 
     `preflight` opens its own connection through `gct.db.connect`, so the row this test commits is
     read back by a connection that is not the one that wrote it - the refusal is proof the work
@@ -1408,24 +1400,23 @@ def test_preflight_refuses_the_real_database_once_a_file_is_in_it(db, monkeypatc
     # it where the ordering will find it rather than assume the ordering favours it.
     file_id = conn.execute(
         "insert into files (owner_id, class_id, filename, status, created_at) "
-        "values (%s, %s::uuid, %s, 'processing', '2000-01-01'::timestamptz) "
+        "values (%s, %s::uuid, %s, 'ready', '2000-01-01'::timestamptz) "
         "returning file_id::text",
         (owner_id, class_id, "someone-elses-upload.pdf"),
     ).fetchone()[0]
     conn.execute(
-        "insert into jobs (file_id, owner_id, class_id, state, leased_until) "
-        "values (%s::uuid, %s, %s::uuid, 'processing', now() + interval '1 hour')",
+        "insert into jobs (file_id, owner_id, class_id, state) "
+        "values (%s::uuid, %s, %s::uuid, 'done')",
         (file_id, owner_id, class_id),
     )
     conn.commit()
 
-    # The predicate that used to be the whole guard, over exactly this row, on its own connection:
-    # it sees nothing. That is the defect, asserted rather than described.
+    # The queue predicate, over exactly this row, on its own connection: it sees nothing.
     with connect() as other:
         waiting, _ = http_smoke.claimable_jobs(other)
     assert waiting == 0, (
-        "the planted lease was already expired, so this test is no longer staging the state #138 "
-        f"is about. Got waiting={waiting}"
+        "the queue predicate saw a finished job, so this test no longer stages a row only the "
+        f"census can see. Got waiting={waiting}"
     )
 
     with pytest.raises(http_smoke.SetupError) as err:
@@ -1773,7 +1764,7 @@ def test_the_real_pair_comes_up_and_never_reaches_a_paid_endpoint(db, monkeypatc
     HARD-FAIL in CI. No `db_other` - this test writes nothing and claims no publication.
 
     One thing it does to the database, worth knowing before the next person adds to it: the
-    worker is a REAL worker, and it completes several poll ticks (reap, claim) against the test
+    worker is a REAL worker, and it completes several poll ticks (claim) against the test
     database while the hold runs. It enqueues nothing itself. The queue is asserted empty first,
     so a red here is attributable: a claimable row would make the worker ingest, and the failure
     would be this test's premise rather than the launch buying something.

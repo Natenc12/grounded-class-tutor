@@ -3,7 +3,7 @@
 The reader is driven through the REAL write path where one exists: `enqueue` creates the
 `queued` row. The later transitions are set by SQL on `db_other` (autocommit, a second
 connection) because the worker's `_bury` is the only production writer of `failed_reason` and
-driving it needs a claimed job, a lease and a `ParseError` — machinery that would test the
+driving it needs a claimed job and a `ParseError` — machinery that would test the
 worker, not this reader. Setting the columns directly is what a reader test can honestly do,
 and the CHECK constraint (not this file) is what keeps the values legal: the negative arm of
 `test_reads_back_every_reason_the_constraint_admits` proves that constraint is real by having it

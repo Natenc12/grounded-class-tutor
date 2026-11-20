@@ -10,11 +10,6 @@ unconditional claim) - and the precondition is now ENFORCED, not just documented
 refuses a non-IDLE connection (ADR 0025, guarded per ADR 0027). The transaction wraps only the
 write; the slow parse/chunk/embed work already ran, with no transaction open.
 
-A publish can also be REFUSED before it starts. `index_file` takes an optional `publish_guard`
-and calls it inside the transaction; a False answer raises `PublishRefused` and nothing is
-written (#92, ADR 0030). The predicate is opaque to this module - it is how the write path checks
-a caller's entitlement to publish without this box learning that jobs or leases exist.
-
 Idempotent by construction: processing a `file_id` is `DELETE FROM chunks WHERE file_id` then
 insert the full set, so re-running the same `file_id` replaces cleanly with no dedup keys. The
 `files` row is written via upsert (`ON CONFLICT (file_id) DO UPDATE`): first call inserts the
@@ -24,34 +19,12 @@ needs when the row pre-exists - wrap, not rewrite; PM-4 seam).
 
 from __future__ import annotations
 
-from collections.abc import Callable
 from typing import TYPE_CHECKING
 
 import psycopg
 
 from gct.db import require_idle
 from gct.ids import canonical_uuid, require_canonical_uuid
-
-
-class PublishRefused(Exception):
-    """The caller's `publish_guard` vetoed this publish; NOTHING was written.
-
-    Raised from inside `index_file`'s transaction, which is what makes the veto atomic: the
-    raise propagates out of `conn.transaction()`, so the block rolls back and the `files`
-    upsert, the chunk delete and the chunk insert are all discarded together. A caller that
-    catches this has the same guarantee a failed publish gives - all or nothing (ADR 0020).
-
-    NOT an error condition. `gct.jobs.worker` raises it on the routine at-least-once outcome
-    (ADR 0011): a worker whose lease was reaped mid-ingest reaching the publish after another
-    worker took the job. Callers log it and move on; it is not a `ParseError` and buys no retry.
-    """
-
-    def __init__(self, file_id: str) -> None:
-        super().__init__(
-            f"publish of file_id={file_id} refused by the caller's publish_guard; nothing written"
-        )
-        self.file_id = file_id
-
 
 if TYPE_CHECKING:
     # Type-only import: keeps the pipeline -> index runtime edge one-directional (no import cycle).
@@ -66,7 +39,6 @@ def index_file(
     owner_id: str,
     class_id: str,
     chunks: list[PreparedChunk],
-    publish_guard: Callable[[psycopg.Connection], bool] | None = None,
 ) -> None:
     """Atomically write `chunks` for `file_id` and publish the file `ready`, in one transaction.
 
@@ -84,8 +56,8 @@ def index_file(
     does not.
     Satisfy it with a fresh connection, `conn.autocommit = True`, or an explicit commit since the
     last statement. `scripts/ask_smoke.py` uses autocommit; a Slice 2 worker MUST COMMIT ITS CLAIM
-    before ingesting on the same connection (`components/ingestion-worker.md`, step 1) - leasing a
-    job is a write, so the lease alone is enough to trigger this.
+    before ingesting on the same connection (`components/ingestion-worker.md`, step 1). Claiming a
+    job is a write, so the claim alone is enough to trigger this.
     ENFORCED, not merely documented: `require_idle` below raises rather than letting the call
     look like it worked. ADR 0025 declined this guard predicting it would fire on benign code;
     ADR 0027 measured that prediction (every firing was a caller already in the hazardous state,
@@ -100,13 +72,6 @@ def index_file(
       - uuid columns (`file_id`, `class_id`) -> cast `%s::uuid`; `owner_id` is `text`.
       - `embedding` (`list[float]`) adapts to `vector(1536)` only if the connection registered the
         pgvector type - `conn` MUST come from `gct.db.connect()`.
-
-    `publish_guard`, when given, is called ONCE inside the transaction and before any write; a
-    False answer raises `PublishRefused` and the block rolls back, so a refused publish writes
-    nothing at all (#92, ADR 0030). It is a predicate over `conn` deliberately: this box never
-    learns what entitlement is being checked, which is what keeps the PM-4 seam (ADR 0020) intact
-    while the check still runs inside the transaction it protects. Omit it and this function
-    behaves exactly as it did before #92. Step 0's comment carries the argument.
 
     Raises `ValueError` if `chunks` is empty: publishing `ready` with no chunks would break
     `status=ready` ⟺ full chunk set committed & queryable (ADR 0020, publication conditional per
@@ -190,35 +155,6 @@ def index_file(
         )
 
     with conn.transaction():
-        # 0. THE CALLER'S VETO, INSIDE THE TRANSACTION IT PROTECTS (#92). `publish_guard` answers
-        #    one question this box is not allowed to ask: is this caller STILL ENTITLED to publish?
-        #    Ingest is slow and the entitlement can expire while it runs - under ADR 0011's
-        #    at-least-once queue a worker's lease is reaped mid-ingest and the job re-handed out,
-        #    and the reaped worker then arrives here with a complete, correct chunk set and no
-        #    right to publish it. Nothing else on this path notices: every other write to `files`
-        #    checks the lease and this one did not, which is the whole of #92.
-        #
-        #    THE SEAM IS KEPT BY NOT KNOWING WHAT THE GUARD CHECKS (PM-4, ADR 0020, extended per
-        #    ADR 0030). The parameter is a predicate over `conn`; this module never learns that
-        #    `jobs`, leases or workers exist, and Slice 1's direct callers pass nothing and get
-        #    the pre-#92 behavior exactly. The alternative - clearing `failed_reason` in the
-        #    upsert below - closes the same path but makes this box a second writer for a
-        #    job-layer column, which ADR 0030 §3 records as considered and declined.
-        #
-        #    IT RUNS ON `conn`, NOT ON A CONNECTION OF THE GUARD'S OWN, and that is the entire
-        #    point of passing it: checked on any other connection the answer would be true
-        #    OUTSIDE this transaction and unenforceable inside it. Here the check and the writes
-        #    are one atomic unit, so whatever the guard locks stays locked until this commits.
-        #    A guard that opens its own connection re-introduces the check-then-act gap this
-        #    argument exists to close - see `worker._publish_guard` for what holding it buys.
-        #
-        #    RAISE, NOT RETURN FALSE. The transaction must roll back, and a raise out of
-        #    `conn.transaction()` is what does that; a bool would leave the caller to remember an
-        #    explicit rollback, and a caller who forgot would publish exactly the state the guard
-        #    just refused. It is also the load-bearing difference for a caller who ignores the
-        #    result entirely - an ignored exception stops the program, an ignored bool does not.
-        if publish_guard is not None and not publish_guard(conn):
-            raise PublishRefused(file_id)
         # 1. Publish the files row as `ready` (upsert). Must precede the chunk insert: chunks FK to
         #    files.file_id. A repeat file_id lands on the UPDATE branch (idempotent re-index).
         #
@@ -247,20 +183,6 @@ def index_file(
         #    would make the publisher a second writer for a column it knows nothing about - pinned
         #    by `test_index_file_does_not_clear_failed_reason`.
         #
-        #    THE OMISSION WAS NOT COST-FREE, AND #92 WAS THE COST - PAID ABOVE, NOT HERE. This
-        #    statement is the only writer of `ready` and reads no lease, so a worker whose lease
-        #    expired mid-ingest used to republish `ready` over a reason a live-leased `_bury`
-        #    committed while it was working. #92 closed that by ENTITLEMENT (step 0's
-        #    `publish_guard`) rather than by cleanup: the reaped worker never reaches this
-        #    statement, so there is no stale reason here to clear. Clearing it instead was the
-        #    considered alternative and ADR 0030 §3 records why it lost - it would move the
-        #    column's second writer into this box to fix a problem that is not about the column.
-        #
-        #    THE GUARD IS OPT-IN, WHICH BOUNDS WHAT THE SENTENCE ABOVE PROMISES (ADR 0030 §4). A
-        #    caller that passes no `publish_guard` is unguarded by construction; that is correct
-        #    for Slice 1's direct callers, which hold no lease and race no bury, and it is a trap
-        #    for any future caller that acquires one. `worker.process_one` is the only guarded
-        #    caller today.
         conn.execute(
             """
             insert into files (file_id, owner_id, class_id, filename, status)

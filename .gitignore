@@ -35,11 +35,6 @@ data/dogfood/**
 # Staged uploads (ADR 0010, `gct.staging`) — bytes a student sent; never committed.
 data/staging/
 
-# --- Personal understanding log ---
-# Nate's own comprehension notes + glossary, in his words — not project truth.
-# Personal for now; drop this line if it ever becomes a shared team artifact.
-understanding/
-
 # --- OS / editor noise ---
 .DS_Store
 .idea/

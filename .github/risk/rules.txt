@@ -1,0 +1,28 @@
+# Risk rules for pull requests (issue #211). The one place these paths live.
+#
+# CI's `risk-gate` check labels every PR risk:high, risk:medium or risk:low from the paths it
+# changes, and a risk:high PR fails the check until the owner adds the `owner-ok` label.
+#
+# One rule per line: `high <pattern>` or `low <pattern>`.
+#   - A pattern ending in `/` is a folder: it matches everything under it.
+#   - A pattern with no `/` matches the file name at any depth (`*.md` = every Markdown file).
+#   - Any other pattern is matched against the full path; `*` may cross folders.
+# A file is high if any high rule matches it, else low if any low rule matches, else medium.
+# A PR takes the highest tier of its files; a moved file counts under its old and new names.
+#
+# The checker always reads this file from the branch the PR merges into (main), never from the
+# PR itself, so a PR cannot change the rules it is judged by. Changes here land like any other
+# change to .github/: as risk:high.
+
+high migrations/
+high src/gct/db.py
+high src/gct/jobs/
+high src/gct/grounder/
+high src/gct/ask*
+high src/gct/providers/
+high .github/
+
+low docs/
+low design/
+low *.md
+low tests/

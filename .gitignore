@@ -35,11 +35,6 @@ data/dogfood/**
 # Staged uploads (ADR 0010, `gct.staging`) — bytes a student sent; never committed.
 data/staging/
 
-# --- Review / decision artifacts ---
-# Lavish interactive briefs (.lavish/pr-<N>-review.html etc). Generated, single-session,
-# and they quote issue and PR state that goes stale — the same failure CLAUDE.md warns about.
-.lavish/
-
 # --- Personal understanding log ---
 # Nate's own comprehension notes + glossary, in his words — not project truth.
 # Personal for now; drop this line if it ever becomes a shared team artifact.
@@ -49,10 +44,3 @@ understanding/
 .DS_Store
 .idea/
 .vscode/
-
-# /ship run state: the plan, the decisions, the mutation harness and ledger, the
-# reproduction. All of it is scoped to ONE pull request and published as a comment there;
-# none of it is committed, because a snapshot in the repo makes claims about files that
-# nothing re-checks and starts going stale the moment anything moves. Ignored here so
-# `ruff check` (which CI runs with no path arguments) never lints the throwaway harness.
-.ship/

@@ -421,6 +421,22 @@ def test_claim_returns_the_oldest_queued_job(worker_db, db_other, tmp_path):
     assert untouched == ("queued", 0), "claim touched a job it did not return"
 
 
+def test_claim_skips_a_queued_job_whose_file_row_is_gone(worker_db, tmp_path):
+    conn, owner_id, class_id = worker_db
+    with conn.transaction():
+        conn.execute("set local session_replication_role = replica")
+        conn.execute(
+            "insert into jobs (file_id, owner_id, class_id, created_at)"
+            " values (gen_random_uuid(), %s, %s::uuid, now() - interval '1 hour')",
+            (owner_id, class_id),
+        )
+    good = enqueue(conn, path=_lecture(tmp_path), owner_id=owner_id, class_id=class_id)
+
+    job = claim(conn)
+
+    assert job is not None and job.file_id == good
+
+
 def test_claim_hands_back_the_path_with_the_connection_still_idle(worker_db, tmp_path):
     """A SELECT for the path after `claim` would reopen a transaction (ADR 0025)."""
     conn, owner_id, class_id = worker_db

@@ -267,7 +267,8 @@ def claim(conn: psycopg.Connection) -> Job | None:
             from files f
             where f.file_id = j.file_id
               and j.job_id = (
-                  select job_id from jobs where state = 'queued' order by created_at limit 1
+                  select q.job_id from jobs q join files using (file_id)
+                  where q.state = 'queued' order by q.created_at limit 1
               )
             returning j.job_id::text, j.file_id::text, j.owner_id, j.class_id::text,
                       j.attempts, f.staging_ref

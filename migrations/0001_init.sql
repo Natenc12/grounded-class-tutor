@@ -57,7 +57,6 @@ create table if not exists jobs (
     state         text not null default 'queued'
                       check (state in ('queued','processing','done','failed')),
     attempts      int not null default 0,             -- retry count vs the ADR 0011 budget
-    leased_until  timestamptz,                         -- visibility timeout; reaper reclaims past this
     last_error    text,
     created_at    timestamptz not null default now(),
     updated_at    timestamptz not null default now()
@@ -66,7 +65,7 @@ create table if not exists jobs (
 -- Indexes (data-model.md §Indexes).
 create index if not exists chunks_owner_class_idx on chunks (owner_id, class_id);  -- retrieval scope (F6/F12)
 create index if not exists files_class_idx        on files  (class_id);            -- status listing
-create index if not exists jobs_state_lease_idx   on jobs   (state, leased_until); -- reaper scan
+create index if not exists jobs_state_created_idx on jobs   (state, created_at);   -- oldest-queued-first claim
 -- pgvector ANN index over the embedding (ivfflat/hnsw + params are tuning, not contract).
 create index if not exists chunks_embedding_idx
     on chunks using hnsw (embedding vector_cosine_ops);

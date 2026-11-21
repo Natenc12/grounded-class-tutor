@@ -7,8 +7,17 @@ case (ADR 0020).
 
 from __future__ import annotations
 
-import pytest
+import re
+import struct
+import tracemalloc
+import zipfile
+import zlib
 
+import pytest
+from pypdf import PdfWriter, get_configuration
+from pypdf.generic import DecodedStreamObject, DictionaryObject, NameObject
+
+import gct.ingest.parse as parse_mod
 from gct.ingest.parse import ParsedUnit, ParseError, _slide_notes, parse_file
 
 
@@ -392,3 +401,358 @@ class TestNulSanitization:
 
         # The existing `empty` terminal, not a new failure kind (ADR 0020's taxonomy is closed).
         assert excinfo.value.reason == "empty"
+
+
+def _pdf_with_compressed_page(path, decoded_size):
+    writer = PdfWriter()
+    page = writer.add_blank_page(width=612, height=792)
+    font = DictionaryObject(
+        {
+            NameObject("/Type"): NameObject("/Font"),
+            NameObject("/Subtype"): NameObject("/Type1"),
+            NameObject("/BaseFont"): NameObject("/Helvetica"),
+        }
+    )
+    page[NameObject("/Resources")] = DictionaryObject(
+        {NameObject("/Font"): DictionaryObject({NameObject("/F1"): writer._add_object(font)})}
+    )
+    text = b"BT /F1 12 Tf 72 720 Td (Visible fact) Tj ET\n"
+    stream = DecodedStreamObject()
+    stream.set_data(text + b" " * (decoded_size - len(text)))
+    page[NameObject("/Contents")] = writer._add_object(stream.flate_encode())
+    writer.write(path)
+    return path
+
+
+def _add_parts(path, names):
+    with zipfile.ZipFile(path, "a", zipfile.ZIP_DEFLATED) as archive:
+        for name in names:
+            archive.writestr(name, b"")
+
+
+def _write_part(archive, name, prefix, zeros):
+    with archive.open(name, "w") as part:
+        part.write(prefix)
+        for start in range(0, zeros, 1024 * 1024):
+            part.write(bytes(min(1024 * 1024, zeros - start)))
+
+
+def _add_zeros(path, name, size):
+    with zipfile.ZipFile(path, "a", zipfile.ZIP_DEFLATED) as archive:
+        _write_part(archive, name, b"", size)
+
+
+def _pad_part(path, name, zeros):
+    with zipfile.ZipFile(path) as archive:
+        contents = {part.filename: archive.read(part) for part in archive.infolist()}
+    with zipfile.ZipFile(path, "w", zipfile.ZIP_DEFLATED) as archive:
+        for part_name, data in contents.items():
+            if part_name == name:
+                _write_part(archive, name, data, zeros)
+            else:
+                archive.writestr(part_name, data)
+    return contents[name]
+
+
+def _rewrite_central_record(
+    path,
+    name,
+    *,
+    declared_size=None,
+    flag_bits=None,
+    crc=None,
+    method=None,
+    offset=None,
+    new_name=None,
+):
+    data = bytearray(path.read_bytes())
+    encoded = name.encode()
+    at = data.find(b"PK\x01\x02")
+    while at != -1:
+        name_length = struct.unpack_from("<H", data, at + 28)[0]
+        if data[at + 46 : at + 46 + name_length] == encoded:
+            if flag_bits is not None:
+                struct.pack_into("<H", data, at + 8, flag_bits)
+            if method is not None:
+                struct.pack_into("<H", data, at + 10, method)
+            if crc is not None:
+                struct.pack_into("<I", data, at + 16, crc)
+            if declared_size is not None:
+                struct.pack_into("<I", data, at + 24, declared_size)
+            if offset is not None:
+                struct.pack_into("<I", data, at + 42, offset)
+            if new_name is not None:
+                assert len(new_name) == name_length
+                data[at + 46 : at + 46 + name_length] = new_name
+            path.write_bytes(bytes(data))
+            return
+        at = data.find(b"PK\x01\x02", at + 4)
+    raise AssertionError(f"{name} not in the central directory")
+
+
+def _expanded_size(path):
+    with zipfile.ZipFile(path) as archive:
+        return sum(part.file_size for part in archive.infolist())
+
+
+def _parse_with_peak(path):
+    tracemalloc.start()
+    try:
+        try:
+            outcome = parse_file(path)
+        except ParseError as exc:
+            outcome = exc
+        _, peak = tracemalloc.get_traced_memory()
+    finally:
+        tracemalloc.stop()
+    return outcome, peak
+
+
+@pytest.fixture
+def presentation_calls(monkeypatch):
+    calls = []
+
+    def _record(*args, **kwargs):
+        calls.append(args)
+        raise RuntimeError("python-pptx was asked to load this archive")
+
+    monkeypatch.setattr(parse_mod, "Presentation", _record)
+    return calls
+
+
+class TestPdfExpansionLimit:
+    def test_stream_expanding_past_the_limit_is_too_long(self, tmp_path):
+        path = _pdf_with_compressed_page(tmp_path / "bomb.pdf", parse_mod._PDF_STREAM_MAX_BYTES + 1)
+
+        with pytest.raises(ParseError) as exc_info:
+            parse_file(path)
+
+        assert exc_info.value.reason == "too_long"
+
+    def test_stream_expanding_exactly_to_the_limit_parses(self, tmp_path):
+        path = _pdf_with_compressed_page(tmp_path / "big.pdf", parse_mod._PDF_STREAM_MAX_BYTES)
+
+        [unit] = parse_file(path)
+
+        assert "Visible fact" in unit.text
+
+    def test_limits_do_not_outlive_the_parse(self, tmp_path):
+        before = get_configuration()
+        bomb = _pdf_with_compressed_page(tmp_path / "bomb.pdf", parse_mod._PDF_STREAM_MAX_BYTES + 1)
+
+        with pytest.raises(ParseError):
+            parse_file(bomb)
+
+        assert get_configuration() is before
+
+
+class TestPptxArchiveLimits:
+    def test_too_many_parts_is_too_long(self, pptx_factory, presentation_calls):
+        path = pptx_factory("deck.pptx", ["Some text"])
+        with zipfile.ZipFile(path) as archive:
+            existing = len(archive.infolist())
+        _add_parts(
+            path, [f"ppt/extra/{i}.xml" for i in range(parse_mod._PPTX_MAX_PARTS - existing + 1)]
+        )
+
+        with pytest.raises(ParseError) as exc_info:
+            parse_file(path)
+
+        assert exc_info.value.reason == "too_long"
+        assert presentation_calls == []
+
+    def test_part_declaring_more_than_the_limit_is_refused_before_copying(
+        self, pptx_factory, presentation_calls
+    ):
+        path = pptx_factory("deck.pptx", ["Some text"])
+        _add_parts(path, ["ppt/media/padding.bin"])
+        _rewrite_central_record(
+            path, "ppt/media/padding.bin", declared_size=parse_mod._PPTX_MAX_PART_BYTES + 1
+        )
+
+        with pytest.raises(ParseError) as exc_info:
+            parse_file(path)
+
+        assert exc_info.value.reason == "too_long"
+        assert presentation_calls == []
+
+    def test_parts_declaring_more_than_the_total_are_refused_before_copying(
+        self, pptx_factory, presentation_calls
+    ):
+        path = pptx_factory("deck.pptx", ["Some text"])
+        existing = _expanded_size(path)
+        _add_parts(path, ["ppt/media/a.bin", "ppt/media/b.bin"])
+        _rewrite_central_record(
+            path, "ppt/media/a.bin", declared_size=parse_mod._PPTX_MAX_PART_BYTES
+        )
+        _rewrite_central_record(
+            path,
+            "ppt/media/b.bin",
+            declared_size=parse_mod._PPTX_MAX_TOTAL_BYTES
+            - parse_mod._PPTX_MAX_PART_BYTES
+            - existing
+            + 1,
+        )
+
+        with pytest.raises(ParseError) as exc_info:
+            parse_file(path)
+
+        assert exc_info.value.reason == "too_long"
+        assert presentation_calls == []
+
+    def test_counted_part_past_the_limit_is_too_long_without_the_declared_check(
+        self, pptx_factory, presentation_calls, monkeypatch
+    ):
+        monkeypatch.setattr(parse_mod, "_check_declared_sizes", lambda path, parts: None)
+        monkeypatch.setattr(parse_mod, "_PPTX_MAX_PART_BYTES", 1024 * 1024)
+        path = pptx_factory("deck.pptx", ["Some text"])
+        _add_zeros(path, "ppt/media/padding.bin", 1024 * 1024 + 1)
+
+        with pytest.raises(ParseError) as exc_info:
+            parse_file(path)
+
+        assert exc_info.value.reason == "too_long"
+        assert presentation_calls == []
+
+    def test_counted_total_past_the_limit_is_too_long_without_the_declared_check(
+        self, pptx_factory, presentation_calls, monkeypatch
+    ):
+        monkeypatch.setattr(parse_mod, "_check_declared_sizes", lambda path, parts: None)
+        path = pptx_factory("deck.pptx", ["Some text"])
+        monkeypatch.setattr(parse_mod, "_PPTX_MAX_PART_BYTES", 1024 * 1024)
+        monkeypatch.setattr(parse_mod, "_PPTX_MAX_TOTAL_BYTES", _expanded_size(path) + 1024 * 1024)
+        _add_zeros(path, "ppt/media/a.bin", 1024 * 1024)
+        _add_zeros(path, "ppt/media/b.bin", 1)
+
+        with pytest.raises(ParseError) as exc_info:
+            parse_file(path)
+
+        assert exc_info.value.reason == "too_long"
+        assert presentation_calls == []
+
+    def test_part_understating_its_size_is_refused_without_expanding(
+        self, pptx_factory, presentation_calls
+    ):
+        path = pptx_factory("deck.pptx", ["Some text"])
+        _add_zeros(path, "ppt/slides/liar.xml", 64 * 1024 * 1024)
+        _rewrite_central_record(path, "ppt/slides/liar.xml", declared_size=10)
+        assert path.stat().st_size < 1024 * 1024
+
+        outcome, peak = _parse_with_peak(path)
+
+        assert isinstance(outcome, ParseError)
+        assert outcome.reason == "unparseable"
+        assert presentation_calls == []
+        assert peak < 8 * 1024 * 1024
+
+    def test_slide_hiding_bytes_behind_a_matching_checksum_is_never_expanded(self, pptx_factory):
+        path = pptx_factory("deck.pptx", ["Some text"])
+        slide = _pad_part(path, "ppt/slides/slide1.xml", 64 * 1024 * 1024)
+        _rewrite_central_record(
+            path, "ppt/slides/slide1.xml", declared_size=len(slide), crc=zlib.crc32(slide)
+        )
+        assert path.stat().st_size < 1024 * 1024
+
+        outcome, peak = _parse_with_peak(path)
+
+        assert [unit.text for unit in outcome] == ["Some text"]
+        assert peak < 16 * 1024 * 1024
+
+    def test_unreferenced_parts_hiding_bytes_are_never_expanded(self, pptx_factory):
+        path = pptx_factory("deck.pptx", ["Some text"])
+        names = [f"ppt/media/hidden{i}.bin" for i in range(8)]
+        for name in names:
+            _add_zeros(path, name, 8 * 1024 * 1024)
+        for name in names:
+            _rewrite_central_record(path, name, declared_size=10, crc=zlib.crc32(bytes(10)))
+
+        outcome, peak = _parse_with_peak(path)
+
+        assert [unit.text for unit in outcome] == ["Some text"]
+        assert peak < 16 * 1024 * 1024
+
+    def test_unsupported_compression_method_is_unparseable(self, pptx_factory, presentation_calls):
+        path = pptx_factory("deck.pptx", ["Some text"])
+        _rewrite_central_record(path, "ppt/presentation.xml", method=zipfile.ZIP_BZIP2)
+
+        with pytest.raises(ParseError) as exc_info:
+            parse_file(path)
+
+        assert exc_info.value.reason == "unparseable"
+        assert presentation_calls == []
+
+    def test_repeated_part_name_is_unparseable(self, pptx_factory, presentation_calls):
+        path = pptx_factory("deck.pptx", ["Some text"])
+        with pytest.warns(UserWarning, match="Duplicate name"):
+            _add_parts(path, ["ppt/presentation.xml"])
+
+        with pytest.raises(ParseError) as exc_info:
+            parse_file(path)
+
+        assert exc_info.value.reason == "unparseable"
+        assert presentation_calls == []
+
+    def test_part_name_repeated_in_other_case_is_unparseable(
+        self, pptx_factory, presentation_calls
+    ):
+        path = pptx_factory("deck.pptx", ["Some text"])
+        _add_parts(path, ["PPT/PRESENTATION.XML"])
+
+        with pytest.raises(ParseError) as exc_info:
+            parse_file(path)
+
+        assert exc_info.value.reason == "unparseable"
+        assert presentation_calls == []
+
+    @pytest.mark.parametrize(
+        "damage",
+        [
+            {"new_name": b"\x00pt/presentation.xml"},
+            {"new_name": b"\xffpt/presentation.xml", "flag_bits": 0x800},
+            {"offset": 0x7FFFFFFF},
+            {"new_name": b"ppt/presentation.xmm"},
+        ],
+        ids=["nul-led-name", "invalid-utf8-name", "offset-past-end", "name-differs-from-header"],
+    )
+    def test_malformed_entry_is_unparseable(self, pptx_factory, presentation_calls, damage):
+        path = pptx_factory("deck.pptx", ["Some text"])
+        _rewrite_central_record(path, "ppt/presentation.xml", **damage)
+
+        with pytest.raises(ParseError) as exc_info:
+            parse_file(path)
+
+        assert exc_info.value.reason == "unparseable"
+        assert presentation_calls == []
+
+    def test_slide_list_pointing_at_a_missing_relationship_is_unparseable(self, pptx_factory):
+        path = pptx_factory("deck.pptx", ["Some text"])
+        with zipfile.ZipFile(path) as archive:
+            contents = {part.filename: archive.read(part) for part in archive.infolist()}
+        contents["ppt/presentation.xml"] = re.sub(
+            rb'(<p:sldId [^>]*r:id=")rId\d+', rb"\1rId999", contents["ppt/presentation.xml"]
+        )
+        with zipfile.ZipFile(path, "w", zipfile.ZIP_DEFLATED) as archive:
+            for name, data in contents.items():
+                archive.writestr(name, data)
+
+        with pytest.raises(ParseError) as exc_info:
+            parse_file(path)
+
+        assert exc_info.value.reason == "unparseable"
+
+    def test_zip_encrypted_part_is_protected(self, pptx_factory, presentation_calls):
+        path = pptx_factory("deck.pptx", ["Some text"])
+        _rewrite_central_record(path, "ppt/presentation.xml", flag_bits=0x1)
+
+        with pytest.raises(ParseError) as exc_info:
+            parse_file(path)
+
+        assert exc_info.value.reason == "protected"
+        assert presentation_calls == []
+
+    def test_ordinary_deck_passes_the_check(self, pptx_factory):
+        path = pptx_factory("deck.pptx", ["Slide one", "Slide two"])
+
+        units = parse_file(path)
+
+        assert [u.page_or_slide for u in units] == [1, 2]

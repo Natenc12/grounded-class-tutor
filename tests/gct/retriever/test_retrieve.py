@@ -20,10 +20,10 @@ import psycopg
 import pytest
 
 from gct.config import ACTIVE_EMBEDDING_MODEL_ID
+from gct.contracts import RetrievedChunk
 from gct.providers.base import TransientEmbeddingError
 from gct.retriever.retrieve import (
     EmbeddingModelMismatchError,
-    RetrievedChunk,
     _assert_embedding_consistency,
     _to_score,
     retrieve,

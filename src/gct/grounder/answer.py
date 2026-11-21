@@ -40,8 +40,8 @@ from collections.abc import Sequence
 from dataclasses import dataclass
 from enum import Enum
 
+from gct.contracts import RetrievedChunk
 from gct.providers.base import Generation, Message, TransientGenerationError
-from gct.retriever.retrieve import RetrievedChunk
 
 # ONE shared retry budget, per ask (ADR 0016). Shared is the point: the single re-attempt fires
 # on EITHER a structural validation failure OR a transient provider error, never both in

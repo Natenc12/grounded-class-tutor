@@ -32,10 +32,10 @@ import pytest
 from reportlab.pdfgen import canvas
 
 from gct.config import EMBEDDING_DIM, V1_OWNER_ID, Settings
+from gct.contracts import RetrievedChunk
 from gct.eval.questions import EvalQuestion, ExpectedSource
 from gct.ingest.chunk import CHUNK_OVERLAP_WORDS, CHUNK_SIZE_WORDS
 from gct.ingest.pipeline import ingest_file
-from gct.retriever.retrieve import RetrievedChunk
 
 # Import the script by PATH rather than by package name: `scripts/` is deliberately not a package
 # (ADR 0009 - the scripts are peers of the library, not part of it), so there is nothing to

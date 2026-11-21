@@ -7,8 +7,14 @@ case (ADR 0020).
 
 from __future__ import annotations
 
-import pytest
+import struct
+import zipfile
 
+import pytest
+from pypdf import PdfWriter, get_configuration
+from pypdf.generic import DecodedStreamObject, DictionaryObject, NameObject
+
+import gct.ingest.parse as parse_mod
 from gct.ingest.parse import ParsedUnit, ParseError, _slide_notes, parse_file
 
 
@@ -392,3 +398,176 @@ class TestNulSanitization:
 
         # The existing `empty` terminal, not a new failure kind (ADR 0020's taxonomy is closed).
         assert excinfo.value.reason == "empty"
+
+
+def _pdf_with_compressed_page(path, decoded_size):
+    writer = PdfWriter()
+    page = writer.add_blank_page(width=612, height=792)
+    font = DictionaryObject(
+        {
+            NameObject("/Type"): NameObject("/Font"),
+            NameObject("/Subtype"): NameObject("/Type1"),
+            NameObject("/BaseFont"): NameObject("/Helvetica"),
+        }
+    )
+    page[NameObject("/Resources")] = DictionaryObject(
+        {NameObject("/Font"): DictionaryObject({NameObject("/F1"): writer._add_object(font)})}
+    )
+    text = b"BT /F1 12 Tf 72 720 Td (Visible fact) Tj ET\n"
+    stream = DecodedStreamObject()
+    stream.set_data(text + b" " * (decoded_size - len(text)))
+    page[NameObject("/Contents")] = writer._add_object(stream.flate_encode())
+    writer.write(path)
+    return path
+
+
+def _add_parts(path, names):
+    with zipfile.ZipFile(path, "a", zipfile.ZIP_DEFLATED) as archive:
+        for name in names:
+            archive.writestr(name, b"")
+
+
+def _rewrite_central_record(path, name, *, declared_size=None, flag_bits=None):
+    data = bytearray(path.read_bytes())
+    encoded = name.encode()
+    at = data.find(b"PK\x01\x02")
+    while at != -1:
+        name_length = struct.unpack_from("<H", data, at + 28)[0]
+        if data[at + 46 : at + 46 + name_length] == encoded:
+            if flag_bits is not None:
+                struct.pack_into("<H", data, at + 8, flag_bits)
+            if declared_size is not None:
+                struct.pack_into("<I", data, at + 24, declared_size)
+            path.write_bytes(bytes(data))
+            return
+        at = data.find(b"PK\x01\x02", at + 4)
+    raise AssertionError(f"{name} not in the central directory")
+
+
+def _expanded_size(path):
+    with zipfile.ZipFile(path) as archive:
+        return sum(part.file_size for part in archive.infolist())
+
+
+@pytest.fixture
+def presentation_never_loads(monkeypatch):
+    def _refuse(*args, **kwargs):
+        raise AssertionError("python-pptx was asked to load an archive the check should refuse")
+
+    monkeypatch.setattr(parse_mod, "Presentation", _refuse)
+
+
+class TestPdfExpansionLimit:
+    def test_stream_expanding_past_the_limit_is_too_long(self, tmp_path):
+        path = _pdf_with_compressed_page(tmp_path / "bomb.pdf", parse_mod._PDF_STREAM_MAX_BYTES + 1)
+
+        with pytest.raises(ParseError) as exc_info:
+            parse_file(path)
+
+        assert exc_info.value.reason == "too_long"
+
+    def test_stream_expanding_exactly_to_the_limit_parses(self, tmp_path):
+        path = _pdf_with_compressed_page(tmp_path / "big.pdf", parse_mod._PDF_STREAM_MAX_BYTES)
+
+        [unit] = parse_file(path)
+
+        assert "Visible fact" in unit.text
+
+    def test_limits_do_not_outlive_the_parse(self, tmp_path):
+        before = get_configuration()
+        bomb = _pdf_with_compressed_page(tmp_path / "bomb.pdf", parse_mod._PDF_STREAM_MAX_BYTES + 1)
+
+        with pytest.raises(ParseError):
+            parse_file(bomb)
+
+        assert get_configuration() is before
+
+
+class TestPptxArchiveLimits:
+    def test_too_many_parts_is_too_long(self, pptx_factory, presentation_never_loads):
+        path = pptx_factory("deck.pptx", ["Some text"])
+        with zipfile.ZipFile(path) as archive:
+            existing = len(archive.infolist())
+        _add_parts(
+            path, [f"ppt/extra/{i}.xml" for i in range(parse_mod._PPTX_MAX_PARTS - existing + 1)]
+        )
+
+        with pytest.raises(ParseError) as exc_info:
+            parse_file(path)
+
+        assert exc_info.value.reason == "too_long"
+
+    def test_part_expanding_past_the_limit_is_too_long(
+        self, pptx_factory, presentation_never_loads
+    ):
+        path = pptx_factory("deck.pptx", ["Some text"])
+        _add_parts(path, ["ppt/media/padding.bin"])
+        _rewrite_central_record(
+            path, "ppt/media/padding.bin", declared_size=parse_mod._PPTX_MAX_PART_BYTES + 1
+        )
+
+        with pytest.raises(ParseError) as exc_info:
+            parse_file(path)
+
+        assert exc_info.value.reason == "too_long"
+
+    def test_parts_expanding_past_the_total_limit_are_too_long(
+        self, pptx_factory, presentation_never_loads
+    ):
+        path = pptx_factory("deck.pptx", ["Some text"])
+        existing = _expanded_size(path)
+        _add_parts(path, ["ppt/media/a.bin", "ppt/media/b.bin"])
+        _rewrite_central_record(
+            path, "ppt/media/a.bin", declared_size=parse_mod._PPTX_MAX_PART_BYTES
+        )
+        _rewrite_central_record(
+            path,
+            "ppt/media/b.bin",
+            declared_size=parse_mod._PPTX_MAX_TOTAL_BYTES
+            - parse_mod._PPTX_MAX_PART_BYTES
+            - existing
+            + 1,
+        )
+        assert _expanded_size(path) == parse_mod._PPTX_MAX_TOTAL_BYTES + 1
+
+        with pytest.raises(ParseError) as exc_info:
+            parse_file(path)
+
+        assert exc_info.value.reason == "too_long"
+
+    def test_part_larger_than_its_declared_size_is_not_expanded(self, pptx_factory):
+        path = pptx_factory("deck.pptx", ["Some text"])
+        with zipfile.ZipFile(path, "a", zipfile.ZIP_DEFLATED) as archive:
+            archive.writestr("ppt/media/liar.bin", b"x" * 100_000)
+        _rewrite_central_record(path, "ppt/media/liar.bin", declared_size=10)
+
+        with pytest.raises(ParseError) as exc_info:
+            parse_file(path)
+
+        assert exc_info.value.reason == "unparseable"
+
+    def test_repeated_part_name_is_unparseable(self, pptx_factory, presentation_never_loads):
+        path = pptx_factory("deck.pptx", ["Some text"])
+        with pytest.warns(UserWarning, match="Duplicate name"):
+            _add_parts(path, ["ppt/presentation.xml"])
+
+        with pytest.raises(ParseError) as exc_info:
+            parse_file(path)
+
+        assert exc_info.value.reason == "unparseable"
+
+    def test_zip_encrypted_part_is_protected(self, pptx_factory, presentation_never_loads):
+        path = pptx_factory("deck.pptx", ["Some text"])
+        _rewrite_central_record(path, "ppt/presentation.xml", flag_bits=0x1)
+
+        with pytest.raises(ParseError) as exc_info:
+            parse_file(path)
+
+        assert exc_info.value.reason == "protected"
+
+    def test_ordinary_deck_passes_the_check(self, pptx_factory):
+        path = pptx_factory("deck.pptx", ["Slide one", "Slide two"])
+
+        units = parse_file(path)
+
+        assert [u.page_or_slide for u in units] == [1, 2]

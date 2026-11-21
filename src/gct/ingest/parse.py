@@ -15,25 +15,39 @@ Tooling (pypdf / python-pptx) is a spike choice (design/components/ingestion-wor
 
 from __future__ import annotations
 
+import zipfile
 from dataclasses import dataclass
 from pathlib import Path
 
 import pypdf.errors
 from pptx import Presentation
 from pptx.enum.shapes import MSO_SHAPE_TYPE
-from pypdf import PdfReader
+from pypdf import PdfReader, apply_configuration, get_configuration
 
 # The closed terminal-reason taxonomy, mirroring `files.failed_reason`'s CHECK
-# (migrations/0001_init.sql, widened by 0003). NOT every value is born here: `too_long` is raised
-# by the pipeline's input ceiling, downstream of parsing (ADR 0020, terminal set extended per
-# ADR 0029). Every entry is a legal `ParseError` reason; `parse_file` is simply not the only
-# place one is raised.
+# (migrations/0001_init.sql, widened by 0003). `too_long` is also raised by the pipeline's input
+# ceiling, downstream of parsing (ADR 0020, terminal set extended per ADR 0029). Every entry is a
+# legal `ParseError` reason; `parse_file` is simply not the only place one is raised.
 TERMINAL_REASONS = ("unparseable", "protected", "unsupported", "empty", "too_long")
 
 # MS-CFB (OLE2) container signature. Password-protected OOXML files (.pptx/.docx/.xlsx)
 # are wrapped in this container instead of being a plain zip, so python-pptx's zip-based
 # reader never gets far enough to raise anything more specific - check for it up front.
 _OLE_SIGNATURE = b"\xd0\xcf\x11\xe0\xa1\xb1\x1a\xe1"
+
+_PDF_STREAM_MAX_BYTES = 16 * 1024 * 1024
+_PDF_STREAM_LIMITS = (
+    "maximum_declared_stream_length",
+    "array_based_stream_maximum_output_length",
+    "brotli_maximum_output_length",
+    "lzw_maximum_output_length",
+    "run_length_maximum_output_length",
+    "zlib_maximum_output_length",
+)
+
+_PPTX_MAX_PARTS = 10_000
+_PPTX_MAX_PART_BYTES = 512 * 1024 * 1024
+_PPTX_MAX_TOTAL_BYTES = 1024 * 1024 * 1024
 
 
 class ParseError(Exception):
@@ -69,8 +83,8 @@ def parse_file(path: str | Path) -> list[ParsedUnit]:
     """Parse a staged PDF or PPTX file into provenance-stamped text units.
 
     Raises `ParseError` (terminal, no retry) for an unsupported extension, an
-    unparseable/corrupt file, a password-protected file, or a file with zero
-    extractable text across every page/slide.
+    unparseable/corrupt file, a password-protected file, a file that expands past the
+    parser's limits, or a file with zero extractable text across every page/slide.
     """
     path = Path(path)
     suffix = path.suffix.lower()
@@ -119,8 +133,24 @@ def _strip_nul(units: list[ParsedUnit]) -> list[ParsedUnit]:
 
 
 def _parse_pdf(path: Path) -> list[ParsedUnit]:
+    current = get_configuration()
+    limits = {
+        name: min(getattr(current, name), _PDF_STREAM_MAX_BYTES) for name in _PDF_STREAM_LIMITS
+    }
+    try:
+        with apply_configuration(**limits):
+            return _read_pdf(path)
+    except pypdf.errors.LimitReachedError as exc:
+        raise ParseError(
+            "too_long", f"{path.name} expands past the parser's limits: {exc}"
+        ) from exc
+
+
+def _read_pdf(path: Path) -> list[ParsedUnit]:
     try:
         reader = PdfReader(path)
+    except pypdf.errors.LimitReachedError:
+        raise
     except pypdf.errors.PyPdfError as exc:
         raise ParseError("unparseable", f"could not read PDF {path.name}: {exc}") from exc
 
@@ -131,6 +161,8 @@ def _parse_pdf(path: Path) -> list[ParsedUnit]:
     for i, page in enumerate(reader.pages, start=1):
         try:
             text = page.extract_text() or ""
+        except pypdf.errors.LimitReachedError:
+            raise
         except Exception as exc:
             raise ParseError(
                 "unparseable", f"could not extract text from {path.name} page {i}: {exc}"
@@ -178,11 +210,33 @@ def _slide_notes(slide) -> str:
     return notes_text_frame.text
 
 
-def _parse_pptx(path: Path) -> list[ParsedUnit]:
+def _check_pptx_archive(path: Path) -> None:
     with open(path, "rb") as f:
         header = f.read(len(_OLE_SIGNATURE))
     if header == _OLE_SIGNATURE:
         raise ParseError("protected", f"{path.name} is password-protected")
+
+    try:
+        with zipfile.ZipFile(path) as archive:
+            parts = archive.infolist()
+    except Exception as exc:
+        raise ParseError("unparseable", f"could not read PPTX {path.name}: {exc}") from exc
+
+    if any(part.flag_bits & 0x1 for part in parts):
+        raise ParseError("protected", f"{path.name} is password-protected")
+    if len(parts) > _PPTX_MAX_PARTS:
+        raise ParseError("too_long", f"{path.name} has more than {_PPTX_MAX_PARTS} parts")
+    if len({part.filename for part in parts}) != len(parts):
+        raise ParseError("unparseable", f"{path.name} repeats a part name")
+    if (
+        any(part.file_size > _PPTX_MAX_PART_BYTES for part in parts)
+        or sum(part.file_size for part in parts) > _PPTX_MAX_TOTAL_BYTES
+    ):
+        raise ParseError("too_long", f"{path.name} expands past the parser's limits")
+
+
+def _parse_pptx(path: Path) -> list[ParsedUnit]:
+    _check_pptx_archive(path)
 
     try:
         deck = Presentation(str(path))

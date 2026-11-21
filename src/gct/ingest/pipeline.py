@@ -25,7 +25,7 @@ from gct.config import MAX_INGEST_WORDS
 from gct.ids import canonical_uuid
 from gct.ingest.chunk import CHUNK_OVERLAP_WORDS, CHUNK_SIZE_WORDS, chunk_units
 from gct.ingest.index import index_file
-from gct.ingest.parse import ParseError, parse_file
+from gct.ingest.parse import ParsedUnit, ParseError, parse_file
 from gct.providers.base import Embeddings
 
 # NB: pipeline importing index_file at runtime is fine - index.py imports PreparedChunk only under
@@ -80,8 +80,37 @@ def compose(
     `ParseError` (terminal) and `TransientEmbeddingError` (transient) propagate untouched - handling
     is Slice 2's (ADR 0020). An empty parse cannot occur: `parse_file` raises
     `ParseError("empty", ...)` rather than returning `[]`.
+
+    Everything after the parse is `compose_units`, so text that never was a file (the synthetic
+    eval course, issue #199) goes through exactly the same steps as an upload.
     """
-    units = parse_file(path)
+    return compose_units(
+        parse_file(path),
+        owner_id,
+        class_id,
+        embedder=embedder,
+        chunk_size=chunk_size,
+        chunk_overlap=chunk_overlap,
+        max_words=max_words,
+    )
+
+
+def compose_units(
+    units: list[ParsedUnit],
+    owner_id: str,
+    class_id: str,
+    *,
+    embedder: Embeddings,
+    chunk_size: int = CHUNK_SIZE_WORDS,
+    chunk_overlap: int = CHUNK_OVERLAP_WORDS,
+    max_words: int = MAX_INGEST_WORDS,
+) -> list[PreparedChunk]:
+    """`compose` minus the parse: already-extracted pages -> chunk -> embed -> `PreparedChunk`s.
+
+    The entry point for text that is not a file on disk (issue #199: the synthetic eval course
+    enters here, so a PDF-library upgrade cannot change what the model is shown). Same word
+    ceiling, same alignment guard and same stamping as an upload, because it IS the upload path.
+    """
     # The input ceiling (ADR 0029), and its POSITION is the whole point: parsing and chunking are
     # free, `embed` below is the only call that costs money, and it is handed every chunk at once.
     # A ceiling checked after that call bounds nothing at all. Counted over `units` rather than
@@ -100,7 +129,7 @@ def compose(
     if total_words > max_words:
         raise ParseError(
             "too_long",
-            f"{Path(path).name} has {total_words} words, over the {max_words}-word ingest ceiling",
+            f"{units[0].file} has {total_words} words, over the {max_words}-word ingest ceiling",
         )
     chunks = chunk_units(units, size=chunk_size, overlap=chunk_overlap)
     vectors = embedder.embed([c.text for c in chunks])

@@ -53,11 +53,16 @@ from __future__ import annotations
 import re
 from collections import Counter
 from collections.abc import Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from enum import Enum
 
-from gct.eval.questions import EXPECTATION_ANSWER, EXPECTATION_REFUSE, ExpectedSource
-from gct.grounder.answer import GrounderState
+from gct.eval.questions import (
+    EXPECTATION_ANSWER,
+    EXPECTATION_PARTIAL,
+    EXPECTATION_REFUSE,
+    ExpectedSource,
+)
+from gct.grounder.answer import Citation, GrounderState
 from gct.retriever.retrieve import RetrievedChunk
 
 
@@ -83,6 +88,14 @@ class Outcome(str, Enum):
     EXCLUDED = "EXCLUDED"
 
 
+# THE ONE PLACE TO FLIP (issue #199): what a FULL cited answer is worth on a question the
+# materials only half cover. FAIL is the strict reading - the answer hid the gap, which is the
+# overclaim this product exists to prevent. The owner let this default stand at the #199 plan
+# without choosing it by hand; the alternative considered was `Outcome.TRACKED` (counted on its
+# own line, neither pass nor fail, mirroring PARTIAL on an `answer` question). Changing this one
+# value is the whole switch; `tests/gct/eval/test_runner.py` pins the current choice.
+FULL_ANSWER_ON_PARTIAL_QUESTION = Outcome.FAIL
+
 # ADR 0023 §2's table, transcribed. Laid out as expectation -> state -> outcome so it can be read
 # against the markdown row by row; keep it that way, so a future edit to the ADR is a visibly
 # one-to-one edit here. Both columns are total over the five states - there is no default and no
@@ -101,6 +114,15 @@ _SCORE_TABLE: dict[str, dict[GrounderState, Outcome]] = {
         GrounderState.GROUNDED: Outcome.FAIL,  # hallucinated
         GrounderState.PARTIAL: Outcome.FAIL,  # asserted when it should refuse
         GrounderState.REFUSAL: Outcome.PASS,
+        GrounderState.INTEGRITY_FLAGGED: Outcome.FAIL,
+        GrounderState.ERROR: Outcome.EXCLUDED,
+    },
+    # half in-corpus (ADR 0021's #199 amendment): we expect the covered part, cited, and the gap
+    # named - which is exactly the Grounder's PARTIAL state
+    EXPECTATION_PARTIAL: {
+        GrounderState.GROUNDED: FULL_ANSWER_ON_PARTIAL_QUESTION,  # claimed complete
+        GrounderState.PARTIAL: Outcome.PASS,
+        GrounderState.REFUSAL: Outcome.FAIL,  # the covered half was answerable
         GrounderState.INTEGRITY_FLAGGED: Outcome.FAIL,
         GrounderState.ERROR: Outcome.EXCLUDED,
     },
@@ -285,6 +307,14 @@ class EvalMetrics:
     answer: GroundingCounts
     refuse: GroundingCounts
     retrieval: RetrievalCounts
+    # The `partial`-expectation tally (issue #199). A FIELD, not new rate properties: ADR 0023 §3
+    # fixes the rate vector, and the 12 hand-written questions carry no `partial` row, so their
+    # report is unchanged. Defaults to all-zero so a caller that builds metrics by hand still can.
+    partial_expected: GroundingCounts = field(
+        default_factory=lambda: GroundingCounts(
+            total=0, scored=0, grounded=0, partial=0, refusal=0, integrity_flagged=0, error=0
+        )
+    )
 
     # --- Primary: what a bake-off ranks on (ADR 0023 §3) ---------------------------------------
     @property
@@ -344,7 +374,7 @@ class EvalMetrics:
         in-corpus questions erroring can post a perfect 2/2 pass rate. The per-type counts on
         `answer.error` / `refuse.error` say which side lost its denominator.
         """
-        return self.answer.error + self.refuse.error
+        return self.answer.error + self.refuse.error + self.partial_expected.error
 
     @property
     def error_rate(self) -> float | None:
@@ -352,7 +382,7 @@ class EvalMetrics:
 
         It has to be: a rate of ERRORs over non-ERRORs would be 0 exactly when everything errored.
         """
-        total = self.answer.total + self.refuse.total
+        total = self.answer.total + self.refuse.total + self.partial_expected.total
         return _rate(self.error_count, total)
 
     # --- Retrieval: the other signal (ADR 0023 §1) ----------------------------------------------
@@ -401,6 +431,7 @@ def compute_metrics(records: Sequence[EvalRecord]) -> EvalMetrics:
     per_expectation: dict[str, Counter[GrounderState]] = {
         EXPECTATION_ANSWER: Counter(),
         EXPECTATION_REFUSE: Counter(),
+        EXPECTATION_PARTIAL: Counter(),
     }
     totals: Counter[str] = Counter()
     applicable = 0
@@ -417,7 +448,8 @@ def compute_metrics(records: Sequence[EvalRecord]) -> EvalMetrics:
         # `is not None` rather than truthiness - `hit=False` is a measured miss and must count in
         # the denominator, which is exactly the row a `if record.hit:` bug would drop, inflating
         # the hit rate toward 1.0 by discarding the misses.
-        if record.expectation == EXPECTATION_ANSWER and record.hit is not None:
+        # A `partial` row is in-corpus for the half it covers, so it counts here too (issue #199).
+        if record.expectation != EXPECTATION_REFUSE and record.hit is not None:
             applicable += 1
             hits += int(record.hit)
 
@@ -429,6 +461,63 @@ def compute_metrics(records: Sequence[EvalRecord]) -> EvalMetrics:
             per_expectation[EXPECTATION_REFUSE], EXPECTATION_REFUSE, totals[EXPECTATION_REFUSE]
         ),
         retrieval=RetrievalCounts(applicable=applicable, hits=hits),
+        partial_expected=_counts(
+            per_expectation[EXPECTATION_PARTIAL], EXPECTATION_PARTIAL, totals[EXPECTATION_PARTIAL]
+        ),
+    )
+
+
+def citation_hit(
+    expected_sources: Sequence[ExpectedSource], citations: Sequence[Citation]
+) -> bool | None:
+    """Did the answer CITE one of the expected pages? (issue #199.)
+
+    The citation twin of `retrieval_hit`, with the same tri-state and the same exact
+    `(file, page_or_slide)` match: `None` when there is nothing to expect (a refuse row), else
+    any-match over what the model actually cited. Retrieval can find the right page and the model
+    still cite another; this is the signal that tells those apart.
+    """
+    if not expected_sources:
+        return None
+    pairs = _expected_pairs(expected_sources)
+    return any((c.file, c.page_or_slide) in pairs for c in citations)
+
+
+@dataclass(frozen=True)
+class StringCheck:
+    """Which required words an answer lacked, and which forbidden words it contained (#199).
+
+    Case-insensitive, on word and number boundaries (see `contains_term`). `None` prose (a refusal,
+    an error) contains nothing: it misses every required word and trips no forbidden one.
+    """
+
+    missing_required: tuple[str, ...]
+    forbidden_found: tuple[str, ...]
+
+    @property
+    def ok(self) -> bool:
+        return not self.missing_required and not self.forbidden_found
+
+
+def contains_term(text: str, term: str) -> bool:
+    """`term` appears in `text` as a whole word or number, ignoring case (#199).
+
+    Plain substring matching would let a required "50" be met by "1500", "0.4" by "10.4" and
+    "500" by "1,500". So the term may not touch a letter or digit on either side, nor sit next to
+    a decimal point or thousands comma that continues the number.
+    """
+    pattern = rf"(?<!\w)(?<!\d[.,]){re.escape(term)}(?!\w)(?![.,]\d)"
+    return re.search(pattern, text, flags=re.IGNORECASE) is not None
+
+
+def check_strings(
+    prose: str | None, required: Sequence[str], forbidden: Sequence[str]
+) -> StringCheck:
+    """Score an answer's prose against a question's required and forbidden words (#199)."""
+    text = prose or ""
+    return StringCheck(
+        missing_required=tuple(word for word in required if not contains_term(text, word)),
+        forbidden_found=tuple(word for word in forbidden if contains_term(text, word)),
     )
 
 

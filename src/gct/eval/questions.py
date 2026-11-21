@@ -28,14 +28,17 @@ corpus moved" would make an unreadable error message out of a routine re-ingest.
 from __future__ import annotations
 
 import json
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
-# The two legal `expectation` values (ADR 0021 §3). Exported because `gct.eval.scoring` keys its
-# state->outcome table on exactly these strings: one spelling, two readers, no drift.
+# The legal `expectation` values (ADR 0021 §3, `partial` added by its #199 amendment). Exported
+# because `gct.eval.scoring` keys its state->outcome table on exactly these strings: one spelling,
+# two readers, no drift. `partial` means the materials cover only part of the question, so the
+# right response answers that part and names the gap.
 EXPECTATION_ANSWER = "answer"
 EXPECTATION_REFUSE = "refuse"
-EXPECTATIONS = frozenset({EXPECTATION_ANSWER, EXPECTATION_REFUSE})
+EXPECTATION_PARTIAL = "partial"
+EXPECTATIONS = frozenset({EXPECTATION_ANSWER, EXPECTATION_REFUSE, EXPECTATION_PARTIAL})
 
 # Every key ADR 0021 §3 names. Presence is required; see the module docstring for why absence is
 # an error rather than a default.
@@ -89,6 +92,11 @@ class EvalQuestion:
     suites: list[str]
     tags: list[str]
     added: str
+    # Optional (ADR 0021 #199 amendment): words the answer must contain, and words it must never
+    # contain (a prompt-injection marker, say). Absent from a row means "no check", so the 12
+    # hand-written questions load exactly as before.
+    required: list[str] = field(default_factory=list)
+    forbidden: list[str] = field(default_factory=list)
 
 
 def _fail(path: Path, lineno: int, qid: object, problem: str) -> ValueError:
@@ -217,6 +225,8 @@ def load_questions(path: str | Path, *, suite: str | None = None) -> list[EvalQu
             suites=_parse_str_list(row["suites"], "suites", path, lineno, qid),
             tags=_parse_str_list(row["tags"], "tags", path, lineno, qid),
             added=str(row["added"]),
+            required=_parse_str_list(row.get("required", []), "required", path, lineno, qid),
+            forbidden=_parse_str_list(row.get("forbidden", []), "forbidden", path, lineno, qid),
         )
 
         # Filter AFTER validating, never before: a malformed row outside the requested suite is

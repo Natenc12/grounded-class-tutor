@@ -63,6 +63,7 @@ from openai import OpenAIError
 
 from gct.ask import AskResult, ask
 from gct.config import V1_OWNER_ID, load_settings
+from gct.contracts import RetrievedChunk
 from gct.db import connect
 from gct.eval.questions import EXPECTATION_ANSWER, EXPECTATION_REFUSE, EvalQuestion, load_questions
 from gct.eval.scoring import (
@@ -83,7 +84,7 @@ from gct.ingest.chunk import CHUNK_OVERLAP_WORDS, CHUNK_SIZE_WORDS
 from gct.ingest.pipeline import ingest_file
 from gct.providers.base import Embeddings
 from gct.providers.openai_provider import OpenAIEmbeddings, OpenAIGeneration
-from gct.retriever.retrieve import DEFAULT_K, RetrievedChunk
+from gct.retriever.retrieve import DEFAULT_K
 
 # The V1 owner the API serves (ADR 0004; issue #104) - imported, not restated, so the smoke
 # and the API cannot drift onto two corpora.

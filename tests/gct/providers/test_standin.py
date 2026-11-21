@@ -7,11 +7,11 @@ from fastapi.testclient import TestClient
 
 from gct.api.app import create_app
 from gct.config import EMBEDDING_DIM
+from gct.contracts import RetrievedChunk
 from gct.grounder.answer import GrounderState, answer
 from gct.providers import active
 from gct.providers.openai_provider import OpenAIEmbeddings, OpenAIGeneration
 from gct.providers.standin import StandInEmbeddings, StandInGeneration
-from gct.retriever.retrieve import RetrievedChunk
 
 WATER = RetrievedChunk(
     chunk_id="c1",

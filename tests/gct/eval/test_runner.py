@@ -5,6 +5,7 @@ from __future__ import annotations
 import pytest
 
 from gct.ask import AskResult
+from gct.contracts import RetrievedChunk
 from gct.eval import scoring
 from gct.eval.questions import EvalQuestion, ExpectedSource
 from gct.eval.runner import CourseFile, score_answers
@@ -17,7 +18,6 @@ from gct.eval.scoring import (
     score_state,
 )
 from gct.grounder.answer import Citation, Coverage, GrounderResult, GrounderState, Integrity
-from gct.retriever.retrieve import RetrievedChunk
 
 PAGE = ExpectedSource(file="Lecture 02 Founding.pdf", page_or_slide=1)
 

@@ -20,6 +20,7 @@ dependencies = [
     # `UploadFile`/`Form` parameter when this is absent, so without it the whole adapter fails to
     # start rather than failing on the first upload.
     "python-multipart>=0.0.9",
+    "claude-agent-sdk>=0.2.187",
 ]
 
 [project.optional-dependencies]

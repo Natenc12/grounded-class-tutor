@@ -11,7 +11,10 @@ from gct.providers.base import Embeddings, Generation
 PROVIDERS_ENV = "GCT_PROVIDERS"
 OPENAI = "openai"
 STANDIN = "standin"
-CHOICES = (OPENAI, STANDIN)
+# PROTOTYPE (spike #210): answers from Claude via the Agent SDK on the local Claude login;
+# embeddings stay on the free stand-in.
+CLAUDE = "claude"
+CHOICES = (OPENAI, STANDIN, CLAUDE)
 
 _log = logging.getLogger("gct.providers")
 
@@ -56,6 +59,10 @@ def build_generator() -> Generation:
         from gct.providers.openai_provider import OpenAIGeneration
 
         return OpenAIGeneration()
+    if selected() == CLAUDE:
+        from gct.providers.claude_sdk import ClaudeSDKGeneration
+
+        return ClaudeSDKGeneration()
     from gct.providers.standin import StandInGeneration
 
     _warn("answers", StandInGeneration.model_id)

@@ -33,7 +33,8 @@ def tier(*paths: str) -> str:
 
 
 def test_rules_file_is_exactly_the_ticket_list():
-    # Issue #211's list. Changing the rules is allowed, but must be a deliberate edit here too.
+    # Issue #211's list plus #218's desktop-move paths. Changing the rules is allowed, but must be
+    # a deliberate edit here too.
     assert RULES == [
         ("high", "migrations/"),
         ("high", "src/gct/db.py"),
@@ -42,6 +43,10 @@ def test_rules_file_is_exactly_the_ticket_list():
         ("high", "src/gct/ask*"),
         ("high", "src/gct/providers/"),
         ("high", ".github/"),
+        ("high", "src/gct/library/"),
+        ("high", "src/gct/search/"),
+        ("high", "desktop/main*"),
+        ("high", "desktop/preload*"),
         ("low", "docs/"),
         ("low", "design/"),
         ("low", "*.md"),
@@ -63,6 +68,13 @@ def test_rules_file_is_exactly_the_ticket_list():
         ".github/workflows/ci.yml",
         ".github/risk/rules.txt",
         ".github/risk/risk_gate.py",
+        # #218: the desktop move's library, search and desktop main process
+        "src/gct/library/x.py",
+        "src/gct/search/x.py",
+        "desktop/main.mjs",
+        "desktop/preload.cjs",
+        "desktop/main/window.mjs",
+        "src/gct/library/README.md",  # high beats low
     ],
 )
 def test_high_paths(path):
@@ -97,6 +109,10 @@ def test_low_paths(path):
         "migrations.txt",  # folder rules need the slash
         "srcx/gct/db.py",
         "README.md.txt",
+        # #218: desktop screens stay medium; only main and preload are high
+        "desktop/renderer/app.js",
+        "desktop/renderer/main.js",  # named main, but not desktop/main*
+        "src/gct/library.py",  # folder rules need the slash
     ],
 )
 def test_medium_paths(path):

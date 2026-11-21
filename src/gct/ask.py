@@ -25,6 +25,7 @@ from dataclasses import dataclass
 
 import psycopg
 
+from gct.contracts import RetrievedChunk
 from gct.grounder.answer import (
     ERROR_KIND_PROVIDER_TRANSIENT,
     Coverage,
@@ -38,7 +39,6 @@ from gct.providers.base import Embeddings, Generation, TransientEmbeddingError
 from gct.retriever.retrieve import (
     DEFAULT_K,
     EmbeddingModelMismatchError,
-    RetrievedChunk,
     retrieve,
 )
 

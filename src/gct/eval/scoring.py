@@ -56,6 +56,7 @@ from collections.abc import Sequence
 from dataclasses import dataclass, field
 from enum import Enum
 
+from gct.contracts import RetrievedChunk
 from gct.eval.questions import (
     EXPECTATION_ANSWER,
     EXPECTATION_PARTIAL,
@@ -63,7 +64,6 @@ from gct.eval.questions import (
     ExpectedSource,
 )
 from gct.grounder.answer import Citation, GrounderState
-from gct.retriever.retrieve import RetrievedChunk
 
 
 class Outcome(str, Enum):

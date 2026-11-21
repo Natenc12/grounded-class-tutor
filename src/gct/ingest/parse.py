@@ -48,6 +48,9 @@ _PDF_STREAM_LIMITS = (
 _PPTX_MAX_PARTS = 10_000
 _PPTX_MAX_PART_BYTES = 512 * 1024 * 1024
 _PPTX_MAX_TOTAL_BYTES = 1024 * 1024 * 1024
+_PPTX_MAX_EXPANSION_RATIO = 100
+_PPTX_RATIO_FLOOR_BYTES = 64 * 1024 * 1024
+_PPTX_READ_CHUNK_BYTES = 1024 * 1024
 
 
 class ParseError(Exception):
@@ -217,20 +220,37 @@ def _check_pptx_archive(path: Path) -> None:
         raise ParseError("protected", f"{path.name} is password-protected")
 
     try:
-        with zipfile.ZipFile(path) as archive:
-            parts = archive.infolist()
+        archive = zipfile.ZipFile(path)
     except Exception as exc:
         raise ParseError("unparseable", f"could not read PPTX {path.name}: {exc}") from exc
 
+    with archive:
+        parts = archive.infolist()
+        _check_pptx_parts(path, parts)
+        try:
+            for part in parts:
+                with archive.open(part) as stream:
+                    while stream.read(_PPTX_READ_CHUNK_BYTES):
+                        pass
+        except Exception as exc:
+            raise ParseError("unparseable", f"could not read PPTX {path.name}: {exc}") from exc
+
+
+def _check_pptx_parts(path: Path, parts: list[zipfile.ZipInfo]) -> None:
     if any(part.flag_bits & 0x1 for part in parts):
         raise ParseError("protected", f"{path.name} is password-protected")
     if len(parts) > _PPTX_MAX_PARTS:
         raise ParseError("too_long", f"{path.name} has more than {_PPTX_MAX_PARTS} parts")
-    if len({part.filename for part in parts}) != len(parts):
+    if len({part.filename.lower() for part in parts}) != len(parts):
         raise ParseError("unparseable", f"{path.name} repeats a part name")
+    total = sum(part.file_size for part in parts)
     if (
         any(part.file_size > _PPTX_MAX_PART_BYTES for part in parts)
-        or sum(part.file_size for part in parts) > _PPTX_MAX_TOTAL_BYTES
+        or total > _PPTX_MAX_TOTAL_BYTES
+        or (
+            total > _PPTX_RATIO_FLOOR_BYTES
+            and total > _PPTX_MAX_EXPANSION_RATIO * path.stat().st_size
+        )
     ):
         raise ParseError("too_long", f"{path.name} expands past the parser's limits")
 

@@ -8,6 +8,7 @@ case (ADR 0020).
 from __future__ import annotations
 
 import struct
+import tracemalloc
 import zipfile
 
 import pytest
@@ -540,21 +541,65 @@ class TestPptxArchiveLimits:
         assert exc_info.value.reason == "too_long"
         assert presentation_calls == []
 
-    def test_part_larger_than_its_declared_size_is_not_expanded(self, pptx_factory):
+    def test_part_understating_its_size_is_refused_without_expanding(
+        self, pptx_factory, presentation_calls
+    ):
+        real_size = 64 * 1024 * 1024
         path = pptx_factory("deck.pptx", ["Some text"])
         with zipfile.ZipFile(path, "a", zipfile.ZIP_DEFLATED) as archive:
-            archive.writestr("ppt/media/liar.bin", b"x" * 100_000)
-        _rewrite_central_record(path, "ppt/media/liar.bin", declared_size=10)
+            with archive.open("ppt/slides/liar.xml", "w") as part:
+                for _ in range(real_size // (1024 * 1024)):
+                    part.write(bytes(1024 * 1024))
+        _rewrite_central_record(path, "ppt/slides/liar.xml", declared_size=10)
+        assert path.stat().st_size < 1024 * 1024
+
+        tracemalloc.start()
+        try:
+            with pytest.raises(ParseError) as exc_info:
+                parse_file(path)
+            _, peak = tracemalloc.get_traced_memory()
+        finally:
+            tracemalloc.stop()
+
+        assert exc_info.value.reason == "unparseable"
+        assert presentation_calls == []
+        assert peak < 8 * 1024 * 1024
+
+    def test_high_expansion_ratio_past_the_floor_is_too_long(
+        self, pptx_factory, presentation_calls
+    ):
+        path = pptx_factory("deck.pptx", ["Some text"])
+        existing = _expanded_size(path)
+        _add_parts(path, ["ppt/media/padding.bin"])
+        _rewrite_central_record(
+            path,
+            "ppt/media/padding.bin",
+            declared_size=parse_mod._PPTX_RATIO_FLOOR_BYTES - existing + 1,
+        )
+        assert _expanded_size(path) > parse_mod._PPTX_MAX_EXPANSION_RATIO * path.stat().st_size
 
         with pytest.raises(ParseError) as exc_info:
             parse_file(path)
 
-        assert exc_info.value.reason == "unparseable"
+        assert exc_info.value.reason == "too_long"
+        assert presentation_calls == []
 
     def test_repeated_part_name_is_unparseable(self, pptx_factory, presentation_calls):
         path = pptx_factory("deck.pptx", ["Some text"])
         with pytest.warns(UserWarning, match="Duplicate name"):
             _add_parts(path, ["ppt/presentation.xml"])
+
+        with pytest.raises(ParseError) as exc_info:
+            parse_file(path)
+
+        assert exc_info.value.reason == "unparseable"
+        assert presentation_calls == []
+
+    def test_part_name_repeated_in_other_case_is_unparseable(
+        self, pptx_factory, presentation_calls
+    ):
+        path = pptx_factory("deck.pptx", ["Some text"])
+        _add_parts(path, ["PPT/PRESENTATION.XML"])
 
         with pytest.raises(ParseError) as exc_info:
             parse_file(path)

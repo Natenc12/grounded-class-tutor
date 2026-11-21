@@ -450,11 +450,15 @@ def _expanded_size(path):
 
 
 @pytest.fixture
-def presentation_never_loads(monkeypatch):
-    def _refuse(*args, **kwargs):
-        raise AssertionError("python-pptx was asked to load an archive the check should refuse")
+def presentation_calls(monkeypatch):
+    calls = []
 
-    monkeypatch.setattr(parse_mod, "Presentation", _refuse)
+    def _record(*args, **kwargs):
+        calls.append(args)
+        raise RuntimeError("python-pptx was asked to load this archive")
+
+    monkeypatch.setattr(parse_mod, "Presentation", _record)
+    return calls
 
 
 class TestPdfExpansionLimit:
@@ -484,7 +488,7 @@ class TestPdfExpansionLimit:
 
 
 class TestPptxArchiveLimits:
-    def test_too_many_parts_is_too_long(self, pptx_factory, presentation_never_loads):
+    def test_too_many_parts_is_too_long(self, pptx_factory, presentation_calls):
         path = pptx_factory("deck.pptx", ["Some text"])
         with zipfile.ZipFile(path) as archive:
             existing = len(archive.infolist())
@@ -496,10 +500,9 @@ class TestPptxArchiveLimits:
             parse_file(path)
 
         assert exc_info.value.reason == "too_long"
+        assert presentation_calls == []
 
-    def test_part_expanding_past_the_limit_is_too_long(
-        self, pptx_factory, presentation_never_loads
-    ):
+    def test_part_expanding_past_the_limit_is_too_long(self, pptx_factory, presentation_calls):
         path = pptx_factory("deck.pptx", ["Some text"])
         _add_parts(path, ["ppt/media/padding.bin"])
         _rewrite_central_record(
@@ -510,9 +513,10 @@ class TestPptxArchiveLimits:
             parse_file(path)
 
         assert exc_info.value.reason == "too_long"
+        assert presentation_calls == []
 
     def test_parts_expanding_past_the_total_limit_are_too_long(
-        self, pptx_factory, presentation_never_loads
+        self, pptx_factory, presentation_calls
     ):
         path = pptx_factory("deck.pptx", ["Some text"])
         existing = _expanded_size(path)
@@ -534,6 +538,7 @@ class TestPptxArchiveLimits:
             parse_file(path)
 
         assert exc_info.value.reason == "too_long"
+        assert presentation_calls == []
 
     def test_part_larger_than_its_declared_size_is_not_expanded(self, pptx_factory):
         path = pptx_factory("deck.pptx", ["Some text"])
@@ -546,7 +551,7 @@ class TestPptxArchiveLimits:
 
         assert exc_info.value.reason == "unparseable"
 
-    def test_repeated_part_name_is_unparseable(self, pptx_factory, presentation_never_loads):
+    def test_repeated_part_name_is_unparseable(self, pptx_factory, presentation_calls):
         path = pptx_factory("deck.pptx", ["Some text"])
         with pytest.warns(UserWarning, match="Duplicate name"):
             _add_parts(path, ["ppt/presentation.xml"])
@@ -555,8 +560,9 @@ class TestPptxArchiveLimits:
             parse_file(path)
 
         assert exc_info.value.reason == "unparseable"
+        assert presentation_calls == []
 
-    def test_zip_encrypted_part_is_protected(self, pptx_factory, presentation_never_loads):
+    def test_zip_encrypted_part_is_protected(self, pptx_factory, presentation_calls):
         path = pptx_factory("deck.pptx", ["Some text"])
         _rewrite_central_record(path, "ppt/presentation.xml", flag_bits=0x1)
 
@@ -564,6 +570,7 @@ class TestPptxArchiveLimits:
             parse_file(path)
 
         assert exc_info.value.reason == "protected"
+        assert presentation_calls == []
 
     def test_ordinary_deck_passes_the_check(self, pptx_factory):
         path = pptx_factory("deck.pptx", ["Slide one", "Slide two"])

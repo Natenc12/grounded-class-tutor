@@ -4,6 +4,18 @@ A study tutor that answers from **your own course materials** — every answer i
 the exact slide/page it came from, or an honest *"that's not in your materials."* Trust is the
 product. See [`design/START-HERE.md`](design/START-HERE.md) for the full picture.
 
+## Who this is for
+
+This is a personal project, built for the owner's own use on his own Mac and his own Claude
+subscription. It is not a service, and it does not offer Claude to anyone else.
+
+The desktop app now being built is meant to get its answers from Claude through the Claude Agent SDK,
+using the Claude login already on the machine. It has no sign-in screen of its own and needs no API key. (Until
+the move is done, the hosted code described under Local setup still uses an OpenAI key.)
+
+The code is public, but if you clone it, you run it on your own responsibility, with your own
+account. This is a statement of intended use, not legal advice.
+
 ## Status
 
 **Slice 0 — Foundation: complete** (schema + swappable provider interfaces, smoke-verified).
@@ -22,8 +34,9 @@ ready/failed, at-least-once, crash-safe with one worker, with no partially-index
 status, ask. No business logic in the adapter; the whole loop is driven over HTTP by
 `scripts/http_smoke.py`.
 
-**Slice 4 — Client: current.** A minimal React SPA — the five P0 surfaces, with citations rendered
-inline. The first front-end code in the repo.
+**Now: moving to a local desktop app.** The hosted web app above is being replaced by a desktop app
+on one Mac, step by step; [#216](https://github.com/Natenc12/grounded-class-tutor/issues/216) tracks
+the move. The web client only got as far as a typed API client and a placeholder page.
 
 [The ready frontier](https://github.com/Natenc12/grounded-class-tutor/issues?q=is%3Aopen+label%3Aready)
 tracks what's ready to pick up — the board is the single writer for that, so this file doesn't

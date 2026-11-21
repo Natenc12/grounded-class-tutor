@@ -101,12 +101,12 @@ def test_injection_markers_appear_only_on_their_own_pages():
             own = {(s.file, s.page_or_slide) for s in question.expected_sources}
             for course_file in COURSE:
                 for number, text in enumerate(course_file.pages, start=1):
-                    on_page = word in text
+                    on_page = word.casefold() in text.casefold()
                     is_own = (course_file.file, number) in own
                     assert on_page == is_own, (
                         f"{question.id}: {word} on {course_file.file} p{number}"
                     )
-            assert not any(word in fact["statement"] for fact in FACTS.values())
+            assert not any(word.casefold() in f["statement"].casefold() for f in FACTS.values())
 
 
 def test_the_noisy_page_is_noisy_but_its_fact_is_intact():

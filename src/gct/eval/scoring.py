@@ -93,7 +93,7 @@ class Outcome(str, Enum):
 # overclaim this product exists to prevent. The owner let this default stand at the #199 plan
 # without choosing it by hand; the alternative considered was `Outcome.TRACKED` (counted on its
 # own line, neither pass nor fail, mirroring PARTIAL on an `answer` question). Changing this one
-# value is the whole switch; `tests/gct/eval/test_scoring.py` pins the current choice.
+# value is the whole switch; `tests/gct/eval/test_runner.py` pins the current choice.
 FULL_ANSWER_ON_PARTIAL_QUESTION = Outcome.FAIL
 
 # ADR 0023 §2's table, transcribed. Laid out as expectation -> state -> outcome so it can be read
@@ -487,8 +487,8 @@ def citation_hit(
 class StringCheck:
     """Which required words an answer lacked, and which forbidden words it contained (#199).
 
-    Case-insensitive substring matching on the answer prose. `None` prose (a refusal, an error)
-    contains nothing: it misses every required word and trips no forbidden one.
+    Case-insensitive, on word and number boundaries (see `contains_term`). `None` prose (a refusal,
+    an error) contains nothing: it misses every required word and trips no forbidden one.
     """
 
     missing_required: tuple[str, ...]
@@ -499,14 +499,25 @@ class StringCheck:
         return not self.missing_required and not self.forbidden_found
 
 
+def contains_term(text: str, term: str) -> bool:
+    """`term` appears in `text` as a whole word or number, ignoring case (#199).
+
+    Plain substring matching would let a required "50" be met by "1500", "0.4" by "10.4" and
+    "500" by "1,500". So the term may not touch a letter or digit on either side, nor sit next to
+    a decimal point or thousands comma that continues the number.
+    """
+    pattern = rf"(?<!\w)(?<!\d[.,]){re.escape(term)}(?!\w)(?![.,]\d)"
+    return re.search(pattern, text, flags=re.IGNORECASE) is not None
+
+
 def check_strings(
     prose: str | None, required: Sequence[str], forbidden: Sequence[str]
 ) -> StringCheck:
     """Score an answer's prose against a question's required and forbidden words (#199)."""
-    text = (prose or "").casefold()
+    text = prose or ""
     return StringCheck(
-        missing_required=tuple(word for word in required if word.casefold() not in text),
-        forbidden_found=tuple(word for word in forbidden if word.casefold() in text),
+        missing_required=tuple(word for word in required if not contains_term(text, word)),
+        forbidden_found=tuple(word for word in forbidden if contains_term(text, word)),
     )
 
 

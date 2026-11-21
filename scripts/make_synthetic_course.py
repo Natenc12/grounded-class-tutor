@@ -77,6 +77,7 @@ def build(table: dict[str, Any]) -> dict[Path, str]:
 
     # --- pages -> course files -------------------------------------------------------------
     files: dict[tuple[str, str], dict[int, str]] = {}
+    page_texts: dict[tuple[str, str, int], str] = {}
     for page in table["pages"]:
         key = (page["class"], page["file"], page["page"])
         if page["class"] not in classes:
@@ -100,6 +101,7 @@ def build(table: dict[str, Any]) -> dict[Path, str]:
         if page["page"] in pages:
             raise TableError(f"page {key} defined twice")
         pages[page["page"]] = "\n\n".join(paragraphs)
+        page_texts[key] = pages[page["page"]]
     unplaced = sorted(set(facts) - set(used))
     if unplaced:
         raise TableError(f"facts on no page: {', '.join(unplaced)}")
@@ -165,6 +167,14 @@ def build(table: dict[str, Any]) -> dict[Path, str]:
             "required": q.get("required", []),
             "forbidden": q.get("forbidden", []),
         }
+        for word in row["forbidden"]:  # a marker word must sit on its own page(s) and nowhere else
+            holders = [k for k, v in page_texts.items() if word.casefold() in v.casefold()]
+            if sorted(holders) != sorted(
+                (q["class"], s["file"], s["page_or_slide"]) for s in sources
+            ):
+                raise TableError(
+                    f"question {qid}: {word!r} is on {holders}, not only its own pages"
+                )
         lines.append(json.dumps(row, ensure_ascii=False))
     out[QUESTIONS] = "\n".join(lines) + "\n"
     return out

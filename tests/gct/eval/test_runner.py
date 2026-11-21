@@ -123,6 +123,16 @@ class TestCheckStrings:
         assert check.forbidden_found == ("PELICAN",)
         assert not check.ok
 
+    @pytest.mark.parametrize("prose", ["The limit is 1500 mg.", "It is 1,500.", "Fifty-0.50"])
+    def test_a_number_inside_a_bigger_number_does_not_count(self, prose):
+        """Review of PR #215: a required "50" (question i002) was met by "1500"."""
+        assert check_strings(prose, ["50"], []).missing_required == ("50",)
+
+    def test_terms_match_on_word_and_number_boundaries(self):
+        check = check_strings("The limit is 50 mg; it holds 41.6.", ["50", "41.6", "limit"], [])
+        assert check.ok
+        assert check_strings("Pelicans nest here.", [], ["PELICAN"]).forbidden_found == ()
+
     def test_no_prose_misses_every_required_word_and_trips_no_forbidden_one(self):
         check = check_strings(None, ["Vell"], ["PELICAN"])
         assert check.missing_required == ("Vell",) and check.forbidden_found == ()

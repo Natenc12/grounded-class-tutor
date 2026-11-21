@@ -15,6 +15,7 @@ Tooling (pypdf / python-pptx) is a spike choice (design/components/ingestion-wor
 
 from __future__ import annotations
 
+import tempfile
 import zipfile
 from dataclasses import dataclass
 from pathlib import Path
@@ -48,8 +49,6 @@ _PDF_STREAM_LIMITS = (
 _PPTX_MAX_PARTS = 10_000
 _PPTX_MAX_PART_BYTES = 512 * 1024 * 1024
 _PPTX_MAX_TOTAL_BYTES = 1024 * 1024 * 1024
-_PPTX_MAX_EXPANSION_RATIO = 100
-_PPTX_RATIO_FLOOR_BYTES = 64 * 1024 * 1024
 _PPTX_READ_CHUNK_BYTES = 1024 * 1024
 
 
@@ -213,27 +212,48 @@ def _slide_notes(slide) -> str:
     return notes_text_frame.text
 
 
-def _check_pptx_archive(path: Path) -> None:
-    with open(path, "rb") as f:
-        header = f.read(len(_OLE_SIGNATURE))
-    if header == _OLE_SIGNATURE:
-        raise ParseError("protected", f"{path.name} is password-protected")
-
-    try:
-        archive = zipfile.ZipFile(path)
-    except Exception as exc:
-        raise ParseError("unparseable", f"could not read PPTX {path.name}: {exc}") from exc
-
-    with archive:
-        parts = archive.infolist()
-        _check_pptx_parts(path, parts)
+def _load_presentation(path: Path):
+    with tempfile.TemporaryFile() as clean:
+        _copy_counted_parts(path, clean)
+        clean.seek(0)
         try:
-            for part in parts:
-                with archive.open(part) as stream:
-                    while stream.read(_PPTX_READ_CHUNK_BYTES):
-                        pass
+            return Presentation(clean)
         except Exception as exc:
             raise ParseError("unparseable", f"could not read PPTX {path.name}: {exc}") from exc
+
+
+def _copy_counted_parts(path: Path, clean) -> None:
+    with open(path, "rb") as source:
+        if source.read(len(_OLE_SIGNATURE)) == _OLE_SIGNATURE:
+            raise ParseError("protected", f"{path.name} is password-protected")
+        source.seek(0)
+        try:
+            archive = zipfile.ZipFile(source)
+        except Exception as exc:
+            raise ParseError("unparseable", f"could not read PPTX {path.name}: {exc}") from exc
+
+        with archive, zipfile.ZipFile(clean, "w", zipfile.ZIP_STORED) as copy:
+            parts = [part for part in archive.infolist() if not part.is_dir()]
+            _check_pptx_parts(path, parts)
+            total = 0
+            for part in parts:
+                size = 0
+                try:
+                    with archive.open(part) as stream, copy.open(part.filename, "w") as out:
+                        while chunk := stream.read(_PPTX_READ_CHUNK_BYTES):
+                            size += len(chunk)
+                            total += len(chunk)
+                            if size > _PPTX_MAX_PART_BYTES or total > _PPTX_MAX_TOTAL_BYTES:
+                                raise ParseError(
+                                    "too_long", f"{path.name} expands past the parser's limits"
+                                )
+                            out.write(chunk)
+                except ParseError:
+                    raise
+                except Exception as exc:
+                    raise ParseError(
+                        "unparseable", f"could not read PPTX {path.name}: {exc}"
+                    ) from exc
 
 
 def _check_pptx_parts(path: Path, parts: list[zipfile.ZipInfo]) -> None:
@@ -243,25 +263,12 @@ def _check_pptx_parts(path: Path, parts: list[zipfile.ZipInfo]) -> None:
         raise ParseError("too_long", f"{path.name} has more than {_PPTX_MAX_PARTS} parts")
     if len({part.filename.lower() for part in parts}) != len(parts):
         raise ParseError("unparseable", f"{path.name} repeats a part name")
-    total = sum(part.file_size for part in parts)
-    if (
-        any(part.file_size > _PPTX_MAX_PART_BYTES for part in parts)
-        or total > _PPTX_MAX_TOTAL_BYTES
-        or (
-            total > _PPTX_RATIO_FLOOR_BYTES
-            and total > _PPTX_MAX_EXPANSION_RATIO * path.stat().st_size
-        )
-    ):
-        raise ParseError("too_long", f"{path.name} expands past the parser's limits")
+    if any(part.compress_type not in (zipfile.ZIP_STORED, zipfile.ZIP_DEFLATED) for part in parts):
+        raise ParseError("unparseable", f"{path.name} uses an unsupported compression method")
 
 
 def _parse_pptx(path: Path) -> list[ParsedUnit]:
-    _check_pptx_archive(path)
-
-    try:
-        deck = Presentation(str(path))
-    except Exception as exc:
-        raise ParseError("unparseable", f"could not read PPTX {path.name}: {exc}") from exc
+    deck = _load_presentation(path)
 
     units: list[ParsedUnit] = []
     for i, slide in enumerate(deck.slides, start=1):

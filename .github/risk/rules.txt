@@ -21,6 +21,13 @@ high src/gct/grounder/
 high src/gct/ask*
 high src/gct/providers/
 high .github/
+# Desktop move (#216, rules from #218): the library and search replace db.py and migrations/,
+# and the desktop main process and preload hold the window's security settings. Desktop
+# screens (desktop/renderer/ and the like) stay medium.
+high src/gct/library/
+high src/gct/search/
+high desktop/main*
+high desktop/preload*
 
 low docs/
 low design/

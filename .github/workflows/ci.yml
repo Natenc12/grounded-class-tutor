@@ -148,3 +148,28 @@ jobs:
 
       - name: Tests (everything except paid-API `live`)
         run: uv run pytest -m "not live"
+
+  # The one required check from this workflow (#251). It runs nothing itself: it passes only when
+  # every job it needs finished with `success`. A new job joins the gate by being added to
+  # `needs:` below, so adding, renaming or splitting jobs never touches the branch rule or the
+  # ruleset again (#173 is what that costs otherwise). Every other job in this file belongs here.
+  #
+  # `if: always()` is load-bearing. Without it, a failed job makes this one SKIPPED, and GitHub
+  # counts a skipped required check as passing. With it, this job always runs and reports, and
+  # the step fails on anything but `success`: `failure`, `cancelled`, or `skipped` (a job skipped
+  # by its own `if:` proved nothing). A run cancelled by `concurrency` above therefore goes red
+  # here; that run's commit is no longer the head, and the newer run is the one that counts.
+  merge-check:
+    name: merge-check  # required by this exact name; do not rename
+    needs: [lint-and-test]
+    if: always()
+    runs-on: ubuntu-latest
+    permissions: {}
+    timeout-minutes: 2
+    steps:
+      - name: Every job it needs succeeded
+        env:
+          NEEDS: ${{ toJSON(needs) }}
+        run: |
+          echo "$NEEDS" | jq -r 'to_entries[] | "\(.key): \(.value.result)"'
+          echo "$NEEDS" | jq -e 'length > 0 and all(.[]; .result == "success")' > /dev/null

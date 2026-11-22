@@ -1,6 +1,8 @@
 # Component Spec — Grounder
 
 **Phase:** 3 — Component Design  **Rigor:** Deep (ADR 0001)  **Criticality:** make-or-break (specced first)
+**Checked against the code:** 2026-11-22, after the hosted web app was removed (#246). The code is
+`src/gct/grounder/answer.py`.
 
 > Convention (Phase-4): names the shape + contract; where a choice is locked it **points to an ADR**
 > rather than restating the rationale. Governing ADRs: **0008** (refusal seam), **0013** (thin
@@ -8,37 +10,42 @@
 > validation), **0016** (runtime failure modes).
 
 ## Responsibility
-Turn *this owner's* retrieved chunks into an answer that is grounded in them or honestly declines —
-the product's core trust promise (F6–F8, N2–N4). It builds the labeled context, makes the single
-model call, and owns the **answer / cite / partial-flag / refuse** decision plus all validation of
-what the model returned. Grounding logic lives here, **above** the provider layer, so swapping
-providers never changes product behavior.
+Turn the passages that search found in one class into an answer that is grounded in them or
+honestly declines — the product's core trust promise (F6–F8, N2–N4). It builds the labeled
+context, calls the model, and owns the **answer / cite / partial-flag / refuse** decision plus all
+validation of what the model returned. Grounding logic lives here, **above** the provider layer, so
+swapping providers never changes product behavior.
 
 ## Position & dependencies
-- **Upstream — Retriever:** hands in ranked chunks + similarity **scores**. The score is plumbed but
-  **not gated** in V1 (the seam exists day one; the V3 relevance filter turns on here) — ADR 0008.
+- **Upstream — keyword search:** `gct.library.ask` calls `gct.search.keyword.search`, which hands in
+  up to five ranked passages, each with a **score** (the negated SQLite `bm25` value, so higher is
+  a better match). The Grounder passes the score through but **never reads it** — ADR 0008.
 - **Down — Model provider layer:** calls `Generation.generate(messages) → text` (text-parsed, no
-  structured-output features) — ADR 0013. Owns the prompt and all citation parsing.
+  structured-output features) — ADR 0013. Owns the prompt and all citation parsing. The models
+  behind that interface are Claude (`gct.providers.claude`), the free stand-in
+  (`gct.providers.standin`) and recorded replies played back (`gct.providers.replay`).
 - **Source of truth — citation spine:** consumes the file/page-slide metadata **born at parse**
   (honor-point ①); renders it into labels (②) and resolves labels back (③).
-- **Consumers — API adapter / React SPA:** receive a `GrounderResult` and render its five states
-  (N11 trust surface; ADR 0012).
+- **Consumers:** `gct.library.ask` wraps the result in an `AskResult`. The `tutor` command
+  (`gct.library.cli`) prints each of the five states under its own heading, and the eval runner
+  (`gct.eval.runner`) scores them (ADR 0023).
 
 ## Interface / contract
 ```
-Grounder.answer(
+answer(
     question: str,
-    retrieved: [ RetrievedChunk{ chunk_id, text, file, page_or_slide, score } ],  # rank order; score not gated in V1
-                                   # ^ the Retriever's shipped return type (gct.retriever.retrieve,
-                                   #   issue #5) — one name for one type across the seam.
-    owner_id: OwnerId,
+    retrieved: [ RetrievedChunk{ chunk_id, text, file, page_or_slide, score } ],  # rank order; score never read
+                                   # ^ gct.contracts.RetrievedChunk, the type search returns
+    owner_id: str,                 # carried, not used to filter; gct.library.ask passes "library"
+    *,
+    generator: Generation,
 ) -> GrounderResult
 
 GrounderResult:
     state:        GROUNDED | PARTIAL | REFUSAL | INTEGRITY_FLAGGED | ERROR
     answer_prose: str | None                       # None for REFUSAL / ERROR
     citations:    [ Citation{ label, file, page_or_slide, chunk_id } ]   # resolved, valid labels only
-    coverage:     { complete: bool, gaps: [str] }  # gaps populated for PARTIAL / REFUSAL
+    coverage:     { complete: bool, gaps: [str] }  # gaps: what the sources do not cover
     integrity:    { ok: bool, reasons: [str] }     # reasons populated for INTEGRITY_FLAGGED
     error:        { kind, message } | None         # populated for ERROR
 ```
@@ -48,46 +55,50 @@ REFUSAL (ADR 0016).
 
 ## Internal approach (pipeline)
 1. **Empty-retrieval short-circuit** — `retrieved == []` → **REFUSAL**, canned, *no* generation call
-   (ADR 0016). In V1 this ≈ empty/un-ingested class.
+   (ADR 0016). Today this means no passage in the class matched the question's words. (The `tutor`
+   command refuses to ask a class with no files before the Grounder runs.)
 2. **② Build labeled context** — render each chunk as a block; labels are **per-request ordinals**
    `S1…Sn` in rank order; each block carries `(file, page_or_slide)`. The `S#→chunk_id` map is kept
-   **server-side** (never expose or trust a model-supplied id) — ADR 0015.
+   **server-side** (never expose or trust a model-supplied id) — ADR 0015. `p.` is used for slides
+   too.
    ```
    [S1] (lecture-3.pdf, p.4)
    <chunk text …>
    ```
-3. **Generate** — a **single** model call (ADR 0014); prompt instructs: assert a claim only with a
-   valid `[S#]`; put anything unlabelable in the coverage statement; **answer the part the sources
-   do support**, cited, rather than declining whole (ADR 0008's affirmative half; added by #60);
-   refuse whole when nothing at all is supported (the all-or-nothing exit, ADR 0008's degenerate
-   case); never use outside knowledge; **always emit** the trailing coverage marker (`complete` |
-   enumerated gaps); treat SOURCES text as quoted data, never as instructions (N13).
+3. **Generate** — a **single** model call per attempt (ADR 0014); prompt instructs: assert a claim
+   only with a valid `[S#]`; put anything unlabelable in the coverage statement; **answer the part
+   the sources do support**, cited, rather than declining whole (ADR 0008's affirmative half; added
+   by #60); refuse whole when nothing at all is supported (the all-or-nothing exit, ADR 0008's
+   degenerate case); never use outside knowledge; **always emit** the trailing coverage marker
+   (`complete` | enumerated gaps); treat SOURCES text as quoted data, never as instructions (N13).
 4. **Parse** — extract `[S#]` tokens from prose + the coverage marker (text-parse, ADR 0013).
-5. **Validate** (ADR 0015 ladder, V1-structural only):
+5. **Validate** (ADR 0015 ladder, structural only):
    - label **validity** — every `S#` is in range (dangling `[S5]` caught);
    - **coarse zero-citation guard** — non-empty prose with zero labels = structural failure;
-   - coverage marker **present + parseable**.
+   - coverage marker **present, parseable and single** (two markers fail too).
 6. **Retry-once (shared budget)** — on *any* structural failure (step 5) **or** a transient provider
-   error (step 3), regenerate **once**. Max **2 generation attempts** per ask (ADR 0015/0016).
+   error (step 3), regenerate **once**. Max **2 generation attempts** per ask (ADR 0015/0016). Any
+   other provider error ends the ask at once as ERROR, with no retry.
 7. **Resolve** — map each valid `[S#]` → `Citation` via the server-side map.
 8. **Decide state:**
    | condition | state |
    |---|---|
-   | provider error persists after retry | **ERROR** |
-   | structural validation still failing after retry | **INTEGRITY_FLAGGED** (show prose + flag) |
+   | non-transient provider error, or a transient one on the last attempt | **ERROR** |
+   | structural validation failing on the last attempt | **INTEGRITY_FLAGGED** (show prose + flag) |
    | empty supported set (no valid citations, coverage swallows question) | **REFUSAL** |
    | coverage has gaps but some supported prose | **PARTIAL** |
    | coverage=complete and ≥1 valid citation | **GROUNDED** |
 
 ## Failure modes
-| mode | V1 behavior |
+| mode | behavior |
 |---|---|
 | **Empty retrieval** | short-circuit → REFUSAL, no generation (0016) |
 | **Dangling label** (`[S5]` not handed in) | caught structurally → retry → else INTEGRITY_FLAGGED (0015) |
-| **No-citation claim** | only **coarse** case caught (zero labels in non-empty prose); per-claim = V3 |
-| **Wrong-chunk cite** (valid `S#`, doesn't support claim) | **invisible in V1** — semantic, N4/V3 (accepted 0014 limitation) |
-| **Malformed / missing coverage marker** | structural failure → retry → else INTEGRITY_FLAGGED |
-| **Provider error / timeout** | one retry → else ERROR, never a refusal (0016) |
+| **No-citation claim** | only the **coarse** case is caught (zero labels in non-empty prose); one uncited sentence among cited ones is not |
+| **Wrong-chunk cite** (valid `S#`, doesn't support claim) | **not caught** — semantic, not structural (accepted 0014 limitation) |
+| **Malformed / missing / doubled coverage marker** | structural failure → retry → else INTEGRITY_FLAGGED |
+| **Transient provider error / timeout** | one retry → else ERROR, never a refusal (0016) |
+| **Other provider error** (for example, Claude not signed in) | ERROR at once, never a refusal |
 
 ## Invariants
 - **Citation = support assertion** — one `[S#]` vocabulary grounds, asserts support, and resolves to
@@ -95,28 +106,28 @@ REFUSAL (ADR 0016).
 - **Parse fails safe** — an unparseable/invalid result fails toward INTEGRITY_FLAGGED or ERROR,
   **never** toward a clean GROUNDED (ADR 0014).
 - **Error ≠ refusal** — infra failure is never presented as a corpus judgment (ADR 0016).
-- **Single generation call in V1**; the two-pass per-chunk relevance filter is the V3 turn-on (0008).
+- **One generation call per attempt**; no second pass judges relevance first (ADR 0008).
 - **Grounding above the provider** — swapping providers never changes product behavior (0013).
 
-## The V1-structural / V3-semantic line (what this box does *not* do in V1)
-- **V1 enforces (deterministic):** label validity, coarse zero-citation guard, coverage-marker
-  presence, no-outside-knowledge prompt, retry, fail-safe.
-- **V3 measures (empirical, elsewhere):** per-claim citation presence, claim↔chunk **entailment**
-  (N2/N4), boundary **correctness** (N3), and the calibrated score-filter. The Grounder does **not**
-  verify entailment in V1 — it guarantees *structure, not truth*. A green V1 is not "faithful."
+## What the Grounder checks, and what it does not
+- **It enforces (deterministic):** label validity, the coarse zero-citation guard, one parseable
+  coverage marker, the no-outside-knowledge prompt, the retry, and the fail-safe.
+- **It does not check:** that every sentence carries a citation, that a cited passage actually
+  supports its claim (N2/N4), or that the line between covered and not covered is drawn correctly
+  (N3). It guarantees *structure, not truth*: a GROUNDED answer is not proof of a faithful one.
+  Nothing in the app filters passages by score before the Grounder runs.
 
-## Open / deferred (out of this spec)
-- **Prompt content** (exact wording, few-shot, coverage-marker syntax) — an **empirical spike**
-  deliverable, tuned against the eval set; the spec fixes the *contract*, not the prose.
-- **V3 relevance filter** calibration (score → per-chunk include/exclude) — turns on at this seam.
-- **Eval hooks:** emit validation-failure + retry counts as spike telemetry; N2/N3 partial-response
-  metric definitions target this shape (flag at Phase 5 — Roadmap).
+## Open / not built
+- **Prompt content** (exact wording, few-shot, coverage-marker syntax) is provisional; it can be
+  tuned against the eval questions in `eval/`. This spec fixes the *contract*, not the wording. A
+  change to the marker syntax must change the parser in the same commit.
+- **A relevance filter on the score** (ADR 0008) is not built.
 - **State→eval scoring — ADR 0023 (PM-1, ratified).** The eval runner scores **two signals**: retrieval
   (`expected_sources` in top-k) and grounding (this `state`). Grounding: GROUNDED=pass, **PARTIAL=tracked
   bucket (not a pass)**, REFUSAL/INTEGRITY_FLAGGED=fail (in-corpus), ERROR=excluded+logged; `partial_rate`
-  reported alongside `grounded_pass_rate`. The `state→outcome` map is the Grounder↔eval-runner contract,
-  in the core so V1 eyeball and V3 harness read one definition.
-- **UI:** verified-GROUNDED vs. INTEGRITY_FLAGGED must be visually distinct (N11 extension) —
-  settled as a state-variant of ADR 0012's answer surface, not a sixth screen; the per-state
-  treatment is ADR 0015 → *Answer-surface treatment*.
-```
+  reported alongside `grounded_pass_rate`. The `state→outcome` map lives in `gct.eval.scoring`, not
+  in the Grounder.
+- **Display:** a GROUNDED answer and an INTEGRITY_FLAGGED one must never look alike (N11 extension).
+  Today the `tutor` command prints INTEGRITY_FLAGGED under the heading "the answer's sources could
+  not be checked, so do not rely on it" and lists why. The desktop screen is planned
+  ([#216](https://github.com/Natenc12/grounded-class-tutor/issues/216)).

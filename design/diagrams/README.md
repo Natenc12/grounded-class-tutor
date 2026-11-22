@@ -2,7 +2,7 @@
 
 Open **[slice-3-api.drawio](slice-3-api.drawio)** in draw.io / diagrams.net. The file contains three pages with editable shapes, text, and connectors. Component shapes carry source references in their **Edit Data** metadata.
 
-These diagrams are a derived implementation snapshot of commit `19bfdc9` on 2026-09-10. They explain the Slice 3 boundary and the core it calls; the React SPA is identified as a Slice 4 consumer. The implementation, [architecture](../architecture.md), [API specification](../components/api.md), and ADRs remain the source of truth. Refresh the diagrams and exports together when those contracts change.
+These diagrams are a derived implementation snapshot of commit `19bfdc9` on 2026-09-10. They explain the Slice 3 boundary and the core it calls; the React SPA is identified as a Slice 4 consumer. The implementation, [architecture](../architecture.md), API specification (since deleted), and ADRs remain the source of truth. Refresh the diagrams and exports together when those contracts change.
 
 ## 1. System architecture
 

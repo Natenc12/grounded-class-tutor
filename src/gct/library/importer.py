@@ -12,6 +12,7 @@ from pathlib import Path
 
 from pptx import Presentation
 from pypdf import PdfReader
+from pypdf.errors import DependencyError
 
 from gct.ingest.parse import ParsedUnit, ParseError, parse_file
 from gct.library.store import (
@@ -43,6 +44,7 @@ class RefusalReason(Enum):
     NO_WORKING_COPY = "no_working_copy"
     CLASS_MISSING = "class_missing"
     NOT_SAVED = "not_saved"
+    INSTALL_INCOMPLETE = "install_incomplete"
 
 
 @dataclass(frozen=True)
@@ -130,8 +132,9 @@ def _import(library: Library, class_id: str, path: Path) -> Imported:
     ):
         snapshot = Path(folder) / name
         snapshot.write_bytes(original)
-        units = _parse(snapshot, kind)
-        count = kind.count(snapshot)
+        with _installed(name):
+            units = _parse(snapshot, kind)
+            count = kind.count(snapshot)
     if count > kind.max_units:
         raise _Refusal(
             RefusalReason.TOO_MANY_PAGES,
@@ -199,6 +202,19 @@ def _working_copy(name: str) -> Iterator[None]:
             RefusalReason.NO_WORKING_COPY,
             f"The tutor could not make a working copy of {name} on this Mac. "
             "Try again; if it keeps happening, restart the Mac.",
+        ) from exc
+
+
+@contextmanager
+def _installed(name: str) -> Iterator[None]:
+    try:
+        yield
+    except DependencyError as exc:
+        raise _Refusal(
+            RefusalReason.INSTALL_INCOMPLETE,
+            f"The tutor cannot open {name} because part of its own installation is missing; "
+            "this is not a problem with the file. Reinstall the tutor (in Terminal, run "
+            "uv sync in its folder), then import the file again.",
         ) from exc
 
 

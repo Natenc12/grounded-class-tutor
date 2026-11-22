@@ -187,6 +187,28 @@ def test_a_reading_with_copy_or_print_restrictions_imports(
     assert library.check() == []
 
 
+def test_a_missing_encryption_helper_is_a_plain_refusal(
+    library, biology, files, library_with_a_document, monkeypatch
+):
+    import pypdf._encryption as encryption
+    from pypdf._crypt_providers import _fallback
+
+    path = write_restricted_pdf(files / "Reading.pdf", ["Stomata open in light"], "AES-256")
+    for helper in ("CryptAES", "aes_cbc_decrypt", "aes_ecb_decrypt"):
+        monkeypatch.setattr(encryption, helper, getattr(_fallback, helper))
+
+    result = import_file(library, biology, path)
+
+    assert result == Refused(
+        RefusalReason.INSTALL_INCOMPLETE,
+        "The tutor cannot open Reading.pdf because part of its own installation is missing; "
+        "this is not a problem with the file. Reinstall the tutor (in Terminal, run uv sync in "
+        "its folder), then import the file again.",
+    )
+    assert library.list_documents(biology) == library_with_a_document
+    assert library.check() == []
+
+
 def test_importing_the_same_file_twice_gives_one_document(library, biology, files):
     path = write_pdf(files / "Cells.pdf", ["Mitochondria make ATP"])
     first = import_file(library, biology, path)

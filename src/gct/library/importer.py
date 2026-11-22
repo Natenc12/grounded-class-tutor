@@ -115,6 +115,12 @@ def import_file(library: Library, class_id: str, path: str | Path) -> Imported |
 def _import(library: Library, class_id: str, path: Path) -> Imported:
     name = path.name
     kind = _KINDS.get(path.suffix.lower())
+    if kind is None and not path.suffix:
+        raise _Refusal(
+            RefusalReason.UNSUPPORTED,
+            f"{name} has no .pdf or .pptx at the end of its name, so the tutor cannot tell what "
+            "kind of file it is. Add the right ending to the name and import it again.",
+        )
     if kind is None:
         raise _Refusal(RefusalReason.UNSUPPORTED, _not_a_pdf_or_pptx(name))
     original = _read(path)

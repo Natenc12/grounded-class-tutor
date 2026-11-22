@@ -64,6 +64,16 @@ def write_encrypted_pdf(path: Path) -> Path:
     return path
 
 
+def write_restricted_pdf(path: Path, pages: list[str | None], algorithm: str) -> Path:
+    from pypdf import PdfReader, PdfWriter
+
+    writer = PdfWriter(clone_from=PdfReader(write_pdf(path, pages)))
+    writer.encrypt(user_password="", owner_password="prof", algorithm=algorithm)
+    with open(path, "wb") as out:
+        writer.write(out)
+    return path
+
+
 def write_pptx(path: Path, slides: list[str | None], notes: dict[int, str] | None = None) -> Path:
     deck = Presentation()
     for number, text in enumerate(slides, start=1):
@@ -154,6 +164,26 @@ def test_a_pptx_keeps_its_real_slide_numbers_across_blank_slides(
         cited = library.passage(biology, hit)
         assert (cited.filename, cited.page_or_slide) == ("Week 3.pptx", slide)
     assert len(library.document_pages(biology, result.document.id)) == 6
+    assert library.check() == []
+
+
+@pytest.mark.parametrize("algorithm", ["RC4-128", "AES-128", "AES-256"])
+def test_a_reading_with_copy_or_print_restrictions_imports(
+    library, biology, files, raw_connection, algorithm
+):
+    path = write_restricted_pdf(
+        files / "Reading.pdf", ["Stomata open in light", None, "Guard cells swell"], algorithm
+    )
+    assert parse.PdfReader(path).is_encrypted
+
+    result = import_file(library, biology, path)
+
+    assert isinstance(result, Imported)
+    assert result.document.page_count == 3
+    for word, page in (("stomata", 1), ("guard", 3)):
+        (hit,) = search(raw_connection, word)
+        assert library.passage(biology, hit).page_or_slide == page
+    assert [unit.page_or_slide for unit in parse.parse_file(path)] == [1, 3]
     assert library.check() == []
 
 
@@ -332,6 +362,13 @@ REFUSALS = {
         RefusalReason.UNSUPPORTED,
         "Old.ppt is not a PDF or PowerPoint (.pptx) file. "
         "Save or export it as a PDF, then import that.",
+    ),
+    "PDF with no ending on its name": (
+        "Reading",
+        lambda path: write_pdf(path, ["A real PDF"]),
+        RefusalReason.UNSUPPORTED,
+        "Reading has no .pdf or .pptx at the end of its name, so the tutor cannot tell what "
+        "kind of file it is. Add the right ending to the name and import it again.",
     ),
     "file that has gone": (
         "Moved.pdf",

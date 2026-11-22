@@ -21,11 +21,9 @@ of that seam, so the conversion lands here. See `ask()`'s docstring for the exac
 
 from __future__ import annotations
 
-from dataclasses import dataclass
-
 import psycopg
 
-from gct.contracts import RetrievedChunk
+from gct.contracts import AskResult
 from gct.grounder.answer import (
     ERROR_KIND_PROVIDER_TRANSIENT,
     Coverage,
@@ -49,45 +47,6 @@ from gct.retriever.retrieve import (
 # (`gct.api.routers.ask._ERROR_STATUS`), and telemetry uses it to tell a misconfigured corpus
 # (re-index needed) from a flaky provider (retry might help).
 ERROR_KIND_EMBEDDING_MISMATCH = "embedding_mismatch"
-
-
-@dataclass(frozen=True)
-class AskResult:
-    """One ask's outcome: the Grounder's verdict, plus the evidence it was handed.
-
-    PUBLIC CONTRACT - the API adapter and the eval runner both consume this.
-
-    `result` is a `GrounderResult`, NESTED AND UNTOUCHED. Not flattened, not re-wrapped, not
-    "enriched": the Grounder's shipped contract (grounder.md Sec.Interface) stays byte-identical
-    inside this wrapper, so a caller that already knows how to render a `GrounderResult` keeps
-    working, and a change to the five-state contract has exactly one owner.
-
-    `retrieved` is the EXACT top-k list handed to the Grounder, in rank order - the same object,
-    not a copy or a filtered view. It exists because the eval runner scores `expected_sources`
-    against the whole retrieved set (recall@k, N1), and `GrounderResult` structurally cannot
-    carry that: its `citations` name only the chunks the model actually cited, so a run that
-    retrieved the right page and failed to cite it is indistinguishable, from the result alone,
-    from one that never retrieved it. Those are opposite defects - a grounding failure versus a
-    retrieval failure - and telling them apart is the whole point of measuring both.
-
-    `[]` when retrieval returned nothing (empty/un-ingested class, retriever.md) AND on the two
-    ERROR paths below, where retrieval never produced a set at all.
-
-    `retrieval_ran` is what tells those two `[]` cases apart, and it exists because `retrieved`
-    alone CANNOT. An empty class retrieves nothing and that is a MEASURED MISS - we looked and the
-    corpus did not have it. A retrieval-side ERROR never looked at all, and scoring it as a miss
-    reports a recall failure that never happened (ADR 0023 Sec.1: the retrieval signal is defined
-    over questions where retrieval actually ran). The eval runner needs a tri-state - hit / miss /
-    not-applicable - and this flag is the third state's only honest source.
-
-    Set at the SITE THAT KNOWS, not inferred downstream. `state is ERROR and not retrieved` would
-    derive the same fact today, but only by coincidence of two other modules' contracts. A flag
-    written on the error path cannot become wrong; that inference silently can.
-    """
-
-    result: GrounderResult
-    retrieved: list[RetrievedChunk]
-    retrieval_ran: bool = True
 
 
 def _retrieval_error(kind: str, message: str) -> GrounderResult:

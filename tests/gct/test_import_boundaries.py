@@ -2,22 +2,36 @@
 
 The pgvector retriever is deleted in stage 2 of #216. Anything the answer and eval code share with
 it lives in `gct.contracts`, so that deletion never has to edit them. This walks the import
-statements in both packages and fails on any that reach `gct.retriever`.
+statements in both packages and fails on any that reach `gct.retriever`. There are no exceptions.
 
-`ALLOWED` lists the one known exception, by file and name, so a new import still fails: the eval
-runner's `DEFAULT_K`, which leaves with the Postgres half of the runner (#216).
+The practice exam and the library's ask run with no Postgres (#230), so importing either in a fresh
+interpreter must not load anything stage 2 deletes.
 """
 
 from __future__ import annotations
 
 import ast
+import subprocess
+import sys
 from pathlib import Path
+
+import pytest
 
 import gct
 
 SRC = Path(gct.__file__).parent
 GUARDED = ("grounder", "eval")
-ALLOWED = {("eval/runner.py", "DEFAULT_K")}
+RETIRED = (
+    "gct.api",
+    "gct.ask",
+    "gct.classes",
+    "gct.db",
+    "gct.ingest.index",
+    "gct.jobs",
+    "gct.retriever",
+    "pgvector",
+    "psycopg",
+)
 
 
 def _module_of(path: Path) -> list[str]:
@@ -49,8 +63,6 @@ def _retriever_imports(path: Path) -> list[str]:
                 target = f"{module}.{alias.name}"
                 if not (target == "gct.retriever" or target.startswith("gct.retriever.")):
                     continue
-                if (rel, alias.name) in ALLOWED:
-                    continue
                 found.append(f"{rel}:{node.lineno} from {module} import {alias.name}")
     return found
 
@@ -63,3 +75,15 @@ def test_grounder_and_eval_do_not_import_the_retriever():
         "gct.grounder and gct.eval must not import from gct.retriever; "
         "move shared types to gct.contracts instead:\n  " + "\n  ".join(found)
     )
+
+
+@pytest.mark.parametrize("module", ["gct.eval.runner", "gct.library.ask"])
+def test_the_practice_exam_and_the_library_ask_load_nothing_stage_2_deletes(module):
+    loaded = subprocess.run(
+        [sys.executable, "-c", f"import sys, {module}; print('\\n'.join(sys.modules))"],
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.split()
+    assert module in loaded
+    assert [name for name in loaded if name.startswith(RETIRED)] == []

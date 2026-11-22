@@ -1,8 +1,10 @@
 """The whole synthetic suite, end to end, with the free stand-in models (issue #199).
 
 The stand-ins match words; they do not read. So nothing here says anything about answer quality.
-What it proves is that the machinery works on every pull request: the course ingests through the
-real upload path, every question is asked against the real database, and every answer is scored.
+What it proves is that the machinery works on every pull request: the course is saved through the
+library's own save, every question is asked through the library (#230) with no Postgres, and every
+answer is scored. The same course must give the same scores on every run, whatever order its files
+are loaded in, or a later recording of real replies (#198) could not be replayed.
 """
 
 from __future__ import annotations
@@ -12,31 +14,27 @@ from collections import Counter
 from pathlib import Path
 
 from gct.eval.questions import load_questions
-from gct.eval.runner import SuiteResult, load_course, run_suite
+from gct.eval.runner import CourseFile, SuiteResult, load_course, run_suite
 from gct.eval.scoring import Outcome
 from gct.grounder.answer import GrounderState
-from gct.providers.standin import StandInEmbeddings, StandInGeneration
+from gct.providers.standin import StandInGeneration
 
 SYNTHETIC = Path(__file__).resolve().parents[3] / "eval" / "synthetic"
 TIME_LIMIT_SECONDS = 30  # #199's "Done when"; a local run takes well under a second
 
 
-def run(db) -> tuple[SuiteResult, float]:
-    conn, owner_id, _ = db
+def run(course: list[CourseFile] | None = None) -> tuple[SuiteResult, float]:
     started = time.perf_counter()
     suite = run_suite(
-        conn,
-        load_course(SYNTHETIC / "course"),
+        load_course(SYNTHETIC / "course") if course is None else course,
         load_questions(SYNTHETIC / "questions.jsonl"),
-        owner_id=owner_id,
-        embedder=StandInEmbeddings(),
         generator=StandInGeneration(),
     )
     return suite, time.perf_counter() - started
 
 
-def test_the_whole_suite_runs_and_every_question_is_scored(db):
-    suite, seconds = run(db)
+def test_the_whole_suite_runs_and_every_question_is_scored():
+    suite, seconds = run()
 
     assert seconds < TIME_LIMIT_SECONDS
     assert suite.total == 100
@@ -61,7 +59,7 @@ def test_the_whole_suite_runs_and_every_question_is_scored(db):
     # Hand-checked outcomes. A plain one-page fact, quoted and cited: passes.
     assert by_id["s013"].passed and by_id["s013"].citation_hit
     # Common knowledge the course never states: refused.
-    assert by_id["r001"].state is GrounderState.REFUSAL and by_id["r001"].passed
+    assert by_id["r003"].state is GrounderState.REFUSAL and by_id["r003"].passed
     # A fact that exists only in the OTHER class: refused, so classes stay separate.
     assert by_id["r022"].state is GrounderState.REFUSAL and by_id["r022"].passed
     # The stand-in answers the covered half and claims it is complete: the strict #199 rule
@@ -70,3 +68,13 @@ def test_the_whole_suite_runs_and_every_question_is_scored(db):
     assert by_id["p001"].outcome is Outcome.FAIL and by_id["p001"].citation_hit
     # The hijack page's marker word did not reach the answer.
     assert by_id["i001"].strings.forbidden_found == ()
+
+
+def test_the_same_course_scores_the_same_in_any_load_order():
+    course = load_course(SYNTHETIC / "course")
+    first, _ = run(course)
+    again, _ = run(course)
+    reversed_order, _ = run(course[::-1])
+
+    assert again == first
+    assert reversed_order == first

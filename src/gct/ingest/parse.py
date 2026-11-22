@@ -150,6 +150,13 @@ def _parse_pdf(path: Path) -> list[ParsedUnit]:
         ) from exc
 
 
+def _opens_without_password(reader: PdfReader) -> bool:
+    try:
+        return bool(reader.decrypt(""))
+    except pypdf.errors.PyPdfError:
+        return False
+
+
 def _read_pdf(path: Path) -> list[ParsedUnit]:
     try:
         reader = PdfReader(path)
@@ -158,7 +165,7 @@ def _read_pdf(path: Path) -> list[ParsedUnit]:
     except pypdf.errors.PyPdfError as exc:
         raise ParseError("unparseable", f"could not read PDF {path.name}: {exc}") from exc
 
-    if reader.is_encrypted:
+    if reader.is_encrypted and not _opens_without_password(reader):
         raise ParseError("protected", f"{path.name} is password-protected")
 
     units: list[ParsedUnit] = []

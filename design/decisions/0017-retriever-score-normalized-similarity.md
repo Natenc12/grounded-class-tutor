@@ -1,7 +1,10 @@
 # 0017. Retriever score seam — normalized cosine similarity, converted at the boundary
 
 - **Date:** 2026-07-04
-- **Status:** accepted — **range claim amended 2026-07-20 by ADR 0024** (pgvector cosine distance is
+- **Status:** **Superseded by #216 (desktop move)** (2026-11-22): there is no vector search; the
+  score is now the keyword-search score, the negated `bm25` value, which is higher-is-better but not
+  limited to 0–1 (#228). Kept as history. Previously: accepted — **range claim amended 2026-07-20 by
+  ADR 0024** (pgvector cosine distance is
   `[0,2]`, so the conversion clamps at zero; the seam rationale below stands unchanged)
 
 ## Context

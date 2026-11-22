@@ -422,10 +422,12 @@ def _decide(parsed: _ParsedAnswer, citations: list[Citation]) -> GrounderResult:
     AS THE MODEL WROTE IT rather than rewriting `complete` to False, so telemetry sees the actual
     output; if the eval set shows this happening often, it is a prompt-tuning signal.
     """
-    # Non-None by construction: `_validate` fails any attempt whose marker didn't parse, and only
-    # a passing attempt reaches here. If a future edit drops that rung, this raises AttributeError
-    # on the next line - loud and immediate, which is the right direction for a fail-safe box.
+    # Unreachable today: `_validate` fails any attempt whose marker didn't parse, and only a
+    # passing attempt reaches here. If a future edit drops that rung, stop loudly rather than
+    # decide a state with no coverage statement - the right direction for a fail-safe box.
     coverage = parsed.coverage
+    if coverage is None:
+        raise RuntimeError("_decide was handed an attempt with no parsed coverage marker")
 
     if not citations:
         return GrounderResult(

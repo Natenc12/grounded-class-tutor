@@ -1,5 +1,14 @@
 # START HERE — Grounded Class Tutor
 
+> **History note (2026-11-22):** This guide was written for the retired hosted web app, removed in
+> stage 2 of the desktop move ([#216](https://github.com/Natenc12/grounded-class-tutor/issues/216)).
+> Still true: what the tutor is for, why trust is the whole point, the asking half of the picture,
+> and the glossary apart from embeddings and pgvector; today search matches keywords, not
+> embeddings. Everything else here, including the putting-materials-in half of the picture, how the
+> design came to be, the reading order (its retriever, ingestion-worker and API docs were deleted),
+> the build sequence and the V3 ship bar, is history. For where things stand, see the Status section
+> of the [README](../README.md); for the plan, see #216.
+
 **Who this is for:** anyone landing on this repo cold — a reviewer, a fellow engineer, a future
 collaborator. Zero context is the expected starting point, not a gap: Nate worked through the whole
 design one-on-one with an AI architect (more on that below), so even someone joining the team starts

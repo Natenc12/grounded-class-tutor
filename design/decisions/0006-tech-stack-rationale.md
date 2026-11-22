@@ -1,7 +1,10 @@
 # 0006. Tech stack rationale (full-stack, deliberate not defaulted)
 
 - **Date:** 2026-07-04
-- **Status:** accepted
+- **Status:** **Partly superseded by #216 (desktop move)** (2026-11-22): the React PWA, FastAPI,
+  Supabase (Postgres, pgvector, Auth, Storage), the OpenAI defaults, the deployment plan and async
+  ingestion no longer hold. Python, the hand-rolled core (ADR 0003), and pypdf with python-pptx
+  still hold. Before this: accepted
 
 ## Context
 The proposal listed a plausible stack, but a Deep-rigor project shouldn't inherit choices by

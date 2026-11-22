@@ -1,5 +1,16 @@
 # Architecture — Grounded Class Tutor
 
+> **History note (2026-11-22):** This doc maps the retired hosted web app, removed in stage 2 of the
+> desktop move ([#216](https://github.com/Natenc12/grounded-class-tutor/issues/216)). Still true:
+> search hands ranked passages to the Grounder, which answers, cites or refuses; the citation spine
+> (page or slide born at parse, rendered into `[S#]` labels, resolved back into citations); and
+> generation behind a thin, swappable interface. Everything else here, including the component map,
+> the API, the job queue and worker, file staging, embeddings, Postgres with pgvector and the
+> `owner_id` scope, is history; the component docs for the retriever, the worker and the API were
+> deleted (git history keeps them). Today's pieces are in `src/gct/`: `library/` (the library file,
+> import, ask and the `tutor` command), `search/keyword.py`, `grounder/`, `ingest/` and
+> `providers/`. For the plan, see #216.
+
 **Phase:** 2 — Architecture  **Rigor:** Deep (ADR 0001)
 **Delivery model:** the maturity ladder (ADR 0004) — this map is the **V1 walking skeleton**, shaped
 so V2/V3 *turn things on* rather than reshape them.

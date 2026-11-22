@@ -1,7 +1,9 @@
 # 0019. Chunking contract — provenance-carrying, never-span page/slide; strategy is a spike
 
 - **Date:** 2026-07-04
-- **Status:** accepted
+- **Status:** **Partly superseded by #216 (desktop move)** (2026-11-22): the `embedding_model_id`
+  stamp no longer holds: there are no embeddings today. Provenance on every passage and the
+  never-span rule still hold (each passage has one `page_or_slide`). Before this: accepted
 
 ## Context
 The ingestion worker's chunking step is repeatedly flagged as "the biggest lever on N1/N2" —

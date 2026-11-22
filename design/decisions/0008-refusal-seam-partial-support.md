@@ -1,7 +1,11 @@
 # 0008. Refusal seam — partial-support policy, laddered V1→V3
 
 - **Date:** 2026-07-04
-- **Status:** accepted
+- **Status:** **Partly superseded by #216 (desktop move)** (2026-11-22): the partial-support policy
+  and the seam still hold: the Grounder decides answer, flag or refuse, and it receives a score for
+  every passage without gating on it. What no longer holds: the scores are keyword-search (`bm25`)
+  scores, not similarity scores, and the calibrated V3 relevance filter is not in #216's plan.
+  Before this: accepted
 
 ## Context
 F8 — refuse to invent beyond the corpus — is the product's core trust promise, and N3 sets its

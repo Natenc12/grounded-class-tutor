@@ -1,7 +1,8 @@
 # 0011. Async substrate — DB-backed job/status + in-process worker (V1)
 
 - **Date:** 2026-07-04
-- **Status:** accepted
+- **Status:** **Superseded by #216 (desktop move)** (2026-11-22): there is no job queue or worker;
+  an import finishes inside the `tutor` command (#253). Kept as history. Previously: accepted
 
 ## Context
 ADR 0006 locked async ingestion; this ADR settles *what runs it*. Open decision ② framed the axis:

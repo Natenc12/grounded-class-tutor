@@ -1,7 +1,9 @@
 # 0032. V1 client tooling — Vite, TypeScript, npm; the dev server proxies the API
 
 - **Date:** 2026-09-11
-- **Status:** accepted (decided by Nate, 2026-09-11; type generation, the proxy's shape and the
+- **Status:** **Superseded by #216 (desktop move)** (2026-11-22): the web client was removed (#250).
+  Kept as history. Previously: accepted (decided by Nate, 2026-09-11; type generation, the proxy's
+  shape and the
   version pins decided in build, #140)
 
 ## Context

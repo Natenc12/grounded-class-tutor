@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import pytest
 
+import gct.grounder.answer as grounder
 from gct.contracts import RetrievedChunk
 from gct.grounder.answer import (
     MAX_GENERATION_ATTEMPTS,
@@ -479,6 +480,25 @@ class TestStates:
         """`GrounderState` subclasses `str`, so ADR 0023's state->outcome map and the API adapter
         can read the value with no custom encoder."""
         assert GrounderState.GROUNDED == "GROUNDED"
+
+    @pytest.mark.parametrize("reply", ["A [S1].", ""], ids=["cited", "uncited"])
+    def test_a_missing_marker_that_slips_past_validation_stops_loudly(
+        self, chunks, scripted, monkeypatch, reply
+    ):
+        """If `_validate` ever lost its coverage rung, `_decide` must raise, never decide.
+
+        Both rows matter: before #192 the cited one raised AttributeError, but the uncited one
+        returned a REFUSAL carrying `coverage=None`, breaking the result's own contract silently.
+        """
+        real = grounder._validate
+
+        def without_the_coverage_rung(parsed, n_sources):
+            return [r for r in real(parsed, n_sources) if "coverage marker" not in r]
+
+        monkeypatch.setattr(grounder, "_validate", without_the_coverage_rung)
+
+        with pytest.raises(RuntimeError, match="no parsed coverage marker"):
+            answer("q", chunks(2), "owner-1", generator=scripted(reply))
 
 
 class TestRetryBudget:

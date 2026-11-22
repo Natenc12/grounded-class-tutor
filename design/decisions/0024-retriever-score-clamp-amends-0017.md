@@ -1,7 +1,9 @@
 # 0024. Retriever score clamped at zero — amending ADR 0017's range claim
 
 - **Date:** 2026-07-20
-- **Status:** accepted — amends **ADR 0017** (its `[0,1]` range claim; the seam rationale stands)
+- **Status:** **Superseded by #216 (desktop move)** (2026-11-22): it amends ADR 0017, which is
+  superseded; there is no pgvector distance to clamp. Kept as history. Previously: accepted — amends
+  **ADR 0017** (its `[0,1]` range claim; the seam rationale stands)
 
 ## Context
 ADR 0017 fixed the Retriever's seam currency as normalized cosine similarity and wrote the

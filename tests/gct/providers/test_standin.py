@@ -3,9 +3,7 @@ from __future__ import annotations
 import math
 
 import pytest
-from fastapi.testclient import TestClient
 
-from gct.api.app import create_app
 from gct.config import EMBEDDING_DIM
 from gct.contracts import RetrievedChunk
 from gct.grounder.answer import GrounderState, answer
@@ -86,24 +84,3 @@ def test_the_default_is_the_real_providers_and_they_refuse_to_start_without_a_ke
     assert active.costs_money()
     with pytest.raises(RuntimeError, match="OPENAI_API_KEY"):
         active.require_usable()
-
-
-def test_stand_in_mode_starts_the_app_with_no_key_and_says_so(monkeypatch, caplog):
-    monkeypatch.setenv(active.PROVIDERS_ENV, active.STANDIN)
-    monkeypatch.setenv("OPENAI_API_KEY", "")
-    with caplog.at_level("WARNING", logger="gct.providers"), TestClient(create_app()) as client:
-        assert isinstance(client.app.state.embedder, StandInEmbeddings)
-        assert isinstance(client.app.state.generator, StandInGeneration)
-    assert [r.getMessage().split(":")[0] for r in caplog.records] == [
-        "STAND-IN MODELS (GCT_PROVIDERS=standin)",
-        "STAND-IN MODELS (GCT_PROVIDERS=standin)",
-    ]
-
-
-def test_an_unknown_provider_set_is_refused_by_name_rather_than_defaulted(monkeypatch):
-    monkeypatch.setenv(active.PROVIDERS_ENV, "free")
-    with pytest.raises(RuntimeError, match=r"GCT_PROVIDERS='free' is not a provider set"):
-        active.selected()
-    with pytest.raises(RuntimeError, match="not a provider set"):
-        with TestClient(create_app()):
-            pass

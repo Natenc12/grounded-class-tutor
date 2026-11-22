@@ -4,8 +4,6 @@ version = "0.1.0"
 description = "A study tutor grounded in your own course materials — cited answers or an honest refusal."
 requires-python = ">=3.14"
 dependencies = [
-    "psycopg[binary]>=3.2",
-    "pgvector>=0.3",
     "openai>=1.40",
     "python-dotenv>=1.0",
     "pypdf[crypto]>=6.21.4",

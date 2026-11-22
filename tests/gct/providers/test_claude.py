@@ -94,6 +94,7 @@ def _result_error(text, *, status=None):
 
 
 HANG = object()
+HANG_HARD_STOP_SECONDS = 3
 
 
 class FakeQuery:
@@ -113,16 +114,32 @@ class FakeQuery:
         )
         return self._stream()
 
-    async def _stream(self):
-        try:
-            for item in self.script:
-                if item is HANG:
-                    await asyncio.sleep(3600)
-                if isinstance(item, BaseException):
-                    raise item
-                yield item
-        finally:
-            self.closed = True
+    def _stream(self):
+        return FakeStream(self, list(self.script))
+
+
+class FakeStream:
+    def __init__(self, owner, items):
+        self.owner = owner
+        self.items = items
+
+    def __aiter__(self):
+        return self
+
+    async def __anext__(self):
+        if not self.items:
+            raise StopAsyncIteration
+        item = self.items.pop(0)
+        if item is HANG:
+            await asyncio.sleep(HANG_HARD_STOP_SECONDS)
+            raise StopAsyncIteration
+        if isinstance(item, BaseException):
+            raise item
+        return item
+
+    async def aclose(self):
+        self.owner.closed = True
+        self.owner.folder_existed_at_close = os.path.isdir(self.owner.calls[-1]["options"].cwd)
 
 
 @pytest.fixture
@@ -161,6 +178,7 @@ def test_claude_gets_exactly_the_locked_down_options_and_an_empty_folder_it_neve
     assert call["options"].add_dirs == []
     assert call["options"].plugins == []
     assert call["prompt"] == MESSAGES[1]["content"]
+    assert stub.closed and stub.folder_existed_at_close
 
 
 def test_the_real_sdk_turns_the_options_into_a_command_with_no_tools_settings_or_servers(tmp_path):
@@ -302,8 +320,27 @@ def test_a_call_that_hangs_is_ended_at_the_time_limit_and_worth_the_one_retry(fa
     with pytest.raises(TransientGenerationError, match="did not answer within 0.2 seconds"):
         ClaudeGeneration(time_limit=0.2).generate(MESSAGES)
 
-    assert time.monotonic() - started < 5
+    assert time.monotonic() - started < HANG_HARD_STOP_SECONDS
     assert stub.closed
+    assert stub.folder_existed_at_close
+
+
+def test_each_call_gets_a_120_second_limit_by_default(fake, monkeypatch):
+    import anyio
+
+    limits = []
+    real_fail_after = anyio.fail_after
+
+    def recording_fail_after(seconds, *args, **kwargs):
+        limits.append(seconds)
+        return real_fail_after(seconds, *args, **kwargs)
+
+    monkeypatch.setattr(anyio, "fail_after", recording_fail_after)
+    fake(_init(), _result("ok"))
+
+    ClaudeGeneration().generate(MESSAGES)
+
+    assert limits == [120.0]
 
 
 def test_generate_works_from_inside_a_running_event_loop(fake):

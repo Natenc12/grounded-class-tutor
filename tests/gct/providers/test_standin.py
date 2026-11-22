@@ -5,7 +5,7 @@ import math
 from gct.config import EMBEDDING_DIM
 from gct.contracts import RetrievedChunk
 from gct.grounder.answer import GrounderState, answer
-from gct.providers.openai_provider import OpenAIEmbeddings, OpenAIGeneration
+from gct.providers.claude import MODEL_ENV, ClaudeGeneration
 from gct.providers.standin import StandInEmbeddings, StandInGeneration
 
 WATER = RetrievedChunk(
@@ -69,6 +69,10 @@ def test_an_uncovered_question_is_refused_with_no_citations():
 
 
 def test_stand_in_model_ids_can_never_be_mistaken_for_the_real_ones(monkeypatch):
-    monkeypatch.setenv("OPENAI_API_KEY", "sk-not-used")
-    assert StandInEmbeddings.model_id != OpenAIEmbeddings().model_id
-    assert StandInGeneration.model_id != OpenAIGeneration().model_id
+    for model in (None, "sonnet", "opus"):
+        if model is None:
+            monkeypatch.delenv(MODEL_ENV, raising=False)
+        else:
+            monkeypatch.setenv(MODEL_ENV, model)
+        assert StandInGeneration.model_id != ClaudeGeneration().model_id
+    assert not StandInGeneration.model_id.startswith("claude")

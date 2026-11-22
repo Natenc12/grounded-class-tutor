@@ -2,7 +2,7 @@
 name = "grounded-class-tutor"
 version = "0.1.0"
 description = "A study tutor grounded in your own course materials — cited answers or an honest refusal."
-requires-python = ">=3.10"
+requires-python = ">=3.14"
 dependencies = [
     "psycopg[binary]>=3.2",
     "pgvector>=0.3",
@@ -52,7 +52,7 @@ line-length = 100
 # Ruff's default is F + a slice of E, which notably EXCLUDES E501 — so `line-length` above was
 # decorative and a 300-character line passed the merge gate. Selecting E makes the number real.
 # The rest are small and load-bearing for this codebase: I sorts imports (a permanent source of
-# noise diffs otherwise), UP keeps us on 3.10 idiom, and B is the bug-shaped one — B905 in
+# noise diffs otherwise), UP keeps us on 3.14 idiom, and B is the bug-shaped one — B905 in
 # particular forces `zip(..., strict=)`, and a silently-truncating zip over chunks/vectors is
 # exactly the kind of thing that would corrupt an index without ever raising.
 select = ["E", "F", "I", "B", "UP", "W"]

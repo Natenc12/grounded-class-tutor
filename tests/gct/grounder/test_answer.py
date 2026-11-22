@@ -49,6 +49,9 @@ PARTIAL_REPLY = (
 # mechanic with an empty supported set (ADR 0008/0014) - one mechanism, not a second path.
 REFUSAL_REPLY = "COVERAGE: gaps: anything about gradient descent"
 
+# A garbled label far longer than Python will turn into an int (issue #224).
+OVERSIZED_LABEL = "[S" + "7" * 5000 + "]"
+
 
 class TestEmptyRetrieval:
     """Zero chunks -> canned REFUSAL, deterministically, with no model call (ADR 0016)."""
@@ -475,6 +478,15 @@ class TestRetryBudget:
         assert result.state is GrounderState.GROUNDED
         assert result.integrity.ok is True  # the first attempt's failure is not held against it
 
+    def test_oversized_label_retries_once_and_can_recover(self, chunks, scripted):
+        generator = scripted(f"Claim [S1] {OVERSIZED_LABEL}.\nCOVERAGE: complete", GOOD_REPLY)
+
+        result = answer("q", chunks(2), "owner-1", generator=generator)
+
+        assert generator.call_count == 2
+        assert result.state is GrounderState.GROUNDED
+        assert result.integrity.ok is True
+
     def test_transient_provider_error_retries_once_and_can_recover(self, chunks, scripted):
         generator = scripted(TransientGenerationError("429 rate limited"), GOOD_REPLY)
 
@@ -547,6 +559,24 @@ class TestIntegrityFlagged:
         assert result.integrity.ok is False
         assert "[S5]" in result.integrity.reasons[0]
         assert result.error is None  # a model defect is NOT a transport failure
+
+    def test_oversized_label_twice_flags_like_a_dangling_label(self, chunks, scripted):
+        """A label too long to convert is a bad reply, not a crash: same state, prose and
+        citations as the dangling [S5] above, with a reason naming the oversized label."""
+        reply = f"Real claim [S1]. Garbled claim {OVERSIZED_LABEL}.\nCOVERAGE: complete"
+        generator = scripted(reply, reply)
+
+        result = answer("q", chunks(2), "owner-1", generator=generator)
+
+        assert generator.call_count == 2
+        assert result.state is GrounderState.INTEGRITY_FLAGGED
+        assert result.answer_prose == f"Real claim [S1]. Garbled claim {OVERSIZED_LABEL}."
+        assert [c.label for c in result.citations] == ["S1"]
+        assert result.integrity.ok is False
+        assert result.integrity.reasons == [
+            "cited label [S777777…] has 5000 digits, too long to be one of the 2 sources provided"
+        ]
+        assert result.error is None
 
     def test_zero_citation_prose_twice_flags(self, chunks, scripted):
         reply = "Gradient descent goes downhill.\nCOVERAGE: complete"

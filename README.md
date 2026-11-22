@@ -44,7 +44,7 @@ the file reader and chunker, and the eval scoring) is still in use.
   visible.
 - **Slice 3 — API adapter: complete** — a thin HTTP layer over the core: create a class, upload,
   poll status, ask.
-- **Slice 4 — Client: not finished.** The React client only got as far as a typed API client and a
+- **Slice 4 (client): not finished.** The React client only got as far as a typed API client and a
   placeholder page.
 
 [The ready frontier](https://github.com/Natenc12/grounded-class-tutor/issues?q=is%3Aopen+label%3Aready)

@@ -17,9 +17,9 @@ validation of what the model returned. Grounding logic lives here, **above** the
 swapping providers never changes product behavior.
 
 ## Position & dependencies
-- **Upstream — keyword search:** `gct.library.ask` calls `gct.search.keyword.search`, which hands in
+- **Upstream, keyword search:** `gct.library.ask` calls `gct.search.keyword.search`, which hands in
   up to five ranked passages, each with a **score** (the negated SQLite `bm25` value, so higher is
-  a better match). The Grounder passes the score through but **never reads it** — ADR 0008.
+  a better match). The Grounder passes the score through but **never reads it** (ADR 0008).
 - **Down — Model provider layer:** calls `Generation.generate(messages) → text` (text-parsed, no
   structured-output features) — ADR 0013. Owns the prompt and all citation parsing. The models
   behind that interface are Claude (`gct.providers.claude`), the free stand-in
@@ -95,7 +95,7 @@ REFUSAL (ADR 0016).
 | **Empty retrieval** | short-circuit → REFUSAL, no generation (0016) |
 | **Dangling label** (`[S5]` not handed in) | caught structurally → retry → else INTEGRITY_FLAGGED (0015) |
 | **No-citation claim** | only the **coarse** case is caught (zero labels in non-empty prose); one uncited sentence among cited ones is not |
-| **Wrong-chunk cite** (valid `S#`, doesn't support claim) | **not caught** — semantic, not structural (accepted 0014 limitation) |
+| **Wrong-chunk cite** (valid `S#`, doesn't support claim) | **not caught**: semantic, not structural (accepted 0014 limitation) |
 | **Malformed / missing / doubled coverage marker** | structural failure → retry → else INTEGRITY_FLAGGED |
 | **Transient provider error / timeout** | one retry → else ERROR, never a refusal (0016) |
 | **Other provider error** (for example, Claude not signed in) | ERROR at once, never a refusal |

@@ -29,6 +29,10 @@ DEFAULT_LIBRARY = "~/tutor.sqlite3"
 USAGE_MISTAKE = 2
 INTERRUPTED = 130
 LONGEST_GAP = 160
+QUOTES_WHY = (
+    "Keep the question in quotes. Without them, a question ending in ? gets 'no matches found' "
+    "from Terminal before the tutor runs."
+)
 
 STATE_HEADINGS = {
     GrounderState.GROUNDED: "answered from your files.",
@@ -74,6 +78,8 @@ Your class tutor: ask questions of your own course files and get answers with th
   {PROG} check                                    check the library is sound
 
 Your library is {DEFAULT_LIBRARY} unless you add --library PATH.
+Keep the question in quotes. Without them, a question ending in ? gets 'no matches found'
+from Terminal before the tutor runs.
 More about one command: {PROG} ask --help
 """
 
@@ -258,7 +264,10 @@ def _parser() -> argparse.ArgumentParser:
     asking = command("ask", "ask a class a question", _ask)
     asking.add_argument("class_name", metavar="CLASS", help="the class to ask")
     asking.add_argument(
-        "question", nargs="+", metavar="QUESTION", help="the question, best kept in quotes"
+        "question",
+        nargs="+",
+        metavar="QUESTION",
+        help=QUOTES_WHY,
     )
 
     command("check", "check the library is sound", _check)
@@ -307,6 +316,12 @@ def _class(library: Library, place: _Place, name: str) -> LibraryClass:
             f"  {_command('add-class', place, name)}"
         )
     names = ", ".join(found.name for found in classes)
+    alike = [found.name for found in classes if found.name.casefold() == wanted.casefold()]
+    if len(alike) > 1:
+        raise _Stop(
+            f"More than one class matches {name!r}: {', '.join(alike)}. Type one exactly as it "
+            "is written, capital letters included."
+        )
     message = f"There is no class called {name!r} in this library. Its classes are: {names}."
     prefix = f"{wanted} ".casefold()
     spaced = [found for found in classes if found.name.casefold().startswith(prefix)]
@@ -328,8 +343,9 @@ def _add_class(arguments: argparse.Namespace, _: Callable[[], Generation], out: 
     new = not place.path.exists()
     with Library(place.path) as library:
         wanted = arguments.name.strip()
-        for found in library.list_classes():
-            if found.name != wanted and found.name.casefold() == wanted.casefold():
+        classes = library.list_classes()
+        for found in [] if wanted in {each.name for each in classes} else classes:
+            if found.name.casefold() == wanted.casefold():
                 raise _Stop(
                     f"There is already a class called {found.name!r}. Names that differ only in "
                     "capital letters are too easy to mix up; choose another name."

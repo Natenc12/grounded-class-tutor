@@ -399,9 +399,17 @@ def test_an_exact_name_wins_over_one_that_differs_only_in_capitals(
             found.name: len(opened.list_documents(found.id)) for found in opened.list_classes()
         }
     assert counts == {"Bio": 0, "bio": 1}
-    code, _, err = run("ask", "BIO", "How do cells divide?", generator=never)
-    assert code == 1
-    assert err.startswith("There is no class called 'BIO'")
+    assert run("ask", "BIO", "How do cells divide?", generator=never) == (
+        1,
+        "",
+        "More than one class matches 'BIO': Bio, bio. Type one exactly as it is written, capital "
+        "letters included.\n",
+    )
+    assert run("add-class", "Bio", generator=never) == (
+        1,
+        "",
+        "A class called 'Bio' already exists; choose another name.\n",
+    )
 
 
 def test_ask_prints_the_state_the_answer_and_each_source_with_its_page(run, hydrology: Path):
@@ -919,3 +927,16 @@ def test_a_long_gap_is_shortened(run, hydrology: Path):
     gap = out.split("Not covered by your files:\n  ", 1)[1].splitlines()[0]
     assert len(gap) <= cli.LONGEST_GAP
     assert gap.endswith("…")
+
+
+def test_the_overview_and_the_ask_help_say_why_the_question_needs_quotes():
+    why = (
+        "Keep the question in quotes. Without them, a question ending in ? gets 'no matches "
+        "found' from Terminal before the tutor runs."
+    )
+    assert why == cli.QUOTES_WHY
+    assert why in " ".join(usage()[1].split())
+    out = io.StringIO()
+    with pytest.raises(SystemExit), contextlib.redirect_stdout(out):
+        cli.main(["ask", "--help"], generator=never)
+    assert " ".join(why.split()) in " ".join(out.getvalue().split())

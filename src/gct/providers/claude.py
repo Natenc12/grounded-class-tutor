@@ -1,57 +1,75 @@
 """Answers written by Claude through the Claude Agent SDK, on the Claude login already on this Mac.
 
-Claude only turns the Grounder's messages into text: no tools, no skills it can run, no MCP
-servers, no settings files, one turn, and an empty folder to start in. Citations and answer states
-stay in `gct.grounder.answer`.
+Claude only turns the Grounder's messages into text: no tools, no skills, no MCP servers, no
+settings files, one turn, and an empty folder to start in. Citations and answer states stay in
+`gct.grounder.answer`.
 """
 
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import os
 import tempfile
 import threading
 from collections.abc import Iterator, Sequence
 from concurrent.futures import ThreadPoolExecutor
-from contextlib import contextmanager
+from contextlib import aclosing, contextmanager
 from typing import Any
 
 from gct.providers.base import Message, TransientGenerationError
 
 MODEL_ENV = "GCT_CLAUDE_MODEL"
 DEFAULT_MODEL = "sonnet"
+TIME_LIMIT_SECONDS = 120.0
 
 LOGIN_OVERRIDES = (
     "ANTHROPIC_API_KEY",
     "ANTHROPIC_AUTH_TOKEN",
+    "ANTHROPIC_CUSTOM_HEADERS",
     "ANTHROPIC_BASE_URL",
     "CLAUDE_CODE_OAUTH_TOKEN",
     "ANTHROPIC_PROFILE",
     "ANTHROPIC_FEDERATION_RULE_ID",
     "ANTHROPIC_ORGANIZATION_ID",
+    "ANTHROPIC_WORKSPACE_ID",
     "ANTHROPIC_IDENTITY_TOKEN",
+    "ANTHROPIC_AWS_API_KEY",
+    "ANTHROPIC_AWS_WORKSPACE_ID",
+    "AWS_BEARER_TOKEN_BEDROCK",
+    "ANTHROPIC_FOUNDRY_API_KEY",
+    "ANTHROPIC_FOUNDRY_AUTH_TOKEN",
+    "CLAUDE_CODE_CLIENT_CERT",
+    "CLAUDE_CODE_CLIENT_KEY",
+    "CLAUDE_CODE_CLIENT_KEY_PASSPHRASE",
     "CLAUDE_CODE_USE_BEDROCK",
     "CLAUDE_CODE_USE_VERTEX",
     "CLAUDE_CODE_USE_FOUNDRY",
     "CLAUDE_CODE_USE_ANTHROPIC_AWS",
+    "CLAUDE_CODE_USE_ANTHROPIC_GOOGLE_CLOUD",
     "CLAUDE_CODE_USE_MANTLE",
+    "CLAUDE_CODE_PROVIDER_MANAGED_BY_HOST",
 )
 
-CLI_ENV = {"CLAUDE_CODE_DISABLE_BUNDLED_SKILLS": "1"}
+CLI_ENV = {"CLAUDE_CODE_DISABLE_BUNDLED_SKILLS": "1", "DISABLE_DOCTOR_COMMAND": "1"}
+SKILLS_OFF = ("design", "doctor", "plugin-authoring")
+CLI_SETTINGS = json.dumps({"skillOverrides": {name: "off" for name in SKILLS_OFF}})
 
 INSTALL_HINT = (
     "The Claude Agent SDK is not installed. In the project folder run `uv sync --extra claude` "
-    "(or `--extra dev`), then ask again."
+    "(or `--extra dev`), then try again."
 )
 MISSING_PROGRAM = (
     "The Claude program that comes with the Claude Agent SDK could not be found. In the project "
-    "folder run `uv sync --extra claude --reinstall-package claude-agent-sdk`, then ask again."
+    "folder run `uv sync --extra claude --reinstall-package claude-agent-sdk`, then try again."
 )
 NOT_SIGNED_IN = (
     "Claude is not signed in on this Mac, or the login has expired. Open Terminal, run `claude`, "
-    "sign in with /login, then ask again."
+    "sign in with /login, then try again."
 )
+NO_ANSWER = "Claude finished without writing an answer."
+NO_REASON = "Claude reported an error without saying what went wrong."
 
 _TRANSIENT_STATUSES = frozenset({408, 429, 500, 502, 503, 504, 529})
 _TRANSIENT_KINDS = frozenset({"rate_limit", "server_error"})
@@ -104,6 +122,7 @@ def build_options(sdk: Any, model: str, system: str, folder: str) -> Any:
         mcp_servers={},
         strict_mcp_config=True,
         setting_sources=[],
+        settings=CLI_SETTINGS,
         skills=[],
         plugins=[],
         permission_mode="dontAsk",
@@ -115,8 +134,9 @@ def build_options(sdk: Any, model: str, system: str, folder: str) -> Any:
 
 
 class ClaudeGeneration:
-    def __init__(self, model: str | None = None) -> None:
+    def __init__(self, model: str | None = None, time_limit: float = TIME_LIMIT_SECONDS) -> None:
         self._model = model or os.environ.get(MODEL_ENV, "").strip() or DEFAULT_MODEL
+        self._time_limit = time_limit
         self.last_start: dict[str, Any] = {}
 
     @property
@@ -131,6 +151,7 @@ class ClaudeGeneration:
 
     async def _ask(self, system: str, prompt: str) -> str:
         try:
+            import anyio
             import claude_agent_sdk as sdk
         except ImportError as err:
             raise ClaudeNotInstalledError(INSTALL_HINT) from err
@@ -140,16 +161,28 @@ class ClaudeGeneration:
         with tempfile.TemporaryDirectory(prefix="gct-claude-") as folder:
             options = build_options(sdk, self._model, system, folder)
             try:
-                async for message in sdk.query(prompt=prompt, options=options):
-                    if isinstance(message, sdk.SystemMessage) and message.subtype == "init":
-                        self.last_start = {
-                            key: message.data.get(key)
-                            for key in ("apiKeySource", "model", "tools", "mcp_servers", "skills")
-                        }
-                    elif isinstance(message, sdk.AssistantMessage) and message.error:
-                        kind = message.error
-                    elif isinstance(message, sdk.ResultMessage):
-                        result = message
+                with anyio.fail_after(self._time_limit):
+                    async with aclosing(sdk.query(prompt=prompt, options=options)) as replies:
+                        async for message in replies:
+                            if isinstance(message, sdk.SystemMessage) and message.subtype == "init":
+                                self.last_start = {
+                                    key: message.data.get(key)
+                                    for key in (
+                                        "apiKeySource",
+                                        "model",
+                                        "tools",
+                                        "mcp_servers",
+                                        "skills",
+                                    )
+                                }
+                            elif isinstance(message, sdk.AssistantMessage) and message.error:
+                                kind = message.error
+                            elif isinstance(message, sdk.ResultMessage):
+                                result = message
+            except TimeoutError as err:
+                raise TransientGenerationError(
+                    f"Claude did not answer within {self._time_limit:g} seconds."
+                ) from err
             except sdk.CLINotFoundError as err:
                 raise ClaudeNotInstalledError(MISSING_PROGRAM) from err
             except sdk.ResultError as err:
@@ -159,9 +192,11 @@ class ClaudeGeneration:
 
         if result is None:
             raise ClaudeError("Claude ended without a reply.")
-        if result.is_error or result.result is None:
-            detail = result.result or "; ".join(result.errors or []) or result.subtype
+        if result.is_error:
+            detail = result.result or "; ".join(result.errors or []) or NO_REASON
             raise _failure(kind, result.api_error_status, f"Claude returned an error: {detail}")
+        if result.result is None:
+            raise ClaudeError(NO_ANSWER)
         return result.result
 
 

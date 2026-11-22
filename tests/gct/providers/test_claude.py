@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import dataclasses
+import json
 import logging
 import os
 import sys
@@ -39,10 +40,11 @@ LOCKED_DOWN = {
     "disallowed_tools": ["*"],
     "strict_mcp_config": True,
     "setting_sources": [],
+    "settings": '{"skillOverrides": {"design": "off", "doctor": "off", "plugin-authoring": "off"}}',
     "skills": [],
     "permission_mode": "dontAsk",
     "max_turns": 1,
-    "env": {"CLAUDE_CODE_DISABLE_BUNDLED_SKILLS": "1"},
+    "env": {"CLAUDE_CODE_DISABLE_BUNDLED_SKILLS": "1", "DISABLE_DOCTOR_COMMAND": "1"},
 }
 
 WATER = RetrievedChunk(
@@ -91,10 +93,14 @@ def _result_error(text, *, status=None):
     )
 
 
+HANG = object()
+
+
 class FakeQuery:
     def __init__(self, *script):
         self.script = list(script)
         self.calls = []
+        self.closed = False
 
     def __call__(self, *, prompt, options):
         self.calls.append(
@@ -108,10 +114,15 @@ class FakeQuery:
         return self._stream()
 
     async def _stream(self):
-        for item in self.script:
-            if isinstance(item, BaseException):
-                raise item
-            yield item
+        try:
+            for item in self.script:
+                if item is HANG:
+                    await asyncio.sleep(3600)
+                if isinstance(item, BaseException):
+                    raise item
+                yield item
+        finally:
+            self.closed = True
 
 
 @pytest.fixture
@@ -167,7 +178,10 @@ def test_the_real_sdk_turns_the_options_into_a_command_with_no_tools_settings_or
     assert value_of("--max-turns") == "1"
     assert "--strict-mcp-config" in command
     assert "--setting-sources=" in command
-    for absent in ("--allowedTools", "--add-dir", "--plugin-dir", "--settings"):
+    assert json.loads(value_of("--settings")) == {
+        "skillOverrides": {"design": "off", "doctor": "off", "plugin-authoring": "off"}
+    }
+    for absent in ("--allowedTools", "--add-dir", "--plugin-dir"):
         assert absent not in command
 
 
@@ -178,6 +192,7 @@ def test_login_overrides_never_reach_claude_or_the_log_and_come_back_afterwards(
         name: f"generated-{uuid.uuid4()}"
         for name in ("ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "ANTHROPIC_BASE_URL")
     }
+    values["ANTHROPIC_CUSTOM_HEADERS"] = f"x-api-key: generated-{uuid.uuid4()}"
     for name, value in values.items():
         monkeypatch.setenv(name, value)
     stub = fake(_init(), _result("ok"))
@@ -259,8 +274,36 @@ def test_a_missing_sdk_stops_with_how_to_install_it(monkeypatch):
 )
 def test_other_failures_stop_without_a_retry(fake, script):
     fake(*script)
-    with pytest.raises(ClaudeError):
+    with pytest.raises(ClaudeError) as caught:
         ClaudeGeneration().generate(MESSAGES)
+    assert not isinstance(caught.value, TransientGenerationError)
+
+
+@pytest.mark.parametrize(
+    ("final", "message"),
+    [
+        (_result(None), "Claude finished without writing an answer."),
+        (_result(None, is_error=True), "Claude reported an error without saying what went wrong."),
+    ],
+    ids=["no-answer-no-error", "error-without-a-reason"],
+)
+def test_an_empty_ending_stops_with_a_plain_message(fake, final, message):
+    fake(_init(), final)
+    with pytest.raises(ClaudeError) as caught:
+        ClaudeGeneration().generate(MESSAGES)
+    assert message in str(caught.value)
+    assert "success" not in str(caught.value)
+
+
+def test_a_call_that_hangs_is_ended_at_the_time_limit_and_worth_the_one_retry(fake):
+    stub = fake(_init(), HANG)
+    started = time.monotonic()
+
+    with pytest.raises(TransientGenerationError, match="did not answer within 0.2 seconds"):
+        ClaudeGeneration(time_limit=0.2).generate(MESSAGES)
+
+    assert time.monotonic() - started < 5
+    assert stub.closed
 
 
 def test_generate_works_from_inside_a_running_event_loop(fake):
@@ -352,6 +395,7 @@ def test_a_real_claude_answer_on_this_macs_login_is_cited(live_claude_generator)
     assert live_claude_generator.last_start["apiKeySource"] == "none"
     assert live_claude_generator.last_start["tools"] == []
     assert live_claude_generator.last_start["mcp_servers"] == []
+    assert live_claude_generator.last_start["skills"] == []
     assert result.state in (GrounderState.GROUNDED, GrounderState.PARTIAL)
     assert result.integrity.ok
     assert result.citations

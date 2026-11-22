@@ -81,7 +81,7 @@ def validate_name(name: str) -> str:
         and this is the same job, so it takes the same guard.
       - blank: `''`, `'   '`, `'\t\n'`. `not null` is not `not blank`, and a class with an
         invisible name is unusable on every surface that lists classes.
-      - not encodable as UTF-8 (an unpaired surrogate such as `'\ud800'`) - psycopg cannot put
+      - not encodable as UTF-8 (an unpaired surrogate such as `'\\ud800'`) - psycopg cannot put
         the value on the wire, and no `text` column can hold it.
       - a NUL (0x00) anywhere - Postgres `text` cannot contain one, whatever the encoding.
 

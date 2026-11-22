@@ -38,7 +38,7 @@ import sys
 import time
 from collections.abc import Callable, Iterable, Sequence
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from uuid import uuid4
@@ -1081,7 +1081,7 @@ def main() -> int:
             observer = Observer(observer_conn)
             log_dir = Path(tmp)
 
-            name = f"ingest-smoke {datetime.now(timezone.utc):%Y-%m-%dT%H:%M:%SZ}"
+            name = f"ingest-smoke {datetime.now(UTC):%Y-%m-%dT%H:%M:%SZ}"
             class_id = _create_class(conn, args.owner, name)
             print(f"\nSetup — owner {args.owner!r}, class {name!r} (class_id={class_id})")
             print(f"  corpus {args.corpus_dir}: {len(corpus)} file(s)")

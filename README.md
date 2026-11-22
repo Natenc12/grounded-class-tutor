@@ -46,7 +46,7 @@ See [`design/roadmap.md`](design/roadmap.md) for the full build sequence.
 
 ## Local setup
 
-Prereqs: Python 3.10+, [uv](https://docs.astral.sh/uv/), and Postgres 17 with pgvector.
+Prereqs: Python 3.14, [uv](https://docs.astral.sh/uv/), and Postgres 17 with pgvector.
 
 ```sh
 # 1. Postgres + pgvector (Homebrew). pgvector is a standalone bottle that drops the

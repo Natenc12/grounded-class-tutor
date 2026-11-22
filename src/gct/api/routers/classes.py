@@ -17,7 +17,7 @@ exception carrying a `reason`, and this module renders it.
 
 THIS ROUTE ONCE CAUGHT A BARE `ValueError` AND CALLED IT "blank". It shipped two wrong answers
 (issue #107's fix round): `UnicodeEncodeError` is a `ValueError` subclass, so a name containing an
-unpaired surrogate - reachable over the wire as the pure-ASCII body `{"name": "Bio \ud800 101"}`,
+unpaired surrogate - reachable over the wire as the pure-ASCII body `{"name": "Bio \\ud800 101"}`,
 since JSON escapes decode to one - was answered "name must not be blank", and the only remedy that
 sentence named could not fix the request. A NUL byte (`{"name": "\u0000"}`) raised
 `psycopg.DataError`, which is not a `ValueError` at all, missed the catch and rendered a caller's

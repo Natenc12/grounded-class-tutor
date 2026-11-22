@@ -54,7 +54,7 @@ import re
 from collections import Counter
 from collections.abc import Sequence
 from dataclasses import dataclass, field
-from enum import Enum
+from enum import StrEnum
 
 from gct.contracts import RetrievedChunk
 from gct.eval.questions import (
@@ -66,7 +66,7 @@ from gct.eval.questions import (
 from gct.grounder.answer import Citation, GrounderState
 
 
-class Outcome(str, Enum):
+class Outcome(StrEnum):
     """What one question's grounding state is worth (ADR 0023 §2).
 
     Subclasses `str` for the same reason `GrounderState` does: an outcome serializes straight

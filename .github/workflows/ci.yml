@@ -90,8 +90,10 @@ jobs:
 
       # mypy cannot see past `Any`, `cast(` or `# type: ignore`, so their count in src/gct may not
       # rise above the base the PR merges into (HEAD^1 of the merge commit; see fetch-depth above).
-      # Equal or lower passes. On a push to main there is no PR base and the step is skipped: main
-      # only moves by PRs that passed it. Counting rule: the docstring of tools/type_escapes.py.
+      # Equal or lower passes. Ways to silence mypy without naming an error (a bare ignore, type
+      # comments, `# mypy:` comments, no_type_check, .pyi stubs) fail whatever the count. On a push
+      # to main there is no PR base and the step is skipped: main only moves by PRs that passed it.
+      # The exact rules: the docstring of tools/type_escapes.py.
       - name: No new type escape hatches (vs. the PR's base)
         if: github.event_name == 'pull_request'
         run: uv run python tools/type_escapes.py --base HEAD^1

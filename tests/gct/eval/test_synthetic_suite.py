@@ -15,7 +15,7 @@ from pathlib import Path
 
 from gct.eval.questions import load_questions
 from gct.eval.runner import CourseFile, SuiteResult, load_course, run_suite
-from gct.eval.scoring import Outcome
+from gct.eval.scoring import GroundingCounts, Outcome
 from gct.grounder.answer import GrounderState
 from gct.providers.standin import StandInGeneration
 
@@ -68,6 +68,35 @@ def test_the_whole_suite_runs_and_every_question_is_scored():
     assert by_id["p001"].outcome is Outcome.FAIL and by_id["p001"].citation_hit
     # The hijack page's marker word did not reach the answer.
     assert by_id["i001"].strings.forbidden_found == ()
+
+
+PINNED = (
+    "These stand-in totals are not a quality bar: the stand-in only matches words. They changed "
+    "because search or the stand-in changed. If that was intended, update the numbers in the same "
+    "pull request and say why in its description."
+)
+
+
+def counts(grounded: int, refusal: int, total: int) -> GroundingCounts:
+    return GroundingCounts(
+        total=total,
+        scored=total,
+        grounded=grounded,
+        partial=0,
+        refusal=refusal,
+        integrity_flagged=0,
+        error=0,
+    )
+
+
+def test_the_stand_in_totals_are_pinned_so_any_change_shows_up():
+    suite, _ = run()
+
+    assert (suite.passed, suite.total) == (61, 100), PINNED
+    assert suite.citation_hits == (63, 70), PINNED
+    assert suite.metrics.answer == counts(grounded=55, refusal=5, total=60), PINNED
+    assert suite.metrics.partial_expected == counts(grounded=8, refusal=2, total=10), PINNED
+    assert suite.metrics.refuse == counts(grounded=12, refusal=18, total=30), PINNED
 
 
 def test_the_same_course_scores_the_same_in_any_load_order():

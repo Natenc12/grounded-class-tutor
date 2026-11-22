@@ -230,6 +230,7 @@ _GAPS_PREFIX_RE = re.compile(r"^gaps\s*:\s*(?P<gaps>.+)$", re.IGNORECASE | re.S)
 # format, and we would lose the signal that the prompt needs tuning. Widen it only WITH a prompt
 # change that asks for the wider form.
 _LABEL_RE = re.compile(r"\[S(?P<ordinal>\d+)\]")
+_MAX_LABEL_DIGITS = 10
 
 
 @dataclass(frozen=True)
@@ -238,6 +239,7 @@ class _ParsedAnswer:
 
     prose: str  # the reply minus EVERY coverage line, stripped
     ordinals: list[int]  # every [S#] found in prose, in order, duplicates kept
+    oversized: list[str]  # digits of every [S#] too long to convert, in order
     coverage: Coverage | None  # None unless EXACTLY ONE marker was found and parsed
     marker_count: int  # how many coverage lines the model emitted; the contract asks for 1
 
@@ -320,9 +322,13 @@ def _parse(raw: str) -> _ParsedAnswer:
     # so the two can never disagree about what a marker line is.
     prose = _COVERAGE_RE.sub("", raw).strip()
     coverage = _parse_coverage(matches[0].group("body")) if len(matches) == 1 else None
-    ordinals = [int(m.group("ordinal")) for m in _LABEL_RE.finditer(prose)]
+    labels = [m.group("ordinal") for m in _LABEL_RE.finditer(prose)]
     return _ParsedAnswer(
-        prose=prose, ordinals=ordinals, coverage=coverage, marker_count=len(matches)
+        prose=prose,
+        ordinals=[int(label) for label in labels if len(label) <= _MAX_LABEL_DIGITS],
+        oversized=[label for label in labels if len(label) > _MAX_LABEL_DIGITS],
+        coverage=coverage,
+        marker_count=len(matches),
     )
 
 
@@ -350,6 +356,12 @@ def _validate(parsed: _ParsedAnswer, n_sources: int) -> list[str]:
     if dangling:
         labels = ", ".join(f"[S{o}]" for o in dangling)
         reasons.append(f"cited label(s) {labels} were not in the {n_sources} sources provided")
+
+    for label in dict.fromkeys(parsed.oversized):
+        reasons.append(
+            f"cited label [S{label[:6]}…] has {len(label)} digits, too long to be one of the "
+            f"{n_sources} sources provided"
+        )
 
     if parsed.prose and not parsed.ordinals:
         reasons.append("answer prose asserts claims with no citation labels at all")

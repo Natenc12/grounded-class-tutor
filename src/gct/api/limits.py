@@ -170,7 +170,7 @@ def _to_utf8(body: bytes) -> bytes:
         return body
     try:
         return body.decode(encoding, errors="replace").encode("utf-8", errors="replace")
-    except (LookupError, UnicodeError):
+    except LookupError, UnicodeError:
         return body
 
 

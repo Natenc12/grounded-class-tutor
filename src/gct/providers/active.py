@@ -11,7 +11,8 @@ from gct.providers.base import Embeddings, Generation
 PROVIDERS_ENV = "GCT_PROVIDERS"
 OPENAI = "openai"
 STANDIN = "standin"
-CHOICES = (OPENAI, STANDIN)
+CLAUDE = "claude"
+CHOICES = (OPENAI, STANDIN, CLAUDE)
 
 _log = logging.getLogger("gct.providers")
 
@@ -31,6 +32,11 @@ def costs_money() -> bool:
 
 
 def require_usable() -> None:
+    if selected() == CLAUDE:
+        from gct.providers.claude import INSTALL_HINT, sdk_installed
+
+        if not sdk_installed():
+            raise RuntimeError(INSTALL_HINT)
     if costs_money() and not load_settings().openai_api_key:
         raise RuntimeError(
             "OPENAI_API_KEY is not set, so the API cannot embed queries or generate answers. "
@@ -56,6 +62,10 @@ def build_generator() -> Generation:
         from gct.providers.openai_provider import OpenAIGeneration
 
         return OpenAIGeneration()
+    if selected() == CLAUDE:
+        from gct.providers.claude import ClaudeGeneration
+
+        return ClaudeGeneration()
     from gct.providers.standin import StandInGeneration
 
     _warn("answers", StandInGeneration.model_id)
@@ -66,7 +76,7 @@ def _warn(what: str, model_id: str) -> None:
     _log.warning(
         "STAND-IN MODELS (%s=%s): %s come from %s. Nothing here is a real model's output.",
         PROVIDERS_ENV,
-        STANDIN,
+        selected(),
         what,
         model_id,
     )

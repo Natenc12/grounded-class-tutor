@@ -208,6 +208,19 @@ def live_openai_embedder():
 
 
 @pytest.fixture
+def live_claude_generator():
+    """The REAL Claude provider, on this Mac's own Claude login. Taking it makes a test `live`.
+
+    No key and no money: it draws from the owner's Claude plan limits instead. Skips without the
+    Claude Agent SDK installed (`uv sync --extra claude`).
+    """
+    pytest.importorskip("claude_agent_sdk", reason="the Claude Agent SDK is not installed")
+    from gct.providers.claude import ClaudeGeneration
+
+    return ClaudeGeneration()
+
+
+@pytest.fixture
 def foreign_class(db_other):
     """A class row owned by SOMEONE ELSE, with its own teardown.
 

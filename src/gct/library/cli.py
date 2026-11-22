@@ -2,10 +2,12 @@ from __future__ import annotations
 
 import argparse
 import logging
+import os
 import shlex
 import sys
 from collections.abc import Callable, Iterator, Sequence
 from contextlib import contextmanager
+from dataclasses import dataclass
 from pathlib import Path
 from typing import TextIO
 
@@ -15,8 +17,11 @@ from gct.library.importer import Imported, import_file
 from gct.library.store import Library, LibraryClass, LibraryError
 from gct.providers import active
 from gct.providers.base import Generation, Message
+from gct.providers.claude import INSTALL_HINT, ClaudeGeneration, sdk_installed
 
-PROG = "python -m gct.library"
+PROG = "uv run tutor"
+LIBRARY_ENV = "GCT_LIBRARY"
+DEFAULT_LIBRARY = "~/tutor.sqlite3"
 INTERRUPTED = 130
 
 STATE_HEADINGS = {
@@ -28,17 +33,44 @@ STATE_HEADINGS = {
     GrounderState.ERROR: "no answer.",
 }
 
+OVERVIEW = f"""\
+Your class tutor: ask questions of your own course files and get answers with their sources.
+
+  {PROG} add-class Hydrology                      make a class
+  {PROG} import Hydrology ~/Downloads/notes.pdf   add a PDF or PowerPoint to it
+  {PROG} ask Hydrology "What is base flow?"       ask it a question (keep the quotes)
+  {PROG} list                                     see your classes and their files
+  {PROG} check                                    check the library is sound
+
+Answers come from Claude on this Mac's login. Your library is {DEFAULT_LIBRARY} unless you add
+--library PATH. More about one command: {PROG} ask --help
+"""
+
 
 class _Stop(Exception):
     pass
 
 
+@dataclass(frozen=True)
+class _Place:
+    path: Path
+    typed: bool
+
+
 def selected_generator() -> Generation:
+    if not os.environ.get(active.PROVIDERS_ENV, "").strip():
+        if not sdk_installed():
+            raise _Stop(INSTALL_HINT)
+        return ClaudeGeneration()
     try:
         active.require_usable()
     except RuntimeError as exc:
         raise _Stop(str(exc)) from exc
     return active.build_generator()
+
+
+def run() -> int:
+    return main(sys.argv[1:], generator=selected_generator)
 
 
 def main(
@@ -50,7 +82,12 @@ def main(
 ) -> int:
     out = out or sys.stdout
     err = err or sys.stderr
+    if not argv:
+        print(OVERVIEW, end="", file=out)
+        return 0
     arguments = _parser().parse_args(list(argv))
+    arguments.library = _place(arguments.library)
+    print(f"Library: {arguments.library.path}", file=out, flush=True)
     try:
         with _pdf_reader_quiet():
             return arguments.command(arguments, generator, out)
@@ -62,52 +99,64 @@ def main(
         return INTERRUPTED
 
 
+def _place(typed: str | None) -> _Place:
+    if typed is not None:
+        return _Place(Path(typed).expanduser(), typed=True)
+    chosen = os.environ.get(LIBRARY_ENV, "").strip() or DEFAULT_LIBRARY
+    return _Place(Path(chosen).expanduser(), typed=False)
+
+
 def _parser() -> argparse.ArgumentParser:
     shared = argparse.ArgumentParser(add_help=False)
     shared.add_argument(
         "--library",
-        required=True,
-        type=_path,
         metavar="PATH",
-        help="the library file, for example ~/tutor.sqlite3",
+        help=f"use this library file instead of {DEFAULT_LIBRARY}",
     )
     parser = argparse.ArgumentParser(
-        prog=PROG, description="Your class tutor: classes, course files and cited answers."
+        prog=PROG,
+        description="Your class tutor: ask questions of your own course files.",
+        epilog=f'Example: {PROG} ask Hydrology "What is base flow?"',
     )
     commands = parser.add_subparsers(title="commands", required=True, metavar="COMMAND")
 
-    add_class = commands.add_parser(
-        "add-class",
-        parents=[shared],
-        help="make a class (and the library, if it does not exist yet)",
+    def command(name: str, summary: str, example: str) -> argparse.ArgumentParser:
+        return commands.add_parser(
+            name,
+            parents=[shared],
+            help=summary,
+            description=f"{summary[0].upper()}{summary[1:]}.",
+            epilog=f"Example: {PROG} {name} {example}".rstrip(),
+        )
+
+    add_class = command("add-class", "make a class (and the library, the first time)", "Hydrology")
+    add_class.add_argument(
+        "name", metavar="CLASS", help="the class name, in quotes if it has spaces"
     )
-    add_class.add_argument("name", metavar="CLASS")
     add_class.set_defaults(command=_add_class)
 
-    listing = commands.add_parser("list", parents=[shared], help="list the classes and files")
-    listing.set_defaults(command=_list)
+    command("list", "list your classes and their files", "").set_defaults(command=_list)
 
-    importing = commands.add_parser(
-        "import", parents=[shared], help="import PDF or PowerPoint files into a class"
+    importing = command(
+        "import", "add PDF or PowerPoint files to a class", "Hydrology ~/Downloads/notes.pdf"
     )
-    importing.add_argument("class_name", metavar="CLASS")
-    importing.add_argument("files", nargs="+", type=_path, metavar="FILE")
+    importing.add_argument("class_name", metavar="CLASS", help="the class to add them to")
+    importing.add_argument(
+        "files",
+        nargs="+",
+        type=lambda text: Path(text).expanduser(),
+        metavar="FILE",
+        help="one or more files; you can drag a file from Finder onto Terminal",
+    )
     importing.set_defaults(command=_import)
 
-    asking = commands.add_parser(
-        "ask", parents=[shared], help="ask a class a question; put the question in quotes"
-    )
-    asking.add_argument("class_name", metavar="CLASS")
-    asking.add_argument("question", metavar="QUESTION")
+    asking = command("ask", "ask a class a question", 'Hydrology "What is base flow?"')
+    asking.add_argument("class_name", metavar="CLASS", help="the class to ask")
+    asking.add_argument("question", metavar="QUESTION", help="the question, in quotes")
     asking.set_defaults(command=_ask)
 
-    checking = commands.add_parser("check", parents=[shared], help="check the library is sound")
-    checking.set_defaults(command=_check)
+    command("check", "check the library is sound", "").set_defaults(command=_check)
     return parser
-
-
-def _path(text: str) -> Path:
-    return Path(text).expanduser()
 
 
 @contextmanager
@@ -122,21 +171,22 @@ def _pdf_reader_quiet() -> Iterator[None]:
 
 
 @contextmanager
-def _existing(path: Path) -> Iterator[Library]:
-    if not path.exists():
+def _existing(place: _Place) -> Iterator[Library]:
+    if not place.path.exists():
         raise _Stop(
-            f"There is no library at {path}. Check the path, or make a new library with:\n"
-            f"  {_command('add-class', path, 'CLASS')}"
+            f"There is no library at {place.path}. Check the path, or make a new library with:\n"
+            f"  {_command('add-class', place, 'CLASS')}"
         )
-    with Library(path) as library:
+    with Library(place.path) as library:
         yield library
 
 
-def _command(name: str, path: Path, *rest: str) -> str:
-    return shlex.join([*PROG.split(), name, "--library", str(path), *rest])
+def _command(name: str, place: _Place, *rest: str) -> str:
+    library = ["--library", str(place.path)] if place.typed else []
+    return shlex.join([*PROG.split(), name, *library, *rest])
 
 
-def _class(library: Library, name: str) -> LibraryClass:
+def _class(library: Library, place: _Place, name: str) -> LibraryClass:
     classes = library.list_classes()
     wanted = name.strip()
     for matches in (
@@ -148,7 +198,7 @@ def _class(library: Library, name: str) -> LibraryClass:
     if not classes:
         raise _Stop(
             f"There is no class called {name!r}; this library has no classes yet. Make one with:\n"
-            f"  {_command('add-class', library.path, name)}"
+            f"  {_command('add-class', place, name)}"
         )
     names = ", ".join(found.name for found in classes)
     raise _Stop(f"There is no class called {name!r} in this library. Its classes are: {names}.")
@@ -163,14 +213,14 @@ def _units(filename: str, count: int) -> str:
 
 
 def _add_class(arguments: argparse.Namespace, _: Callable[[], Generation], out: TextIO) -> int:
-    path = arguments.library
-    new = not path.exists()
-    with Library(path) as library:
+    place = arguments.library
+    new = not place.path.exists()
+    with Library(place.path) as library:
         made = library.create_class(arguments.name)
     if new:
-        print(f"Made a new library at {path}.", file=out)
-    print(f"Made the class {made.name}. Import files into it with:", file=out)
-    print(f"  {_command('import', path, made.name, 'FILE')}", file=out)
+        print("This is a new library; it was made just now.", file=out)
+    print(f"Made the class {made.name}. Add files to it with:", file=out)
+    print(f"  {_command('import', place, made.name, 'FILE')}", file=out)
     return 0
 
 
@@ -195,7 +245,7 @@ def _list(arguments: argparse.Namespace, _: Callable[[], Generation], out: TextI
 def _import(arguments: argparse.Namespace, _: Callable[[], Generation], out: TextIO) -> int:
     refused = 0
     with _existing(arguments.library) as library:
-        target = _class(library, arguments.class_name)
+        target = _class(library, arguments.library, arguments.class_name)
         for file in arguments.files:
             outcome = import_file(library, target.id, file)
             refused += not isinstance(outcome, Imported)
@@ -205,7 +255,7 @@ def _import(arguments: argparse.Namespace, _: Callable[[], Generation], out: Tex
 
 def _ask(arguments: argparse.Namespace, generator: Callable[[], Generation], out: TextIO) -> int:
     with _existing(arguments.library) as library:
-        target = _class(library, arguments.class_name)
+        target = _class(library, arguments.library, arguments.class_name)
         model = _Watched(generator())
         result = ask(library, target.id, arguments.question, generator=model).result
     _print_answer(result, model, out)
@@ -213,7 +263,7 @@ def _ask(arguments: argparse.Namespace, generator: Callable[[], Generation], out
 
 
 def _print_answer(result: GrounderResult, model: _Watched, out: TextIO) -> None:
-    print(f"{result.state.value}: {STATE_HEADINGS[result.state]}", file=out)
+    print(f"\n{result.state.value}: {STATE_HEADINGS[result.state]}", file=out)
     if result.state is GrounderState.ERROR:
         failure = model.failure or (result.error and result.error.message)
         print(f"\n{failure}", file=out)

@@ -56,7 +56,10 @@ class Drive:
         )
         if code != 0:
             raise StepFailed(f"`{' '.join(argv)}` stopped with code {code}:\n{output.getvalue()}")
-        return output.getvalue()
+        header, _, printed = output.getvalue().partition("\n")
+        if header != f"Library: {self.library}":
+            raise StepFailed(f"Expected the first line to name {self.library}, got {header!r}")
+        return printed.lstrip("\n")
 
     def build_files(self) -> None:
         from pptx import Presentation

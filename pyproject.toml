@@ -22,6 +22,9 @@ dependencies = [
     "python-multipart>=0.0.9",
 ]
 
+[project.scripts]
+tutor = "gct.library.cli:run"
+
 [project.optional-dependencies]
 claude = ["claude-agent-sdk>=0.2.187"]
 dev = [

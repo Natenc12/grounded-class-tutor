@@ -1,4 +1,4 @@
-"""The owner's Terminal commands for the library (#188): `python -m gct.library ...`.
+"""The owner's Terminal commands for the library (#188): `uv run tutor ...`.
 
 Every file is generated in the test and every answer comes from the free stand-in model or a fake
 that fails on purpose. Each ordinary mistake must end in a plain message and exit code 1, never a
@@ -7,6 +7,7 @@ stack trace.
 
 from __future__ import annotations
 
+import contextlib
 import functools
 import io
 import logging
@@ -92,9 +93,21 @@ def run(library: Path):
         code = cli.main(
             [argv[0], "--library", str(library), *argv[1:]], generator=generator, out=out, err=err
         )
-        return code, out.getvalue(), err.getvalue()
+        header = f"Library: {library}\n"
+        assert out.getvalue().startswith(header)
+        return code, out.getvalue().removeprefix(header), err.getvalue()
 
     return run
+
+
+@pytest.fixture(autouse=True)
+def home(tmp_path: Path, monkeypatch) -> Path:
+    home = tmp_path / "home"
+    home.mkdir()
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.delenv(cli.LIBRARY_ENV, raising=False)
+    monkeypatch.delenv(active.PROVIDERS_ENV, raising=False)
+    return home
 
 
 @pytest.fixture
@@ -110,9 +123,9 @@ def test_add_class_makes_the_library_and_says_what_to_do_next(run, library: Path
 
     assert (code, err) == (0, "")
     assert out == (
-        f"Made a new library at {library}.\n"
-        "Made the class Hydrology. Import files into it with:\n"
-        f"  python -m gct.library import --library {library} Hydrology FILE\n"
+        "This is a new library; it was made just now.\n"
+        "Made the class Hydrology. Add files to it with:\n"
+        f"  uv run tutor import --library {library} Hydrology FILE\n"
     )
     with Library(library) as opened:
         assert [found.name for found in opened.list_classes()] == ["Hydrology"]
@@ -161,7 +174,7 @@ def test_a_wrong_library_path_is_a_plain_message_and_makes_no_file(run, library:
     assert (code, out) == (1, "")
     assert err == (
         f"There is no library at {library}. Check the path, or make a new library with:\n"
-        f"  python -m gct.library add-class --library {library} CLASS\n"
+        f"  uv run tutor add-class --library {library} CLASS\n"
     )
     assert not library.exists()
 
@@ -237,7 +250,7 @@ def test_list_of_an_empty_library_says_how_to_make_a_class(run, library: Path):
     assert run("list") == (
         0,
         "This library has no classes yet. Make one with:\n"
-        f"  python -m gct.library add-class --library {library} CLASS\n",
+        f"  uv run tutor add-class --library {library} CLASS\n",
         "",
     )
 
@@ -304,7 +317,7 @@ def test_a_damaged_pdf_shows_only_the_tutors_message_in_terminal(tmp_path: Path)
 
     assert finished.returncode == 1
     assert finished.stderr == ""
-    assert finished.stdout.startswith("cut.pdf could not be read.")
+    assert finished.stdout.startswith(f"Library: {library}\ncut.pdf could not be read.")
 
 
 def test_the_pdf_reader_is_quiet_only_while_a_command_runs(run, tmp_path: Path):
@@ -337,7 +350,7 @@ def test_an_unknown_class_in_a_library_with_none_says_how_to_make_it(run, librar
         1,
         "",
         "There is no class called 'Hydrology'; this library has no classes yet. Make one with:\n"
-        f"  python -m gct.library add-class --library {library} Hydrology\n",
+        f"  uv run tutor add-class --library {library} Hydrology\n",
     )
 
 
@@ -345,7 +358,7 @@ def test_a_class_name_matches_whatever_its_capitals(run, hydrology: Path):
     code, out, _ = run("ask", "  hydrology ", "What feeds the base flow of a river?")
 
     assert code == 0
-    assert out.startswith("GROUNDED:")
+    assert out.startswith("\nGROUNDED:")
 
 
 def test_an_exact_name_wins_over_one_that_differs_only_in_capitals(
@@ -370,7 +383,7 @@ def test_an_exact_name_wins_over_one_that_differs_only_in_capitals(
 def test_ask_prints_the_state_the_answer_and_each_source_with_its_page(run, hydrology: Path):
     assert run("ask", "Hydrology", "What feeds the base flow of a river?") == (
         0,
-        "GROUNDED: answered from your files.\n"
+        "\nGROUNDED: answered from your files.\n"
         "\n"
         "The base flow of a river is the part of its flow fed by groundwater. [S1]\n"
         "\n"
@@ -399,7 +412,7 @@ def test_a_source_in_a_powerpoint_is_named_by_its_slide(run, tmp_path: Path):
 def test_ask_prints_a_refusal_and_the_gap_when_the_files_do_not_cover_it(run, hydrology: Path):
     assert run("ask", "Hydrology", "Who won the 1966 World Cup?") == (
         0,
-        "REFUSAL: not answered, because your files for this class do not cover it.\n"
+        "\nREFUSAL: not answered, because your files for this class do not cover it.\n"
         "\n"
         "Not covered by your files:\n"
         "  no course material was retrieved for this question\n"
@@ -417,7 +430,7 @@ def test_ask_prints_what_a_partial_answer_leaves_out(run, hydrology: Path):
     )
 
     assert code == 0
-    assert out.startswith("PARTIAL: partly answered from your files;")
+    assert out.startswith("\nPARTIAL: partly answered from your files;")
     assert "\nNot covered by your files:\n  how fast it moves\n" in out
     assert "  [S1] lecture-03.pdf, page " in out
 
@@ -430,7 +443,7 @@ def test_ask_flags_an_answer_whose_sources_cannot_be_checked(run, hydrology: Pat
     )
 
     assert code == 0
-    assert out.startswith("INTEGRITY_FLAGGED: the answer's sources could not be checked")
+    assert out.startswith("\nINTEGRITY_FLAGGED: the answer's sources could not be checked")
     assert "Base flow is fed by groundwater [S9]." in out
     assert "\nWhy it could not be checked:\n  " in out
 
@@ -440,7 +453,7 @@ def test_not_signed_in_to_claude_prints_claudes_own_plain_message(run, hydrology
 
     assert run("ask", "Hydrology", "What feeds base flow?", generator=lambda: failing) == (
         1,
-        f"ERROR: no answer.\n\n{NOT_SIGNED_IN}\n",
+        f"\nERROR: no answer.\n\n{NOT_SIGNED_IN}\n",
         "",
     )
 
@@ -451,7 +464,7 @@ def test_a_model_that_keeps_timing_out_prints_its_own_message(run, hydrology: Pa
     code, out, _ = run("ask", "Hydrology", "What feeds base flow?", generator=lambda: failing)
 
     assert code == 1
-    assert out == "ERROR: no answer.\n\nClaude did not answer within 120 seconds.\n"
+    assert out == "\nERROR: no answer.\n\nClaude did not answer within 120 seconds.\n"
 
 
 def test_every_answer_state_has_a_plain_heading():
@@ -519,7 +532,7 @@ def test_the_module_runs_from_terminal_without_a_stack_trace(tmp_path: Path):
     )
 
     assert finished.returncode == 1
-    assert finished.stdout == ""
+    assert finished.stdout == f"Library: {missing}\n"
     assert finished.stderr.startswith(f"There is no library at {missing}.")
     assert "Traceback" not in finished.stderr
 
@@ -538,3 +551,150 @@ def test_the_commands_load_nothing_stage_2_deletes():
     ).stdout.split()
     retired = ("gct.api", "gct.db", "gct.jobs", "gct.retriever", "psycopg", "pgvector")
     assert [name for name in loaded if name.startswith(retired)] == []
+
+
+def test_tutor_with_nothing_after_it_lists_what_you_can_do():
+    out = io.StringIO()
+
+    assert cli.main([], generator=never, out=out) == 0
+    lines = out.getvalue().splitlines()
+    assert lines[0].startswith("Your class tutor:")
+    for command in ("add-class", "import", "ask", "list", "check"):
+        assert any(line.startswith(f"  uv run tutor {command} ") for line in lines)
+
+
+def run_plain(*argv: str, generator: Callable[[], Generation] = StandInGeneration):
+    out, err = io.StringIO(), io.StringIO()
+    code = cli.main(list(argv), generator=generator, out=out, err=err)
+    return code, out.getvalue(), err.getvalue()
+
+
+def test_with_no_library_given_the_default_is_tutor_sqlite3_in_your_home(home: Path):
+    code, out, _ = run_plain("add-class", "Hydrology")
+
+    assert code == 0
+    assert out == (
+        f"Library: {home / 'tutor.sqlite3'}\n"
+        "This is a new library; it was made just now.\n"
+        "Made the class Hydrology. Add files to it with:\n"
+        "  uv run tutor import Hydrology FILE\n"
+    )
+    assert (home / "tutor.sqlite3").exists()
+
+
+def test_the_library_variable_wins_over_the_default(home: Path, monkeypatch):
+    monkeypatch.setenv(cli.LIBRARY_ENV, "~/term.sqlite3")
+
+    code, out, _ = run_plain("add-class", "Hydrology")
+
+    assert code == 0
+    assert out.startswith(f"Library: {home / 'term.sqlite3'}\n")
+    assert not (home / "tutor.sqlite3").exists()
+
+
+def test_the_library_flag_wins_over_the_variable(home: Path, tmp_path: Path, monkeypatch):
+    monkeypatch.setenv(cli.LIBRARY_ENV, str(home / "term.sqlite3"))
+    flagged = tmp_path / "flag.sqlite3"
+
+    code, out, _ = run_plain("add-class", "--library", str(flagged), "Hydrology")
+
+    assert code == 0
+    assert out.startswith(f"Library: {flagged}\n")
+    assert flagged.exists()
+    assert not (home / "term.sqlite3").exists()
+
+
+@pytest.mark.parametrize(
+    "command", [["list"], ["check"], ["import", "X", "a.pdf"], ["ask", "X", "q"]]
+)
+def test_only_add_class_makes_the_default_library(home: Path, command):
+    code, out, err = run_plain(*command, generator=never)
+
+    assert code == 1
+    assert out == f"Library: {home / 'tutor.sqlite3'}\n"
+    assert err.endswith("make a new library with:\n  uv run tutor add-class CLASS\n")
+    assert list(home.iterdir()) == []
+
+
+@pytest.fixture
+def built(monkeypatch) -> list[str]:
+    seen: list[str] = []
+    for name, owner in (
+        ("claude", "gct.providers.claude.ClaudeGeneration.__init__"),
+        ("openai", "gct.providers.openai_provider.OpenAIGeneration.__init__"),
+    ):
+        monkeypatch.setattr(owner, lambda self, *_, name=name, **__: seen.append(name))
+    return seen
+
+
+def test_with_no_model_chosen_the_commands_build_claude_never_openai(built, monkeypatch):
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-not-a-real-key")
+
+    cli.selected_generator()
+
+    assert built == ["claude"]
+
+
+@pytest.mark.parametrize("unset", [None, "", "  "])
+def test_an_empty_model_choice_also_means_claude(built, monkeypatch, unset):
+    if unset is not None:
+        monkeypatch.setenv(active.PROVIDERS_ENV, unset)
+
+    cli.selected_generator()
+
+    assert built == ["claude"]
+
+
+def test_a_model_chosen_on_purpose_is_respected(built, monkeypatch):
+    monkeypatch.setenv(active.PROVIDERS_ENV, active.OPENAI)
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-not-a-real-key")
+
+    cli.selected_generator()
+
+    assert built == ["openai"]
+
+
+def test_with_no_model_chosen_and_claude_not_signed_in_you_get_claudes_message(
+    run, hydrology: Path, monkeypatch
+):
+    def not_signed_in(self, messages):
+        raise ClaudeNotSignedInError(NOT_SIGNED_IN)
+
+    monkeypatch.setattr("gct.providers.claude.ClaudeGeneration.generate", not_signed_in)
+
+    assert run("ask", "Hydrology", "What feeds base flow?", generator=cli.selected_generator) == (
+        1,
+        f"\nERROR: no answer.\n\n{NOT_SIGNED_IN}\n",
+        "",
+    )
+
+
+def test_with_no_model_chosen_and_no_claude_add_on_you_get_the_install_message(
+    run, hydrology: Path, monkeypatch
+):
+    monkeypatch.setattr(cli, "sdk_installed", lambda: False)
+
+    assert run("ask", "Hydrology", "What feeds base flow?", generator=cli.selected_generator) == (
+        1,
+        "",
+        f"{INSTALL_HINT}\n",
+    )
+
+
+def test_the_tutor_command_is_installed_and_runs(home: Path):
+    tutor = Path(sys.executable).parent / "tutor"
+
+    finished = subprocess.run([str(tutor)], capture_output=True, text=True)
+
+    assert finished.returncode == 0
+    assert finished.stdout.startswith("Your class tutor:")
+    assert finished.stderr == ""
+
+
+def test_every_help_page_has_an_example():
+    for command in ([], ["add-class"], ["list"], ["import"], ["ask"], ["check"]):
+        out = io.StringIO()
+        with pytest.raises(SystemExit) as done, contextlib.redirect_stdout(out):
+            cli.main([*command, "--help"], generator=never)
+        assert done.value.code == 0
+        assert "Example: uv run tutor" in out.getvalue()

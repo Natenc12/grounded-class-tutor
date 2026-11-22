@@ -1,7 +1,9 @@
 # 0005. Embeddings model: OpenAI text-embedding-3-small (default, spike-confirmed)
 
 - **Date:** 2026-07-04
-- **Status:** accepted (default; final production model confirmed by the retrieval spike)
+- **Status:** **Superseded by #216 (desktop move)** (2026-11-22): there are no embeddings today;
+  search is keyword search (#228), and a free local embedding model is planned. Kept as history.
+  Previously: accepted (default; final production model confirmed by the retrieval spike)
 
 ## Context
 Anthropic ships **no native embeddings** (constraint C2), so a dedicated embeddings model is

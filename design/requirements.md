@@ -1,5 +1,14 @@
 # Requirements — Grounded Class Tutor
 
+> **History note (2026-11-22):** These are the requirements for the retired hosted web app, removed
+> in stage 2 of the desktop move
+> ([#216](https://github.com/Natenc12/grounded-class-tutor/issues/216)). Still true: making a class
+> and adding PDF or PowerPoint files to it (F1), asking one class and getting a cited answer or an
+> honest refusal (F6 to F8), treating sources as quoted data, never as instructions (N13), and the
+> eval file (F15). Everything else here, including the V1 to V4 ladder, the constraints, the OpenAI
+> defaults, accounts and deployment, is history. For the app as it is today, see the
+> [README](../README.md) and the code in `src/gct/`; for the plan, see #216.
+
 **Phase:** 1 — Requirements  **Rigor:** Deep (ADR 0001)
 **Delivery model:** the **maturity ladder** (ADR 0004) — build a working skeleton, then deploy,
 then measure/tune. Requirements below are tagged with the stage they must land in:

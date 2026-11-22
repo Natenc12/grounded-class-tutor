@@ -1,7 +1,10 @@
 # 0015. Grounder [S#] citation contract — labeled-context format, validation ladder, failure handling
 
 - **Date:** 2026-07-04
-- **Status:** accepted
+- **Status:** **Partly superseded by #216 (desktop move)** (2026-11-22): the *Answer-surface
+  treatment* section (screens and HTTP statuses for `POST /ask`) no longer holds: the API and the
+  web client were removed (#252, #250). The labeled-context format, the validation ladder,
+  retry-once and flag-and-show still hold. Before this: accepted
 
 ## Context
 ADR 0014 locked the Grounder's partial-support mechanic on the insight **citation = support

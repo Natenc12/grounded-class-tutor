@@ -1,7 +1,9 @@
 # 0012. V1 client — a minimal React SPA, scoped and off the critical path
 
 - **Date:** 2026-07-04
-- **Status:** accepted — **answer-surface treatment settled 2026-09-11 in ADR 0015** (*Answer-surface
+- **Status:** **Superseded by #216 (desktop move)** (2026-11-22): the React client was removed
+  (#250); a desktop window is planned. Kept as history. Previously: accepted — **answer-surface
+  treatment settled 2026-09-11 in ADR 0015** (*Answer-surface
   treatment*, #49: the answer states this ADR does not list — partial, integrity-flagged, error — are
   variants of its answer surface, not new surfaces, so the five-surface bound stands)
 

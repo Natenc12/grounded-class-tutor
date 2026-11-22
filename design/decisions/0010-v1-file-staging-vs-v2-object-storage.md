@@ -1,7 +1,9 @@
 # 0010. V1 file-staging (local) vs. the V2 Object Storage component
 
 - **Date:** 2026-07-04
-- **Status:** accepted
+- **Status:** **Superseded by #216 (desktop move)** (2026-11-22): there is no staging folder; import
+  keeps the original file inside the library file (#227, #229). Kept as history. Previously:
+  accepted
 
 ## Context
 Whether raw uploaded files need to persist in V1 was challenged directly. The obvious justification —

@@ -1,7 +1,9 @@
 # 0025. The index transaction's atomicity is conditional on the caller's connection — amending ADR 0020
 
 - **Date:** 2026-07-27
-- **Status:** accepted — amends **ADR 0020** (its unconditional publication claim; the
+- **Status:** **Superseded by #216 (desktop move)** (2026-11-22): there is no Postgres and no index
+  transaction (#254). Kept as history. Previously: accepted — amends **ADR 0020** (its unconditional
+  publication claim; the
   index-write-only boundary and the all-or-nothing rationale stand unchanged); its
   "documented, not enforced" decision and the *Guard inside `index_file`* rejection amended
   2026-08-11 by **ADR 0027** (writers now refuse a non-`IDLE` connection via

@@ -1,7 +1,10 @@
 # 0028. The worker's four retry numbers, the reaper's cadence, and what a DB blip is — amending ADR 0020
 
 - **Date:** 2026-08-29
-- **Status:** **replaced by #205** for the reaper cadence (§5) and the lease row of §1: exactly one worker runs, so there is no lease to guard. Kept as history. Previously: accepted — amends **ADR 0020** (its §1 classification of a DB blip as *transient*,
+- **Status:** **Superseded by #216 (desktop move)** (2026-11-22): there is no worker or queue
+  (#253). Kept as history. Previously: **replaced by #205** for the reaper cadence (§5) and the
+  lease row of §1: exactly one worker runs, so there is no lease to guard. Kept as history.
+  Previously: accepted — amends **ADR 0020** (its §1 classification of a DB blip as *transient*,
   and its §1 reference to "the ADR 0011 budget", which named an ADR that holds no budget; §1's
   terminal/bad-input half, §2's all-or-nothing replace and §3's index-write-only boundary all
   stand unchanged); §1's **lease row — what the number MEANS, and the table's completeness —

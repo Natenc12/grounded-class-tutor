@@ -1,7 +1,8 @@
 # 0018. Embedding-model consistency guard — store `model_id`, assert at retrieval, fail loud
 
 - **Date:** 2026-07-04
-- **Status:** accepted
+- **Status:** **Superseded by #216 (desktop move)** (2026-11-22): there are no embeddings today, so
+  there is no model id to guard. Kept as history. Previously: accepted
 
 ## Context
 Similarity search is only meaningful if query- and index-time embeddings come from the **identical

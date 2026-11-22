@@ -1,7 +1,9 @@
 # 0007. Generation model default: OpenAI (consolidation, swappable, spike-confirmed)
 
 - **Date:** 2026-07-04
-- **Status:** accepted (default; final production model confirmed by the spike)
+- **Status:** **Superseded by #216 (desktop move)** (2026-11-22): answers come from Claude through
+  the Claude Agent SDK on the Mac's login (#225), and the OpenAI provider was removed (#255). Kept
+  as history. Previously: accepted (default; final production model confirmed by the spike)
 
 ## Context
 Embeddings default to OpenAI (ADR 0005) and generation sits behind a provider interface (ADR 0004),

@@ -1,5 +1,12 @@
 # Pre-Mortem — Grounded Class Tutor
 
+> **History note (2026-11-22):** This pre-mortem was written for the retired hosted web app, removed
+> in stage 2 of the desktop move
+> ([#216](https://github.com/Natenc12/grounded-class-tutor/issues/216)). Still true: PM-1's fix, the
+> eval scoring rule of ADR 0023, carried out by `gct.eval.scoring`. Everything else here, including
+> PM-2 to PM-5 (embeddings, the worker and the build slices), is history. For the app as it is
+> today, see the [README](../README.md) and the code in `src/gct/`; for the plan, see #216.
+
 **Phase:** 6 — Handoff (adversarial pass, runs *before* the readiness gate)  **Rigor:** Deep (ADR 0001)
 
 > **Frame:** Assume the V1 build shipped and failed — or stalled because a builder hit a wall and was

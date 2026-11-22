@@ -1,5 +1,14 @@
 # HANDOFF — Grounded Class Tutor
 
+> **History note (2026-11-22):** This handoff was written for building the retired hosted web app,
+> removed in stage 2 of the desktop move
+> ([#216](https://github.com/Natenc12/grounded-class-tutor/issues/216)). Still true: the Grounder
+> and its five states, the citation spine, and the two-signal eval scoring of ADR 0023. Everything
+> else here, including the shape, the constraints, the reading order, the build order, the board
+> workflow and the open assumptions, is history; the component docs for the retriever, the ingestion
+> worker and the API were deleted (git history keeps them). For where things stand, see the Status
+> section of the [README](../README.md); for the plan, see #216.
+
 **Status:** Build-ready ✅ (gate green — *buildable*; validated **at one named configuration** per ADR 0026,
 which is still not *proven faithful* — see caveat).  **Rigor:** Deep (ADR 0001).
 **Primary reader:** a build-agent implementing V1. All design decisions settled (PM-1 ratified as ADR 0023).

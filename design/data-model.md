@@ -1,5 +1,15 @@
 # Data Model — Grounded Class Tutor
 
+> **History note (2026-11-22):** This doc describes the Postgres tables of the retired hosted web
+> app (`classes · files · chunks · jobs`, with pgvector embeddings and an `owner_id` on every row),
+> removed in stage 2 of the desktop move
+> ([#216](https://github.com/Natenc12/grounded-class-tutor/issues/216)). None of these tables exist
+> today. The app now keeps classes, files and their text in one SQLite library file. Its tables
+> (`classes`, `documents`, `pages`, `passages`, and the keyword index `passages_fts`) are defined in
+> `src/gct/library/schema.py`, and that code is their reference. Still true: a passage's
+> `page_or_slide` is one page or slide, never a range (ADR 0019). Everything else here is history.
+> For the plan, see #216.
+
 **Phase:** 3 — Component Design (consolidation)  **Rigor:** Deep (ADR 0001)
 
 > Single source of truth for the V1 row shapes, now stable across the three closed component specs.

@@ -1,5 +1,11 @@
 # Slice 3 API diagrams
 
+> **History note (2026-11-22):** These diagrams show the retired hosted web app: its HTTP API,
+> worker, Postgres with pgvector, and OpenAI calls, all removed in stage 2 of the desktop move
+> ([#216](https://github.com/Natenc12/grounded-class-tutor/issues/216)). Everything here is history,
+> and the files the diagrams link to no longer exist. For the app as it is today, see the
+> [README](../../README.md) and the code in `src/gct/`; for the plan, see #216.
+
 Open **[slice-3-api.drawio](slice-3-api.drawio)** in draw.io / diagrams.net. The file contains three pages with editable shapes, text, and connectors. Component shapes carry source references in their **Edit Data** metadata.
 
 These diagrams are a derived implementation snapshot of commit `19bfdc9` on 2026-09-10. They explain the Slice 3 boundary and the core it calls; the React SPA is identified as a Slice 4 consumer. The implementation, [architecture](../architecture.md), API specification (since deleted), and ADRs remain the source of truth. Refresh the diagrams and exports together when those contracts change.

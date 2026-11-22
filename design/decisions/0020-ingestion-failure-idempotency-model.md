@@ -1,29 +1,31 @@
 # 0020. Ingestion failure & idempotency — retryable/terminal split, all-or-nothing replace, index-write-only transaction
 
 - **Date:** 2026-07-04
-- **Status:** **Superseded by #216 (desktop move)** (2026-11-22): the worker, its retries and the
-  Postgres index transaction are gone (#253, #254). The library saves a document all or nothing
-  (#227), and import refuses a bad file with a plain message (#229). Kept as history. Previously:
-  accepted — **publication claim amended 2026-07-27 by ADR 0025** (§2–3's "commits its
-  entire chunk set" holds only if the caller's connection is not already in a transaction; psycopg
-  turns a nested `conn.transaction()` into a SAVEPOINT that commits nothing. The atomicity and
-  index-write-only reasoning below stand unchanged — and ADR 0025's own status line carries what
-  later became of that precondition); §1's **classification of a DB blip as
-  transient amended, and its dangling "ADR 0011 budget" reference resolved, 2026-08-29 by
-  ADR 0028** (a DB blip takes the crash path in V1 — nothing classifies psycopg errors, and a
-  handler wide enough to catch one absorbs every programming error with it; the budget ADR 0011
-  never held is now four ratified numbers. §1's terminal/bad-input half, §2 and §3 stand
-  unchanged); §1's **terminal/bad-input set extended 2026-08-30 by ADR 0029** (it enumerated three
-  kinds of bad input — corrupt, password-protected, unsupported/zero-text — and now carries a
-  fourth, `too_long`: input past a configured word ceiling, refused before the embed call. The
-  terminal *handling* below is unchanged, which is why the new reason needed no worker change; §1's
-  transient half, §2 and §3 stand unchanged); §2–3's **atomic index write, and the PM-4 seam
-  itself, amended 2026-09-01 by ADR 0030** (the index transaction now admits a caller-supplied
-  predicate evaluated inside it, and a False answer rolls the whole write back; the seam is
-  restated as a rule about *knowledge* — the ingest pipeline may accept a predicate it cannot
-  interpret, and still may not write a job-layer column. Atomicity, all-or-nothing replace and
-  index-write-only stand unchanged, and §1's retryable/terminal split is untouched: a refused
-  publish is neither and buys no retry)
+- **Status:** **Partly superseded by #216 (desktop move)** (2026-11-22): the worker, its automatic
+  retries, re-indexing by delete-then-replace, and the Postgres index transaction no longer hold
+  (#253, #254). Still true: a document is saved all or nothing, in one short transaction opened only
+  after parsing and chunking are done (`Library.save_document`, #227); and bad input (corrupt,
+  password-protected, unsupported, no text, too large) is refused at once with a plain message
+  (`TERMINAL_REASONS` in `gct.ingest.parse`, #229), while other failures, such as a full disk, say
+  to try again. Before this: accepted — **publication claim amended 2026-07-27 by ADR 0025** (§2–3's
+  "commits its entire chunk set" holds only if the caller's connection is not already in a
+  transaction; psycopg turns a nested `conn.transaction()` into a SAVEPOINT that commits nothing.
+  The atomicity and index-write-only reasoning below stand unchanged — and ADR 0025's own status
+  line carries what later became of that precondition); §1's **classification of a DB blip as
+  transient amended, and its dangling "ADR 0011 budget" reference resolved, 2026-08-29 by ADR 0028**
+  (a DB blip takes the crash path in V1 — nothing classifies psycopg errors, and a handler wide
+  enough to catch one absorbs every programming error with it; the budget ADR 0011 never held is now
+  four ratified numbers. §1's terminal/bad-input half, §2 and §3 stand unchanged); §1's
+  **terminal/bad-input set extended 2026-08-30 by ADR 0029** (it enumerated three kinds of bad input
+  — corrupt, password-protected, unsupported/zero-text — and now carries a fourth, `too_long`: input
+  past a configured word ceiling, refused before the embed call. The terminal *handling* below is
+  unchanged, which is why the new reason needed no worker change; §1's transient half, §2 and §3
+  stand unchanged); §2–3's **atomic index write, and the PM-4 seam itself, amended 2026-09-01 by ADR
+  0030** (the index transaction now admits a caller-supplied predicate evaluated inside it, and a
+  False answer rolls the whole write back; the seam is restated as a rule about *knowledge* — the
+  ingest pipeline may accept a predicate it cannot interpret, and still may not write a job-layer
+  column. Atomicity, all-or-nothing replace and index-write-only stand unchanged, and §1's
+  retryable/terminal split is untouched: a refused publish is neither and buys no retry)
 
 ## Context
 `architecture.md` locked the async substrate (ADR 0011: DB-backed `jobs` + in-process poll worker,

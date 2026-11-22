@@ -3,9 +3,10 @@
 - **Date:** 2026-07-04
 - **Status:** **Partly superseded by #216 (desktop move)** (2026-11-22): the React PWA frontend and
   the tenancy clause (`owner_id`, Supabase Auth and RLS) no longer hold: the app runs on one
-  person's Mac, with no sign-in. Cited Q&A only, and PDFs and slides only, still hold. Before
-  this: accepted — **tenancy clause amended 2026-07-04 by ADR 0004** (RLS moved from
-  day-one to V3; `owner_id` schema hedge). Interaction/inputs/frontend scope unchanged.
+  person's Mac, with no sign-in. Multi-class-per-user, which this ADR defers, is now built: one
+  library holds many classes (#226). Cited Q&A only, and PDFs and slides only, still hold. Before
+  this: accepted — **tenancy clause amended 2026-07-04 by ADR 0004** (RLS moved from day-one to V3;
+  `owner_id` schema hedge). Interaction/inputs/frontend scope unchanged.
 
 ## Context
 The whole product rests on retrieval quality + faithful grounding being trustworthy. The MVP must

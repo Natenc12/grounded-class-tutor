@@ -24,7 +24,6 @@ from gct.grounder.answer import GrounderState
 from gct.library import Library
 from gct.providers import active
 from gct.providers.claude import ClaudeGeneration
-from gct.providers.openai_provider import OpenAIGeneration
 from gct.providers.standin import StandInGeneration
 
 SCRIPT = Path(__file__).resolve().parents[2] / "tools" / "drive.py"
@@ -73,7 +72,7 @@ def test_the_drive_runs_every_step_and_passes(scratch: Path):
     assert list(scratch.iterdir()) == []
 
 
-@pytest.mark.parametrize("choice", [active.CLAUDE, active.OPENAI, None])
+@pytest.mark.parametrize("choice", [active.CLAUDE, None])
 def test_the_environment_cannot_point_the_drive_at_a_real_model(monkeypatch, choice):
     def real_model(*_: object, **__: object):
         raise AssertionError("the drive reached a real model")
@@ -84,13 +83,8 @@ def test_the_environment_cannot_point_the_drive_at_a_real_model(monkeypatch, cho
         monkeypatch.setenv(active.PROVIDERS_ENV, choice)
     monkeypatch.setenv("GCT_LIBRARY", "/nowhere/tutor.sqlite3")
     monkeypatch.setattr(ClaudeGeneration, "__init__", real_model)
-    monkeypatch.setattr(OpenAIGeneration, "__init__", real_model)
     monkeypatch.setattr("gct.library.cli.selected_generator", real_model)
-    monkeypatch.setenv("OPENAI_API_KEY", "sk-not-a-real-key")
     monkeypatch.setattr(ClaudeGeneration, "generate", real_model)
-    monkeypatch.setattr(OpenAIGeneration, "generate", real_model)
-    monkeypatch.setattr(active, "build_generator", real_model)
-    monkeypatch.setattr(active, "require_usable", real_model)
     asked = []
     monkeypatch.setattr(
         StandInGeneration,

@@ -2,12 +2,9 @@ from __future__ import annotations
 
 import math
 
-import pytest
-
 from gct.config import EMBEDDING_DIM
 from gct.contracts import RetrievedChunk
 from gct.grounder.answer import GrounderState, answer
-from gct.providers import active
 from gct.providers.openai_provider import OpenAIEmbeddings, OpenAIGeneration
 from gct.providers.standin import StandInEmbeddings, StandInGeneration
 
@@ -75,12 +72,3 @@ def test_stand_in_model_ids_can_never_be_mistaken_for_the_real_ones(monkeypatch)
     monkeypatch.setenv("OPENAI_API_KEY", "sk-not-used")
     assert StandInEmbeddings.model_id != OpenAIEmbeddings().model_id
     assert StandInGeneration.model_id != OpenAIGeneration().model_id
-
-
-def test_the_default_is_the_real_providers_and_they_refuse_to_start_without_a_key(monkeypatch):
-    monkeypatch.delenv(active.PROVIDERS_ENV, raising=False)
-    monkeypatch.setenv("OPENAI_API_KEY", "")
-    assert active.selected() == active.OPENAI
-    assert active.costs_money()
-    with pytest.raises(RuntimeError, match="OPENAI_API_KEY"):
-        active.require_usable()

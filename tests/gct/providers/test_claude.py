@@ -13,6 +13,7 @@ import claude_agent_sdk as sdk
 import pytest
 from claude_agent_sdk._internal.transport.subprocess_cli import SubprocessCLITransport
 
+import gct.library.cli as cli
 from gct.contracts import RetrievedChunk
 from gct.grounder.answer import ERROR_KIND_PROVIDER_TERMINAL, GrounderState, answer
 from gct.providers import active, claude
@@ -26,7 +27,6 @@ from gct.providers.claude import (
     ClaudeNotInstalledError,
     ClaudeNotSignedInError,
 )
-from gct.providers.standin import StandInEmbeddings
 
 MESSAGES = [
     {"role": "system", "content": "Answer only from the sources."},
@@ -388,28 +388,13 @@ def test_the_grounder_reports_a_lost_login_as_an_error_with_the_plain_message(fa
     assert NOT_SIGNED_IN in result.error.message
 
 
-def test_gct_providers_claude_answers_with_claude_and_searches_with_the_free_stand_in(monkeypatch):
-    monkeypatch.setenv(active.PROVIDERS_ENV, "claude")
-    monkeypatch.setenv("OPENAI_API_KEY", "")
-
-    active.require_usable()
-    assert active.selected() == active.CLAUDE
-    assert not active.costs_money()
-    assert isinstance(active.build_generator(), ClaudeGeneration)
-    assert isinstance(active.build_embedder(), StandInEmbeddings)
-
-
 def test_gct_providers_claude_refuses_to_start_without_the_sdk(monkeypatch):
     monkeypatch.setenv(active.PROVIDERS_ENV, "claude")
     monkeypatch.setitem(sys.modules, "claude_agent_sdk", None)
-    with pytest.raises(RuntimeError, match="uv sync --extra claude"):
-        active.require_usable()
 
-
-def test_a_misspelt_provider_set_still_fails_with_the_existing_message(monkeypatch):
-    monkeypatch.setenv(active.PROVIDERS_ENV, "claud")
-    with pytest.raises(RuntimeError, match=r"GCT_PROVIDERS='claud' is not a provider set"):
-        active.selected()
+    assert not claude.sdk_installed()
+    with pytest.raises(cli._Stop, match="uv sync --extra claude"):
+        cli.selected_generator()
 
 
 def test_a_real_claude_answer_on_this_macs_login_is_cited(live_claude_generator):

@@ -539,15 +539,27 @@ def test_a_model_choice_ignores_capitals_and_spaces(built, monkeypatch, written)
     assert built == ["claude"]
 
 
-def test_the_paid_model_without_a_key_points_back_to_claude(run, hydrology: Path, monkeypatch):
-    monkeypatch.setenv(active.PROVIDERS_ENV, "OpenAI")
-    monkeypatch.setenv("OPENAI_API_KEY", "")
+@pytest.mark.parametrize("written", ["openai", "OpenAI"])
+def test_openai_is_no_longer_a_choice_and_gets_the_plain_message(
+    hydrology: Path, library: Path, monkeypatch, written
+):
+    monkeypatch.setenv(active.PROVIDERS_ENV, written)
+    tutor = Path(sys.executable).parent / "tutor"
 
-    code, _, err = run("ask", "Hydrology", "x", generator=cli.selected_generator)
+    finished = subprocess.run(
+        [str(tutor), "ask", "--library", str(library), "Hydrology", "What feeds base flow?"],
+        capture_output=True,
+        text=True,
+    )
 
-    assert code == 1
-    assert err.startswith("GCT_PROVIDERS=openai asks for OpenAI, a paid service")
-    assert "unset GCT_PROVIDERS" in err
+    assert finished.returncode == 1
+    assert finished.stdout == f"Library: {library}\n"
+    assert finished.stderr == (
+        f"GCT_PROVIDERS is set to {written!r}, which the tutor does not recognise. To get "
+        "answers from Claude on this Mac's login, remove the setting: unset GCT_PROVIDERS. To "
+        "try the tutor free with the stand-in model, which does not really read, use "
+        "GCT_PROVIDERS=standin.\n"
+    )
 
 
 def test_the_owners_commands_use_the_model_the_environment_selects(monkeypatch):
@@ -662,20 +674,11 @@ def test_only_add_class_makes_the_default_library(home: Path, command):
 @pytest.fixture
 def built(monkeypatch) -> list[str]:
     seen: list[str] = []
-    for name, owner in (
-        ("claude", "gct.providers.claude.ClaudeGeneration.__init__"),
-        ("openai", "gct.providers.openai_provider.OpenAIGeneration.__init__"),
-    ):
-        monkeypatch.setattr(owner, lambda self, *_, name=name, **__: seen.append(name))
+    monkeypatch.setattr(
+        "gct.providers.claude.ClaudeGeneration.__init__",
+        lambda self, *_, **__: seen.append("claude"),
+    )
     return seen
-
-
-def test_with_no_model_chosen_the_commands_build_claude_never_openai(built, monkeypatch):
-    monkeypatch.setenv("OPENAI_API_KEY", "sk-not-a-real-key")
-
-    cli.selected_generator()
-
-    assert built == ["claude"]
 
 
 @pytest.mark.parametrize("unset", [None, "", "  "])
@@ -689,12 +692,10 @@ def test_an_empty_model_choice_also_means_claude(built, monkeypatch, unset):
 
 
 def test_a_model_chosen_on_purpose_is_respected(built, monkeypatch):
-    monkeypatch.setenv(active.PROVIDERS_ENV, active.OPENAI)
-    monkeypatch.setenv("OPENAI_API_KEY", "sk-not-a-real-key")
+    monkeypatch.setenv(active.PROVIDERS_ENV, active.STANDIN)
 
-    cli.selected_generator()
-
-    assert built == ["openai"]
+    assert isinstance(cli.selected_generator(), StandInGeneration)
+    assert built == []
 
 
 def test_with_no_model_chosen_and_claude_not_signed_in_you_get_claudes_message(
@@ -866,7 +867,7 @@ def test_a_class_name_differing_only_in_capitals_is_refused(run, library: Path):
     [
         (None, "Answers come from Claude on this Mac's login."),
         ("standin", "Answers come from the free stand-in model (GCT_PROVIDERS=standin)"),
-        ("OpenAI", "Answers come from OpenAI, a paid service, using your API key"),
+        ("OpenAI", "GCT_PROVIDERS is set to 'OpenAI', which the tutor does not recognise."),
         ("cluade", "GCT_PROVIDERS is set to 'cluade', which the tutor does not recognise."),
     ],
 )
@@ -878,25 +879,6 @@ def test_the_overview_names_the_model_actually_in_use(monkeypatch, written, line
 
     assert code == 0
     assert out.splitlines()[-1].startswith(line)
-
-
-class PaidLookalike(Scripted):
-    model_id = "gpt-test"
-
-
-def test_an_answer_from_the_paid_model_says_so_at_the_top_and_the_bottom(
-    run, hydrology: Path, monkeypatch
-):
-    monkeypatch.setattr(PaidLookalike, "__module__", "gct.providers.openai_provider")
-    reply = "Base flow is fed by groundwater [S1].\nCOVERAGE: complete"
-
-    code, out, _ = run(
-        "ask", "Hydrology", "What feeds base flow?", generator=lambda: PaidLookalike(reply)
-    )
-
-    assert code == 0
-    assert out.startswith("Using OpenAI, using your paid API key (gpt-test).\n")
-    assert out.endswith("\nAnswered by OpenAI, using your paid API key (gpt-test).\n")
 
 
 def test_a_long_gap_is_shortened(run, hydrology: Path):

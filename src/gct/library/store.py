@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 import sqlite3
 import uuid
 from collections.abc import Iterator
@@ -23,7 +24,7 @@ class NewerLibraryError(LibraryError):
     pass
 
 
-class DamagedLibraryError(LibraryError):
+class OutdatedLibraryError(LibraryError):
     pass
 
 
@@ -46,11 +47,18 @@ _OWNED_TABLES = ("classes", "documents", "pages", "passages", "passages_fts")
 Shape = tuple[object, ...]
 
 
+def _normalised(sql: str | None) -> str | None:
+    if sql is None:
+        return None
+    return re.sub(r"\s*([(),=<>;'])\s*", r"\1", " ".join(sql.split()))
+
+
 def _shape(connection: sqlite3.Connection) -> Shape:
     names = tuple(
         sorted(
-            connection.execute(
-                "SELECT type, name, tbl_name FROM sqlite_schema "
+            (kind, name, table, _normalised(sql))
+            for kind, name, table, sql in connection.execute(
+                "SELECT type, name, tbl_name, sql FROM sqlite_schema "
                 "WHERE type <> 'index' AND name NOT LIKE 'sqlite\\_%' ESCAPE '\\' "
                 "AND NOT (type = 'table' AND name LIKE 'passages\\_fts\\_%' ESCAPE '\\')"
             )
@@ -172,8 +180,9 @@ class Library:
                 "update the tutor to open it."
             )
         if version != VERSION or _shape(self._connection) != _expected_shape():
-            raise DamagedLibraryError(
-                f"{self.path} does not have the expected tables; restore it from a backup."
+            raise OutdatedLibraryError(
+                f"{self.path} was made by an earlier build of the tutor and cannot be opened; "
+                "create a new library and import your course files again."
             )
 
     @contextmanager

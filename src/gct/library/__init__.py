@@ -1,17 +1,17 @@
 from gct.library.store import (
     ClassNameError,
-    DamagedLibraryError,
     Library,
     LibraryClass,
     LibraryError,
     NewerLibraryError,
     NotALibraryError,
+    OutdatedLibraryError,
     UnknownClassError,
 )
 
 __all__ = [
     "ClassNameError",
-    "DamagedLibraryError",
+    "OutdatedLibraryError",
     "Library",
     "LibraryClass",
     "LibraryError",

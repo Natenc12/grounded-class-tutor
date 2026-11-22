@@ -14,11 +14,11 @@ from pathlib import Path
 import pytest
 
 from gct.library import (
-    DamagedLibraryError,
     Library,
     LibraryError,
     NewerLibraryError,
     NotALibraryError,
+    OutdatedLibraryError,
 )
 from gct.library.schema import APPLICATION_ID, VERSION
 
@@ -121,7 +121,7 @@ def test_a_library_without_the_expected_tables_is_refused_and_left_untouched(
     connection.commit()
     connection.close()
 
-    _refuses_untouched(library_path, DamagedLibraryError)
+    _refuses_untouched(library_path, OutdatedLibraryError)
 
 
 def test_a_library_stamped_with_an_older_version_is_refused(library_path: Path):
@@ -130,7 +130,7 @@ def test_a_library_stamped_with_an_older_version_is_refused(library_path: Path):
     connection.execute("PRAGMA user_version = 0")
     connection.close()
 
-    _refuses_untouched(library_path, DamagedLibraryError)
+    _refuses_untouched(library_path, OutdatedLibraryError)
 
 
 def test_a_missing_folder_is_a_library_error(tmp_path: Path):
@@ -187,4 +187,37 @@ def test_a_library_missing_a_column_is_refused_and_left_untouched(library_path: 
     connection.commit()
     connection.close()
 
-    _refuses_untouched(library_path, DamagedLibraryError)
+    _refuses_untouched(library_path, OutdatedLibraryError)
+
+
+@pytest.mark.parametrize(
+    ("name", "old", "new"),
+    [
+        ("pages", "BETWEEN 1 AND page_count", "BETWEEN 1 AND page_count + 1"),
+        ("passages_fts_delete", "old.id, old.text", "old.id, ''"),
+        ("pages", "nullif(page_or_slide - 1, 0)", "nullif(page_or_slide - 2, 0)"),
+    ],
+    ids=["loosened check rule", "changed trigger body", "changed generated column"],
+)
+def test_a_library_with_an_outdated_rule_is_refused_and_left_untouched(
+    library_path: Path, name: str, old: str, new: str
+):
+    """Before the first release the schema changes in place, so a library made by an earlier
+    build can differ only in a rule's wording. It must be refused, not opened with old rules."""
+    Library(library_path).close()
+    connection = sqlite3.connect(library_path, isolation_level=None)
+    assert (
+        old
+        in connection.execute("SELECT sql FROM sqlite_schema WHERE name = ?", (name,)).fetchone()[0]
+    )
+    connection.execute("PRAGMA writable_schema = ON")
+    connection.execute(
+        "UPDATE sqlite_schema SET sql = replace(sql, ?, ?) WHERE name = ?", (old, new, name)
+    )
+    connection.execute("PRAGMA writable_schema = OFF")
+    connection.close()
+
+    error = _refuses_untouched(library_path, OutdatedLibraryError)
+
+    assert "earlier build" in str(error)
+    assert "create a new library and import your course files again" in str(error)

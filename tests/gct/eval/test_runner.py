@@ -4,8 +4,7 @@ from __future__ import annotations
 
 import pytest
 
-from gct.ask import AskResult
-from gct.contracts import RetrievedChunk
+from gct.contracts import AskResult, RetrievedChunk
 from gct.eval import scoring
 from gct.eval.questions import EvalQuestion, ExpectedSource
 from gct.eval.runner import CourseFile, score_answers

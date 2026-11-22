@@ -383,7 +383,7 @@ falling through to `ask()` retrieves nothing, which `answer()` renders as *"no c
 retrieved for this question"* — a statement about a corpus that never existed.
 
 **Not on the wire, by decision.** No `retrieved`: it exists for the eval runner's recall@k
-(ADR 0023, `AskResult`'s docstring), while the HTTP client renders citations, and shipping it
+(ADR 0023; `AskResult` now lives in `gct.contracts`, #230), while the HTTP client renders citations, and shipping it
 would make the top-k an observable part of this contract. No `k` request field: `DEFAULT_K` has
 one home and no product meaning for a caller. No conversation id or history — single-shot
 (ADR 0009). No `error` field on a success body, since ERROR is never a 2xx.

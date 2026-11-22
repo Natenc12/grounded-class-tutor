@@ -3,13 +3,11 @@
 Two halves, split on purpose (owner's choice at the #199 plan):
 
   - `score_answers` is pure. It takes the questions and one `AskResult` per question and returns
-    per-question results and totals. No database, no models. Every rule it applies lives in
+    per-question results and totals. No storage, no models. Every rule it applies lives in
     `gct.eval.scoring`; this module only assembles them.
-  - `run_suite` is the thin "load and ask" half. Today that means Postgres: it creates the
-    classes, ingests the course through `compose_units` (the same path an upload takes after
-    parsing), asks every question with the models it is handed, and calls `score_answers`.
-    When the desktop app moves storage to SQLite, this function is the part to rewrite; the
-    course, the questions and the scoring stay as they are.
+  - `run_suite` is the thin "load and ask" half. It saves the course into a fresh temporary
+    library through the library's own save, asks every question through the library (#230) with
+    the model it is handed, and calls `score_answers`.
 
 The course enters as TEXT, never as PDFs, so a PDF-library upgrade cannot change what the model
 is shown. A course directory holds one JSON file per course file:
@@ -19,15 +17,12 @@ is shown. A course directory holds one JSON file per course file:
 from __future__ import annotations
 
 import json
+import tempfile
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
-from uuid import uuid4
 
-import psycopg
-
-from gct.ask import AskResult, ask
-from gct.classes import create_class
+from gct.contracts import AskResult
 from gct.eval.questions import EvalQuestion
 from gct.eval.scoring import (
     AnswerAttribution,
@@ -45,11 +40,11 @@ from gct.eval.scoring import (
     score_state,
 )
 from gct.grounder.answer import GrounderState
-from gct.ingest.index import index_file
 from gct.ingest.parse import ParsedUnit
-from gct.ingest.pipeline import compose_units
-from gct.providers.base import Embeddings, Generation
-from gct.retriever.retrieve import DEFAULT_K
+from gct.library import Library
+from gct.library.ask import ask
+from gct.providers.base import Generation
+from gct.search import DEFAULT_K
 
 
 @dataclass(frozen=True)
@@ -66,6 +61,11 @@ class CourseFile:
             ParsedUnit(text=text, file=self.file, page_or_slide=number)
             for number, text in enumerate(self.pages, start=1)
         ]
+
+    def original(self) -> bytes:
+        """The course file's own text, as the bytes the library stores and fingerprints."""
+        row = {"class": self.class_slug, "file": self.file, "pages": list(self.pages)}
+        return json.dumps(row, ensure_ascii=False, sort_keys=True).encode("utf-8")
 
 
 def load_course(directory: str | Path) -> list[CourseFile]:
@@ -174,50 +174,35 @@ def score_answers(
 
 
 def run_suite(
-    conn: psycopg.Connection,
     course: Sequence[CourseFile],
     questions: Sequence[EvalQuestion],
     *,
-    owner_id: str,
-    embedder: Embeddings,
     generator: Generation,
     k: int = DEFAULT_K,
 ) -> SuiteResult:
-    """Build a fresh class per course class, ingest the course, ask every question, score it all.
+    """Save the course into a fresh temporary library, ask every question there, score it all.
 
-    Today's storage is Postgres: `conn` must come from `gct.db.connect()` and be idle (not inside
-    a transaction), because `index_file` requires it. Every row is written under `owner_id`, and
-    the caller removes them afterwards (the test fixture deletes by owner); pass a fresh one per
-    run so two runs never share classes.
+    Keyword scores depend on word counts across the whole library, so the library holds exactly
+    `course` and nothing else, and is thrown away afterwards. The same course gives the same
+    library, and so the same passages for every question, whatever order the files come in.
     """
     slugs = sorted({f.class_slug for f in course})
     unknown = sorted({q.class_slug for q in questions} - set(slugs))
     if unknown:
         raise ValueError(f"questions name class(es) the course does not have: {', '.join(unknown)}")
 
-    class_ids = {slug: create_class(conn, owner_id=owner_id, name=slug) for slug in slugs}
-    for course_file in course:
-        class_id = class_ids[course_file.class_slug]
-        chunks = compose_units(course_file.units(), owner_id, class_id, embedder=embedder)
-        index_file(
-            conn,
-            file_id=str(uuid4()),
-            filename=course_file.file,
-            owner_id=owner_id,
-            class_id=class_id,
-            chunks=chunks,
-        )
-
-    answers = {
-        q.id: ask(
-            conn,
-            q.question,
-            owner_id,
-            class_ids[q.class_slug],
-            embedder=embedder,
-            generator=generator,
-            k=k,
-        )
-        for q in questions
-    }
+    with tempfile.TemporaryDirectory() as folder, Library(Path(folder) / "suite.db") as library:
+        class_ids = {slug: library.create_class(slug).id for slug in slugs}
+        for course_file in course:
+            library.save_document(
+                class_ids[course_file.class_slug],
+                course_file.file,
+                course_file.original(),
+                len(course_file.pages),
+                course_file.units(),
+            )
+        answers = {
+            q.id: ask(library, class_ids[q.class_slug], q.question, generator=generator, k=k)
+            for q in questions
+        }
     return score_answers(questions, answers)

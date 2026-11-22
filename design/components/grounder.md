@@ -11,15 +11,18 @@
 
 ## Responsibility
 Turn the passages that search found in one class into an answer that is grounded in them or
-honestly declines — the product's core trust promise (F6–F8, N2–N4). It builds the labeled
+honestly declines — the product's core trust promise (requirements F6 to F8). It builds the labeled
 context, calls the model, and owns the **answer / cite / partial-flag / refuse** decision plus all
 validation of what the model returned. Grounding logic lives here, **above** the provider layer, so
 swapping providers never changes product behavior.
 
 ## Position & dependencies
 - **Upstream, keyword search:** `gct.library.ask` calls `gct.search.keyword.search`, which hands in
-  up to five ranked passages, each with a **score** (the negated SQLite `bm25` value, so higher is
-  a better match). The Grounder passes the score through but **never reads it** (ADR 0008).
+  up to `k` ranked passages (5 for the `tutor` command; the eval runner passes its own `k`, 5 by
+  default), each with a **score** (the negated SQLite `bm25` value, so higher is a better match).
+  The Grounder receives the score but **never reads it** (ADR 0008), and its result does not carry
+  it: callers read the passages and their scores from `AskResult.retrieved`, which
+  `gct.library.ask` fills from the search results.
 - **Down — Model provider layer:** calls `Generation.generate(messages) → text` (text-parsed, no
   structured-output features) — ADR 0013. Owns the prompt and all citation parsing. The models
   behind that interface are Claude (`gct.providers.claude`), the free stand-in
@@ -59,7 +62,7 @@ REFUSAL (ADR 0016).
    command refuses to ask a class with no files before the Grounder runs.)
 2. **② Build labeled context** — render each chunk as a block; labels are **per-request ordinals**
    `S1…Sn` in rank order; each block carries `(file, page_or_slide)`. The `S#→chunk_id` map is kept
-   **server-side** (never expose or trust a model-supplied id) — ADR 0015. `p.` is used for slides
+   **on our side** (never expose or trust a model-supplied id) — ADR 0015. `p.` is used for slides
    too.
    ```
    [S1] (lecture-3.pdf, p.4)
@@ -79,7 +82,7 @@ REFUSAL (ADR 0016).
 6. **Retry-once (shared budget)** — on *any* structural failure (step 5) **or** a transient provider
    error (step 3), regenerate **once**. Max **2 generation attempts** per ask (ADR 0015/0016). Any
    other provider error ends the ask at once as ERROR, with no retry.
-7. **Resolve** — map each valid `[S#]` → `Citation` via the server-side map.
+7. **Resolve** — map each valid `[S#]` → `Citation` via our own map from step 2.
 8. **Decide state:**
    | condition | state |
    |---|---|
@@ -113,11 +116,11 @@ REFUSAL (ADR 0016).
 - **It enforces (deterministic):** label validity, the coarse zero-citation guard, one parseable
   coverage marker, the no-outside-knowledge prompt, the retry, and the fail-safe.
 - **It does not check:** that every sentence carries a citation, that a cited passage actually
-  supports its claim (N2/N4), or that the line between covered and not covered is drawn correctly
-  (N3). It guarantees *structure, not truth*: a GROUNDED answer is not proof of a faithful one.
+  supports its claim, or that the line between covered and not covered is drawn correctly. It
+  guarantees *structure, not truth*: a GROUNDED answer is not proof of a faithful one.
   Nothing in the app filters passages by score before the Grounder runs.
 
-## Open / not built
+## Open / deferred
 - **Prompt content** (exact wording, few-shot, coverage-marker syntax) is provisional; it can be
   tuned against the eval questions in `eval/`. This spec fixes the *contract*, not the wording. A
   change to the marker syntax must change the parser in the same commit.
@@ -127,7 +130,7 @@ REFUSAL (ADR 0016).
   bucket (not a pass)**, REFUSAL/INTEGRITY_FLAGGED=fail (in-corpus), ERROR=excluded+logged; `partial_rate`
   reported alongside `grounded_pass_rate`. The `state→outcome` map lives in `gct.eval.scoring`, not
   in the Grounder.
-- **Display:** a GROUNDED answer and an INTEGRITY_FLAGGED one must never look alike (N11 extension).
+- **Display:** a GROUNDED answer and an INTEGRITY_FLAGGED one must never look alike (ADR 0015).
   Today the `tutor` command prints INTEGRITY_FLAGGED under the heading "the answer's sources could
   not be checked, so do not rely on it" and lists why. The desktop screen is planned
   ([#216](https://github.com/Natenc12/grounded-class-tutor/issues/216)).

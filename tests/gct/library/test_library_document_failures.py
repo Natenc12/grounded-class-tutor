@@ -163,7 +163,7 @@ def test_a_save_on_a_full_disk_leaves_the_library_as_before(
     assert _rows(library._connection) == before
     assert library.check() == []
     library._connection.execute(f"PRAGMA max_page_count = {pages + needed * 2}")
-    assert _save(library, hydrology).filename == "big.pdf"
+    assert _save(library, hydrology).document.filename == "big.pdf"
     assert library.check() == []
 
 

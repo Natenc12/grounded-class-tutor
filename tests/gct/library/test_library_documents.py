@@ -18,9 +18,11 @@ import pytest
 from gct.ingest.chunk import CHUNK_SIZE_WORDS
 from gct.ingest.parse import ParsedUnit
 from gct.library import (
+    Document,
     DocumentContentError,
     Library,
     Page,
+    SavedDocument,
     UnknownClassError,
     UnknownDocumentError,
     UnknownPassageError,
@@ -33,7 +35,13 @@ def _units(pages: dict[int, str]) -> list[ParsedUnit]:
     return [ParsedUnit(text=text, file="ignored.pdf", page_or_slide=n) for n, text in pages.items()]
 
 
-def _save(library: Library, class_id: str, original: bytes = ORIGINAL, **changes):
+def _save(library: Library, class_id: str, original: bytes = ORIGINAL, **changes) -> Document:
+    return _save_result(library, class_id, original, **changes).document
+
+
+def _save_result(
+    library: Library, class_id: str, original: bytes = ORIGINAL, **changes
+) -> SavedDocument:
     arguments = {
         "filename": "lecture-01.pdf",
         "original": original,
@@ -130,14 +138,15 @@ def test_documents_are_listed_by_filename_and_only_for_their_class(
 def test_the_same_file_twice_in_one_class_returns_the_first_and_adds_nothing(
     library: Library, hydrology
 ):
-    first = _save(library, hydrology)
+    first = _save_result(library, hydrology)
     before = _rows(library._connection)
 
-    again = _save(library, hydrology, filename="renamed-copy.pdf")
+    again = _save_result(library, hydrology, filename="renamed-copy.pdf")
 
-    assert again == first
+    assert first.already_in_class is False
+    assert again == SavedDocument(first.document, already_in_class=True)
     assert _rows(library._connection) == before
-    assert library.list_documents(hydrology) == [first]
+    assert library.list_documents(hydrology) == [first.document]
 
 
 def test_the_same_file_saved_from_two_windows_is_one_document(
@@ -264,3 +273,49 @@ def test_a_three_hundred_page_document_with_blank_pages_saves_and_deletes(
     library.delete_document(hydrology, saved.id)
     assert set(_rows(library._connection).values()) == {0}
     assert library.check() == []
+
+
+@pytest.mark.parametrize("deleted_at_statement", [1, 2, 3])
+def test_a_document_deleted_by_another_window_while_its_pages_are_read_is_never_empty(
+    library: Library, hydrology, library_path: Path, deleted_at_statement
+):
+    """Each read sees one moment: the whole document, or the "not in this class" refusal, never
+    an empty page list from a check made before the delete and a fetch made after it."""
+    saved = _save(library, hydrology)
+    _delete_from_another_window_at(library, library_path, deleted_at_statement, saved.id)
+
+    try:
+        assert len(library.document_pages(hydrology, saved.id)) == 3
+    except UnknownDocumentError:
+        pass
+
+
+@pytest.mark.parametrize("deleted_at_statement", [1, 2, 3])
+def test_a_class_deleted_by_another_window_while_it_is_listed_is_never_empty(
+    library: Library, hydrology, library_path: Path, deleted_at_statement
+):
+    saved = _save(library, hydrology)
+    _delete_from_another_window_at(library, library_path, deleted_at_statement, hydrology)
+
+    try:
+        assert library.list_documents(hydrology) == [saved]
+    except UnknownClassError:
+        pass
+
+
+def _delete_from_another_window_at(
+    library: Library, library_path: Path, statement: int, row_id: str
+) -> None:
+    other_window = sqlite3.connect(library_path, isolation_level=None)
+    other_window.execute("PRAGMA foreign_keys = ON")
+    started = 0
+
+    def delete_when_reached(_: str) -> None:
+        nonlocal started
+        started += 1
+        if started == statement:
+            other_window.execute("DELETE FROM documents WHERE id = ?", (row_id,))
+            other_window.execute("DELETE FROM classes WHERE id = ?", (row_id,))
+            other_window.close()
+
+    library._connection.set_trace_callback(delete_when_reached)

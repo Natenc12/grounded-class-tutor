@@ -68,6 +68,12 @@ class Document:
 
 
 @dataclass(frozen=True)
+class SavedDocument:
+    document: Document
+    already_in_class: bool
+
+
+@dataclass(frozen=True)
 class Page:
     page_or_slide: int
     text: str
@@ -333,7 +339,7 @@ class Library:
         original: bytes,
         page_count: int,
         units: Sequence[ParsedUnit],
-    ) -> Document:
+    ) -> SavedDocument:
         if not isinstance(filename, str) or not filename.strip():
             raise DocumentContentError("A document needs a filename.")
         if not isinstance(original, bytes) or not original:
@@ -375,7 +381,7 @@ class Library:
                 "SELECT id FROM documents WHERE class_id = ? AND sha256 = ?", (class_id, sha256)
             ).fetchone()
             if existing is not None:
-                return self._document(class_id, existing[0])
+                return SavedDocument(self._document(class_id, existing[0]), already_in_class=True)
             self._connection.execute(
                 "INSERT INTO documents (id, class_id, filename, sha256, page_count, original) "
                 "VALUES (?, ?, ?, ?, ?, ?)",
@@ -391,26 +397,33 @@ class Library:
                 "VALUES (?, ?, ?, ?, ?)",
                 passages,
             )
-        return saved
+        return SavedDocument(saved, already_in_class=False)
 
     def list_documents(self, class_id: str) -> list[Document]:
         with self._reading("The documents could not be listed"):
-            self._refuse_unknown_class(class_id)
             rows = self._connection.execute(
-                "SELECT id, class_id, filename, sha256, page_count FROM documents "
-                "WHERE class_id = ? ORDER BY filename COLLATE NOCASE, filename, sha256",
+                "SELECT documents.id, classes.id, documents.filename, documents.sha256, "
+                "documents.page_count "
+                "FROM classes LEFT JOIN documents ON documents.class_id = classes.id "
+                "WHERE classes.id = ? "
+                "ORDER BY documents.filename COLLATE NOCASE, documents.filename, documents.sha256",
                 (class_id,),
             ).fetchall()
-        return [Document(*row) for row in rows]
+        if not rows:
+            raise UnknownClassError("That class is not in this library; refresh the list.")
+        return [Document(*row) for row in rows if row[0] is not None]
 
     def document_pages(self, class_id: str, document_id: str) -> list[Page]:
         with self._reading("The pages could not be read"):
-            self._document(class_id, document_id)
             rows = self._connection.execute(
-                "SELECT page_or_slide, text FROM pages WHERE document_id = ? "
-                "ORDER BY page_or_slide",
-                (document_id,),
+                "SELECT pages.page_or_slide, pages.text "
+                "FROM documents JOIN pages ON pages.document_id = documents.id "
+                "WHERE documents.id = ? AND documents.class_id = ? "
+                "ORDER BY pages.page_or_slide",
+                (document_id, class_id),
             ).fetchall()
+        if not rows:
+            raise UnknownDocumentError("That document is not in this class; refresh the list.")
         return [Page(*row) for row in rows]
 
     def delete_document(self, class_id: str, document_id: str) -> None:

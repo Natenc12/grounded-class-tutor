@@ -28,7 +28,7 @@ _MATCHES = """
     JOIN passages ON passages.id = passages_fts.rowid
     JOIN documents ON documents.id = passages.document_id
     WHERE passages_fts MATCH :expression
-        AND :class_id IS NOT NULL
+        AND documents.class_id = :class_id
         AND (:document_id IS NULL OR documents.id = :document_id)
     ORDER BY bm25(passages_fts), documents.filename, documents.sha256,
         passages.page_or_slide, passages.ordinal

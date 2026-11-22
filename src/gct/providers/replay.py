@@ -22,6 +22,7 @@ from gct.providers.base import Generation, Message, TransientGenerationError
 
 FORMAT = 1
 NO_QUESTION = "no recording for this question"
+BUSY = "the model was busy on this try when recorded"
 CLAUDE_FORM = "claude-agent-sdk request"
 MESSAGES_FORM = "messages"
 
@@ -79,7 +80,7 @@ class Call:
     sent: str
     sources: tuple[str, ...]
     reply: str | None
-    busy: str | None = None
+    busy: bool = False
 
 
 def _sent(setup: Setup, messages: Sequence[Message]) -> str:
@@ -100,7 +101,7 @@ def _sent(setup: Setup, messages: Sequence[Message]) -> str:
 
 
 def _call(
-    setup: Setup, messages: Sequence[Message], reply: str | None = None, busy: str | None = None
+    setup: Setup, messages: Sequence[Message], reply: str | None = None, busy: bool = False
 ) -> Call:
     sources = tuple(
         match.group("where")
@@ -116,7 +117,7 @@ def _call_body(call: Call) -> dict[str, Any]:
     if call.reply is not None:
         body["reply"] = call.reply.split("\n")
     else:
-        body["busy"] = call.busy
+        body["busy"] = True
     return body
 
 
@@ -126,7 +127,9 @@ def _call_from(body: Any) -> Call:
         raise ValueError("each call needs exactly one of 'reply' and 'busy'")
     if "reply" in body:
         return Call(sent=sent, sources=sources, reply="\n".join(_lines(body["reply"])))
-    return Call(sent=sent, sources=sources, reply=None, busy=_text(body["busy"]))
+    if body["busy"] is not True:
+        raise ValueError("'busy' must be true")
+    return Call(sent=sent, sources=sources, reply=None, busy=True)
 
 
 @dataclass(frozen=True)
@@ -244,7 +247,7 @@ class _Replaying:
             raise ReplayMiss(f"no recording matches what would be sent now: {self._why(now, then)}")
         self.used += 1
         if then.reply is None:
-            raise TransientGenerationError(then.busy)
+            raise TransientGenerationError(BUSY)
         return then.reply
 
     def _why(self, now: Call, then: Call) -> str:
@@ -322,7 +325,7 @@ class _Recording:
         try:
             reply = self.inner.generate(messages)
         except TransientGenerationError as err:
-            self.calls.append(_call(self.setup, messages, busy=str(err)))
+            self.calls.append(_call(self.setup, messages, busy=True))
             self.busy_at_the_end = err
             raise
         except Exception as err:

@@ -194,9 +194,24 @@ def test_a_busy_first_try_recovered_by_the_retry_is_saved_and_replays_the_same_w
 
     assert not recorder.failures
     with Replayer(recorder.recording, recorder.setup).question("q1") as replaying:
-        with pytest.raises(TransientGenerationError, match="rate limited"):
+        with pytest.raises(TransientGenerationError, match="busy on this try when recorded"):
             replaying.generate(ASKED)
         assert replaying.generate(ASKED) == "a"
+
+
+def test_the_text_of_a_busy_try_never_reaches_the_file(tmp_path):
+    recorder = Recorder(Scripted(TransientGenerationError("account 1234 over limit"), "a"))
+    with recorder.question("q1") as recording:
+        with pytest.raises(TransientGenerationError):
+            recording.generate(ASKED)
+        recording.generate(ASKED)
+    path = tmp_path / "replies.json"
+
+    recorder.recording.write(path)
+
+    assert "1234" not in path.read_text(encoding="utf-8")
+    assert '"busy": true' in path.read_text(encoding="utf-8")
+    assert Recording.read(path) == recorder.recording
 
 
 def test_busy_on_both_tries_is_not_saved():

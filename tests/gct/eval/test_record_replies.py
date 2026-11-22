@@ -202,10 +202,8 @@ def test_a_busy_try_rescued_by_the_retry_is_recorded_and_the_run_goes_on(replies
     assert command.main(["--stand-in"]) == 0
 
     recording = Recording.read(replies / "standin.json")
-    assert [(c.busy, c.reply is None) for c in recording.questions["s003"]][0] == (
-        "rate limited",
-        True,
-    )
+    assert [(c.busy, c.reply is None) for c in recording.questions["s003"]][0] == (True, True)
+    assert "rate limited" not in (replies / "standin.json").read_text(encoding="utf-8")
     assert len(recording.questions["s003"]) == 2
     assert model.calls == 96
 
@@ -317,3 +315,16 @@ def test_unexpected_output_from_the_login_check_says_what_to_do(
     err = capsys.readouterr().err
     assert command.LOGIN_UNKNOWN in err
     assert "Expecting value" not in err
+
+
+def test_login_json_without_the_logged_in_field_is_not_called_signed_out(
+    replies, tmp_path, monkeypatch, capsys
+):
+    program = fake_claude_program(tmp_path, '{"signedIn": true, "authMethod": "claude.ai"}')
+    monkeypatch.setattr(command, "_claude_program", lambda: program)
+    monkeypatch.setattr(ClaudeGeneration, "generate", never_called)
+
+    assert command.main([]) == 1
+    err = capsys.readouterr().err
+    assert command.LOGIN_UNKNOWN in err
+    assert NOT_SIGNED_IN not in err

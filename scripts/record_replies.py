@@ -242,11 +242,13 @@ def _check_signed_in() -> None:
             timeout=LOGIN_CHECK_SECONDS,
             check=False,
         )
-        signed_in = json.loads(finished.stdout).get("loggedIn") is True
+        signed_in = json.loads(finished.stdout).get("loggedIn")
     except (OSError, subprocess.TimeoutExpired, ValueError, AttributeError) as err:
         raise Stop(LOGIN_UNKNOWN) from err
-    if not signed_in:
+    if signed_in is False:
         raise Stop(f"{NOT_SIGNED_IN} Nothing was asked.")
+    if signed_in is not True:
+        raise Stop(LOGIN_UNKNOWN)
 
 
 def _failed(question_id: str, error: Exception, shown: Path) -> str:

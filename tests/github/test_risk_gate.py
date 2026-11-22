@@ -1,13 +1,20 @@
-"""Tests for the PR risk gate: `.github/risk/risk_gate.py`, its rules file and its workflow (#211).
+"""Tests for the PR risk gate: `.github/risk/risk_gate.py`, its rules file and its workflow.
 
-Offline and free. The GitHub API is replaced by a small fake that records what the gate writes, so
-the whole flow (list files, set the label, pass or fail the check) runs without a network.
+#211 built it; #240 made the check pass for every tier (the label still shows the risk). Offline
+and free. The GitHub API is replaced by a small fake that records what the gate writes, or by a
+local HTTP server for the script run as CI runs it, so no test touches the network.
 """
 
 from __future__ import annotations
 
+import http.server
 import importlib.util
 import io
+import json
+import os
+import subprocess
+import sys
+import threading
 import urllib.error
 from pathlib import Path
 
@@ -211,31 +218,35 @@ def gate(gh):
     return code, "\n".join(lines)
 
 
-def test_readme_only_pr_is_low_and_passes():
-    gh = FakeGitHub([f("README.md")])
+# #240: the approval label #211 required on risk:high PRs. It no longer has any effect.
+OLD_APPROVAL_LABEL = "owner-ok"
+
+
+@pytest.mark.parametrize("with_old_label", [False, True])
+@pytest.mark.parametrize(
+    "path, want",
+    [
+        ("README.md", "risk:low"),
+        ("src/gct/cli.py", "risk:medium"),
+        ("migrations/0005_new.sql", "risk:high"),
+        (".github/workflows/ci.yml", "risk:high"),
+    ],
+)
+def test_every_tier_passes_and_is_labelled_with_or_without_the_old_label(
+    path, want, with_old_label
+):
+    labels = [OLD_APPROVAL_LABEL] if with_old_label else []
+    gh = FakeGitHub([f(path)], labels=labels)
     code, out = gate(gh)
     assert code == 0
-    assert gh.labels == ["risk:low"]
-    assert gh.writes == [("POST", f"/repos/{REPO}/issues/7/labels", {"labels": ["risk:low"]})]
+    assert "::error" not in out
+    assert out.splitlines()[0].startswith(want)
+    assert sorted(gh.labels) == sorted(labels + [want])
+    assert gh.writes == [("POST", f"/repos/{REPO}/issues/7/labels", {"labels": [want]})]
 
 
-def test_migrations_pr_fails_until_owner_ok_then_passes_without_a_push():
-    gh = FakeGitHub([f("migrations/0005_new.sql")])
-    code, out = gate(gh)
-    assert code == 1
-    assert gh.labels == ["risk:high"]
-    assert "add the owner-ok label to merge" in out
-
-    gh.labels.append("owner-ok")  # the owner adds the label; same files, no new push
-    code, out = gate(gh)
-    assert code == 0
-    assert sorted(gh.labels) == ["owner-ok", "risk:high"]
-
-
-def test_owner_ok_does_nothing_on_low_or_medium():
-    gh = FakeGitHub([f("src/gct/cli.py")], labels=["owner-ok"])
-    assert gate(gh)[0] == 0
-    assert sorted(gh.labels) == ["owner-ok", "risk:medium"]
+def test_gate_script_no_longer_mentions_the_old_label():
+    assert OLD_APPROVAL_LABEL not in (RISK_DIR / "risk_gate.py").read_text(encoding="utf-8")
 
 
 def test_older_risk_label_is_replaced():
@@ -257,14 +268,14 @@ def test_correct_label_already_present_writes_nothing():
 
 def test_moving_a_high_file_out_of_its_folder_stays_high():
     gh = FakeGitHub([f("src/gct/storage.py", previous="src/gct/db.py")])
-    assert gate(gh)[0] == 1
+    assert gate(gh)[0] == 0
     assert gh.labels == ["risk:high"]
 
 
 def test_every_page_of_files_is_read():
     files = [f(f"docs/page{i}.md") for i in range(250)] + [f("migrations/0009.sql")]
     gh = FakeGitHub(files)
-    assert gate(gh)[0] == 1
+    assert gate(gh)[0] == 0
     assert gh.labels == ["risk:high"]
 
 
@@ -277,14 +288,15 @@ def test_exactly_one_full_page_is_read_once():
 def test_more_files_than_github_will_list_is_high():
     gh = FakeGitHub([f(f"docs/p{i}.md") for i in range(3000)], changed_files=3500)
     code, out = gate(gh)
-    assert code == 1
+    assert code == 0
     assert gh.labels == ["risk:high"]
     assert "listed 3000 of 3500" in out
 
 
 def test_files_missing_from_the_listing_is_high():
     gh = FakeGitHub([f("README.md")], changed_files=2)
-    assert gate(gh)[0] == 1
+    assert gate(gh)[0] == 0
+    assert gh.labels == ["risk:high"]
 
 
 def test_label_write_failure_on_own_repo_fails_the_check():
@@ -293,15 +305,29 @@ def test_label_write_failure_on_own_repo_fails_the_check():
         gate(gh)
 
 
-def test_fork_pr_cannot_be_labelled_but_is_still_gated():
+def test_github_refusing_to_list_files_fails_the_check():
+    gh = FakeGitHub([f("migrations/0005_new.sql")])
+    real = gh.__call__
+
+    def refusing(method, path, token, body=None):
+        if "/files?" in path:
+            raise urllib.error.HTTPError(path, 500, "down", {}, io.BytesIO())
+        return real(method, path, token, body)
+
+    with pytest.raises(urllib.error.HTTPError):
+        risk_gate.run_gate(refusing, REPO, 7, "tkn", RULES, out=lambda _: None)
+    assert gh.writes == []
+
+
+def test_fork_pr_cannot_be_labelled_and_still_passes():
     gh = FakeGitHub([f("src/gct/db.py")], head_repo="someone/fork", fail_writes=403)
     code, out = gate(gh)
-    assert code == 1
+    assert code == 0
+    assert out.splitlines()[0].startswith("risk:high")
     assert "::warning" in out
-    assert "add the owner-ok label to merge" in out
 
 
-def test_fork_pr_whose_fork_was_deleted_is_still_gated():
+def test_fork_pr_whose_fork_was_deleted_passes():
     gh = FakeGitHub([f("README.md")], head_repo=None, fail_writes=403)
     assert gate(gh)[0] == 0
 
@@ -322,6 +348,82 @@ def test_classify_command(capsys):
     rules = str(RISK_DIR / "rules.txt")
     assert risk_gate.main(["--rules", rules, "classify", "README.md", "src/gct/cli.py"]) == 0
     assert capsys.readouterr().out.strip() == "medium"
+
+
+# ---------------------------------------------------------------- the script as CI runs it
+
+
+class _LocalGitHub(http.server.BaseHTTPRequestHandler):
+    files: list = []
+    refuse_files = False
+    posted: list = []
+
+    def _send(self, status, payload):
+        raw = json.dumps(payload).encode()
+        self.send_response(status)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(raw)))
+        self.end_headers()
+        self.wfile.write(raw)
+
+    def do_GET(self):
+        if self.path == f"/repos/{REPO}/pulls/7":
+            head = {"repo": {"full_name": REPO}}
+            self._send(200, {"labels": [], "changed_files": len(self.files), "head": head})
+        elif self.path.startswith(f"/repos/{REPO}/pulls/7/files?") and not self.refuse_files:
+            page = int(self.path.rsplit("page=", 1)[1])
+            self._send(200, self.files if page == 1 else [])
+        else:
+            self._send(403, {"message": "refused"})
+
+    def do_POST(self):
+        body = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
+        type(self).posted.append(body)
+        self._send(200, [])
+
+    def log_message(self, *args):
+        pass
+
+
+def run_script_against_local_github(files, refuse_files=False):
+    handler = type("Handler", (_LocalGitHub,), {"files": files, "refuse_files": refuse_files})
+    handler.posted = []
+    server = http.server.HTTPServer(("127.0.0.1", 0), handler)
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    env = {
+        "PATH": os.environ.get("PATH", ""),
+        "GITHUB_API_URL": f"http://127.0.0.1:{server.server_port}",
+        "GITHUB_TOKEN": "tkn",
+        "REPO": REPO,
+        "PR": "7",
+    }
+    script = RISK_DIR / "risk_gate.py"
+    try:
+        done = subprocess.run(
+            [sys.executable, str(script), "--rules", str(RISK_DIR / "rules.txt"), "gate"],
+            env=env,
+            capture_output=True,
+            text=True,
+            timeout=60,
+        )
+    finally:
+        server.shutdown()
+        server.server_close()
+    return done, handler.posted
+
+
+def test_script_passes_a_high_pr_with_no_approval_label():
+    done, posted = run_script_against_local_github([f("migrations/0005_new.sql")])
+    assert done.returncode == 0, done.stdout + done.stderr
+    assert done.stdout.startswith("risk:high")
+    assert posted == [{"labels": ["risk:high"]}]
+
+
+def test_script_fails_when_github_refuses_to_list_files():
+    done, posted = run_script_against_local_github([f("README.md")], refuse_files=True)
+    assert done.returncode != 0
+    assert "HTTPError" in done.stderr
+    assert posted == []
 
 
 # ---------------------------------------------------------------- the workflow file

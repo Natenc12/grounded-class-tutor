@@ -1,7 +1,9 @@
-"""Label a pull request by risk from the paths it changes; block risk:high until `owner-ok`.
+"""Label a pull request by risk from the paths it changes.
 
-Issue #211. Run by .github/workflows/risk-gate.yml on every pull request event. Standard library
-only, so CI runs it with the runner's own python3 and installs nothing.
+Issues #211 and #240. The check passes for every tier: the label shows the risk, and the owner
+approves each merge himself. It fails only on a real fault, such as GitHub refusing to list the
+files or set the label. Run by .github/workflows/risk-gate.yml on every pull request event.
+Standard library only, so CI runs it with the runner's own python3 and installs nothing.
 
 Two ways to run it:
   risk_gate.py --rules rules.txt gate            # CI: needs GITHUB_TOKEN, REPO, PR in the env
@@ -27,8 +29,6 @@ from pathlib import Path
 
 TIERS = ("low", "medium", "high")
 RISK_LABELS = tuple(f"risk:{t}" for t in TIERS)
-OWNER_OK = "owner-ok"
-GATE_MESSAGE = "This pull request is risk:high: add the owner-ok label to merge."
 # GitHub's "list pull request files" endpoint returns at most 3,000 files. Past that we cannot
 # see every path, so we cannot prove the PR is not high: treat it as high.
 GITHUB_FILE_LIMIT = 3000
@@ -136,7 +136,7 @@ def sync_risk_label(
 
 
 def run_gate(api: Api, repo: str, pr: int, token: str, rules: list[Rule], out=print) -> int:
-    """Label the PR and return the check's exit code: 1 if risk:high without owner-ok."""
+    """Label the PR and return the check's exit code: 0 for every tier. API faults raise."""
     info = api("GET", f"/repos/{repo}/pulls/{pr}", token)
     labels = [label["name"] for label in info["labels"]]
     paths, listed = changed_paths(api, repo, pr, token)
@@ -157,17 +157,11 @@ def run_gate(api: Api, repo: str, pr: int, token: str, rules: list[Rule], out=pr
     try:
         sync_risk_label(api, repo, pr, token, want, labels)
     except urllib.error.HTTPError as err:
-        # A PR from a fork gets a read-only token, so it cannot be labelled. The gate below still
-        # applies. On our own repo a failed label write is a real fault, so it fails the check.
+        # A PR from a fork gets a read-only token, so it cannot be labelled; the tier is still in
+        # the log. On our own repo a failed label write is a real fault, so it fails the check.
         if not from_fork:
             raise
         out(f"::warning title=risk-gate::Could not set {want} on a PR from a fork ({err.code}).")
-
-    if tier == "high" and OWNER_OK not in labels:
-        out(f"::error title=risk-gate::{GATE_MESSAGE}")
-        return 1
-    if tier == "high":
-        out("risk:high, and owner-ok is present: passing.")
     return 0
 
 
@@ -175,7 +169,7 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--rules", required=True, type=Path)
     sub = parser.add_subparsers(dest="command", required=True)
-    sub.add_parser("gate", help="label the PR in $PR of $REPO and gate it (CI)")
+    sub.add_parser("gate", help="label the PR in $PR of $REPO by risk (CI)")
     classify = sub.add_parser("classify", help="print the tier for the given paths")
     classify.add_argument("paths", nargs="*")
     args = parser.parse_args(argv)

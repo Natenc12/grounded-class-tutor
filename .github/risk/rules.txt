@@ -1,7 +1,8 @@
 # Risk rules for pull requests (issue #211). The one place these paths live.
 #
 # CI's `risk-gate` check labels every PR risk:high, risk:medium or risk:low from the paths it
-# changes, and a risk:high PR fails the check until the owner adds the `owner-ok` label.
+# changes. The label shows how careful to be; it does not block a merge (#240). The check passes
+# for every tier and fails only if it cannot read the PR or set the label.
 #
 # One rule per line: `high <pattern>` or `low <pattern>`.
 #   - A pattern ending in `/` is a folder: it matches everything under it.

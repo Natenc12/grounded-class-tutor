@@ -1,14 +1,18 @@
 from __future__ import annotations
 
+import hashlib
+import json
 import re
 import sqlite3
 import uuid
-from collections.abc import Iterator
+from collections.abc import Iterator, Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass
 from functools import cache
 from pathlib import Path
 
+from gct.ingest.chunk import chunk_units
+from gct.ingest.parse import ParsedUnit
 from gct.library.schema import APPLICATION_ID, STATEMENTS, VERSION
 
 
@@ -36,10 +40,46 @@ class ClassNameError(LibraryError):
     pass
 
 
+class UnknownDocumentError(LibraryError):
+    pass
+
+
+class UnknownPassageError(LibraryError):
+    pass
+
+
+class DocumentContentError(LibraryError):
+    pass
+
+
 @dataclass(frozen=True)
 class LibraryClass:
     id: str
     name: str
+
+
+@dataclass(frozen=True)
+class Document:
+    id: str
+    class_id: str
+    filename: str
+    sha256: str
+    page_count: int
+
+
+@dataclass(frozen=True)
+class Page:
+    page_or_slide: int
+    text: str
+
+
+@dataclass(frozen=True)
+class Passage:
+    id: str
+    document_id: str
+    filename: str
+    page_or_slide: int
+    text: str
 
 
 _OWNED_TABLES = ("classes", "documents", "pages", "passages", "passages_fts")
@@ -122,6 +162,33 @@ def _checked_name(name: object) -> str:
     if "\x00" in name:
         raise ClassNameError("Remove the NUL character from the class name.")
     return name.strip()
+
+
+def _page_texts(page_count: int, units: Sequence[ParsedUnit]) -> list[str]:
+    if type(page_count) is not int or page_count < 1:
+        raise DocumentContentError("A document needs at least one page.")
+    texts = [""] * page_count
+    seen: set[int] = set()
+    for unit in units:
+        page = unit.page_or_slide
+        if type(page) is not int or not 1 <= page <= page_count or page in seen:
+            raise DocumentContentError(
+                f"Page {page!r} does not fit a document of {page_count} pages, or appears twice."
+            )
+        try:
+            unit.text.encode("utf-8")
+        except UnicodeEncodeError:
+            raise DocumentContentError(
+                f"Page {page} contains characters that cannot be saved."
+            ) from None
+        seen.add(page)
+        texts[page - 1] = unit.text
+    return texts
+
+
+def _stable_id(class_id: str, sha256: str, page: int, ordinal: int, text: str) -> str:
+    identity = json.dumps([class_id, sha256, page, ordinal, text], ensure_ascii=True)
+    return hashlib.sha256(identity.encode("ascii")).hexdigest()
 
 
 class Library:
@@ -236,6 +303,138 @@ class Library:
             cursor = self._connection.execute("DELETE FROM classes WHERE id = ?", (class_id,))
             if cursor.rowcount == 0:
                 raise UnknownClassError("That class is not in this library; refresh the list.")
+
+    @contextmanager
+    def _reading(self, failure: str) -> Iterator[None]:
+        try:
+            yield
+        except sqlite3.Error as exc:
+            raise LibraryError(f"{failure}: {_cause(exc)}.") from exc
+
+    def _refuse_unknown_class(self, class_id: str) -> None:
+        if self._connection.execute("SELECT 1 FROM classes WHERE id = ?", (class_id,)).fetchone():
+            return
+        raise UnknownClassError("That class is not in this library; refresh the list.")
+
+    def _document(self, class_id: str, document_id: str) -> Document:
+        row = self._connection.execute(
+            "SELECT id, class_id, filename, sha256, page_count FROM documents "
+            "WHERE id = ? AND class_id = ?",
+            (document_id, class_id),
+        ).fetchone()
+        if row is None:
+            raise UnknownDocumentError("That document is not in this class; refresh the list.")
+        return Document(*row)
+
+    def save_document(
+        self,
+        class_id: str,
+        filename: str,
+        original: bytes,
+        page_count: int,
+        units: Sequence[ParsedUnit],
+    ) -> Document:
+        if not isinstance(filename, str) or not filename.strip():
+            raise DocumentContentError("A document needs a filename.")
+        if not isinstance(original, bytes) or not original:
+            raise DocumentContentError("A document needs the original file's bytes.")
+        texts = _page_texts(page_count, units)
+        if not any(text.strip() for text in texts):
+            raise DocumentContentError(f"{filename} has no text to search.")
+        sha256 = hashlib.sha256(original).hexdigest()
+        chunks = chunk_units(
+            [
+                ParsedUnit(text=text, file=filename, page_or_slide=page)
+                for page, text in enumerate(texts, start=1)
+            ]
+        )
+        saved = Document(
+            id=str(uuid.uuid4()),
+            class_id=class_id,
+            filename=filename,
+            sha256=sha256,
+            page_count=page_count,
+        )
+        ordinals: dict[int, int] = {}
+        passages = []
+        for chunk in chunks:
+            ordinal = ordinals.get(chunk.page_or_slide, 0)
+            ordinals[chunk.page_or_slide] = ordinal + 1
+            passages.append(
+                (
+                    _stable_id(class_id, sha256, chunk.page_or_slide, ordinal, chunk.text),
+                    saved.id,
+                    chunk.page_or_slide,
+                    ordinal,
+                    chunk.text,
+                )
+            )
+        with self._transaction(f"{filename} was not saved"):
+            self._refuse_unknown_class(class_id)
+            existing = self._connection.execute(
+                "SELECT id FROM documents WHERE class_id = ? AND sha256 = ?", (class_id, sha256)
+            ).fetchone()
+            if existing is not None:
+                return self._document(class_id, existing[0])
+            self._connection.execute(
+                "INSERT INTO documents (id, class_id, filename, sha256, page_count, original) "
+                "VALUES (?, ?, ?, ?, ?, ?)",
+                (saved.id, class_id, filename, sha256, page_count, original),
+            )
+            self._connection.executemany(
+                "INSERT INTO pages (document_id, page_count, page_or_slide, text) "
+                "VALUES (?, ?, ?, ?)",
+                [(saved.id, page_count, page, text) for page, text in enumerate(texts, start=1)],
+            )
+            self._connection.executemany(
+                "INSERT INTO passages (stable_id, document_id, page_or_slide, ordinal, text) "
+                "VALUES (?, ?, ?, ?, ?)",
+                passages,
+            )
+        return saved
+
+    def list_documents(self, class_id: str) -> list[Document]:
+        with self._reading("The documents could not be listed"):
+            self._refuse_unknown_class(class_id)
+            rows = self._connection.execute(
+                "SELECT id, class_id, filename, sha256, page_count FROM documents "
+                "WHERE class_id = ? ORDER BY filename COLLATE NOCASE, filename, sha256",
+                (class_id,),
+            ).fetchall()
+        return [Document(*row) for row in rows]
+
+    def document_pages(self, class_id: str, document_id: str) -> list[Page]:
+        with self._reading("The pages could not be read"):
+            self._document(class_id, document_id)
+            rows = self._connection.execute(
+                "SELECT page_or_slide, text FROM pages WHERE document_id = ? "
+                "ORDER BY page_or_slide",
+                (document_id,),
+            ).fetchall()
+        return [Page(*row) for row in rows]
+
+    def delete_document(self, class_id: str, document_id: str) -> None:
+        with self._transaction("The document was not deleted"):
+            cursor = self._connection.execute(
+                "DELETE FROM documents WHERE id = ? AND class_id = ?", (document_id, class_id)
+            )
+            if cursor.rowcount == 0:
+                raise UnknownDocumentError("That document is not in this class; refresh the list.")
+
+    def passage(self, class_id: str, passage_id: str) -> Passage:
+        with self._reading("The passage could not be read"):
+            row = self._connection.execute(
+                "SELECT passages.stable_id, documents.id, documents.filename, "
+                "passages.page_or_slide, passages.text "
+                "FROM passages JOIN documents ON documents.id = passages.document_id "
+                "WHERE passages.stable_id = ? AND documents.class_id = ?",
+                (passage_id, class_id),
+            ).fetchone()
+        if row is None:
+            raise UnknownPassageError(
+                "That passage is not in this class; it may have been deleted."
+            )
+        return Passage(*row)
 
     def check(self) -> list[str]:
         try:

@@ -1,9 +1,9 @@
 """Fixtures for the library tests.
 
-Saving documents arrives with #227, so these tests put documents in with plain SQL through
-`raw_connection`, which switches foreign keys on the way every writer to the file must. That is
-also the point: the rules under test live in the file's schema, so they hold for any writer, not
-only for the `Library` methods.
+The schema tests put documents in with plain SQL through `raw_connection`, which switches foreign
+keys on the way every writer to the file must, rather than through `Library.save_document`. The
+rules under test live in the file's schema, so they hold for any writer, not only for the
+`Library` methods.
 """
 
 from __future__ import annotations
@@ -55,9 +55,9 @@ def _add_document(
 ) -> str:
     """Insert one complete document (every page, one passage per page with text) in a transaction.
 
-    This is the shape #227 will write: the document row, a row for each of its pages including
-    pages without text, and passages only on pages that have text. The passage `stable_id` here
-    is a stand-in; #227 decides how it is derived.
+    This is the shape `Library.save_document` writes: the document row, a row for each of its
+    pages including pages without text, and passages only on pages that have text. The passage
+    `stable_id` here is a stand-in for the derived id `save_document` gives.
     """
     document_id = str(uuid.uuid4())
     original = ("%PDF-1.7 " + filename + " ".join(pages)).encode()

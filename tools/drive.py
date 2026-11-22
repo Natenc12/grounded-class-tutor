@@ -1,21 +1,24 @@
 """Drive the whole tutor once, for free: `uv run python tools/drive.py`.
 
-It always uses the stand-in model and a throwaway library, whatever the environment says, and ends
-with DRIVE PASSED or DRIVE FAILED at: <step>.
+It always uses the stand-in model, or a scripted reply built here, and a throwaway library, whatever
+the environment says. It ends with DRIVE PASSED or DRIVE FAILED at: <step>.
 """
 
 from __future__ import annotations
 
 import io
 import re
+import shutil
+import sqlite3
 import sys
 import tempfile
 import traceback
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from pathlib import Path
 from typing import TextIO
 
 from gct.library.cli import main as tutor
+from gct.providers.base import Generation, Message
 from gct.providers.standin import StandInGeneration
 
 PDF = "hydrology-notes.pdf"
@@ -32,7 +35,11 @@ PPTX_SLIDES = [
 HYDROLOGY = "Hydrology"
 HISTORY = "History"
 COVERED = "What feeds the base flow of a river?"
+LAST_PAGE = "What slows the recharge of the water table?"
 LEAGUE = "Who founded the Ostren League?"
+UNCITED = "The base flow of a river is fed by groundwater.\nCOVERAGE: complete"
+DECLINED = "COVERAGE: gaps: what feeds the base flow of a river"
+HALF = "The base flow of a river is fed by groundwater [S1].\nCOVERAGE: gaps: how fast it moves"
 
 _SOURCE = re.compile(r"^  \[S\d+\] (?P<where>.+)$", re.M)
 
@@ -41,24 +48,48 @@ class StepFailed(Exception):
     pass
 
 
+class Scripted:
+    model_id = "drive-scripted-reply"
+
+    def __init__(self, reply: str) -> None:
+        self.reply = reply
+
+    def generate(self, messages: Sequence[Message]) -> str:
+        return self.reply
+
+
 class Drive:
     def __init__(self, folder: Path) -> None:
         self.folder = folder
         self.library = folder / "drive.sqlite3"
 
-    def run(self, *argv: str) -> str:
+    def run(
+        self,
+        *argv: str,
+        model: Callable[[], Generation] = StandInGeneration,
+        library: Path | None = None,
+        code: int = 0,
+    ) -> str:
+        library = library or self.library
         output = io.StringIO()
-        code = tutor(
-            [argv[0], "--library", str(self.library), *argv[1:]],
-            generator=StandInGeneration,
-            out=output,
-            err=output,
-        )
-        if code != 0:
-            raise StepFailed(f"`{' '.join(argv)}` stopped with code {code}:\n{output.getvalue()}")
+        try:
+            stopped = tutor(
+                [argv[0], "--library", str(library), *argv[1:]],
+                generator=model,
+                out=output,
+                err=output,
+            )
+        except SystemExit as exit:
+            raise StepFailed(
+                f"`{' '.join(argv)}` exited early with {exit.code!r}:\n{output.getvalue()}"
+            ) from exit
+        if stopped != code:
+            raise StepFailed(
+                f"`{' '.join(argv)}` stopped with code {stopped}, not {code}:\n{output.getvalue()}"
+            )
         header, _, printed = output.getvalue().partition("\n")
-        if header != f"Library: {self.library}":
-            raise StepFailed(f"Expected the first line to name {self.library}, got {header!r}")
+        if header != f"Library: {library}":
+            raise StepFailed(f"Expected the first line to name {library}, got {header!r}")
         return printed.lstrip("\n")
 
     def build_files(self) -> None:
@@ -97,6 +128,9 @@ class Drive:
     def ask_covered(self) -> None:
         _grounded(self.run("ask", HYDROLOGY, COVERED), f"{PDF}, page 2")
 
+    def ask_last_page(self) -> None:
+        _grounded(self.run("ask", HYDROLOGY, LAST_PAGE), f"{PDF}, page 3")
+
     def ask_uncovered(self) -> None:
         printed = self.run("ask", HYDROLOGY, LEAGUE)
         if not printed.startswith("REFUSAL:") or _SOURCE.search(printed):
@@ -105,8 +139,37 @@ class Drive:
     def ask_slides(self) -> None:
         _grounded(self.run("ask", HISTORY, LEAGUE), f"{PPTX}, slide 1")
 
+    def uncited(self) -> None:
+        printed = self.run("ask", HYDROLOGY, COVERED, model=lambda: Scripted(UNCITED))
+        if not printed.startswith("INTEGRITY_FLAGGED:") or _SOURCE.search(printed):
+            raise StepFailed(f"Expected an unchecked answer with no sources, got:\n{printed}")
+
+    def declined(self) -> None:
+        printed = self.run("ask", HYDROLOGY, COVERED, model=lambda: Scripted(DECLINED))
+        if not printed.startswith("REFUSAL:") or _SOURCE.search(printed):
+            raise StepFailed(f"Expected the model's refusal to be shown as one, got:\n{printed}")
+
+    def half_covered(self) -> None:
+        printed = self.run("ask", HYDROLOGY, COVERED, model=lambda: Scripted(HALF))
+        if not printed.startswith("PARTIAL:"):
+            raise StepFailed(f"Expected a partial answer, got:\n{printed}")
+        _expect(printed, f"  [S1] {PDF}, page ")
+        _expect(printed, "Not covered by your files:\n  how fast it moves\n")
+
     def check_library(self) -> None:
         _expect(self.run("check"), "The library is in good order.")
+
+    def check_damaged_copy(self) -> None:
+        damaged = self.folder / "damaged.sqlite3"
+        shutil.copyfile(self.library, damaged)
+        connection = sqlite3.connect(damaged, isolation_level=None)
+        try:
+            connection.execute("PRAGMA foreign_keys = OFF")
+            connection.execute("DELETE FROM documents WHERE filename = ?", (PDF,))
+        finally:
+            connection.close()
+        printed = self.run("check", library=damaged, code=1)
+        _expect(printed, "The library has problems:\n  ")
 
 
 def _expect(printed: str, wanted: str) -> None:
@@ -134,9 +197,14 @@ def drive(out: TextIO | None = None) -> int:
                 ("import the PowerPoint", car.import_pptx),
                 ("list the library", car.list_library),
                 ("ask a covered question", car.ask_covered),
+                ("ask a question only the PDF's last page answers", car.ask_last_page),
                 ("ask a question this class does not cover", car.ask_uncovered),
                 ("ask a question the slides cover", car.ask_slides),
+                ("refuse to vouch for an answer with no citations", car.uncited),
+                ("show a model that declines as a refusal", car.declined),
+                ("print what a half-covered answer leaves out", car.half_covered),
                 ("check the library", car.check_library),
+                ("find the damage in a damaged copy of the library", car.check_damaged_copy),
             ]
             for step, run in steps:
                 run()
@@ -149,7 +217,7 @@ def drive(out: TextIO | None = None) -> int:
         print(failure, file=out)
         print(f"DRIVE FAILED at: {step}", file=out)
         return 1
-    except Exception:
+    except Exception, SystemExit:
         traceback.print_exc(file=out)
         print(f"DRIVE FAILED at: {step}", file=out)
         return 1

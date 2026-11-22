@@ -255,18 +255,40 @@ def test_list_of_an_empty_library_says_how_to_make_a_class(run, library: Path):
     )
 
 
-def test_import_prints_the_importers_own_message(run, tmp_path: Path):
+def test_import_prints_the_importers_own_message_and_the_next_step(
+    run, library: Path, tmp_path: Path
+):
     run("add-class", "Hydrology")
     pdf = write_pdf(tmp_path / "lecture-03.pdf", HYDROLOGY_PAGES)
 
     assert run("import", "Hydrology", str(pdf), generator=never) == (
         0,
-        "Imported lecture-03.pdf (2 pages).\n",
+        "Imported lecture-03.pdf (2 pages).\n"
+        "Ask the class a question with:\n"
+        f"  uv run tutor ask --library {library} Hydrology QUESTION\n",
         "",
     )
     assert run("import", "Hydrology", str(pdf)) == (
         0,
-        "lecture-03.pdf is already in this class, so nothing was added.\n",
+        "lecture-03.pdf is already in this class, so nothing was added.\n"
+        "Ask the class a question with:\n"
+        f"  uv run tutor ask --library {library} Hydrology QUESTION\n",
+        "",
+    )
+
+
+def test_a_path_with_no_file_and_a_folder_get_plain_messages(run, tmp_path: Path):
+    run("add-class", "Hydrology")
+    missing = tmp_path / "lectur-03.pdf"
+    folder = tmp_path / "Week 1"
+    folder.mkdir()
+
+    assert run("import", "Hydrology", str(missing), str(folder), generator=never) == (
+        1,
+        f"There is no file at {missing}. Check the file's name and folder, then try again; "
+        "you can drag the file from Finder onto Terminal to type its path.\n"
+        f"{folder} is a folder, not a file. Import the PDF or PowerPoint files inside it "
+        "instead.\n",
         "",
     )
 
@@ -284,9 +306,9 @@ def test_import_of_several_files_reports_each_and_fails_if_any_is_refused(
     )
 
     assert (code, err) == (1, "")
-    assert out.splitlines() == [
-        "lectur-03.pdf is not there any more. Check that it has not been moved, renamed or "
-        "deleted, then try again.",
+    assert out.splitlines()[:-2] == [
+        f"There is no file at {tmp_path / 'lectur-03.pdf'}. Check the file's name and folder, "
+        "then try again; you can drag the file from Finder onto Terminal to type its path.",
         "scan.pdf has no text the tutor can search; it is probably a scan or made only of "
         "pictures. Use a version with text you can select, or run text recognition (OCR) on it "
         "first.",
@@ -364,8 +386,10 @@ def test_a_class_name_matches_whatever_its_capitals(run, hydrology: Path):
 def test_an_exact_name_wins_over_one_that_differs_only_in_capitals(
     run, library: Path, tmp_path: Path
 ):
-    run("add-class", "Bio")
-    run("add-class", "bio")
+    Library(library).close()
+    with Library(library) as opened:
+        opened.create_class("Bio")
+        opened.create_class("bio")
     pdf = write_pdf(tmp_path / "cells.pdf", ["Cells divide by mitosis."])
 
     run("import", "bio", str(pdf))
@@ -390,7 +414,8 @@ def test_ask_prints_the_state_the_answer_and_each_source_with_its_page(run, hydr
         "Sources:\n"
         "  [S1] lecture-03.pdf, page 2\n"
         "\n"
-        "Answered by: standin-quoted-sentence-v1\n",
+        "Answered by the free stand-in model (standin-quoted-sentence-v1), which does not "
+        "really read.\n",
         "",
     )
 
@@ -409,15 +434,12 @@ def test_a_source_in_a_powerpoint_is_named_by_its_slide(run, tmp_path: Path):
     assert "  [S1] week-02.pptx, slide 2\n" in out
 
 
-def test_ask_prints_a_refusal_and_the_gap_when_the_files_do_not_cover_it(run, hydrology: Path):
+def test_ask_says_plainly_when_nothing_in_the_files_matched(run, hydrology: Path):
     assert run("ask", "Hydrology", "Who won the 1966 World Cup?") == (
         0,
         "\nREFUSAL: not answered, because your files for this class do not cover it.\n"
         "\n"
-        "Not covered by your files:\n"
-        "  no course material was retrieved for this question\n"
-        "\n"
-        "Answered by: standin-quoted-sentence-v1\n",
+        "Nothing in your files for this class matched this question.\n",
         "",
     )
 
@@ -473,7 +495,7 @@ def test_every_answer_state_has_a_plain_heading():
 
 def test_the_claude_add_on_not_installed_is_a_plain_message(run, hydrology: Path, monkeypatch):
     monkeypatch.setenv(active.PROVIDERS_ENV, active.CLAUDE)
-    monkeypatch.setattr("gct.providers.claude.sdk_installed", lambda: False)
+    monkeypatch.setattr(cli, "sdk_installed", lambda: False)
 
     assert run("ask", "Hydrology", "What feeds base flow?", generator=cli.selected_generator) == (
         1,
@@ -482,13 +504,42 @@ def test_the_claude_add_on_not_installed_is_a_plain_message(run, hydrology: Path
     )
 
 
-def test_a_misspelt_model_choice_is_a_plain_message(run, hydrology: Path, monkeypatch):
-    monkeypatch.setenv(active.PROVIDERS_ENV, "claud")
+@pytest.mark.parametrize("typo", ["cluade", "claud", "open ai"])
+def test_a_misspelt_model_choice_points_to_claude_never_the_paid_one(
+    run, hydrology: Path, monkeypatch, typo
+):
+    monkeypatch.setenv(active.PROVIDERS_ENV, typo)
 
     code, out, err = run("ask", "Hydrology", "x", generator=cli.selected_generator)
 
     assert (code, out) == (1, "")
-    assert err.startswith("GCT_PROVIDERS='claud' is not a provider set.")
+    assert err == (
+        f"GCT_PROVIDERS is set to {typo!r}, which the tutor does not recognise. To get answers "
+        "from Claude on this Mac's login, remove the setting: unset GCT_PROVIDERS. To try the "
+        "tutor free with the stand-in model, which does not really read, use "
+        "GCT_PROVIDERS=standin.\n"
+    )
+    assert "openai" not in err.casefold()
+
+
+@pytest.mark.parametrize("written", ["Claude", " CLAUDE ", "claude"])
+def test_a_model_choice_ignores_capitals_and_spaces(built, monkeypatch, written):
+    monkeypatch.setenv(active.PROVIDERS_ENV, written)
+
+    cli.selected_generator()
+
+    assert built == ["claude"]
+
+
+def test_the_paid_model_without_a_key_points_back_to_claude(run, hydrology: Path, monkeypatch):
+    monkeypatch.setenv(active.PROVIDERS_ENV, "OpenAI")
+    monkeypatch.setenv("OPENAI_API_KEY", "")
+
+    code, _, err = run("ask", "Hydrology", "x", generator=cli.selected_generator)
+
+    assert code == 1
+    assert err.startswith("GCT_PROVIDERS=openai asks for OpenAI, a paid service")
+    assert "unset GCT_PROVIDERS" in err
 
 
 def test_the_owners_commands_use_the_model_the_environment_selects(monkeypatch):
@@ -698,3 +749,173 @@ def test_every_help_page_has_an_example():
             cli.main([*command, "--help"], generator=never)
         assert done.value.code == 0
         assert "Example: uv run tutor" in out.getvalue()
+
+
+def test_a_question_without_quotes_is_joined_into_one(run, hydrology: Path):
+    code, out, _ = run(
+        "ask", "Hydrology", "What", "feeds", "the", "base", "flow", "of", "a", "river"
+    )
+
+    assert code == 0
+    assert out.startswith("\nGROUNDED:")
+
+
+def test_the_library_flag_may_come_before_the_command(library: Path):
+    out = io.StringIO()
+    Library(library).close()
+
+    assert cli.main(["--library", str(library), "list"], generator=never, out=out) == 0
+    assert out.getvalue().startswith(f"Library: {library}\n")
+
+
+def usage(*argv: str) -> tuple[int, str, str]:
+    out, err = io.StringIO(), io.StringIO()
+    code = cli.main(list(argv), generator=never, out=out, err=err)
+    return code, out.getvalue(), err.getvalue()
+
+
+@pytest.mark.parametrize(
+    ("argv", "plain", "example"),
+    [
+        (
+            ["add-class", "Water", "Science"],
+            "A class name with spaces needs quotes around it.",
+            'uv run tutor add-class "Water Science"',
+        ),
+        (
+            ["aks", "Hydrology", "x"],
+            "There is no command called 'aks'. The commands are add-class, import, ask, list and "
+            "check; run uv run tutor on its own to see what each one does.",
+            'uv run tutor ask Hydrology "What is base flow?"',
+        ),
+        (
+            ["ask", "Hydrology"],
+            "Say which class to ask, then the question.",
+            'uv run tutor ask Hydrology "What is base flow?"',
+        ),
+        (
+            ["import", "Hydrology"],
+            "Say which class, then the file or files to add.",
+            "uv run tutor import Hydrology ~/Downloads/notes.pdf",
+        ),
+        (
+            ["add-class"],
+            "Say the name of the class to make.",
+            'uv run tutor add-class "Water Science"',
+        ),
+        (["list", "extra"], "The list command takes nothing after it.", "uv run tutor list"),
+        (
+            ["list", "--libary", "x"],
+            "There is no option --libary; the only option is --library PATH.",
+            "uv run tutor list",
+        ),
+        (
+            ["--library"],
+            "Put the library's path after --library.",
+            'uv run tutor ask Hydrology "What is base flow?"',
+        ),
+        (
+            ["--library", "x"],
+            "Say what to do: add-class, import, ask, list or check.",
+            'uv run tutor ask Hydrology "What is base flow?"',
+        ),
+    ],
+)
+def test_a_wrong_command_line_gets_one_plain_line_and_an_example(argv, plain, example):
+    assert usage(*argv) == (2, "", f"{plain}\nFor example: {example}\n")
+
+
+def test_an_unquoted_class_name_with_spaces_gets_a_hint_about_quotes(run):
+    run("add-class", "Water Science")
+
+    code, _, err = run("ask", "Water", "Science", "What", "is", "it", generator=never)
+
+    assert code == 1
+    assert err.endswith('A class name with spaces needs quotes around it, like "Water Science".\n')
+
+
+@pytest.mark.parametrize("question", [[""], ["  "], ["???"], ["?", "!"]])
+def test_an_empty_question_says_to_type_one_and_calls_no_model(run, hydrology: Path, question):
+    assert run("ask", "Hydrology", *question, generator=never) == (
+        1,
+        "",
+        "Type a question after the class name, for example:\n"
+        f"  uv run tutor ask --library {hydrology.parent / 'tutor.sqlite3'} Hydrology "
+        "'What is base flow?'\n",
+    )
+
+
+def test_a_class_with_no_files_says_so_and_calls_no_model(run, library: Path):
+    run("add-class", "Hydrology")
+
+    assert run("ask", "Hydrology", "What is base flow?", generator=never) == (
+        1,
+        "",
+        "The class Hydrology has no files yet, so there is nothing to answer from. Add one "
+        f"with:\n  uv run tutor import --library {library} Hydrology FILE\n",
+    )
+
+
+def test_a_class_name_differing_only_in_capitals_is_refused(run, library: Path):
+    run("add-class", "Biology")
+
+    assert run("add-class", "biology") == (
+        1,
+        "",
+        "There is already a class called 'Biology'. Names that differ only in capital letters "
+        "are too easy to mix up; choose another name.\n",
+    )
+    with Library(library) as opened:
+        assert [found.name for found in opened.list_classes()] == ["Biology"]
+
+
+@pytest.mark.parametrize(
+    ("written", "line"),
+    [
+        (None, "Answers come from Claude on this Mac's login."),
+        ("standin", "Answers come from the free stand-in model (GCT_PROVIDERS=standin)"),
+        ("OpenAI", "Answers come from OpenAI, a paid service, using your API key"),
+        ("cluade", "GCT_PROVIDERS is set to 'cluade', which the tutor does not recognise."),
+    ],
+)
+def test_the_overview_names_the_model_actually_in_use(monkeypatch, written, line):
+    if written is not None:
+        monkeypatch.setenv(active.PROVIDERS_ENV, written)
+
+    code, out, _ = usage()
+
+    assert code == 0
+    assert out.splitlines()[-1].startswith(line)
+
+
+class PaidLookalike(Scripted):
+    model_id = "gpt-test"
+
+
+def test_an_answer_from_the_paid_model_says_so_at_the_top_and_the_bottom(
+    run, hydrology: Path, monkeypatch
+):
+    monkeypatch.setattr(PaidLookalike, "__module__", "gct.providers.openai_provider")
+    reply = "Base flow is fed by groundwater [S1].\nCOVERAGE: complete"
+
+    code, out, _ = run(
+        "ask", "Hydrology", "What feeds base flow?", generator=lambda: PaidLookalike(reply)
+    )
+
+    assert code == 0
+    assert out.startswith("Using OpenAI, using your paid API key (gpt-test).\n")
+    assert out.endswith("\nAnswered by OpenAI, using your paid API key (gpt-test).\n")
+
+
+def test_a_long_gap_is_shortened(run, hydrology: Path):
+    long = "how " + "very " * 80 + "fast it moves"
+    reply = f"Base flow is fed by groundwater [S1].\nCOVERAGE: gaps: {long}"
+
+    code, out, _ = run(
+        "ask", "Hydrology", "What feeds base flow?", generator=lambda: Scripted(reply)
+    )
+
+    assert code == 0
+    gap = out.split("Not covered by your files:\n  ", 1)[1].splitlines()[0]
+    assert len(gap) <= cli.LONGEST_GAP
+    assert gap.endswith("…")

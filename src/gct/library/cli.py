@@ -3,26 +3,32 @@ from __future__ import annotations
 import argparse
 import logging
 import os
+import re
 import shlex
 import sys
 from collections.abc import Callable, Iterator, Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
-from typing import TextIO
+from typing import NoReturn, TextIO
 
-from gct.grounder.answer import GrounderResult, GrounderState
+from gct.config import load_settings
+from gct.contracts import AskResult
+from gct.grounder.answer import GrounderState
 from gct.library.ask import ask
 from gct.library.importer import Imported, import_file
 from gct.library.store import Library, LibraryClass, LibraryError
-from gct.providers import active
+from gct.providers.active import CHOICES, CLAUDE, OPENAI, PROVIDERS_ENV, STANDIN
 from gct.providers.base import Generation, Message
 from gct.providers.claude import INSTALL_HINT, ClaudeGeneration, sdk_installed
+from gct.providers.standin import StandInGeneration
 
 PROG = "uv run tutor"
 LIBRARY_ENV = "GCT_LIBRARY"
 DEFAULT_LIBRARY = "~/tutor.sqlite3"
+USAGE_MISTAKE = 2
 INTERRUPTED = 130
+LONGEST_GAP = 160
 
 STATE_HEADINGS = {
     GrounderState.GROUNDED: "answered from your files.",
@@ -31,6 +37,31 @@ STATE_HEADINGS = {
     GrounderState.INTEGRITY_FLAGGED: "the answer's sources could not be checked, so do not "
     "rely on it.",
     GrounderState.ERROR: "no answer.",
+}
+
+PROVIDER_LINES = {
+    CLAUDE: "Answers come from Claude on this Mac's login.",
+    STANDIN: "Answers come from the free stand-in model (GCT_PROVIDERS=standin), which matches "
+    "words and does not really read.",
+    OPENAI: "Answers come from OpenAI, a paid service, using your API key (GCT_PROVIDERS=openai).",
+}
+
+EXAMPLES = {
+    "": f'{PROG} ask Hydrology "What is base flow?"',
+    "add-class": f'{PROG} add-class "Water Science"',
+    "list": f"{PROG} list",
+    "import": f"{PROG} import Hydrology ~/Downloads/notes.pdf",
+    "ask": f'{PROG} ask Hydrology "What is base flow?"',
+    "check": f"{PROG} check",
+}
+
+NEEDS = {
+    "": "Say what to do: add-class, import, ask, list or check.",
+    "add-class": "Say the name of the class to make.",
+    "list": "The list command takes nothing after it.",
+    "import": "Say which class, then the file or files to add.",
+    "ask": "Say which class to ask, then the question.",
+    "check": "The check command takes nothing after it.",
 }
 
 OVERVIEW = f"""\
@@ -42,13 +73,24 @@ Your class tutor: ask questions of your own course files and get answers with th
   {PROG} list                                     see your classes and their files
   {PROG} check                                    check the library is sound
 
-Answers come from Claude on this Mac's login. Your library is {DEFAULT_LIBRARY} unless you add
---library PATH. More about one command: {PROG} ask --help
+Your library is {DEFAULT_LIBRARY} unless you add --library PATH.
+More about one command: {PROG} ask --help
 """
 
 
 class _Stop(Exception):
     pass
+
+
+class _Usage(Exception):
+    def __init__(self, command: str, message: str) -> None:
+        super().__init__(message)
+        self.command = command
+
+
+class _Parser(argparse.ArgumentParser):
+    def error(self, message: str) -> NoReturn:
+        raise _Usage(self.prog.removeprefix(PROG).strip(), message)
 
 
 @dataclass(frozen=True)
@@ -57,16 +99,36 @@ class _Place:
     typed: bool
 
 
+def provider() -> str:
+    written = os.environ.get(PROVIDERS_ENV, "").strip()
+    choice = written.casefold() or CLAUDE
+    if choice not in CHOICES:
+        raise _Stop(
+            f"{PROVIDERS_ENV} is set to {written!r}, which the tutor does not recognise. "
+            "To get answers from Claude on this Mac's login, remove the setting: "
+            f"unset {PROVIDERS_ENV}. To try the tutor free with the stand-in model, which does "
+            f"not really read, use {PROVIDERS_ENV}={STANDIN}."
+        )
+    return choice
+
+
 def selected_generator() -> Generation:
-    if not os.environ.get(active.PROVIDERS_ENV, "").strip():
+    choice = provider()
+    if choice == CLAUDE:
         if not sdk_installed():
             raise _Stop(INSTALL_HINT)
         return ClaudeGeneration()
-    try:
-        active.require_usable()
-    except RuntimeError as exc:
-        raise _Stop(str(exc)) from exc
-    return active.build_generator()
+    if choice == STANDIN:
+        return StandInGeneration()
+    if not load_settings().openai_api_key:
+        raise _Stop(
+            f"{PROVIDERS_ENV}={OPENAI} asks for OpenAI, a paid service, but no OpenAI API key is "
+            f"set. To use Claude on this Mac's login instead, remove the setting: "
+            f"unset {PROVIDERS_ENV}."
+        )
+    from gct.providers.openai_provider import OpenAIGeneration
+
+    return OpenAIGeneration()
 
 
 def run() -> int:
@@ -83,10 +145,19 @@ def main(
     out = out or sys.stdout
     err = err or sys.stderr
     if not argv:
-        print(OVERVIEW, end="", file=out)
+        print(OVERVIEW, file=out, end="")
+        try:
+            print(PROVIDER_LINES[provider()], file=out)
+        except _Stop as exc:
+            print(exc, file=out)
         return 0
-    arguments = _parser().parse_args(list(argv))
-    arguments.library = _place(arguments.library)
+    try:
+        arguments = _parse(argv)
+    except _Usage as mistake:
+        print(_plain(mistake), file=err)
+        print(f"For example: {EXAMPLES[mistake.command]}", file=err)
+        return USAGE_MISTAKE
+    arguments.library = _place(getattr(arguments, "library", None))
     print(f"Library: {arguments.library.path}", file=out, flush=True)
     try:
         with _pdf_reader_quiet():
@@ -99,6 +170,39 @@ def main(
         return INTERRUPTED
 
 
+def _parse(argv: Sequence[str]) -> argparse.Namespace:
+    arguments, extra = _parser().parse_known_args(list(argv))
+    if extra:
+        raise _Usage(arguments.command_name, "unrecognized arguments: " + " ".join(extra))
+    return arguments
+
+
+def _plain(mistake: _Usage) -> str:
+    message = str(mistake)
+    if "invalid choice" in message:
+        wrong = re.search(r"invalid choice: '([^']*)'", message)
+        named = f" called {wrong.group(1)!r}" if wrong else ""
+        return (
+            f"There is no command{named}. The commands are add-class, import, ask, list and "
+            f"check; run {PROG} on its own to see what each one does."
+        )
+    if message.startswith("the following arguments are required"):
+        return NEEDS[mistake.command]
+    if "expected one argument" in message:
+        return "Put the library's path after --library."
+    if message.startswith("unrecognized arguments:"):
+        extra = message.removeprefix("unrecognized arguments:").split()
+        options = [word for word in extra if word.startswith("-")]
+        if options:
+            return f"There is no option {options[0]}; the only option is --library PATH."
+        if mistake.command == "add-class":
+            return "A class name with spaces needs quotes around it."
+        if mistake.command in ("list", "check"):
+            return NEEDS[mistake.command]
+        return f"These words were not expected: {' '.join(extra)}."
+    return f"{message[:1].upper()}{message[1:]}."
+
+
 def _place(typed: str | None) -> _Place:
     if typed is not None:
         return _Place(Path(typed).expanduser(), typed=True)
@@ -107,39 +211,41 @@ def _place(typed: str | None) -> _Place:
 
 
 def _parser() -> argparse.ArgumentParser:
-    shared = argparse.ArgumentParser(add_help=False)
-    shared.add_argument(
-        "--library",
-        metavar="PATH",
-        help=f"use this library file instead of {DEFAULT_LIBRARY}",
-    )
-    parser = argparse.ArgumentParser(
+    library = {
+        "metavar": "PATH",
+        "default": argparse.SUPPRESS,
+        "help": f"use this library file instead of {DEFAULT_LIBRARY}",
+    }
+    shared = _Parser(add_help=False)
+    shared.add_argument("--library", **library)
+    parser = _Parser(
         prog=PROG,
         description="Your class tutor: ask questions of your own course files.",
-        epilog=f'Example: {PROG} ask Hydrology "What is base flow?"',
+        epilog=f"Example: {EXAMPLES['']}",
     )
+    parser.add_argument("--library", **library)
+    parser.set_defaults(command_name="")
     commands = parser.add_subparsers(title="commands", required=True, metavar="COMMAND")
 
-    def command(name: str, summary: str, example: str) -> argparse.ArgumentParser:
-        return commands.add_parser(
+    def command(name: str, summary: str, run: Callable[..., int]) -> argparse.ArgumentParser:
+        added = commands.add_parser(
             name,
             parents=[shared],
             help=summary,
             description=f"{summary[0].upper()}{summary[1:]}.",
-            epilog=f"Example: {PROG} {name} {example}".rstrip(),
+            epilog=f"Example: {EXAMPLES[name]}",
         )
+        added.set_defaults(command_name=name, command=run)
+        return added
 
-    add_class = command("add-class", "make a class (and the library, the first time)", "Hydrology")
+    add_class = command("add-class", "make a class (and the library, the first time)", _add_class)
     add_class.add_argument(
         "name", metavar="CLASS", help="the class name, in quotes if it has spaces"
     )
-    add_class.set_defaults(command=_add_class)
 
-    command("list", "list your classes and their files", "").set_defaults(command=_list)
+    command("list", "list your classes and their files", _list)
 
-    importing = command(
-        "import", "add PDF or PowerPoint files to a class", "Hydrology ~/Downloads/notes.pdf"
-    )
+    importing = command("import", "add PDF or PowerPoint files to a class", _import)
     importing.add_argument("class_name", metavar="CLASS", help="the class to add them to")
     importing.add_argument(
         "files",
@@ -148,14 +254,14 @@ def _parser() -> argparse.ArgumentParser:
         metavar="FILE",
         help="one or more files; you can drag a file from Finder onto Terminal",
     )
-    importing.set_defaults(command=_import)
 
-    asking = command("ask", "ask a class a question", 'Hydrology "What is base flow?"')
+    asking = command("ask", "ask a class a question", _ask)
     asking.add_argument("class_name", metavar="CLASS", help="the class to ask")
-    asking.add_argument("question", metavar="QUESTION", help="the question, in quotes")
-    asking.set_defaults(command=_ask)
+    asking.add_argument(
+        "question", nargs="+", metavar="QUESTION", help="the question, best kept in quotes"
+    )
 
-    command("check", "check the library is sound", "").set_defaults(command=_check)
+    command("check", "check the library is sound", _check)
     return parser
 
 
@@ -201,7 +307,12 @@ def _class(library: Library, place: _Place, name: str) -> LibraryClass:
             f"  {_command('add-class', place, name)}"
         )
     names = ", ".join(found.name for found in classes)
-    raise _Stop(f"There is no class called {name!r} in this library. Its classes are: {names}.")
+    message = f"There is no class called {name!r} in this library. Its classes are: {names}."
+    prefix = f"{wanted} ".casefold()
+    spaced = [found for found in classes if found.name.casefold().startswith(prefix)]
+    if spaced:
+        message += f'\nA class name with spaces needs quotes around it, like "{spaced[0].name}".'
+    raise _Stop(message)
 
 
 def _unit(filename: str) -> str:
@@ -216,6 +327,13 @@ def _add_class(arguments: argparse.Namespace, _: Callable[[], Generation], out: 
     place = arguments.library
     new = not place.path.exists()
     with Library(place.path) as library:
+        wanted = arguments.name.strip()
+        for found in library.list_classes():
+            if found.name != wanted and found.name.casefold() == wanted.casefold():
+                raise _Stop(
+                    f"There is already a class called {found.name!r}. Names that differ only in "
+                    "capital letters are too easy to mix up; choose another name."
+                )
         made = library.create_class(arguments.name)
     if new:
         print("This is a new library; it was made just now.", file=out)
@@ -247,26 +365,59 @@ def _import(arguments: argparse.Namespace, _: Callable[[], Generation], out: Tex
     with _existing(arguments.library) as library:
         target = _class(library, arguments.library, arguments.class_name)
         for file in arguments.files:
-            outcome = import_file(library, target.id, file)
-            refused += not isinstance(outcome, Imported)
-            print(outcome.message, file=out)
+            if file.is_dir():
+                message = (
+                    f"{file} is a folder, not a file. Import the PDF or PowerPoint files inside "
+                    "it instead."
+                )
+            elif not file.exists():
+                message = (
+                    f"There is no file at {file}. Check the file's name and folder, then try "
+                    "again; you can drag the file from Finder onto Terminal to type its path."
+                )
+            else:
+                outcome = import_file(library, target.id, file)
+                message = outcome.message
+                refused -= isinstance(outcome, Imported)
+            refused += 1
+            print(message, file=out)
+    if refused < len(arguments.files):
+        print("Ask the class a question with:", file=out)
+        print(f"  {_command('ask', arguments.library, target.name, 'QUESTION')}", file=out)
     return 1 if refused else 0
 
 
 def _ask(arguments: argparse.Namespace, generator: Callable[[], Generation], out: TextIO) -> int:
+    question = " ".join(arguments.question).strip()
     with _existing(arguments.library) as library:
         target = _class(library, arguments.library, arguments.class_name)
+        if not re.search(r"[^\W_]", question):
+            raise _Stop(
+                "Type a question after the class name, for example:\n"
+                f"  {_command('ask', arguments.library, target.name, 'What is base flow?')}"
+            )
+        if not library.list_documents(target.id):
+            raise _Stop(
+                f"The class {target.name} has no files yet, so there is nothing to answer from. "
+                f"Add one with:\n  {_command('import', arguments.library, target.name, 'FILE')}"
+            )
         model = _Watched(generator())
-        result = ask(library, target.id, arguments.question, generator=model).result
-    _print_answer(result, model, out)
-    return 1 if result.state is GrounderState.ERROR else 0
+        if model.paid:
+            print(f"Using {model.answered_by}.", file=out)
+        asked = ask(library, target.id, question, generator=model)
+    _print_answer(asked, model, out)
+    return 1 if asked.result.state is GrounderState.ERROR else 0
 
 
-def _print_answer(result: GrounderResult, model: _Watched, out: TextIO) -> None:
+def _print_answer(asked: AskResult, model: _Watched, out: TextIO) -> None:
+    result = asked.result
     print(f"\n{result.state.value}: {STATE_HEADINGS[result.state]}", file=out)
     if result.state is GrounderState.ERROR:
         failure = model.failure or (result.error and result.error.message)
         print(f"\n{failure}", file=out)
+        return
+    if not asked.retrieved:
+        print("\nNothing in your files for this class matched this question.", file=out)
         return
     if result.answer_prose:
         print(f"\n{result.answer_prose.strip()}", file=out)
@@ -285,8 +436,15 @@ def _print_answer(result: GrounderResult, model: _Watched, out: TextIO) -> None:
     if result.coverage.gaps:
         print("\nNot covered by your files:", file=out)
         for gap in result.coverage.gaps:
-            print(f"  {gap}", file=out)
-    print(f"\nAnswered by: {model.model_id}", file=out)
+            print(f"  {_shortened(gap)}", file=out)
+    print(f"\nAnswered by {model.answered_by}.", file=out)
+
+
+def _shortened(text: str) -> str:
+    text = " ".join(text.split())
+    if len(text) <= LONGEST_GAP:
+        return text
+    return f"{text[: LONGEST_GAP - 1].rstrip()}…"
 
 
 def _check(arguments: argparse.Namespace, _: Callable[[], Generation], out: TextIO) -> int:
@@ -305,10 +463,21 @@ class _Watched:
     def __init__(self, inner: Generation) -> None:
         self._inner = inner
         self.failure: Exception | None = None
+        self.paid = type(inner).__module__ == "gct.providers.openai_provider"
 
     @property
     def model_id(self) -> str:
         return self._inner.model_id
+
+    @property
+    def answered_by(self) -> str:
+        if self.paid:
+            return f"OpenAI, using your paid API key ({self.model_id})"
+        if isinstance(self._inner, ClaudeGeneration):
+            return f"Claude on this Mac's login ({self.model_id})"
+        if isinstance(self._inner, StandInGeneration):
+            return f"the free stand-in model ({self.model_id}), which does not really read"
+        return self.model_id
 
     def generate(self, messages: Sequence[Message]) -> str:
         try:

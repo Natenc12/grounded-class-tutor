@@ -6,6 +6,7 @@ imported.
 
 from __future__ import annotations
 
+import dataclasses
 import importlib.util
 import io
 import subprocess
@@ -15,7 +16,12 @@ from pathlib import Path
 
 import pytest
 
+import gct.grounder.answer as grounder
+import gct.library.cli as cli
+import gct.library.importer as importer
 import gct.search.keyword as keyword
+from gct.grounder.answer import GrounderState
+from gct.library import Library
 from gct.providers import active
 from gct.providers.claude import ClaudeGeneration
 from gct.providers.openai_provider import OpenAIGeneration
@@ -35,9 +41,14 @@ STEPS = [
     "import the PowerPoint",
     "list the library",
     "ask a covered question",
+    "ask a question only the PDF's last page answers",
     "ask a question this class does not cover",
     "ask a question the slides cover",
+    "refuse to vouch for an answer with no citations",
+    "show a model that declines as a refusal",
+    "print what a half-covered answer leaves out",
     "check the library",
+    "find the damage in a damaged copy of the library",
     "delete the throwaway library",
 ]
 
@@ -92,7 +103,7 @@ def test_the_environment_cannot_point_the_drive_at_a_real_model(monkeypatch, cho
     code, lines = drive()
 
     assert (code, lines[-1]) == (0, "DRIVE PASSED")
-    assert len(asked) == 2
+    assert len(asked) == 3
 
 
 def test_search_leaking_another_classs_passages_fails_at_the_ask_step(monkeypatch):
@@ -150,3 +161,64 @@ def test_the_drive_runs_from_any_folder_as_a_plain_script(tmp_path: Path):
     assert finished.returncode == 0, finished.stdout + finished.stderr
     assert finished.stdout.splitlines()[-1] == "DRIVE PASSED"
     assert finished.stderr == ""
+
+
+def _fails_at(step: str) -> list[str]:
+    code, lines = drive()
+    assert code == 1, lines
+    assert lines[-1] == f"DRIVE FAILED at: {step}"
+    return lines
+
+
+def test_import_dropping_a_files_last_page_fails_at_the_last_page_question(monkeypatch):
+    real = importer.parse_file
+    monkeypatch.setattr(importer, "parse_file", lambda path: real(path)[:-1])
+
+    _fails_at("ask a question only the PDF's last page answers")
+
+
+def test_accepting_an_answer_with_no_citations_fails_at_that_step(monkeypatch):
+    real = grounder._validate
+
+    def lenient(parsed, n_sources):
+        return [reason for reason in real(parsed, n_sources) if "citation" not in reason]
+
+    monkeypatch.setattr(grounder, "_validate", lenient)
+
+    _fails_at("refuse to vouch for an answer with no citations")
+
+
+def test_showing_a_models_refusal_as_an_answer_fails_at_that_step(monkeypatch):
+    real = grounder._decide
+
+    def answered(parsed, citations):
+        decided = real(parsed, citations)
+        if decided.state is GrounderState.REFUSAL:
+            return dataclasses.replace(decided, state=GrounderState.GROUNDED)
+        return decided
+
+    monkeypatch.setattr(grounder, "_decide", answered)
+
+    _fails_at("show a model that declines as a refusal")
+
+
+def test_no_longer_printing_gaps_fails_at_the_half_covered_step(monkeypatch):
+    monkeypatch.setattr(cli, "_shortened", lambda text: "")
+
+    _fails_at("print what a half-covered answer leaves out")
+
+
+def test_a_check_that_ignores_damage_fails_at_the_damaged_copy_step(monkeypatch):
+    monkeypatch.setattr(Library, "check", lambda self: [])
+
+    _fails_at("find the damage in a damaged copy of the library")
+
+
+def test_the_command_exiting_early_is_reported_as_a_failed_step(monkeypatch):
+    def exits(argv):
+        raise SystemExit(2)
+
+    monkeypatch.setattr(cli, "_parse", exits)
+
+    lines = _fails_at("make two classes")
+    assert "`add-class Hydrology` exited early with 2:" in lines

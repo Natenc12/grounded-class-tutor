@@ -2,9 +2,12 @@
 
 from __future__ import annotations
 
+from types import SimpleNamespace
+
 import pytest
 
 import gct.providers.claude
+from gct.providers.base import TransientGenerationError
 from gct.providers.claude import ClaudeGeneration
 from gct.providers.replay import (
     Recorder,
@@ -67,7 +70,7 @@ def test_one_changed_character_in_the_messages_is_a_miss():
     edited = [ASKED[0], {"role": "user", "content": ASKED[1]["content"] + " "}]
 
     with Replayer(recorder.recording, recorder.setup).question("q1") as replaying:
-        with pytest.raises(ReplayMiss, match="the instructions, the question or a passage"):
+        with pytest.raises(ReplayMiss, match="the instructions, the question, a passage"):
             replaying.generate(edited)
 
 
@@ -180,3 +183,68 @@ def test_a_reply_that_is_not_a_list_of_lines_is_refused(tmp_path):
 
     with pytest.raises(RecordingFileError, match="expected a list of lines"):
         Recording.read(path)
+
+
+def test_a_busy_first_try_recovered_by_the_retry_is_saved_and_replays_the_same_way():
+    recorder = Recorder(Scripted(TransientGenerationError("rate limited"), "a"))
+    with recorder.question("q1") as recording:
+        with pytest.raises(TransientGenerationError):
+            recording.generate(ASKED)
+        assert recording.generate(ASKED) == "a"
+
+    assert not recorder.failures
+    with Replayer(recorder.recording, recorder.setup).question("q1") as replaying:
+        with pytest.raises(TransientGenerationError, match="rate limited"):
+            replaying.generate(ASKED)
+        assert replaying.generate(ASKED) == "a"
+
+
+def test_busy_on_both_tries_is_not_saved():
+    recorder = Recorder(
+        Scripted(TransientGenerationError("busy"), TransientGenerationError("still"))
+    )
+    with recorder.question("q1") as recording:
+        for _ in range(2):
+            with pytest.raises(TransientGenerationError):
+                recording.generate(ASKED)
+
+    assert "q1" not in recorder.recording.questions
+    assert str(recorder.failures["q1"]) == "still"
+
+
+class SentToClaude(Exception):
+    pass
+
+
+def test_the_real_claude_call_and_the_key_use_the_same_request_function(monkeypatch):
+    real = gct.providers.claude.request
+    seen: list[tuple[str, list]] = []
+
+    def spy(sdk, model, messages, folder):
+        offline = isinstance(sdk, SimpleNamespace)
+        seen.append(("key" if offline else "call", list(messages)))
+        if not offline:
+            raise SentToClaude
+        return real(sdk, model, messages, folder)
+
+    monkeypatch.setattr(gct.providers.claude, "request", spy)
+    record("q1", OfflineClaude(model="sonnet"))
+    with pytest.raises(SentToClaude):
+        ClaudeGeneration(model="sonnet").generate(ASKED)
+
+    assert ("key", ASKED) in seen and ("call", ASKED) in seen
+
+
+def test_a_change_to_how_claude_joins_the_messages_misses(monkeypatch):
+    recorder = record("q1", OfflineClaude(model="sonnet"))
+    real = gct.providers.claude.request
+
+    def joined_differently(sdk, model, messages, folder):
+        prompt, options = real(sdk, model, messages, folder)
+        return prompt.replace("\n\n", "\n"), options
+
+    monkeypatch.setattr(gct.providers.claude, "request", joined_differently)
+
+    with Replayer(recorder.recording, recorder.setup).question("q1") as replaying:
+        with pytest.raises(ReplayMiss, match="how the provider puts the request together"):
+            replaying.generate(ASKED)

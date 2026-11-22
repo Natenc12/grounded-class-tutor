@@ -17,6 +17,7 @@ from pathlib import Path
 import pytest
 
 import gct.grounder.answer
+import gct.ingest.chunk
 import gct.library.store
 from gct.eval.questions import load_questions
 from gct.eval.runner import ReplayMissed, ask_all, ask_each, load_course, run_suite
@@ -98,8 +99,11 @@ def test_recording_then_replaying_gives_identical_answers_and_scores_with_no_mod
     )
 
 
-def misses_after(change, *, setup=SETUPS["standin"], k=DEFAULT_K, monkeypatch):
+def misses_after(change, *, model_id=None, k=DEFAULT_K, monkeypatch):
     change(monkeypatch)
+    setup = setup_of(StandInGeneration())
+    if model_id is not None:
+        setup = dataclasses.replace(setup, model_id=model_id)
     recording = Recording.read(REPLIES / "standin.json")
     with pytest.raises(ReplayMissed) as missed:
         run_suite(COURSE, QUESTIONS, generator=Replayer(recording, setup), k=k)
@@ -120,7 +124,7 @@ def test_an_edited_system_prompt_misses_on_every_question_that_asks_the_model(mo
     assert "s001: no recording matches what would be sent now" in str(missed)
 
 
-def test_a_changed_passage_size_misses_and_names_the_questions(monkeypatch):
+def test_passages_cut_smaller_than_a_page_miss_and_name_the_passages(monkeypatch):
     def resize(patch):
         smaller = functools.partial(chunk_units, size=40, overlap=10)
         patch.setattr(gct.library.store, "chunk_units", smaller)
@@ -132,6 +136,28 @@ def test_a_changed_passage_size_misses_and_names_the_questions(monkeypatch):
     assert any("the passages changed" in line for line in missed.misses)
 
 
+@pytest.mark.parametrize(
+    ("setting", "value", "now"),
+    [
+        ("CHUNK_SIZE_WORDS", 240, "240 words, overlapping by 40"),
+        ("CHUNK_OVERLAP_WORDS", 30, "250 words, overlapping by 30"),
+    ],
+)
+def test_any_change_to_the_passage_cutting_misses_even_where_no_page_is_cut(
+    setting, value, now, monkeypatch
+):
+    missed = misses_after(
+        lambda patch: patch.setattr(gct.ingest.chunk, setting, value), monkeypatch=monkeypatch
+    )
+
+    assert {line.split(":")[0] for line in missed.misses} == ASKED
+    assert all(
+        f"the passage cutting changed (recorded 250 words, overlapping by 40, now {now}); it "
+        "decides what real course files send" in line
+        for line in missed.misses
+    )
+
+
 def test_a_changed_search_result_count_misses_and_names_the_questions(monkeypatch):
     missed = misses_after(lambda patch: None, k=DEFAULT_K - 1, monkeypatch=monkeypatch)
 
@@ -140,9 +166,9 @@ def test_a_changed_search_result_count_misses_and_names_the_questions(monkeypatc
 
 
 def test_a_changed_model_name_misses_on_every_question_that_asks_the_model(monkeypatch):
-    other = dataclasses.replace(SETUPS["standin"], model_id="standin-quoted-sentence-v2")
-
-    missed = misses_after(lambda patch: None, setup=other, monkeypatch=monkeypatch)
+    missed = misses_after(
+        lambda patch: None, model_id="standin-quoted-sentence-v2", monkeypatch=monkeypatch
+    )
 
     assert {line.split(":")[0] for line in missed.misses} == ASKED
     assert all("the model changed" in line for line in missed.misses)
@@ -157,8 +183,8 @@ def test_a_replay_miss_is_never_scored_as_an_ordinary_error(monkeypatch):
 
     assert first.question.id == "s001"
     assert first.replay_misses == (
-        "s001: no recording matches what would be sent now: the instructions, the question or a "
-        "passage's text changed",
+        "s001: no recording matches what would be sent now: the instructions, the question, a "
+        "passage's text, or how the provider puts the request together changed",
     )
     with pytest.raises(ReplayMissed, match="s001: no recording"):
         _ = first.answer

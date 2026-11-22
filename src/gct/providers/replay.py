@@ -1,7 +1,8 @@
 """Save a model's replies once, keyed on exactly what was sent, and play them back with no model.
 
-A reply is found again only when the model, its settings and every message are byte-identical to
-the recording, so a change to any of them is a replay miss rather than a stale answer.
+A reply is found again only when the model, its settings, the passage cutting and the exact
+request are identical to the recording, so a change to any of them is a replay miss rather than a
+stale answer. For Claude the request is the provider's own final form, from `claude.request`.
 """
 
 from __future__ import annotations
@@ -17,12 +18,15 @@ from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 
-from gct.providers.base import Generation, Message
+from gct.providers.base import Generation, Message, TransientGenerationError
 
 FORMAT = 1
 NO_QUESTION = "no recording for this question"
+CLAUDE_FORM = "claude-agent-sdk request"
+MESSAGES_FORM = "messages"
 
 _SOURCE_LINE = re.compile(r"^\[S\d+\] \((?P<where>[^\n]*)\)$", re.M)
+_OFFLINE_SDK = SimpleNamespace(ClaudeAgentOptions=lambda **options: options)
 
 
 class ReplayMiss(Exception):
@@ -36,21 +40,33 @@ class RecordingFileError(ValueError):
 @dataclass(frozen=True)
 class Setup:
     model_id: str
+    form: str
     settings: str
+    passages: str
 
 
 def setup_of(model: Generation) -> Setup:
     from gct.providers.claude import ClaudeGeneration
 
-    settings = _claude_settings() if isinstance(model, ClaudeGeneration) else {}
-    return Setup(model_id=model.model_id, settings=_digest(settings))
+    claude = isinstance(model, ClaudeGeneration)
+    return Setup(
+        model_id=model.model_id,
+        form=CLAUDE_FORM if claude else MESSAGES_FORM,
+        settings=_digest(_claude_request([])[1] if claude else {}),
+        passages=_passages(),
+    )
 
 
-def _claude_settings() -> dict[str, Any]:
-    from gct.providers.claude import build_options
+def _passages() -> str:
+    from gct.ingest import chunk
 
-    sdk = SimpleNamespace(ClaudeAgentOptions=lambda **options: options)
-    return build_options(sdk, model="<model>", system="<system>", folder="<folder>")
+    return f"{chunk.CHUNK_SIZE_WORDS} words, overlapping by {chunk.CHUNK_OVERLAP_WORDS}"
+
+
+def _claude_request(messages: Sequence[Message]) -> tuple[str, Any]:
+    from gct.providers import claude
+
+    return claude.request(_OFFLINE_SDK, "<model>", messages, "<folder>")
 
 
 def _digest(value: Any) -> str:
@@ -62,24 +78,55 @@ def _digest(value: Any) -> str:
 class Call:
     sent: str
     sources: tuple[str, ...]
-    reply: str
+    reply: str | None
+    busy: str | None = None
 
 
-def _call(setup: Setup, messages: Sequence[Message], reply: str = "") -> Call:
-    sent = _digest(
+def _sent(setup: Setup, messages: Sequence[Message]) -> str:
+    if setup.form == CLAUDE_FORM:
+        prompt, options = _claude_request(messages)
+        request: Any = {"prompt": prompt, "options": options}
+    else:
+        request = [dict(message) for message in messages]
+    return _digest(
         {
             "model": setup.model_id,
+            "form": setup.form,
             "settings": setup.settings,
-            "messages": [dict(message) for message in messages],
+            "passages": setup.passages,
+            "request": request,
         }
     )
+
+
+def _call(
+    setup: Setup, messages: Sequence[Message], reply: str | None = None, busy: str | None = None
+) -> Call:
     sources = tuple(
         match.group("where")
         for message in messages
         if message["role"] == "user"
         for match in _SOURCE_LINE.finditer(message["content"])
     )
-    return Call(sent=sent, sources=sources, reply=reply)
+    return Call(sent=_sent(setup, messages), sources=sources, reply=reply, busy=busy)
+
+
+def _call_body(call: Call) -> dict[str, Any]:
+    body: dict[str, Any] = {"sent": call.sent, "sources": list(call.sources)}
+    if call.reply is not None:
+        body["reply"] = call.reply.split("\n")
+    else:
+        body["busy"] = call.busy
+    return body
+
+
+def _call_from(body: Any) -> Call:
+    sent, sources = _text(body["sent"]), _lines(body["sources"])
+    if ("reply" in body) == ("busy" in body):
+        raise ValueError("each call needs exactly one of 'reply' and 'busy'")
+    if "reply" in body:
+        return Call(sent=sent, sources=sources, reply="\n".join(_lines(body["reply"])))
+    return Call(sent=sent, sources=sources, reply=None, busy=_text(body["busy"]))
 
 
 @dataclass(frozen=True)
@@ -91,19 +138,21 @@ class Recording:
         body = {
             "format": FORMAT,
             "model": self.setup.model_id,
+            "form": self.setup.form,
             "settings": self.setup.settings,
+            "passages": self.setup.passages,
             "questions": {
-                question_id: [
-                    {"sent": c.sent, "sources": list(c.sources), "reply": c.reply.split("\n")}
-                    for c in calls
-                ]
+                question_id: [_call_body(c) for c in calls]
                 for question_id, calls in sorted(self.questions.items())
             },
         }
         text = json.dumps(body, ensure_ascii=False, indent=2) + "\n"
         draft = path.with_name(path.name + ".writing")
-        draft.write_text(text, encoding="utf-8")
-        os.replace(draft, path)
+        try:
+            draft.write_text(text, encoding="utf-8")
+            os.replace(draft, path)
+        finally:
+            draft.unlink(missing_ok=True)
 
     @classmethod
     def read(cls, path: Path) -> Recording:
@@ -112,16 +161,14 @@ class Recording:
             if body["format"] != FORMAT:
                 raise RecordingFileError(f"{path}: format {body['format']!r}, expected {FORMAT}")
             return cls(
-                setup=Setup(model_id=_text(body["model"]), settings=_text(body["settings"])),
+                setup=Setup(
+                    model_id=_text(body["model"]),
+                    form=_text(body["form"]),
+                    settings=_text(body["settings"]),
+                    passages=_text(body["passages"]),
+                ),
                 questions={
-                    _text(question_id): tuple(
-                        Call(
-                            sent=_text(c["sent"]),
-                            sources=_lines(c["sources"]),
-                            reply="\n".join(_lines(c["reply"])),
-                        )
-                        for c in calls
-                    )
+                    _text(question_id): tuple(_call_from(c) for c in calls)
                     for question_id, calls in body["questions"].items()
                 },
             )
@@ -196,6 +243,8 @@ class _Replaying:
         if now.sent != then.sent:
             raise ReplayMiss(f"no recording matches what would be sent now: {self._why(now, then)}")
         self.used += 1
+        if then.reply is None:
+            raise TransientGenerationError(then.busy)
         return then.reply
 
     def _why(self, now: Call, then: Call) -> str:
@@ -204,11 +253,22 @@ class _Replaying:
                 f"the model changed (recorded {self.recorded_setup.model_id}, "
                 f"now {self.setup.model_id})"
             )
+        if self.setup.passages != self.recorded_setup.passages:
+            return (
+                f"the passage cutting changed (recorded {self.recorded_setup.passages}, now "
+                f"{self.setup.passages}); it decides what real course files send, even where "
+                "the practice course's short pages are cut the same way"
+            )
         if self.setup.settings != self.recorded_setup.settings:
             return "the model's settings changed"
+        if self.setup.form != self.recorded_setup.form:
+            return f"the request form changed (recorded {self.recorded_setup.form})"
         if now.sources != then.sources:
             return f"the passages changed (recorded {list(then.sources)}, now {list(now.sources)})"
-        return "the instructions, the question or a passage's text changed"
+        return (
+            "the instructions, the question, a passage's text, or how the provider puts the "
+            "request together changed"
+        )
 
 
 @dataclass
@@ -239,10 +299,11 @@ class Recorder:
             return
         model = _Recording(self.model, self.setup)
         yield model
-        if model.failure is None:
+        unrecovered = model.failure or model.busy_at_the_end
+        if unrecovered is None:
             self._questions[question_id] = tuple(model.calls)
         else:
-            self.failures[question_id] = model.failure
+            self.failures[question_id] = unrecovered
 
 
 @dataclass
@@ -251,6 +312,7 @@ class _Recording:
     setup: Setup
     calls: list[Call] = field(default_factory=list)
     failure: Exception | None = None
+    busy_at_the_end: TransientGenerationError | None = None
 
     @property
     def model_id(self) -> str:
@@ -259,8 +321,13 @@ class _Recording:
     def generate(self, messages: Sequence[Message]) -> str:
         try:
             reply = self.inner.generate(messages)
+        except TransientGenerationError as err:
+            self.calls.append(_call(self.setup, messages, busy=str(err)))
+            self.busy_at_the_end = err
+            raise
         except Exception as err:
             self.failure = self.failure or err
             raise
-        self.calls.append(_call(self.setup, messages, reply))
+        self.calls.append(_call(self.setup, messages, reply=reply))
+        self.busy_at_the_end = None
         return reply

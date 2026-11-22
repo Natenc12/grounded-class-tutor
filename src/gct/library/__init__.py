@@ -1,3 +1,4 @@
+from gct.library.importer import Imported, RefusalReason, Refused, import_file
 from gct.library.store import (
     ClassNameError,
     Document,
@@ -20,6 +21,7 @@ __all__ = [
     "ClassNameError",
     "Document",
     "DocumentContentError",
+    "Imported",
     "Library",
     "LibraryClass",
     "LibraryError",
@@ -28,8 +30,11 @@ __all__ = [
     "OutdatedLibraryError",
     "Page",
     "Passage",
+    "RefusalReason",
+    "Refused",
     "SavedDocument",
     "UnknownClassError",
     "UnknownDocumentError",
     "UnknownPassageError",
+    "import_file",
 ]

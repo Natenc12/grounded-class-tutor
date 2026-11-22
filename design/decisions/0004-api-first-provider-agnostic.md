@@ -1,7 +1,11 @@
 # 0004. Delivery strategy: API-first, provider-agnostic, staged maturity ladder
 
 - **Date:** 2026-07-04
-- **Status:** accepted
+- **Status:** **Partly superseded by #216 (desktop move)** (2026-11-22): running on hosted APIs with
+  no local-model stage, the embeddings interface, the V1–V3 ladder (Supabase, deploy, auth and RLS)
+  and the `owner_id` column no longer hold: answers come from Claude on the Mac's login, there are
+  no embeddings today, and a free local model is planned for search. Generation behind a thin,
+  swappable interface still holds (`gct.providers`). Before this: accepted
 
 ## Context
 We initially considered a **local-first** build (run a local model in v1, swap to APIs later) to

@@ -1,7 +1,10 @@
 # 0002. MVP scope boundary
 
 - **Date:** 2026-07-04
-- **Status:** accepted — **tenancy clause amended 2026-07-04 by ADR 0004** (RLS moved from
+- **Status:** **Partly superseded by #216 (desktop move)** (2026-11-22): the React PWA frontend and
+  the tenancy clause (`owner_id`, Supabase Auth and RLS) no longer hold: the app runs on one
+  person's Mac, with no sign-in. Cited Q&A only, and PDFs and slides only, still hold. Before
+  this: accepted — **tenancy clause amended 2026-07-04 by ADR 0004** (RLS moved from
   day-one to V3; `owner_id` schema hedge). Interaction/inputs/frontend scope unchanged.
 
 ## Context

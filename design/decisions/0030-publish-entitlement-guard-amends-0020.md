@@ -1,7 +1,10 @@
 # 0030. The publish is guarded by entitlement, not repaired afterwards — a caller-supplied predicate crosses the PM-4 seam
 
 - **Date:** 2026-09-01
-- **Status:** **replaced by #205** for the publish guard: exactly one worker runs, so there is no lease to guard. Kept as history. Previously: accepted — amends ADR 0020 (§2–3's atomic index write now admits a caller-supplied
+- **Status:** **Superseded by #216 (desktop move)** (2026-11-22): there is no worker and no publish
+  guard (#253). Kept as history. Previously: **replaced by #205** for the publish guard: exactly one
+  worker runs, so there is no lease to guard. Kept as history. Previously: accepted — amends ADR
+  0020 (§2–3's atomic index write now admits a caller-supplied
   **veto** evaluated inside that transaction, and the PM-4 seam is restated as a rule about
   *knowledge* rather than about parameters: the ingest pipeline may accept a predicate it cannot
   interpret, and still may not write a job-layer column. §1's retryable/terminal split is

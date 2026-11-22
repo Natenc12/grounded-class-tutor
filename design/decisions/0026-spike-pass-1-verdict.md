@@ -1,7 +1,9 @@
 # 0026. Spike Pass 1 verdict — the core Slices 2–4 are built on
 
 - **Date:** 2026-08-03
-- **Status:** accepted
+- **Status:** **Superseded by #216 (desktop move)** (2026-11-22): the configuration it validated
+  (`text-embedding-3-small`, `gpt-4o-mini`, vector search) no longer runs, so the verdict covers
+  that past configuration only. Kept as history. Previously: accepted
 
 ## Context
 ADR 0022 §Decision 2 reads *"Build Slices 2–4 on the **validated** core."* Nothing discharged that

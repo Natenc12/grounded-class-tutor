@@ -1,7 +1,8 @@
 # 0022. Spike sequencing — two-pass: validate on the tracer, tune on the dogfood corpus
 
 - **Date:** 2026-07-04
-- **Status:** accepted
+- **Status:** **Superseded by #216 (desktop move)** (2026-11-22): Pass 1 ran (ADR 0026); Slices 2–4
+  and Pass 2 are replaced by the stages of #216. Kept as history. Previously: accepted
 
 ## Context
 Phase 5 established that no spike blocks the build; the tracer bullet (Slice 1) is the *bench* the

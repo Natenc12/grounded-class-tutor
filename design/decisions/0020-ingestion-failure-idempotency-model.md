@@ -1,7 +1,10 @@
 # 0020. Ingestion failure & idempotency — retryable/terminal split, all-or-nothing replace, index-write-only transaction
 
 - **Date:** 2026-07-04
-- **Status:** accepted — **publication claim amended 2026-07-27 by ADR 0025** (§2–3's "commits its
+- **Status:** **Superseded by #216 (desktop move)** (2026-11-22): the worker, its retries and the
+  Postgres index transaction are gone (#253, #254). The library saves a document all or nothing
+  (#227), and import refuses a bad file with a plain message (#229). Kept as history. Previously:
+  accepted — **publication claim amended 2026-07-27 by ADR 0025** (§2–3's "commits its
   entire chunk set" holds only if the caller's connection is not already in a transaction; psycopg
   turns a nested `conn.transaction()` into a SAVEPOINT that commits nothing. The atomicity and
   index-write-only reasoning below stand unchanged — and ADR 0025's own status line carries what

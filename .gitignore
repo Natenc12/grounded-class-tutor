@@ -13,7 +13,7 @@ venv/
 .mypy_cache/
 .ruff_cache/
 
-# --- Node / React (arrives in Slice 4) ---
+# --- Desktop app (Electron, stage 4 of #216) ---
 node_modules/
 dist/
 build/

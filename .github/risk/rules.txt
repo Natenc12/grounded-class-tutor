@@ -15,11 +15,7 @@
 # PR itself, so a PR cannot change the rules it is judged by. Changes here land like any other
 # change to .github/: as risk:high.
 
-high migrations/
-high src/gct/db.py
-high src/gct/jobs/
 high src/gct/grounder/
-high src/gct/ask*
 high src/gct/providers/
 high .github/
 # Desktop move (#216, rules from #218): the library and search replace db.py and migrations/,

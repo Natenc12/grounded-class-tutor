@@ -40,14 +40,11 @@ def tier(*paths: str) -> str:
 
 
 def test_rules_file_is_exactly_the_ticket_list():
-    # Issue #211's list plus #218's desktop-move paths. Changing the rules is allowed, but must be
-    # a deliberate edit here too.
+    # Issue #211's list plus #218's desktop-move paths, less the four Postgres-era rules #254
+    # removed with the last of their paths. Changing the rules is allowed, but must be a deliberate
+    # edit here too.
     assert RULES == [
-        ("high", "migrations/"),
-        ("high", "src/gct/db.py"),
-        ("high", "src/gct/jobs/"),
         ("high", "src/gct/grounder/"),
-        ("high", "src/gct/ask*"),
         ("high", "src/gct/providers/"),
         ("high", ".github/"),
         ("high", "src/gct/library/"),
@@ -64,13 +61,8 @@ def test_rules_file_is_exactly_the_ticket_list():
 @pytest.mark.parametrize(
     "path",
     [
-        "migrations/0005_new.sql",
-        "src/gct/db.py",
-        "src/gct/jobs/worker.py",
         "src/gct/grounder/answer.py",
-        "src/gct/ask.py",
-        "src/gct/ask_helpers.py",
-        "src/gct/ask/flow.py",
+        "src/gct/grounder/deep/nested/x.py",  # a folder rule matches at any depth below it
         "src/gct/providers/base.py",
         ".github/workflows/ci.yml",
         ".github/risk/rules.txt",
@@ -80,7 +72,9 @@ def test_rules_file_is_exactly_the_ticket_list():
         "src/gct/search/x.py",
         "desktop/main.mjs",
         "desktop/preload.cjs",
-        "desktop/main/window.mjs",
+        "desktop/main/window.mjs",  # `*` crosses folders
+        "desktop/preload/bridge/index.cjs",  # `*` crosses more than one folder
+        "desktop/main-helper.mjs",  # `*` matches any suffix
         "src/gct/library/README.md",  # high beats low
     ],
 )
@@ -107,14 +101,15 @@ def test_low_paths(path):
     "path",
     [
         "src/gct/cli.py",
-        "scripts/migrate.py",
+        "scripts/record_replies.py",
         "pyproject.toml",
         "uv.lock",
         ".gitignore",
-        "src/gct/database.py",  # looks like db.py, is not
-        "src/gct/db.py.bak",
-        "migrations.txt",  # folder rules need the slash
-        "srcx/gct/db.py",
+        "src/gct/searching.py",  # looks like search/, is not
+        "src/gct/providersx/base.py",  # a folder rule is the folder, not a name prefix
+        ".github.txt",  # folder rules need the slash
+        "src/desktop/main.mjs",  # a full-path pattern is anchored at the start
+        "desktop/xmain.mjs",
         "README.md.txt",
         # #218: desktop screens stay medium; only main and preload are high
         "desktop/renderer/app.js",
@@ -127,7 +122,7 @@ def test_medium_paths(path):
 
 
 def test_high_beats_low_inside_a_high_folder():
-    assert tier("migrations/README.md") == "high"
+    assert tier("src/gct/providers/README.md") == "high"
     assert tier(".github/PULL_REQUEST_TEMPLATE.md") == "high"
     assert tier("src/gct/grounder/NOTES.md") == "high"
 
@@ -135,8 +130,8 @@ def test_high_beats_low_inside_a_high_folder():
 def test_mixed_pr_takes_the_highest_tier():
     assert tier("README.md", "tests/test_x.py", "docs/a.md") == "low"
     assert tier("README.md", "src/gct/cli.py") == "medium"
-    assert tier("README.md", "src/gct/cli.py", "migrations/0005.sql") == "high"
-    assert tier("tests/test_x.py", "src/gct/db.py") == "high"
+    assert tier("README.md", "src/gct/cli.py", "src/gct/search/keyword.py") == "high"
+    assert tier("tests/test_x.py", "desktop/main.mjs") == "high"
 
 
 def test_pr_with_no_files_is_low():
@@ -144,7 +139,8 @@ def test_pr_with_no_files_is_low():
 
 
 def test_matching_is_case_sensitive_like_git():
-    assert tier("Migrations/0005.sql") == "medium"
+    assert tier("SRC/gct/grounder/answer.py") == "medium"
+    assert tier("Desktop/main.mjs") == "medium"
     assert tier("README.MD") == "medium"
 
 
@@ -228,7 +224,7 @@ OLD_APPROVAL_LABEL = "owner-ok"
     [
         ("README.md", "risk:low"),
         ("src/gct/cli.py", "risk:medium"),
-        ("migrations/0005_new.sql", "risk:high"),
+        ("src/gct/grounder/answer.py", "risk:high"),
         (".github/workflows/ci.yml", "risk:high"),
     ],
 )
@@ -250,7 +246,9 @@ def test_gate_script_no_longer_mentions_the_old_label():
 
 
 def test_older_risk_label_is_replaced():
-    gh = FakeGitHub([f("src/gct/db.py")], labels=["risk:low", "risk:medium", "in-progress"])
+    gh = FakeGitHub(
+        [f("src/gct/library/store.py")], labels=["risk:low", "risk:medium", "in-progress"]
+    )
     gate(gh)
     assert sorted(gh.labels) == ["in-progress", "risk:high"]
     deleted = [p for m, p, _ in gh.writes if m == "DELETE"]
@@ -267,13 +265,13 @@ def test_correct_label_already_present_writes_nothing():
 
 
 def test_moving_a_high_file_out_of_its_folder_stays_high():
-    gh = FakeGitHub([f("src/gct/storage.py", previous="src/gct/db.py")])
+    gh = FakeGitHub([f("src/gct/storage.py", previous="src/gct/library/store.py")])
     assert gate(gh)[0] == 0
     assert gh.labels == ["risk:high"]
 
 
 def test_every_page_of_files_is_read():
-    files = [f(f"docs/page{i}.md") for i in range(250)] + [f("migrations/0009.sql")]
+    files = [f(f"docs/page{i}.md") for i in range(250)] + [f("src/gct/search/keyword.py")]
     gh = FakeGitHub(files)
     assert gate(gh)[0] == 0
     assert gh.labels == ["risk:high"]
@@ -306,7 +304,7 @@ def test_label_write_failure_on_own_repo_fails_the_check():
 
 
 def test_github_refusing_to_list_files_fails_the_check():
-    gh = FakeGitHub([f("migrations/0005_new.sql")])
+    gh = FakeGitHub([f("src/gct/grounder/answer.py")])
     real = gh.__call__
 
     def refusing(method, path, token, body=None):
@@ -320,7 +318,7 @@ def test_github_refusing_to_list_files_fails_the_check():
 
 
 def test_fork_pr_cannot_be_labelled_and_still_passes():
-    gh = FakeGitHub([f("src/gct/db.py")], head_repo="someone/fork", fail_writes=403)
+    gh = FakeGitHub([f("src/gct/providers/base.py")], head_repo="someone/fork", fail_writes=403)
     code, out = gate(gh)
     assert code == 0
     assert out.splitlines()[0].startswith("risk:high")
@@ -413,7 +411,7 @@ def run_script_against_local_github(files, refuse_files=False):
 
 
 def test_script_passes_a_high_pr_with_no_approval_label():
-    done, posted = run_script_against_local_github([f("migrations/0005_new.sql")])
+    done, posted = run_script_against_local_github([f("src/gct/grounder/answer.py")])
     assert done.returncode == 0, done.stdout + done.stderr
     assert done.stdout.startswith("risk:high")
     assert posted == [{"labels": ["risk:high"]}]

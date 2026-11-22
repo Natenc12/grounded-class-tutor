@@ -175,6 +175,21 @@ class TestLabeledContext:
         assert any(
             "no part" in line.lower() and "answer" in line.lower() for line in system.splitlines()
         ), "no prompt rule carries the all-or-nothing refusal exit (support no part -> no answer)"
+        # #247 pins two sentences word for word, because they were measured with real Claude
+        # exactly as worded (the numbers live in #247, not here). The first keeps a gap to a part
+        # of the question, so a right answer is not marked PARTIAL over a detail nobody asked for;
+        # the second keeps a refusal from carrying nearby facts, which scores as PARTIAL. Line
+        # wrapping is not wording, so the check reads the prompt with its whitespace collapsed.
+        # Rewording either is a new measurement, and every recording of replies must be re-made.
+        flowing = " ".join(system.split())
+        assert (
+            "A gap is a part of the question itself that the sources do not answer - never a "
+            "detail the question did not ask for." in flowing
+        ), "rule 6 lost #247's sentence: a gap must be part of the question"
+        assert (
+            "Do not add related facts the question did not ask for; they are not a partial "
+            "answer." in flowing
+        ), "rule 7 lost #247's sentence: a refusal adds no related facts"
         # Quoted, not sanitized: the injection string survives verbatim inside SOURCES.
         assert injected_text in user
 

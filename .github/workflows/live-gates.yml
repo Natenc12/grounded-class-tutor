@@ -49,7 +49,7 @@ jobs:
     # ceiling is a hang, not work.
     timeout-minutes: 45
     env:
-      UV_PYTHON: "3.10"
+      UV_PYTHON: "3.14"
       UV_LOCKED: "1"
       DATABASE_URL: postgresql://postgres:postgres@localhost:5432/grounded_class_tutor
       OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
@@ -101,8 +101,8 @@ jobs:
         with:
           enable-cache: true
 
-      - name: Install Python 3.10
-        run: uv python install 3.10
+      - name: Install Python 3.14
+        run: uv python install 3.14
 
       - name: Sync dependencies
         run: uv sync --extra dev

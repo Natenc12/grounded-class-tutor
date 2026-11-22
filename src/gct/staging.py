@@ -110,7 +110,7 @@ def validate_filename(filename: str) -> str:
     a real input, not a type error:
       - not a `str` at all (`None`), empty or whitespace-only (`""`, `"  "`, `"\t"`) - there is
         nothing to cite;
-      - not encodable as UTF-8 (a lone surrogate such as `"\udcff.pdf"`, which is how a
+      - not encodable as UTF-8 (a lone surrogate such as `"\\udcff.pdf"`, which is how a
         non-UTF-8 name reaches Python through `surrogateescape`) - the filesystem could not
         store the name, and neither could a `text` column;
       - a path separator (`/`, `\\`) or NUL anywhere - `../evil.pdf`, `sub/dir.pdf`, and

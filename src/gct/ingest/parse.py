@@ -235,7 +235,7 @@ def _load_slides(path: Path) -> list:
 def _malformed_archive_is_unparseable(path: Path) -> Iterator[None]:
     try:
         yield
-    except (ParseError, MemoryError):
+    except ParseError, MemoryError:
         raise
     except Exception as exc:
         raise ParseError("unparseable", f"could not read PPTX {path.name}: {exc}") from exc

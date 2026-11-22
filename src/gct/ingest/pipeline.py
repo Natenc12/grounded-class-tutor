@@ -233,7 +233,7 @@ def ingest_file(
         # and closed without settling it; do not settle it here.
         try:
             canonical = str(UUID(file_id)) == file_id.lower()
-        except (ValueError, AttributeError, TypeError):
+        except ValueError, AttributeError, TypeError:
             canonical = False
         if not canonical:
             raise ValueError(

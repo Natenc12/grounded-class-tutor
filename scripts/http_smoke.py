@@ -557,7 +557,7 @@ def _signal_group(child: Child, signum: int) -> None:
     """
     try:
         os.killpg(child.pid, signum)
-    except (ProcessLookupError, PermissionError):
+    except ProcessLookupError, PermissionError:
         pass
 
 
@@ -607,7 +607,7 @@ def health_ok(base_url: str) -> bool:
             if response.status != 200:
                 return False
             return json.loads(response.read().decode("utf-8")).get("status") == "ok"
-    except (urllib.error.URLError, OSError, ValueError, json.JSONDecodeError):
+    except urllib.error.URLError, OSError, ValueError, json.JSONDecodeError:
         return False
 
 

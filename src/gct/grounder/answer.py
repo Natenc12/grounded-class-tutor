@@ -38,7 +38,7 @@ from __future__ import annotations
 import re
 from collections.abc import Sequence
 from dataclasses import dataclass
-from enum import Enum
+from enum import StrEnum
 
 from gct.contracts import RetrievedChunk
 from gct.providers.base import Generation, Message, TransientGenerationError
@@ -56,7 +56,7 @@ ERROR_KIND_PROVIDER_TRANSIENT = "provider_transient"
 ERROR_KIND_PROVIDER_TERMINAL = "provider_terminal"
 
 
-class GrounderState(str, Enum):
+class GrounderState(StrEnum):
     """The five render states - the WHOLE output contract (grounder.md Sec.Interface).
 
     Subclasses `str` so the value serializes straight to JSON for the API adapter and the eval

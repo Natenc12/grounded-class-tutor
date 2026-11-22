@@ -13,10 +13,10 @@ import logging
 import os
 import tempfile
 import threading
-from collections.abc import Iterator, Sequence
+from collections.abc import Awaitable, Iterator, Sequence
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import aclosing, contextmanager
-from typing import Any
+from typing import Any, Protocol, runtime_checkable
 
 from gct.providers.base import Message, TransientGenerationError
 
@@ -70,6 +70,10 @@ NOT_SIGNED_IN = (
 )
 NO_ANSWER = "Claude finished without writing an answer."
 NO_REASON = "Claude reported an error without saying what went wrong."
+UNCLOSABLE = (
+    "The installed Claude Agent SDK gave back a reply that cannot be stopped early, so the tutor "
+    "did not read it. This SDK version does not work with the tutor."
+)
 
 _TRANSIENT_STATUSES = frozenset({408, 429, 500, 502, 503, 504, 529})
 _TRANSIENT_KINDS = frozenset({"rate_limit", "server_error"})
@@ -90,6 +94,17 @@ class ClaudeNotInstalledError(ClaudeError):
 
 class ClaudeNotSignedInError(ClaudeError):
     pass
+
+
+@runtime_checkable
+class _Closable(Protocol):
+    """A reply stream that can be stopped early, so a timeout or cancel ends Claude at once.
+
+    `sdk.query` is an async generator, which always has `aclose`, but the SDK annotates it as a
+    plain `AsyncIterator`, which does not. `_ask` checks for it rather than assuming it.
+    """
+
+    def aclose(self) -> Awaitable[object]: ...
 
 
 def sdk_installed() -> bool:
@@ -166,7 +181,10 @@ class ClaudeGeneration:
             prompt, options = request(sdk, self._model, messages, folder)
             try:
                 with anyio.fail_after(self._time_limit):
-                    async with aclosing(sdk.query(prompt=prompt, options=options)) as replies:
+                    stream = sdk.query(prompt=prompt, options=options)
+                    if not isinstance(stream, _Closable):
+                        raise ClaudeError(UNCLOSABLE)
+                    async with aclosing(stream) as replies:
                         async for message in replies:
                             if isinstance(message, sdk.SystemMessage) and message.subtype == "init":
                                 self.last_start = {

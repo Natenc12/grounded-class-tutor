@@ -21,6 +21,9 @@ dev = [
     # `uv lock --upgrade` from reddening that gate with no repo change.
     "ruff~=0.15.20",
     "reportlab>=5.0.0",
+    # Bounded for the same reason as ruff: CI gates zero mypy errors (#192), and a minor release
+    # can add checks that report new errors, so an upgrade should be a deliberate edit here.
+    "mypy~=2.4.1",
 ]
 
 [build-system]
@@ -41,6 +44,16 @@ line-length = 100
 # particular forces `zip(..., strict=)`, and a silently-truncating zip over chunks/vectors is
 # exactly the kind of thing that would corrupt an index without ever raising.
 select = ["E", "F", "I", "B", "UP", "W"]
+
+[tool.mypy]
+# The type checker, gated in CI with zero errors allowed (#192). `tests/`, `scripts/` and `tools/`
+# are deliberately not checked. Two settings stop a hint being silenced instead of fixed:
+# warn_unused_ignores fails an ignore that no longer hides an error, and ignore-without-code fails
+# a bare `# type: ignore`, so every ignore names the one error it hides. No per-module overrides:
+# the count of ignores, casts and Any is guarded against rising by tools/type_escapes.py.
+files = ["src/gct"]
+warn_unused_ignores = true
+enable_error_code = ["ignore-without-code"]
 
 [tool.pytest.ini_options]
 # --strict-markers: applying an unregistered mark is an ERROR, not a silently-ignored no-op. It

@@ -424,3 +424,31 @@ def test_a_real_claude_answer_on_this_macs_login_is_cited(live_claude_generator)
     assert {(c.file, c.page_or_slide) for c in result.citations} <= {
         (WATER.file, WATER.page_or_slide)
     }
+
+
+class UnclosableStream:
+    """A reply stream with no `aclose`: allowed by the SDK's annotation, never by its code."""
+
+    def __init__(self, items):
+        self.items = items
+
+    def __aiter__(self):
+        return self
+
+    async def __anext__(self):
+        if not self.items:
+            raise StopAsyncIteration
+        return self.items.pop(0)
+
+
+def test_a_reply_that_cannot_be_stopped_early_is_refused_before_it_is_read(monkeypatch):
+    stream = UnclosableStream([_init(), _result("never read")])
+    monkeypatch.setattr(sdk, "query", lambda **kw: stream)
+    generation = ClaudeGeneration()
+
+    with pytest.raises(ClaudeError, match="cannot be stopped early") as stopped:
+        generation.generate(MESSAGES)
+
+    assert type(stopped.value) is ClaudeError  # terminal: not worth the Grounder's one retry
+    assert len(stream.items) == 2
+    assert generation.last_start == {}

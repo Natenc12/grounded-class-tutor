@@ -29,7 +29,7 @@ def test_each_escape_counts_once_per_occurrence_by_its_tokens():
         "def f(x: Any) -> Any:\n"  # 2: two on one line
         "    y = typing.cast(int, x)\n"  # 1
         "    z = cast(int, x)  # type: ignore[redundant-cast]\n"  # 2: cast( and the ignore
-        "    return y + z  #type:ignore\n"  # 1: mypy reads this spelling too
+        "    return y + z  #type:ignore[operator]\n"  # 1: mypy reads this spelling too
     )
 
     assert type_escapes.escapes(source) == [
@@ -38,8 +38,8 @@ def test_each_escape_counts_once_per_occurrence_by_its_tokens():
         (3, "Any"),
         (4, "cast("),
         (5, "cast("),
-        (5, "type: ignore"),
-        (6, "type: ignore"),
+        (5, "type: ignore[...]"),
+        (6, "type: ignore[...]"),
     ]
 
 
@@ -62,6 +62,31 @@ def test_words_in_strings_and_docstrings_are_not_escapes():
     )
 
     assert type_escapes.escapes(source) == []
+    assert type_escapes.refused(source) == []
+
+
+@pytest.mark.parametrize(
+    ("source", "what"),
+    [
+        ("# type: ignore\nX: int = 'a'\n", "a # type: ignore with no [code]"),  # the whole file
+        ("X: int = 'a'  # type: ignore\n", "a # type: ignore with no [code]"),
+        ("X: int = 'a'  # noqa: E501  #type:ignore\n", "a # type: ignore with no [code]"),
+        ("x = f()  # type: Any\n", "a # type: comment"),
+        ("# mypy: ignore-errors\n", "a # mypy: comment"),
+        ("# mypy: disable-error-code=assignment\n", "a # mypy: comment"),
+        ("from typing import no_type_check\n", "no_type_check"),
+        ("@typing.no_type_check\ndef f() -> int:\n    return 'b'\n", "no_type_check"),
+    ],
+)
+def test_ways_to_silence_mypy_without_naming_an_error_are_refused(source, what):
+    assert what in [found for _, found in type_escapes.refused(source)]
+
+
+def test_a_coded_ignore_is_counted_not_refused():
+    source = "X: int = 'a'  # type: ignore[assignment]\n"
+
+    assert type_escapes.refused(source) == []
+    assert type_escapes.escapes(source) == [(1, "type: ignore[...]")]
 
 
 def _git(root: Path, *args: str) -> None:
@@ -130,3 +155,20 @@ def test_without_a_base_it_only_reports(repo, capsys):
 def test_a_base_git_cannot_find_stops_the_check_instead_of_passing(repo):
     with pytest.raises(SystemExit, match="git ls-tree .* failed"):
         run(repo, "--base", "no-such-ref")
+
+
+def test_a_refused_escape_fails_even_when_the_count_goes_down(repo, capsys):
+    (repo / "src" / "gct" / "a.py").write_text(TYPED)  # one Any fewer
+    (repo / "src" / "gct" / "zz.py").write_text("# type: ignore\nX: int = 'a'\n")
+
+    assert run(repo, "--base", "base") == 1
+    out = capsys.readouterr().out
+    assert "src/gct/zz.py:1: a # type: ignore with no [code]" in out
+    assert run(repo) == 1  # refused with or without a base
+
+
+def test_a_stub_file_in_the_package_is_refused(repo, capsys):
+    (repo / "src" / "gct" / "a.pyi").write_text("def f(x): ...\n")
+
+    assert run(repo, "--base", "base") == 1
+    assert "src/gct/a.pyi: a .pyi stub" in capsys.readouterr().out

@@ -17,7 +17,7 @@ concurrency:
 
 jobs:
   lint-and-test:
-    name: ruff + pytest + drive  # not required by name; merge-check below is (#251, #254)
+    name: ruff + mypy + pytest + drive  # not required by name; merge-check below is (#251, #254)
     runs-on: ubuntu-latest
     # State our own floor rather than inheriting the repo default, which is a setting someone can
     # flip elsewhere: this job only ever reads code, so a write-scoped GITHUB_TOKEN here would be
@@ -82,6 +82,11 @@ jobs:
       # mystery. The one-time flush that made this green is the commit before it.
       - name: Ruff format
         run: uv run ruff format --check .
+
+      # The type checker (#192): the type hints are checked against the code on every PR, and one
+      # error fails the job. What it checks and how strictly is [tool.mypy] in pyproject.toml.
+      - name: Mypy (zero errors in src/gct)
+        run: uv run mypy
 
       # mypy cannot see past `Any`, `cast(` or `# type: ignore`, so their count in src/gct may not
       # rise above the base the PR merges into (HEAD^1 of the merge commit; see fetch-depth above).

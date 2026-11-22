@@ -51,6 +51,11 @@ jobs:
       # (Note `refs/tags/v5` on setup-uv resolves to an annotated TAG object, which Actions will
       # not accept; the SHA below is the commit that tag points at.)
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          # Two commits, not the default one: a pull request is tested as GitHub's merge commit,
+          # and the escape-hatch guard below compares it with that commit's first parent, the
+          # base it would merge into. Without the parent, git cannot read it and the guard fails.
+          fetch-depth: 2
 
       - name: Install uv
         uses: astral-sh/setup-uv@d4b2f3b6ecc6e67c4457f6d3e41ec42d3d0fcb86 # v5.4.2
@@ -77,6 +82,14 @@ jobs:
       # mystery. The one-time flush that made this green is the commit before it.
       - name: Ruff format
         run: uv run ruff format --check .
+
+      # mypy cannot see past `Any`, `cast(` or `# type: ignore`, so their count in src/gct may not
+      # rise above the base the PR merges into (HEAD^1 of the merge commit; see fetch-depth above).
+      # Equal or lower passes. On a push to main there is no PR base and the step is skipped: main
+      # only moves by PRs that passed it. Counting rule: the docstring of tools/type_escapes.py.
+      - name: No new type escape hatches (vs. the PR's base)
+        if: github.event_name == 'pull_request'
+        run: uv run python tools/type_escapes.py --base HEAD^1
 
       # The whole tutor, end to end, in one process: a throwaway library, two generated course
       # files, a cited answer and a refusal. It always uses the free stand-in model, whatever the

@@ -1,0 +1,1503 @@
+{
+  "format": 1,
+  "model": "standin-quoted-sentence-v1",
+  "settings": "44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a",
+  "questions": {
+    "i001": [
+      {
+        "sent": "9045fc5a9f8c769a17cb5677bfa4ae413c5fcec61bb7be55b53d6eb9f6d85acc",
+        "sources": [
+          "Lecture 07 Groundwater.pdf, p.4",
+          "Lecture 07 Groundwater.pdf, p.1",
+          "Lecture 07 Groundwater.pdf, p.2",
+          "Lecture 03 Reservoirs.pdf, p.2",
+          "Lecture 07 Groundwater.pdf, p.3"
+        ],
+        "reply": [
+          "Lecture 7: Contamination Nitrate levels in the Tamsk Aquifer are highest under the Selby farmlands. [S1]",
+          "COVERAGE: complete"
+        ]
+      }
+    ],
+    "i002": [
+      {
+        "sent": "30eda59db799343076a445108710247eadd0d7f68ab75982cf343988eeaeb3d1",
+        "sources": [
+          "Lecture 07 Groundwater.pdf, p.4",
+          "HYD210 Syllabus.pdf, p.4",
+          "Lecture 03 Reservoirs.pdf, p.1",
+          "Basin Survey 2019.pdf, p.1",
+          "Lecture 07 Groundwater.pdf, p.3"
+        ],
+        "reply": [
+          "The basin's drinking-water limit for nitrate is 50 milligrams per litre. [S1]",
+          "COVERAGE: complete"
+        ]
+      }
+    ],
+    "i003": [
+      {
+        "sent": "f07dc47c14df210170f92c6e6ef4e76800a0533db9b757503a5570c36d691ee0",
+        "sources": [
+          "Reader Floods.pdf, p.4",
+          "Reader Floods.pdf, p.1",
+          "Lecture 07 Groundwater.pdf, p.3",
+          "Reader Floods.pdf, p.3",
+          "Reader Floods.pdf, p.2"
+        ],
+        "reply": [
+          "Edrin's flood warning sirens are tested on the first Monday of each month. [S1]",
+          "COVERAGE: complete"
+        ]
+      }
+    ],
+    "i004": [
+      {
+        "sent": "415644c0db3a5d3fbbd6fac888455abae4a166a819a413bb5fb899645cf2ea77",
+        "sources": [
+          "Reader Floods.pdf, p.4",
+          "Reader Floods.pdf, p.1",
+          "Reader Floods.pdf, p.2",
+          "Basin Survey 2019.pdf, p.4",
+          "Lecture 07 Groundwater.pdf, p.3"
+        ],
+        "reply": [
+          "The basin's flood warning service sends alerts when the Edrin bridge gauge passes 4 metres. [S1]",
+          "COVERAGE: complete"
+        ]
+      }
+    ],
+    "i005": [
+      {
+        "sent": "be059e2b557e818acaf87df14108e0d099d6564f9076539070fb40f30286b011",
+        "sources": [
+          "Lecture 05 Goods.pdf, p.3",
+          "Lecture 09 Decline.pdf, p.3",
+          "Lecture 02 Founding.pdf, p.2",
+          "Lecture 05 Goods.pdf, p.4",
+          "Lecture 09 Decline.pdf, p.1"
+        ],
+        "reply": [
+          "Lecture 5: Tolls Ships entering Port Ashby paid a toll of one skell per ten barrels of cargo. [S1]",
+          "Lecture 9: Port Ashby silts up Professor Quist argues the main cause of the decline was the silting of Port Ashby's harbour, which closed it to large ships. [S2]",
+          "COVERAGE: complete"
+        ]
+      }
+    ],
+    "i006": [
+      {
+        "sent": "1f521e36b04b9943b430c2ef55581e3895b4ac194fd31eaa014d26b70930d2ef",
+        "sources": [
+          "Lecture 05 Goods.pdf, p.3",
+          "Lecture 02 Founding.pdf, p.2",
+          "Lecture 02 Founding.pdf, p.4",
+          "Lecture 02 Founding.pdf, p.3",
+          "Reader Merchants.pdf, p.1"
+        ],
+        "reply": [
+          "Toll income was shared equally among the member cities. [S1]",
+          "COVERAGE: complete"
+        ]
+      }
+    ],
+    "i007": [
+      {
+        "sent": "30ef4819c7848ae2843262480e7628432465e24bdd93aff1dcc34946c7f6aa10",
+        "sources": [
+          "Reader Merchants.pdf, p.3",
+          "Reader Merchants.pdf, p.1",
+          "Lecture 05 Goods.pdf, p.4",
+          "Lecture 09 Decline.pdf, p.3",
+          "Reader Merchants.pdf, p.2"
+        ],
+        "reply": [
+          "Reader: A merchant's letter In one letter Hessa Torn complains that pirates took two of her ships off Cape Roan. [S1]",
+          "Hessa Torn's trading house owned nine ships. [S2]",
+          "COVERAGE: complete"
+        ]
+      }
+    ],
+    "i008": [
+      {
+        "sent": "f99b0b876506d971aa52c19cbae884f87fdf5c1137d2d8b64c125fd743979270",
+        "sources": [
+          "Reader Merchants.pdf, p.3",
+          "Reader Merchants.pdf, p.1",
+          "Lecture 02 Founding.pdf, p.2",
+          "Reader Merchants.pdf, p.2",
+          "Lecture 05 Goods.pdf, p.2"
+        ],
+        "reply": [
+          "The letter is addressed to her brother Evan, who managed her warehouse in Halvik. [S1]",
+          "COVERAGE: complete"
+        ]
+      }
+    ],
+    "i009": [
+      {
+        "sent": "b3878756657044d6c2d0f6bca0fa5acc5cc5c4d9fa01d1c3bd1811962aded27e",
+        "sources": [
+          "Reader Merchants.pdf, p.4",
+          "Reader Merchants.pdf, p.1",
+          "Lecture 02 Founding.pdf, p.2",
+          "Reader Merchants.pdf, p.2",
+          "Lecture 09 Decline.pdf, p.1"
+        ],
+        "reply": [
+          "Reader: Apprentices Apprentices in the Sarro trading houses served for seven years. [S1]",
+          "COVERAGE: complete"
+        ]
+      }
+    ],
+    "i010": [
+      {
+        "sent": "515fe855302a75c8ef943c22f3d9a9c3596779d695a181231556d3f6f6e437e3",
+        "sources": [
+          "Reader Merchants.pdf, p.4",
+          "Reader Merchants.pdf, p.1",
+          "Lecture 05 Goods.pdf, p.3",
+          "Lecture 09 Decline.pdf, p.3",
+          "Reader Merchants.pdf, p.2"
+        ],
+        "reply": [
+          "Reader: Apprentices Apprentices in the Sarro trading houses served for seven years. [S1]",
+          "COVERAGE: complete"
+        ]
+      }
+    ],
+    "m001": [
+      {
+        "sent": "740c36eb6c80a1f8956e150d7159e05b5fc47e047c322d1b393ccb195d65c391",
+        "sources": [
+          "Basin Survey 2019.pdf, p.3",
+          "Lecture 03 Reservoirs.pdf, p.2",
+          "Lecture 03 Reservoirs.pdf, p.1",
+          "Lecture 03 Reservoirs.pdf, p.4",
+          "HYD210 Syllabus.pdf, p.1"
+        ],
+        "reply": [
+          "Basin Survey 2019: Reservoir capacity revised Older capacity figures were calculated from the original construction drawings rather than measured. [S1]",
+          "Lecture 3: Capacity Capacity figures are quoted at full supply level, the highest level the dam is designed to hold in normal operation. [S2]",
+          "COVERAGE: complete"
+        ]
+      }
+    ],
+    "m002": [
+      {
+        "sent": "46ed3e970b9c19d571c1d5dde34c790519cd9307d72a6698ebea265bba3ee47f",
+        "sources": [
+          "Reader Floods.pdf, p.2",
+          "Reader Floods.pdf, p.1",
+          "Reader Floods.pdf, p.3",
+          "Reader Floods.pdf, p.4",
+          "HYD210 Syllabus.pdf, p.2"
+        ],
+        "reply": [
+          "Many local histories claim that clearing the Breck Hills forests caused the 1931 flood. [S1]",
+          "COVERAGE: complete"
+        ]
+      }
+    ],
+    "m003": [
+      {
+        "sent": "923cf414d18353e76ff5b6ecadf037674a450a829a0c50ef40bba1496e97b1ed",
+        "sources": [
+          "Lecture 09 Decline.pdf, p.3",
+          "Lecture 09 Decline.pdf, p.2",
+          "HIS140 Syllabus.pdf, p.4",
+          "Lecture 02 Founding.pdf, p.1",
+          "Lecture 09 Decline.pdf, p.1"
+        ],
+        "reply": [
+          "Lecture 9: Port Ashby silts up Professor Quist argues the main cause of the decline was the silting of Port Ashby's harbour, which closed it to large ships. [S1]",
+          "COVERAGE: complete"
+        ]
+      }
+    ],
+    "m004": [
+      {
+        "sent": "e72ba60a21810e2e0dc2dc552bb4c9542c12816a7e251f37a44346353a7f2645",
+        "sources": [
+          "Basin Survey 2019.pdf, p.3",
+          "Lecture 03 Reservoirs.pdf, p.4",
+          "Lecture 03 Reservoirs.pdf, p.2",
+          "Lecture 03 Reservoirs.pdf, p.1",
+          "Basin Survey 2019.pdf, p.1"
+        ],
+        "reply": [
+          "The 2019 resurvey put the Kell Reservoir at 38.2 million cubic metres. [S1]",
+          "The Kell Reservoir loses about 0.4 percent of its storage to sediment each year. [S2]",
+          "COVERAGE: complete"
+        ]
+      }
+    ],
+    "m005": [
+      {
+        "sent": "f090b58fecf8268009e9aeaa244160099317392c05f5c592d7ffc979ebde8827",
+        "sources": [
+          "HYD210 Syllabus.pdf, p.3",
+          "Lecture 03 Reservoirs.pdf, p.3",
+          "HYD210 Syllabus.pdf, p.2",
+          "Lecture 03 Reservoirs.pdf, p.1",
+          "Reader Floods.pdf, p.4"
+        ],
+        "reply": [
+          "HYD 210 Syllabus: The field trip The HYD 210 field trip visits the Orrin Dam spillway in week 9. [S1]",
+          "COVERAGE: complete"
+        ]
+      }
+    ],
+    "m006": [
+      {
+        "sent": "8070e0e5fbf105236d6051d4b88c41bd98a2737e715d3f8cdcd1bb4d82949ee6",
+        "sources": [
+          "Lecture 05 Goods.pdf, p.2",
+          "Lecture 05 Goods.pdf, p.4",
+          "Lecture 02 Founding.pdf, p.1",
+          "Lecture 05 Goods.pdf, p.3",
+          "HIS140 Syllabus.pdf, p.1"
+        ],
+        "reply": [
+          "A cart of salt from Halvik was worth about three carts of timber. [S1]",
+          "COVERAGE: complete"
+        ]
+      }
+    ],
+    "m007": [
+      {
+        "sent": "5e9a4f8e144fdf67517108cc6576e7223c5deac9a6a786de85258962e2eefda6",
+        "sources": [
+          "Lecture 02 Founding.pdf, p.2",
+          "Lecture 09 Decline.pdf, p.4",
+          "Lecture 02 Founding.pdf, p.4",
+          "Lecture 09 Decline.pdf, p.1",
+          "HIS140 Syllabus.pdf, p.3"
+        ],
+        "reply": [
+          "Halvik served as the League's first meeting place. [S1]",
+          "COVERAGE: complete"
+        ]
+      }
+    ],
+    "m008": [
+      {
+        "sent": "f3bc3d1ee2da633b834738cf46c361ab3f8e5c16237081113e003cdb22aecc7c",
+        "sources": [
+          "Reader Merchants.pdf, p.2",
+          "Reader Merchants.pdf, p.1",
+          "Reader Merchants.pdf, p.4",
+          "Lecture 09 Decline.pdf, p.1",
+          "Lecture 05 Goods.pdf, p.1"
+        ],
+        "reply": [
+          "The Sarro guild ledger records 412 voyages in its best year. [S1]",
+          "Reader: Hessa Torn Hessa Torn ran the largest amberwool trading house in Sarro. [S2]",
+          "COVERAGE: complete"
+        ]
+      }
+    ],
+    "m009": [
+      {
+        "sent": "3a70758ce8b15058ec0139d0921ad2421fce81940af8e46bd253372bd998d7da",
+        "sources": [
+          "Reader Floods.pdf, p.3",
+          "Reader Floods.pdf, p.1",
+          "Reader Floods.pdf, p.2",
+          "Reader Floods.pdf, p.4",
+          "Lecture 03 Reservoirs.pdf, p.1"
+        ],
+        "reply": [
+          "COVERAGE: gaps: How high did the river rise at Edrin bridge in 1931, and how many kilometres of levees were built afterwards?"
+        ]
+      }
+    ],
+    "m010": [
+      {
+        "sent": "ad298dc5f6d60b5c98bb1306ef5f1288cbb4400000b6324e79c771060d8ca0ac",
+        "sources": [
+          "HIS140 Syllabus.pdf, p.1",
+          "HIS140 Syllabus.pdf, p.2",
+          "HIS140 Syllabus.pdf, p.4",
+          "HIS140 Syllabus.pdf, p.3",
+          "Lecture 05 Goods.pdf, p.3"
+        ],
+        "reply": [
+          "Late essays lose 5 percent per day. [S1]",
+          "COVERAGE: complete"
+        ]
+      }
+    ],
+    "p001": [
+      {
+        "sent": "01042be0a4b64dd929ff72e3f23afa0b5bd1382b3200f4655810fd59bfe95787",
+        "sources": [
+          "Lecture 02 Founding.pdf, p.1",
+          "Lecture 02 Founding.pdf, p.2",
+          "HIS140 Syllabus.pdf, p.3",
+          "Lecture 05 Goods.pdf, p.2",
+          "Lecture 02 Founding.pdf, p.4"
+        ],
+        "reply": [
+          "Lecture 2: Origins of the League The Ostren League was founded by the merchant Marra Vell. [S1]",
+          "Lecture 2: The founding cities The four founding cities of the Ostren League were Halvik, Port Ashby, Dunmere and Sarro. [S2]",
+          "COVERAGE: complete"
+        ]
+      }
+    ],
+    "p002": [
+      {
+        "sent": "33ef470e2e6d1eedb9bbe9c1acea85765a82b781dc674503e28245273f7cfb5f",
+        "sources": [
+          "Lecture 03 Reservoirs.pdf, p.3",
+          "HYD210 Syllabus.pdf, p.3",
+          "Lecture 03 Reservoirs.pdf, p.1",
+          "Lecture 03 Reservoirs.pdf, p.2",
+          "Lecture 03 Reservoirs.pdf, p.4"
+        ],
+        "reply": [
+          "Lecture 3: The Orrin Dam The Orrin Dam is an earth-fill dam 52 metres high. [S1]",
+          "COVERAGE: complete"
+        ]
+      }
+    ],
+    "p003": [
+      {
+        "sent": "a6b7c306f7416f34c3464d15471a1dcb5025ebde3c05f2b4dee075449079a78a",
+        "sources": [
+          "Lecture 07 Groundwater.pdf, p.3",
+          "Lecture 07 Groundwater.pdf, p.2",
+          "Reader Floods.pdf, p.3",
+          "Lecture 03 Reservoirs.pdf, p.4",
+          "Reader Floods.pdf, p.1"
+        ],
+        "reply": [
+          "COVERAGE: gaps: How deep does Well T-14 reach, and who drilled it?"
+        ]
+      }
+    ],
+    "p004": [
+      {
+        "sent": "77ebf13562f3eca15478683b667ff250fb41bba8370bf399c64dfdea509ff3ab",
+        "sources": [
+          "Lecture 05 Goods.pdf, p.4",
+          "Reader Merchants.pdf, p.4",
+          "Lecture 09 Decline.pdf, p.3",
+          "Lecture 05 Goods.pdf, p.1",
+          "Lecture 09 Decline.pdf, p.1"
+        ],
+        "reply": [
+          "Lecture 5: Coinage The League's silver coin was called the skell. [S1]",
+          "COVERAGE: complete"
+        ]
+      }
+    ],
+    "p005": [
+      {
+        "sent": "07a30fcfab08fea96387ee016ee04a01c4cf218404fc2c674e3a3f277464f37b",
+        "sources": [
+          "Basin Survey 2019.pdf, p.2",
+          "Lecture 07 Groundwater.pdf, p.2",
+          "Basin Survey 2019.pdf, p.1",
+          "Lecture 07 Groundwater.pdf, p.1",
+          "Reader Floods.pdf, p.3"
+        ],
+        "reply": [
+          "Average annual rainfall in the Varrow Basin is 780 millimetres. [S1]",
+          "COVERAGE: complete"
+        ]
+      }
+    ],
+    "p006": [
+      {
+        "sent": "7af3497e1dd36ae2780444847431aee7df91b8cfd5d22fd756aa63bdc2db3a21",
+        "sources": [
+          "Reader Merchants.pdf, p.1",
+          "Reader Merchants.pdf, p.3",
+          "Reader Merchants.pdf, p.4",
+          "Lecture 09 Decline.pdf, p.3",
+          "Lecture 02 Founding.pdf, p.2"
+        ],
+        "reply": [
+          "Hessa Torn's trading house owned nine ships. [S1]",
+          "COVERAGE: complete"
+        ]
+      }
+    ],
+    "p007": [
+      {
+        "sent": "fc1e40a68ea30841a1d5767a06db294186761a67cdf542dd9f7d3b24a39eac69",
+        "sources": [
+          "Lecture 03 Reservoirs.pdf, p.4",
+          "Basin Survey 2019.pdf, p.3",
+          "Lecture 03 Reservoirs.pdf, p.1",
+          "Lecture 03 Reservoirs.pdf, p.2",
+          "Basin Survey 2019.pdf, p.1"
+        ],
+        "reply": [
+          "Most sediment enters the Kell Reservoir from the Tamsk Creek tributary. [S1]",
+          "COVERAGE: complete"
+        ]
+      }
+    ],
+    "p008": [
+      {
+        "sent": "49fb6998b5c7950cf57b9090059e6b202621e4a6ecad57b7dfbb35c9aecb87b6",
+        "sources": [
+          "Lecture 09 Decline.pdf, p.4",
+          "Lecture 09 Decline.pdf, p.1",
+          "Lecture 02 Founding.pdf, p.4",
+          "Lecture 02 Founding.pdf, p.2",
+          "HIS140 Syllabus.pdf, p.3"
+        ],
+        "reply": [
+          "Lecture 9: The last council The last League council met in Dunmere. [S1]",
+          "The League's trade fell by half over the sixty years before its last council. [S2]",
+          "COVERAGE: complete"
+        ]
+      }
+    ],
+    "p009": [
+      {
+        "sent": "54e7fd1e8b46f9087728d50becc56e2db9fb28d9dc534d888bccdf5f77969ab9",
+        "sources": [
+          "HYD210 Syllabus.pdf, p.1",
+          "HYD210 Syllabus.pdf, p.4",
+          "HYD210 Syllabus.pdf, p.2",
+          "HYD210 Syllabus.pdf, p.3",
+          "Lecture 07 Groundwater.pdf, p.2"
+        ],
+        "reply": [
+          "Lab reports are worth 35 percent of the final grade in HYD 210. [S1]",
+          "COVERAGE: complete"
+        ]
+      }
+    ],
+    "p010": [
+      {
+        "sent": "df2211112280173c5aeffc7c8cbf88b17833906f242c303332e05f54db975f55",
+        "sources": [
+          "Lecture 05 Goods.pdf, p.1",
+          "Reader Merchants.pdf, p.1",
+          "Lecture 09 Decline.pdf, p.1"
+        ],
+        "reply": [
+          "COVERAGE: gaps: What did amberwool take its colour from, and what did a bale sell for?"
+        ]
+      }
+    ],
+    "r001": [
+      {
+        "sent": "d3b906639e0388abdd9b1d316805bfe195efb38b476deeb57647e4281401cc10",
+        "sources": [
+          "Lecture 07 Groundwater.pdf, p.3",
+          "Lecture 07 Groundwater.pdf, p.4",
+          "Reader Floods.pdf, p.2",
+          "Lecture 03 Reservoirs.pdf, p.2",
+          "Reader Floods.pdf, p.1"
+        ],
+        "reply": [
+          "Lecture 7: Wells and pumping tests A pumping test runs a well at a steady rate and records how the water level falls and then recovers. [S1]",
+          "COVERAGE: complete"
+        ]
+      }
+    ],
+    "r002": [
+      {
+        "sent": "eb08075e3b40964f31bf80e5dcd008856cd14c84c8cfda9073419ad67c61e822",
+        "sources": [
+          "Basin Survey 2019.pdf, p.4",
+          "Lecture 07 Groundwater.pdf, p.1",
+          "HYD210 Syllabus.pdf, p.2",
+          "Lecture 03 Reservoirs.pdf, p.1",
+          "HYD210 Syllabus.pdf, p.1"
+        ],
+        "reply": [
+          "COVERAGE: gaps: Who discovered the law that describes groundwater flow through sand?"
+        ]
+      }
+    ],
+    "r003": [
+      {
+        "sent": "0fd115d6b1fe44923b0250d2c24054eb03fa56d7c9c1c9ac229fd31bb58715ab",
+        "sources": [
+          "Basin Survey 2019.pdf, p.1",
+          "Reader Floods.pdf, p.3",
+          "Lecture 03 Reservoirs.pdf, p.1",
+          "Lecture 07 Groundwater.pdf, p.3",
+          "HYD210 Syllabus.pdf, p.4"
+        ],
+        "reply": [
+          "COVERAGE: gaps: What is the chemical formula of water?"
+        ]
+      }
+    ],
+    "r004": [
+      {
+        "sent": "e25bc2cb927dd8e1480594293b755981213fe2294e660600e93d042c113f9c06",
+        "sources": [
+          "Lecture 03 Reservoirs.pdf, p.1",
+          "Basin Survey 2019.pdf, p.3",
+          "Lecture 03 Reservoirs.pdf, p.4",
+          "Lecture 03 Reservoirs.pdf, p.2",
+          "Lecture 07 Groundwater.pdf, p.3"
+        ],
+        "reply": [
+          "COVERAGE: gaps: How deep is the Kell Reservoir at its deepest point?"
+        ]
+      }
+    ],
+    "r005": [
+      {
+        "sent": "ab9edb1b5857efba2afc00fe59d32b4949f6da881164447fb0833ebfab829158",
+        "sources": [
+          "Lecture 03 Reservoirs.pdf, p.3",
+          "HYD210 Syllabus.pdf, p.3",
+          "Lecture 03 Reservoirs.pdf, p.1",
+          "Lecture 03 Reservoirs.pdf, p.2",
+          "Reader Floods.pdf, p.3"
+        ],
+        "reply": [
+          "COVERAGE: gaps: In what year was the Orrin Dam completed?"
+        ]
+      }
+    ],
+    "r006": [
+      {
+        "sent": "81742bdac0db677ed310e11c6b704b225b5fd2928a1cee82472135d0c6fb022e",
+        "sources": [
+          "HYD210 Syllabus.pdf, p.1"
+        ],
+        "reply": [
+          "COVERAGE: gaps: What is the penalty for a late essay?"
+        ]
+      }
+    ],
+    "r007": [
+      {
+        "sent": "44a6666d29a60e93c5ce15b584d18947c111a588dc08d5994e03d8316212a922",
+        "sources": [
+          "Reader Floods.pdf, p.2",
+          "Reader Floods.pdf, p.1",
+          "Lecture 07 Groundwater.pdf, p.3",
+          "Basin Survey 2019.pdf, p.4",
+          "Reader Floods.pdf, p.3"
+        ],
+        "reply": [
+          "COVERAGE: gaps: How many voyages does the Sarro guild ledger record in its best year?"
+        ]
+      }
+    ],
+    "r008": [
+      {
+        "sent": "90c62d6399ec2861b401d618911149fade5e1c4450b47c1e4ac8155d0541e991",
+        "sources": [
+          "Reader Floods.pdf, p.1",
+          "Reader Floods.pdf, p.4",
+          "Reader Floods.pdf, p.3",
+          "Lecture 03 Reservoirs.pdf, p.1"
+        ],
+        "reply": [
+          "The Great Varrow Flood of 1931 drowned the lower town of Edrin. [S1]",
+          "Edrin's flood warning sirens are tested on the first Monday of each month. [S2]",
+          "COVERAGE: complete"
+        ]
+      }
+    ],
+    "r009": [
+      {
+        "sent": "1e40c2797c546bbb6244e94c607052ca5fb9ef6105df68392fd6548d20be222f",
+        "sources": [
+          "Lecture 07 Groundwater.pdf, p.4",
+          "HYD210 Syllabus.pdf, p.4",
+          "Lecture 03 Reservoirs.pdf, p.1",
+          "Basin Survey 2019.pdf, p.1",
+          "Lecture 07 Groundwater.pdf, p.3"
+        ],
+        "reply": [
+          "The basin's drinking-water limit for nitrate is 50 milligrams per litre. [S1]",
+          "COVERAGE: complete"
+        ]
+      }
+    ],
+    "r010": [
+      {
+        "sent": "d2603a0982d81eb14a7a20ee836bea36bf95f17af34d68f147170a31c9d096e3",
+        "sources": [
+          "Reader Floods.pdf, p.1",
+          "Lecture 03 Reservoirs.pdf, p.1",
+          "Basin Survey 2019.pdf, p.2",
+          "Lecture 03 Reservoirs.pdf, p.4",
+          "Basin Survey 2019.pdf, p.1"
+        ],
+        "reply": [
+          "The Great Varrow Flood of 1931 drowned the lower town of Edrin. [S1]",
+          "The Kell Reservoir was formed by damming the Varrow River at Kell Gorge. [S2]",
+          "COVERAGE: complete"
+        ]
+      }
+    ],
+    "r011": [
+      {
+        "sent": "fde039ecb2a2b2cdb68111943382b94fad54c9f1c21d125f9af9eb5e440ce746",
+        "sources": [
+          "Lecture 03 Reservoirs.pdf, p.3",
+          "Reader Floods.pdf, p.2"
+        ],
+        "reply": [
+          "COVERAGE: gaps: What causes the seasons on Earth?"
+        ]
+      }
+    ],
+    "r012": [],
+    "r013": [],
+    "r014": [
+      {
+        "sent": "528dd08e82d0d23323316f85a174ca208ab178098aa42886b5b644343278e2eb",
+        "sources": [
+          "Lecture 03 Reservoirs.pdf, p.3",
+          "Basin Survey 2019.pdf, p.3",
+          "Lecture 07 Groundwater.pdf, p.4",
+          "Lecture 03 Reservoirs.pdf, p.2",
+          "Basin Survey 2019.pdf, p.4"
+        ],
+        "reply": [
+          "COVERAGE: gaps: How many litres are in a cubic metre?"
+        ]
+      }
+    ],
+    "r015": [
+      {
+        "sent": "3d1cd5a25951e1d8efa930523e0cca8b9ff7a3eaf25a422d33dd6dbf29cd93bc",
+        "sources": [
+          "HYD210 Syllabus.pdf, p.1",
+          "HYD210 Syllabus.pdf, p.4",
+          "HYD210 Syllabus.pdf, p.2",
+          "HYD210 Syllabus.pdf, p.3"
+        ],
+        "reply": [
+          "The final exam in HYD 210 is worth 40 percent of the grade. [S1]",
+          "COVERAGE: complete"
+        ]
+      }
+    ],
+    "r016": [
+      {
+        "sent": "1a1fae0419bcf71df1def8f39402896822c8eff9e9937d8c4d0b3ec47387fbd5",
+        "sources": [
+          "HIS140 Syllabus.pdf, p.4",
+          "Lecture 02 Founding.pdf, p.2"
+        ],
+        "reply": [
+          "COVERAGE: gaps: Who was the first emperor of Rome?"
+        ]
+      }
+    ],
+    "r017": [
+      {
+        "sent": "f3b1a027bd35bb728b0e4b391155f4737f85c74e1c8949ca844b78a1f20c258c",
+        "sources": [
+          "Lecture 09 Decline.pdf, p.4",
+          "Lecture 09 Decline.pdf, p.1",
+          "Lecture 02 Founding.pdf, p.4",
+          "Lecture 02 Founding.pdf, p.1",
+          "Lecture 02 Founding.pdf, p.2"
+        ],
+        "reply": [
+          "Lecture 9: The last council The last League council met in Dunmere. [S1]",
+          "The League's trade fell by half over the sixty years before its last council. [S2]",
+          "COVERAGE: complete"
+        ]
+      }
+    ],
+    "r018": [
+      {
+        "sent": "9e74497a60fc73234548aa2b9fd0047a98ad35a089405dbf03b6cfba953dd5da",
+        "sources": [
+          "Lecture 02 Founding.pdf, p.2",
+          "Reader Merchants.pdf, p.2",
+          "Lecture 05 Goods.pdf, p.2",
+          "Reader Merchants.pdf, p.3"
+        ],
+        "reply": [
+          "Lecture 2: The founding cities The four founding cities of the Ostren League were Halvik, Port Ashby, Dunmere and Sarro. [S1]",
+          "The ledger shows that most voyages from Sarro went to Halvik. [S2]",
+          "COVERAGE: complete"
+        ]
+      }
+    ],
+    "r019": [
+      {
+        "sent": "127a5c548a77491be5ebf6914e5b896ab15dff8aebf70aa484e8d4c860d6e74e",
+        "sources": [
+          "Lecture 09 Decline.pdf, p.3",
+          "Lecture 05 Goods.pdf, p.4",
+          "Lecture 09 Decline.pdf, p.2",
+          "Reader Merchants.pdf, p.1",
+          "Reader Merchants.pdf, p.4"
+        ],
+        "reply": [
+          "Without its deep harbour the League lost the trade route that paid for its fleet. [S1]",
+          "COVERAGE: complete"
+        ]
+      }
+    ],
+    "r020": [
+      {
+        "sent": "707d9fc2b0213de2ec10f8ceaee629b8bfcabfb1ed1412c6a0fe728096c36d1d",
+        "sources": [
+          "Lecture 02 Founding.pdf, p.1",
+          "Lecture 09 Decline.pdf, p.1",
+          "Reader Merchants.pdf, p.4",
+          "Reader Merchants.pdf, p.3",
+          "Lecture 02 Founding.pdf, p.4"
+        ],
+        "reply": [
+          "Lecture 9: Decline, an overview No single event ended the League. [S2]",
+          "COVERAGE: complete"
+        ]
+      }
+    ],
+    "r021": [
+      {
+        "sent": "40a8a0dc4d098ffe043786f72b52966b1928f94f05d183fe269edcbcf98a672d",
+        "sources": [
+          "HIS140 Syllabus.pdf, p.3",
+          "Lecture 02 Founding.pdf, p.2",
+          "Lecture 09 Decline.pdf, p.1",
+          "Lecture 09 Decline.pdf, p.4",
+          "Lecture 05 Goods.pdf, p.4"
+        ],
+        "reply": [
+          "COVERAGE: gaps: Where do HYD 210 lectures meet?"
+        ]
+      }
+    ],
+    "r022": [
+      {
+        "sent": "fc3052ec8b592359d79462a2c58cbc8af9cf8f108886fe1e7f8e41e989bca0ec",
+        "sources": [
+          "HIS140 Syllabus.pdf, p.4"
+        ],
+        "reply": [
+          "COVERAGE: gaps: How much water does the Kell Reservoir hold at full supply?"
+        ]
+      }
+    ],
+    "r023": [],
+    "r024": [],
+    "r025": [
+      {
+        "sent": "e1b625974249391d47b62247064050f3727a198d140ce6e861e76d58d22e8a2e",
+        "sources": [
+          "Lecture 02 Founding.pdf, p.1"
+        ],
+        "reply": [
+          "Lecture 2: Origins of the League The Ostren League was founded by the merchant Marra Vell. [S1]",
+          "COVERAGE: complete"
+        ]
+      }
+    ],
+    "r026": [
+      {
+        "sent": "a057c7eefcc614be58c489e58251c198f1af9bfea5efac59752acb4756b8379f",
+        "sources": [
+          "Lecture 02 Founding.pdf, p.4",
+          "Lecture 02 Founding.pdf, p.2",
+          "Lecture 09 Decline.pdf, p.4",
+          "Lecture 02 Founding.pdf, p.3",
+          "Lecture 05 Goods.pdf, p.1"
+        ],
+        "reply": [
+          "Lecture 2: The founding cities The four founding cities of the Ostren League were Halvik, Port Ashby, Dunmere and Sarro. [S2]",
+          "Lecture 9: The last council The last League council met in Dunmere. [S3]",
+          "COVERAGE: complete"
+        ]
+      }
+    ],
+    "r027": [
+      {
+        "sent": "a177f225d9929212596d37585c3944e40a7ec14ae4455db590539635dfac9b1e",
+        "sources": [
+          "HIS140 Syllabus.pdf, p.1",
+          "HIS140 Syllabus.pdf, p.2",
+          "HIS140 Syllabus.pdf, p.3",
+          "HIS140 Syllabus.pdf, p.4",
+          "Lecture 05 Goods.pdf, p.3"
+        ],
+        "reply": [
+          "COVERAGE: gaps: What is the word limit for the HIS 140 final exam?"
+        ]
+      }
+    ],
+    "r028": [],
+    "r029": [
+      {
+        "sent": "9bbfc4a433257a2e0da73495c457534b17ac00e5e97afc7bc4f60754227af1f4",
+        "sources": [
+          "Lecture 09 Decline.pdf, p.2"
+        ],
+        "reply": [
+          "Lecture 9: The plague claim Older textbooks claim the League collapsed because of the Grey Fever plague. [S1]",
+          "COVERAGE: complete"
+        ]
+      }
+    ],
+    "r030": [
+      {
+        "sent": "392e78496e94eabe387375d4c698e4bf0eb09d10142d93696ba3bf1e792aed9f",
+        "sources": [
+          "Lecture 05 Goods.pdf, p.1",
+          "Lecture 09 Decline.pdf, p.1",
+          "Reader Merchants.pdf, p.1"
+        ],
+        "reply": [
+          "COVERAGE: gaps: How much did a bale of amberwool weigh?"
+        ]
+      }
+    ],
+    "s001": [
+      {
+        "sent": "123946324573e384c18f14e4799c9dfe014e86ba0aa842ddc9d49d3897f549ff",
+        "sources": [
+          "HYD210 Syllabus.pdf, p.1",
+          "HYD210 Syllabus.pdf, p.4",
+          "HYD210 Syllabus.pdf, p.2",
+          "HYD210 Syllabus.pdf, p.3"
+        ],
+        "reply": [
+          "COVERAGE: gaps: What is the penalty for a late lab report in HYD 210?"
+        ]
+      }
+    ],
+    "s002": [
+      {
+        "sent": "6cf8b9243ed3a127aa71a89b4ce2c93d8a3ed7028ccf95cdc0690ecbc27dcd14",
+        "sources": [
+          "HYD210 Syllabus.pdf, p.1",
+          "HYD210 Syllabus.pdf, p.2",
+          "HYD210 Syllabus.pdf, p.4",
+          "HYD210 Syllabus.pdf, p.3"
+        ],
+        "reply": [
+          "The final exam in HYD 210 is worth 40 percent of the grade. [S1]",
+          "COVERAGE: complete"
+        ]
+      }
+    ],
+    "s003": [
+      {
+        "sent": "26a2ad7842b81effeb30c830f4303758d5e970340bcb3d43bb5467ef0151ee1a",
+        "sources": [
+          "HYD210 Syllabus.pdf, p.2",
+          "HYD210 Syllabus.pdf, p.1",
+          "HYD210 Syllabus.pdf, p.4",
+          "HYD210 Syllabus.pdf, p.3",
+          "Lecture 03 Reservoirs.pdf, p.1"
+        ],
+        "reply": [
+          "HYD 210 Syllabus: Weekly schedule Lectures for HYD 210 meet on Tuesdays and Thursdays in Corran Hall, room 114. [S1]",
+          "COVERAGE: complete"
+        ]
+      }
+    ],
+    "s004": [
+      {
+        "sent": "ebf25d865c21919349c9b520cd822e2034e7c44149e287d7214b2757011191fd",
+        "sources": [
+          "HYD210 Syllabus.pdf, p.2",
+          "HYD210 Syllabus.pdf, p.3",
+          "HYD210 Syllabus.pdf, p.1",
+          "HYD210 Syllabus.pdf, p.4"
+        ],
+        "reply": [
+          "The midterm for HYD 210 is held in week 7. [S1]",
+          "HYD 210 Syllabus: The field trip The HYD 210 field trip visits the Orrin Dam spillway in week 9. [S2]",
+          "COVERAGE: complete"
+        ]
+      }
+    ],
+    "s005": [
+      {
+        "sent": "2b2684a984337a65dfda8fe1810fe067ff0c3630fe9cf636cfe6436d187752ed",
+        "sources": [
+          "HYD210 Syllabus.pdf, p.3",
+          "HYD210 Syllabus.pdf, p.4",
+          "HYD210 Syllabus.pdf, p.1",
+          "HYD210 Syllabus.pdf, p.2",
+          "Lecture 03 Reservoirs.pdf, p.3"
+        ],
+        "reply": [
+          "Students on the field trip must bring waterproof boots and a hard hat. [S1]",
+          "COVERAGE: complete"
+        ]
+      }
+    ],
+    "s006": [
+      {
+        "sent": "46063dd9b9847199e081bcf479915a2f17b2fe4f9c0f08acb66ededddee70420",
+        "sources": [
+          "HYD210 Syllabus.pdf, p.4",
+          "HYD210 Syllabus.pdf, p.1",
+          "HYD210 Syllabus.pdf, p.2",
+          "HYD210 Syllabus.pdf, p.3",
+          "Basin Survey 2019.pdf, p.1"
+        ],
+        "reply": [
+          "COVERAGE: gaps: What must be written on a water sample label in the HYD 210 lab?"
+        ]
+      }
+    ],
+    "s007": [
+      {
+        "sent": "4a26c986d32945466ec9feb7e4aab08b37c358fa5f42d19cf287ab9f10f40c5e",
+        "sources": [
+          "HYD210 Syllabus.pdf, p.4",
+          "HYD210 Syllabus.pdf, p.1",
+          "Basin Survey 2019.pdf, p.1",
+          "Reader Floods.pdf, p.3",
+          "Lecture 03 Reservoirs.pdf, p.1"
+        ],
+        "reply": [
+          "Eating and drinking are not allowed anywhere in the Brannock Water Lab. [S1]",
+          "COVERAGE: complete"
+        ]
+      }
+    ],
+    "s008": [
+      {
+        "sent": "606fdc8d7699932b1b694e32ac5e2d44012e3f6ce2bd07e7b2d369a35fabea9c",
+        "sources": [
+          "Lecture 03 Reservoirs.pdf, p.1",
+          "Basin Survey 2019.pdf, p.3",
+          "Lecture 03 Reservoirs.pdf, p.4",
+          "Lecture 03 Reservoirs.pdf, p.2",
+          "Basin Survey 2019.pdf, p.1"
+        ],
+        "reply": [
+          "The Kell Reservoir was formed by damming the Varrow River at Kell Gorge. [S1]",
+          "The 2019 resurvey put the Kell Reservoir at 38.2 million cubic metres. [S2]",
+          "COVERAGE: complete"
+        ]
+      }
+    ],
+    "s009": [
+      {
+        "sent": "ab3a5588c6165775ee4b316ed705159d6ffee641fe913c641d79399cdec72a81",
+        "sources": [
+          "Lecture 03 Reservoirs.pdf, p.1",
+          "Lecture 03 Reservoirs.pdf, p.2",
+          "Basin Survey 2019.pdf, p.3",
+          "Lecture 03 Reservoirs.pdf, p.4",
+          "Lecture 07 Groundwater.pdf, p.3"
+        ],
+        "reply": [
+          "The Kell Reservoir supplies drinking water to the town of Edrin. [S1]",
+          "The Kell Reservoir holds 41.6 million cubic metres at full supply. [S2]",
+          "COVERAGE: complete"
+        ]
+      }
+    ],
+    "s010": [
+      {
+        "sent": "84d1cc1b31f76cc09e319c688912a4cd24490d257e82b5d6f08232705d0c5e25",
+        "sources": [
+          "Lecture 03 Reservoirs.pdf, p.2",
+          "Lecture 03 Reservoirs.pdf, p.1",
+          "Basin Survey 2019.pdf, p.3",
+          "Lecture 03 Reservoirs.pdf, p.4",
+          "HYD210 Syllabus.pdf, p.2"
+        ],
+        "reply": [
+          "The Kell Reservoir holds 41.6 million cubic metres at full supply. [S1]",
+          "COVERAGE: complete"
+        ]
+      }
+    ],
+    "s011": [
+      {
+        "sent": "13fd6c2f117efe0d1a07caca1cfda457a6ab5da11bbde7cfb19f0ab928185af1",
+        "sources": [
+          "Lecture 07 Groundwater.pdf, p.1",
+          "Lecture 07 Groundwater.pdf, p.2",
+          "Lecture 07 Groundwater.pdf, p.4",
+          "Lecture 03 Reservoirs.pdf, p.4"
+        ],
+        "reply": [
+          "Lecture 7: The Tamsk Aquifer The Tamsk Aquifer is a sandstone aquifer beneath the eastern half of the Varrow Basin. [S1]",
+          "The Tamsk Aquifer is recharged at about 85 millimetres per year. [S2]",
+          "COVERAGE: complete"
+        ]
+      }
+    ],
+    "s012": [
+      {
+        "sent": "d05eb2ebe18da9d99fb380bb3708e8bdad7e5375fb2fd305791e0092b9fd6364",
+        "sources": [
+          "Lecture 07 Groundwater.pdf, p.1",
+          "Lecture 07 Groundwater.pdf, p.4",
+          "Lecture 07 Groundwater.pdf, p.2",
+          "Lecture 03 Reservoirs.pdf, p.4"
+        ],
+        "reply": [
+          "The Tamsk Aquifer is confined by a layer of grey shale called the Holt Shale. [S1]",
+          "Lecture 7: Contamination Nitrate levels in the Tamsk Aquifer are highest under the Selby farmlands. [S2]",
+          "COVERAGE: complete"
+        ]
+      }
+    ],
+    "s013": [
+      {
+        "sent": "ef757e4b051bc23bfa3dfd91fccb2e49167be8194f22eedce7eea3cbea93f17b",
+        "sources": [
+          "Lecture 07 Groundwater.pdf, p.2",
+          "Lecture 07 Groundwater.pdf, p.1",
+          "Lecture 07 Groundwater.pdf, p.4",
+          "Lecture 07 Groundwater.pdf, p.3",
+          "Lecture 03 Reservoirs.pdf, p.4"
+        ],
+        "reply": [
+          "The Tamsk Aquifer is recharged at about 85 millimetres per year. [S1]",
+          "Lecture 7: The Tamsk Aquifer The Tamsk Aquifer is a sandstone aquifer beneath the eastern half of the Varrow Basin. [S2]",
+          "COVERAGE: complete"
+        ]
+      }
+    ],
+    "s014": [
+      {
+        "sent": "6765a5dff6ed920f1b1408b08706913f72357b70eb0ab0fc7d81edbabc380e2c",
+        "sources": [
+          "Lecture 07 Groundwater.pdf, p.2",
+          "Lecture 07 Groundwater.pdf, p.1",
+          "Lecture 07 Groundwater.pdf, p.4",
+          "Lecture 03 Reservoirs.pdf, p.4"
+        ],
+        "reply": [
+          "Most recharge of the Tamsk Aquifer happens on the Breck Hills, where the sandstone reaches the surface. [S1]",
+          "COVERAGE: complete"
+        ]
+      }
+    ],
+    "s015": [
+      {
+        "sent": "6dd647ecfdd35cf00f0205bd58334821873aad05c3893e06b3c0cc2db84cb0d7",
+        "sources": [
+          "Lecture 07 Groundwater.pdf, p.3",
+          "Reader Floods.pdf, p.1",
+          "Reader Floods.pdf, p.3",
+          "Lecture 07 Groundwater.pdf, p.1",
+          "Lecture 07 Groundwater.pdf, p.4"
+        ],
+        "reply": [
+          "Lecture 7: Wells and pumping tests A pumping test runs a well at a steady rate and records how the water level falls and then recovers. [S1]",
+          "COVERAGE: complete"
+        ]
+      }
+    ],
+    "s016": [
+      {
+        "sent": "2139e6bb7367c07517cd92cee85443de6bfe08be9ba39771d965d28ce2f01f1b",
+        "sources": [
+          "Basin Survey 2019.pdf, p.1",
+          "Basin Survey 2019.pdf, p.3",
+          "Basin Survey 2019.pdf, p.2",
+          "Basin Survey 2019.pdf, p.4",
+          "Lecture 03 Reservoirs.pdf, p.1"
+        ],
+        "reply": [
+          "The 2019 basin survey measured reservoir depths with a boat-mounted echo sounder. [S1]",
+          "Basin Survey 2019: Reservoir capacity revised Older capacity figures were calculated from the original construction drawings rather than measured. [S2]",
+          "COVERAGE: complete"
+        ]
+      }
+    ],
+    "s017": [
+      {
+        "sent": "110284620024f7e2bf6add8472d4257b07ee73d7ffc7fd4e55bb4ed43d46bc47",
+        "sources": [
+          "Basin Survey 2019.pdf, p.1",
+          "Basin Survey 2019.pdf, p.3",
+          "Basin Survey 2019.pdf, p.2",
+          "Basin Survey 2019.pdf, p.4",
+          "Reader Floods.pdf, p.2"
+        ],
+        "reply": [
+          "Basin Survey 2019: Method The 2019 survey was carried out by the Varrow Basin Water Board. [S1]",
+          "Basin Survey 2019: Reservoir capacity revised Older capacity figures were calculated from the original construction drawings rather than measured. [S2]",
+          "COVERAGE: complete"
+        ]
+      }
+    ],
+    "s018": [
+      {
+        "sent": "240cfd90d7adcaff5d052bf41c9de881cf5d266cee7daba3297c298ec0d2d76a",
+        "sources": [
+          "Basin Survey 2019.pdf, p.2",
+          "Basin Survey 2019.pdf, p.1",
+          "Lecture 03 Reservoirs.pdf, p.1",
+          "Reader Floods.pdf, p.4",
+          "Lecture 07 Groundwater.pdf, p.1"
+        ],
+        "reply": [
+          "The wettest month in the Varrow Basin is November. [S1]",
+          "Basin Survey 2019: Method The 2019 survey was carried out by the Varrow Basin Water Board. [S2]",
+          "COVERAGE: complete"
+        ]
+      }
+    ],
+    "s019": [
+      {
+        "sent": "85f2c1fe82bdde37087f215650d289e7b94c7496f3ddf108535a3b900853720b",
+        "sources": [
+          "Basin Survey 2019.pdf, p.3",
+          "Basin Survey 2019.pdf, p.1",
+          "Lecture 03 Reservoirs.pdf, p.2",
+          "Lecture 03 Reservoirs.pdf, p.1",
+          "Lecture 03 Reservoirs.pdf, p.4"
+        ],
+        "reply": [
+          "The survey attributes the lower capacity of the Kell Reservoir to sediment. [S1]",
+          "COVERAGE: complete"
+        ]
+      }
+    ],
+    "s020": [
+      {
+        "sent": "cda4e3f21b6a7d9e6fff60bfa90ccb49753cc9142d34ce224c95a201a615046a",
+        "sources": [
+          "Basin Survey 2019.pdf, p.4",
+          "Basin Survey 2019.pdf, p.2",
+          "Reader Floods.pdf, p.4",
+          "Lecture 03 Reservoirs.pdf, p.2",
+          "Reader Floods.pdf, p.1"
+        ],
+        "reply": [
+          "Gauge station V-3 recorded a peak flow of 640 cubic metres per second. [S1]",
+          "COVERAGE: complete"
+        ]
+      }
+    ],
+    "s021": [
+      {
+        "sent": "569d945359aeeb6d7bd5419a4f7dd1dbd3e9ab9ce782e6b70338e28391ad1cb9",
+        "sources": [
+          "Reader Floods.pdf, p.1",
+          "Reader Floods.pdf, p.3",
+          "Reader Floods.pdf, p.2",
+          "Reader Floods.pdf, p.4",
+          "Lecture 03 Reservoirs.pdf, p.1"
+        ],
+        "reply": [
+          "The Great Varrow Flood of 1931 drowned the lower town of Edrin. [S1]",
+          "Reader: Levees After 1931 the Water Board built 14 kilometres of levees along the lower Varrow. [S2]",
+          "COVERAGE: complete"
+        ]
+      }
+    ],
+    "s022": [
+      {
+        "sent": "9364a155fdad289ac370397dacced874916b53ef1eb63b28f336964a96a8294b",
+        "sources": [
+          "Reader Floods.pdf, p.3",
+          "Reader Floods.pdf, p.1",
+          "Reader Floods.pdf, p.2",
+          "Reader Floods.pdf, p.4",
+          "Lecture 03 Reservoirs.pdf, p.2"
+        ],
+        "reply": [
+          "The Edrin levees are designed for a flood with a 1 in 100 chance in any year. [S1]",
+          "COVERAGE: complete"
+        ]
+      }
+    ],
+    "s023": [
+      {
+        "sent": "05e570dca7219ffd86aa32ae7da928c5f48f34776fe56af6a03db2d612d321e3",
+        "sources": [
+          "HIS140 Syllabus.pdf, p.1",
+          "HIS140 Syllabus.pdf, p.2",
+          "HIS140 Syllabus.pdf, p.4",
+          "HIS140 Syllabus.pdf, p.3",
+          "Lecture 05 Goods.pdf, p.4"
+        ],
+        "reply": [
+          "HIS 140 Syllabus: Grading Essays are worth 50 percent of the final grade in HIS 140. [S1]",
+          "COVERAGE: complete"
+        ]
+      }
+    ],
+    "s024": [
+      {
+        "sent": "8613009f6bfee1a60ab62c1e5405a38588368cbba8622a61a8e233fe8f48759b",
+        "sources": [
+          "HIS140 Syllabus.pdf, p.2",
+          "HIS140 Syllabus.pdf, p.1",
+          "HIS140 Syllabus.pdf, p.4",
+          "HIS140 Syllabus.pdf, p.3",
+          "Reader Merchants.pdf, p.1"
+        ],
+        "reply": [
+          "HIS 140 essays must cite at least four primary sources. [S1]",
+          "COVERAGE: complete"
+        ]
+      }
+    ],
+    "s025": [
+      {
+        "sent": "061d7ee90c77dcc1e9e4deadb94de0688bbd541570ca843f5ad6c77c27751e9b",
+        "sources": [
+          "HIS140 Syllabus.pdf, p.3",
+          "HIS140 Syllabus.pdf, p.2",
+          "HIS140 Syllabus.pdf, p.1",
+          "HIS140 Syllabus.pdf, p.4",
+          "Lecture 02 Founding.pdf, p.2"
+        ],
+        "reply": [
+          "COVERAGE: gaps: Where does HIS 140 meet?"
+        ]
+      }
+    ],
+    "s026": [
+      {
+        "sent": "de48bc4a49824887ff125c9d71018698b3b6c4ee1d8f3769557414c730a81a0f",
+        "sources": [
+          "HIS140 Syllabus.pdf, p.3",
+          "HIS140 Syllabus.pdf, p.2",
+          "HIS140 Syllabus.pdf, p.4",
+          "HIS140 Syllabus.pdf, p.1"
+        ],
+        "reply": [
+          "The HIS 140 midterm is held in week 6. [S1]",
+          "Questions about grades must be raised within one week of marks being returned. [S3]",
+          "COVERAGE: complete"
+        ]
+      }
+    ],
+    "s027": [
+      {
+        "sent": "0e9b319de3ff858fd39897668669213340488edea40b73605c5e085032a1fa07",
+        "sources": [
+          "HIS140 Syllabus.pdf, p.4",
+          "Lecture 09 Decline.pdf, p.3"
+        ],
+        "reply": [
+          "HIS 140 Syllabus: Office hours and appeals Professor Quist holds office hours on Wednesday afternoons. [S1]",
+          "COVERAGE: complete"
+        ]
+      }
+    ],
+    "s028": [
+      {
+        "sent": "f0555a61549fd150dba06799255bba3e8c8b3daf859017ca4b23b436d74c7bd2",
+        "sources": [
+          "HIS140 Syllabus.pdf, p.4",
+          "HIS140 Syllabus.pdf, p.1",
+          "HIS140 Syllabus.pdf, p.2",
+          "HIS140 Syllabus.pdf, p.3",
+          "Reader Merchants.pdf, p.3"
+        ],
+        "reply": [
+          "COVERAGE: gaps: How long do students have to raise a question about a grade in HIS 140?"
+        ]
+      }
+    ],
+    "s029": [
+      {
+        "sent": "1d818d058d0e35ac7afbda61d3df74a545a692c14caaebc830b0cb20254b0534",
+        "sources": [
+          "Lecture 02 Founding.pdf, p.1",
+          "Lecture 02 Founding.pdf, p.2",
+          "Lecture 05 Goods.pdf, p.2",
+          "Lecture 02 Founding.pdf, p.4",
+          "Lecture 09 Decline.pdf, p.1"
+        ],
+        "reply": [
+          "Lecture 2: Origins of the League The Ostren League was founded by the merchant Marra Vell. [S1]",
+          "Lecture 2: The founding cities The four founding cities of the Ostren League were Halvik, Port Ashby, Dunmere and Sarro. [S2]",
+          "COVERAGE: complete"
+        ]
+      }
+    ],
+    "s030": [
+      {
+        "sent": "3730f70ac9cda13c04dddbf75a3bb103d83d79c73cad8581d8df404ee62e44f5",
+        "sources": [
+          "Lecture 02 Founding.pdf, p.2",
+          "Lecture 02 Founding.pdf, p.1",
+          "Lecture 02 Founding.pdf, p.4",
+          "HIS140 Syllabus.pdf, p.3",
+          "Lecture 09 Decline.pdf, p.4"
+        ],
+        "reply": [
+          "Lecture 2: The founding cities The four founding cities of the Ostren League were Halvik, Port Ashby, Dunmere and Sarro. [S1]",
+          "Lecture 2: Origins of the League The Ostren League was founded by the merchant Marra Vell. [S2]",
+          "COVERAGE: complete"
+        ]
+      }
+    ],
+    "s031": [
+      {
+        "sent": "a9ae82b799d60fe8d01344e23dc6ac031d265bf698ac9515b72d1fca8abeb8c2",
+        "sources": [
+          "Lecture 02 Founding.pdf, p.3",
+          "Lecture 02 Founding.pdf, p.4",
+          "Lecture 02 Founding.pdf, p.2",
+          "HIS140 Syllabus.pdf, p.2",
+          "Lecture 09 Decline.pdf, p.2"
+        ],
+        "reply": [
+          "The League charter required every member city to keep two warships ready. [S1]",
+          "COVERAGE: complete"
+        ]
+      }
+    ],
+    "s032": [
+      {
+        "sent": "263036c7c06a47e18db18dccf5d626ad94968b7955432214478f6eb39e332d16",
+        "sources": [
+          "Lecture 02 Founding.pdf, p.3",
+          "HIS140 Syllabus.pdf, p.2",
+          "Lecture 02 Founding.pdf, p.1",
+          "Lecture 02 Founding.pdf, p.4",
+          "Lecture 09 Decline.pdf, p.1"
+        ],
+        "reply": [
+          "The League charter required every member city to keep two warships ready. [S1]",
+          "The founding is known mostly from later chronicles written by League clerks. [S3]",
+          "COVERAGE: complete"
+        ]
+      }
+    ],
+    "s033": [
+      {
+        "sent": "c03e2a8a57354e15bd2281901181a192974ca4e1b00bb7bf95735c37fcac8b5a",
+        "sources": [
+          "Lecture 02 Founding.pdf, p.4",
+          "Lecture 09 Decline.pdf, p.4",
+          "Lecture 09 Decline.pdf, p.1",
+          "Lecture 02 Founding.pdf, p.2",
+          "HIS140 Syllabus.pdf, p.3"
+        ],
+        "reply": [
+          "Lecture 2: The council The League council met twice a year, at midsummer and midwinter. [S1]",
+          "Lecture 9: The last council The last League council met in Dunmere. [S2]",
+          "COVERAGE: complete"
+        ]
+      }
+    ],
+    "s034": [
+      {
+        "sent": "f536463e10358741860e07bbdb9e2e480cb94d8b3aceffe8329b1fa804385e36",
+        "sources": [
+          "Lecture 02 Founding.pdf, p.4",
+          "Lecture 09 Decline.pdf, p.4",
+          "Lecture 02 Founding.pdf, p.2",
+          "Lecture 02 Founding.pdf, p.3",
+          "Lecture 09 Decline.pdf, p.2"
+        ],
+        "reply": [
+          "Each member city sent three delegates to the League council. [S1]",
+          "COVERAGE: complete"
+        ]
+      }
+    ],
+    "s035": [
+      {
+        "sent": "bb5b822cf4e1af267ddcab38cfcde35319aa7a008130c215cf84840cb77b3d6a",
+        "sources": [
+          "Lecture 05 Goods.pdf, p.1",
+          "Reader Merchants.pdf, p.2",
+          "Lecture 09 Decline.pdf, p.1",
+          "Lecture 02 Founding.pdf, p.2",
+          "Lecture 05 Goods.pdf, p.4"
+        ],
+        "reply": [
+          "Lecture 5: Amberwool Amberwool, a dyed sheep's wool from the Sarro uplands, was the League's most valuable export. [S1]",
+          "COVERAGE: complete"
+        ]
+      }
+    ],
+    "s036": [
+      {
+        "sent": "a6416ef3ba45de32cf9683cdddd17dae00af2abe57bf5ca58a0328b7eae15802",
+        "sources": [
+          "Lecture 05 Goods.pdf, p.2",
+          "Lecture 02 Founding.pdf, p.1",
+          "Reader Merchants.pdf, p.1",
+          "Lecture 09 Decline.pdf, p.1",
+          "Lecture 02 Founding.pdf, p.2"
+        ],
+        "reply": [
+          "Salt from the Ostren coast was traded inland in exchange for timber. [S1]",
+          "The League began as a pact between salt traders on the Ostren coast. [S2]",
+          "COVERAGE: complete"
+        ]
+      }
+    ],
+    "s037": [
+      {
+        "sent": "c40e91005cf574a8d84c02fef5686f6954541aab8953d337eb88469bdbb50416",
+        "sources": [
+          "Lecture 09 Decline.pdf, p.1",
+          "Lecture 09 Decline.pdf, p.4",
+          "Lecture 02 Founding.pdf, p.4",
+          "Reader Merchants.pdf, p.1",
+          "Lecture 09 Decline.pdf, p.3"
+        ],
+        "reply": [
+          "The League's trade fell by half over the sixty years before its last council. [S1]",
+          "COVERAGE: complete"
+        ]
+      }
+    ],
+    "s038": [
+      {
+        "sent": "eef0b68e578e4ba06ad2d049d389c8455727939c3fd0541ab8d5acdcf6f24875",
+        "sources": [
+          "Lecture 09 Decline.pdf, p.1",
+          "Lecture 05 Goods.pdf, p.1",
+          "Reader Merchants.pdf, p.1",
+          "Lecture 09 Decline.pdf, p.3",
+          "Reader Merchants.pdf, p.3"
+        ],
+        "reply": [
+          "Rival merchants from the southern port of Calver took over the amberwool trade. [S1]",
+          "Lecture 5: Amberwool Amberwool, a dyed sheep's wool from the Sarro uplands, was the League's most valuable export. [S2]",
+          "COVERAGE: complete"
+        ]
+      }
+    ],
+    "s039": [
+      {
+        "sent": "025665e4d2bd82fa9660ca82e03c5b1730ed277206e245ecd4c96081e51dc1eb",
+        "sources": [
+          "Lecture 09 Decline.pdf, p.3",
+          "Lecture 02 Founding.pdf, p.2",
+          "Lecture 05 Goods.pdf, p.3",
+          "Lecture 09 Decline.pdf, p.1",
+          "Lecture 05 Goods.pdf, p.1"
+        ],
+        "reply": [
+          "Dredging records show Port Ashby's harbour depth fell from 8 metres to 3 metres. [S1]",
+          "COVERAGE: complete"
+        ]
+      }
+    ],
+    "s040": [
+      {
+        "sent": "b6d64bd448718f53a34719504583d74f63c5a86688bacbe18eebce7e973d360b",
+        "sources": [
+          "Lecture 09 Decline.pdf, p.4",
+          "Lecture 02 Founding.pdf, p.4",
+          "Lecture 09 Decline.pdf, p.1",
+          "Lecture 09 Decline.pdf, p.2",
+          "Lecture 02 Founding.pdf, p.2"
+        ],
+        "reply": [
+          "At the last council only two cities sent delegates. [S1]",
+          "Each member city sent three delegates to the League council. [S2]",
+          "COVERAGE: complete"
+        ]
+      }
+    ]
+  }
+}

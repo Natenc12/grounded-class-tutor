@@ -204,20 +204,24 @@ def _place(typed: str | None) -> _Place:
     return _Place(Path(chosen).expanduser(), typed=False)
 
 
+def _add_library_option(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument(
+        "--library",
+        metavar="PATH",
+        default=argparse.SUPPRESS,
+        help=f"use this library file instead of {DEFAULT_LIBRARY}",
+    )
+
+
 def _parser() -> argparse.ArgumentParser:
-    library = {
-        "metavar": "PATH",
-        "default": argparse.SUPPRESS,
-        "help": f"use this library file instead of {DEFAULT_LIBRARY}",
-    }
     shared = _Parser(add_help=False)
-    shared.add_argument("--library", **library)
+    _add_library_option(shared)
     parser = _Parser(
         prog=PROG,
         description="Your class tutor: ask questions of your own course files.",
         epilog=f"Example: {EXAMPLES['']}",
     )
-    parser.add_argument("--library", **library)
+    _add_library_option(parser)
     parser.set_defaults(command_name="")
     commands = parser.add_subparsers(title="commands", required=True, metavar="COMMAND")
 

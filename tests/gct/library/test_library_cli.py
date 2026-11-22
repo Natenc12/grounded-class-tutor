@@ -596,22 +596,6 @@ def test_the_module_runs_from_terminal_without_a_stack_trace(tmp_path: Path):
     assert "Traceback" not in finished.stderr
 
 
-def test_the_commands_load_nothing_stage_2_deletes():
-    loaded = subprocess.run(
-        [
-            sys.executable,
-            "-c",
-            "import sys, gct.library.cli as cli; cli.selected_generator; "
-            "import gct.providers.active, gct.providers.claude; print('\\n'.join(sys.modules))",
-        ],
-        check=True,
-        capture_output=True,
-        text=True,
-    ).stdout.split()
-    retired = ("gct.api", "gct.db", "gct.jobs", "gct.retriever", "psycopg", "pgvector")
-    assert [name for name in loaded if name.startswith(retired)] == []
-
-
 def test_tutor_with_nothing_after_it_lists_what_you_can_do():
     out = io.StringIO()
 

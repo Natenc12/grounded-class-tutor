@@ -133,6 +133,12 @@ def build_options(sdk: Any, model: str, system: str, folder: str) -> Any:
     )
 
 
+def request(sdk: Any, model: str, messages: Sequence[Message], folder: str) -> tuple[str, Any]:
+    system = "\n\n".join(m["content"] for m in messages if m["role"] == "system")
+    prompt = "\n\n".join(m["content"] for m in messages if m["role"] != "system")
+    return prompt, build_options(sdk, model, system, folder)
+
+
 class ClaudeGeneration:
     def __init__(self, model: str | None = None, time_limit: float = TIME_LIMIT_SECONDS) -> None:
         self._model = model or os.environ.get(MODEL_ENV, "").strip() or DEFAULT_MODEL
@@ -144,12 +150,10 @@ class ClaudeGeneration:
         return f"claude-agent-sdk:{self._model}"
 
     def generate(self, messages: Sequence[Message]) -> str:
-        system = "\n\n".join(m["content"] for m in messages if m["role"] == "system")
-        prompt = "\n\n".join(m["content"] for m in messages if m["role"] != "system")
         with login_overrides_removed(), ThreadPoolExecutor(max_workers=1) as pool:
-            return pool.submit(lambda: asyncio.run(self._ask(system, prompt))).result()
+            return pool.submit(lambda: asyncio.run(self._ask(messages))).result()
 
-    async def _ask(self, system: str, prompt: str) -> str:
+    async def _ask(self, messages: Sequence[Message]) -> str:
         try:
             import anyio
             import claude_agent_sdk as sdk
@@ -159,7 +163,7 @@ class ClaudeGeneration:
         kind: str | None = None
         result: Any = None
         with tempfile.TemporaryDirectory(prefix="gct-claude-") as folder:
-            options = build_options(sdk, self._model, system, folder)
+            prompt, options = request(sdk, self._model, messages, folder)
             try:
                 with anyio.fail_after(self._time_limit):
                     async with aclosing(sdk.query(prompt=prompt, options=options)) as replies:

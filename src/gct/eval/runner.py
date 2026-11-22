@@ -9,6 +9,10 @@ Two halves, split on purpose (owner's choice at the #199 plan):
     library through the library's own save, asks every question through the library (#230) with
     the model it is handed, and calls `score_answers`.
 
+The model can also be a recorder or a replayer (#198), which answers each question from its own
+recorded replies. A replay miss is never scored: `run_suite` raises `ReplayMissed`, naming every
+question that missed, because the answer checker would otherwise score it as an ordinary ERROR.
+
 The course enters as TEXT, never as PDFs, so a PDF-library upgrade cannot change what the model
 is shown. A course directory holds one JSON file per course file:
 `{"class": "<slug>", "file": "<name>", "pages": ["page 1 text", ...]}`.
@@ -18,9 +22,11 @@ from __future__ import annotations
 
 import json
 import tempfile
-from collections.abc import Mapping, Sequence
-from dataclasses import dataclass
+from collections.abc import Iterator, Mapping, Sequence
+from contextlib import AbstractContextManager, nullcontext
+from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Protocol, runtime_checkable
 
 from gct.contracts import AskResult
 from gct.eval.questions import EvalQuestion
@@ -43,7 +49,8 @@ from gct.grounder.answer import GrounderState
 from gct.ingest.parse import ParsedUnit
 from gct.library import Library
 from gct.library.ask import ask
-from gct.providers.base import Generation
+from gct.providers.base import Generation, Message
+from gct.providers.replay import ReplayMiss
 from gct.search import DEFAULT_K
 
 
@@ -173,14 +180,41 @@ def score_answers(
     )
 
 
-def run_suite(
+@runtime_checkable
+class QuestionModels(Protocol):
+    def question(self, question_id: str) -> AbstractContextManager[Generation]: ...
+
+
+class ReplayMissed(Exception):
+    def __init__(self, misses: Sequence[str]) -> None:
+        self.misses = tuple(misses)
+        super().__init__(
+            f"{len(self.misses)} replay miss(es); the recording no longer matches what the app "
+            "sends the model:\n" + "\n".join(self.misses)
+        )
+
+
+@dataclass(frozen=True)
+class Asked:
+    question: EvalQuestion
+    replay_misses: tuple[str, ...]
+    _answer: AskResult = field(repr=False)
+
+    @property
+    def answer(self) -> AskResult:
+        if self.replay_misses:
+            raise ReplayMissed(self.replay_misses)
+        return self._answer
+
+
+def ask_each(
     course: Sequence[CourseFile],
     questions: Sequence[EvalQuestion],
     *,
-    generator: Generation,
+    generator: Generation | QuestionModels,
     k: int = DEFAULT_K,
-) -> SuiteResult:
-    """Save the course into a fresh temporary library, ask every question there, score it all.
+) -> Iterator[Asked]:
+    """Save the course into a fresh temporary library and ask every question there, in order.
 
     Keyword scores depend on word counts across the whole library, so the library holds exactly
     `course` and nothing else, and is thrown away afterwards. The same course gives the same
@@ -190,6 +224,7 @@ def run_suite(
     unknown = sorted({q.class_slug for q in questions} - set(slugs))
     if unknown:
         raise ValueError(f"questions name class(es) the course does not have: {', '.join(unknown)}")
+    models = generator if isinstance(generator, QuestionModels) else _Every(generator)
 
     with tempfile.TemporaryDirectory() as folder, Library(Path(folder) / "suite.db") as library:
         class_ids = {slug: library.create_class(slug).id for slug in slugs}
@@ -201,8 +236,74 @@ def run_suite(
                 len(course_file.pages),
                 course_file.units(),
             )
-        answers = {
-            q.id: ask(library, class_ids[q.class_slug], q.question, generator=generator, k=k)
-            for q in questions
-        }
-    return score_answers(questions, answers)
+        for question in questions:
+            misses: list[str] = []
+            try:
+                with models.question(question.id) as model:
+                    asked = ask(
+                        library,
+                        class_ids[question.class_slug],
+                        question.question,
+                        generator=_Watched(model, misses),
+                        k=k,
+                    )
+            except ReplayMiss as miss:
+                misses.append(str(miss))
+            yield Asked(
+                question, tuple(f"{question.id}: {miss}" for miss in dict.fromkeys(misses)), asked
+            )
+
+
+def ask_all(
+    course: Sequence[CourseFile],
+    questions: Sequence[EvalQuestion],
+    *,
+    generator: Generation | QuestionModels,
+    k: int = DEFAULT_K,
+) -> dict[str, AskResult]:
+    answers: dict[str, AskResult] = {}
+    misses: list[str] = []
+    for asked in ask_each(course, questions, generator=generator, k=k):
+        if asked.replay_misses:
+            misses.extend(asked.replay_misses)
+        else:
+            answers[asked.question.id] = asked.answer
+    if misses:
+        raise ReplayMissed(misses)
+    return answers
+
+
+def run_suite(
+    course: Sequence[CourseFile],
+    questions: Sequence[EvalQuestion],
+    *,
+    generator: Generation | QuestionModels,
+    k: int = DEFAULT_K,
+) -> SuiteResult:
+    """Ask every question (see `ask_each`) and score it all."""
+    return score_answers(questions, ask_all(course, questions, generator=generator, k=k))
+
+
+@dataclass(frozen=True)
+class _Every:
+    model: Generation
+
+    def question(self, question_id: str) -> AbstractContextManager[Generation]:
+        return nullcontext(self.model)
+
+
+@dataclass(frozen=True)
+class _Watched:
+    inner: Generation
+    misses: list[str]
+
+    @property
+    def model_id(self) -> str:
+        return self.inner.model_id
+
+    def generate(self, messages: Sequence[Message]) -> str:
+        try:
+            return self.inner.generate(messages)
+        except ReplayMiss as miss:
+            self.misses.append(str(miss))
+            raise

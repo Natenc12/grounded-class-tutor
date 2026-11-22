@@ -1,5 +1,5 @@
 """The swappable model provider layer (ADR 0004 / 0013).
 
-Two thin interfaces — Embeddings and Generation — with grounding logic sitting *above* them,
-so swapping OpenAI for another provider never changes product behavior.
+One thin interface — Generation — with grounding logic sitting *above* it, so swapping one
+model provider for another never changes product behavior.
 """

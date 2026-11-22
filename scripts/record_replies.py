@@ -72,7 +72,7 @@ def record(*, stand_in: bool, again: bool) -> int:
     to_ask = [q.id for q in questions if not recorder.already(q.id)]
 
     print(f"Recording {model.model_id}'s replies to the practice exam.")
-    print(f"  Questions: {len(questions)}, of which {len(to_ask)} will be asked now", end="")
+    print(f"  Questions: {len(questions)}, of which {len(to_ask)} are still to record", end="")
     print(f" ({len(questions) - len(to_ask)} already recorded)." if resume else ".")
     if stand_in:
         print("  Model:     the free stand-in, which matches words and costs nothing.")

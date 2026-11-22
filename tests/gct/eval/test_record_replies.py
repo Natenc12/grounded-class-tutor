@@ -71,7 +71,7 @@ def test_the_stand_in_recording_matches_the_committed_one_byte_for_byte(replies,
 
     assert (replies / "standin.json").read_bytes() == COMMITTED.read_bytes()
     out = capsys.readouterr().out
-    assert "Questions: 100, of which 100 will be asked now." in out
+    assert "Questions: 100, of which 100 are still to record." in out
     assert "Checked: it replays with no model and no misses." in out
     assert "git add replies/standin.json" in out
 
@@ -113,7 +113,7 @@ def test_ctrl_c_keeps_what_was_recorded_and_the_next_run_asks_only_the_rest(
 
     assert first.calls == 3 and len(saved.questions) == 3
     assert rest.calls == 95 - 3
-    assert f"of which {100 - 3} will be asked now ({3} already recorded)" in capsys.readouterr().out
+    assert "of which 97 are still to record (3 already recorded)" in capsys.readouterr().out
     assert (replies / "standin.json").read_bytes() == COMMITTED.read_bytes()
 
 

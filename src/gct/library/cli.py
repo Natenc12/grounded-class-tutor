@@ -12,13 +12,12 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import NoReturn, TextIO
 
-from gct.config import load_settings
 from gct.contracts import AskResult
 from gct.grounder.answer import GrounderState
 from gct.library.ask import ask
 from gct.library.importer import Imported, import_file
 from gct.library.store import Library, LibraryClass, LibraryError
-from gct.providers.active import CHOICES, CLAUDE, OPENAI, PROVIDERS_ENV, STANDIN
+from gct.providers.active import CHOICES, CLAUDE, PROVIDERS_ENV, STANDIN
 from gct.providers.base import Generation, Message
 from gct.providers.claude import INSTALL_HINT, ClaudeGeneration, sdk_installed
 from gct.providers.standin import StandInGeneration
@@ -47,7 +46,6 @@ PROVIDER_LINES = {
     CLAUDE: "Answers come from Claude on this Mac's login.",
     STANDIN: "Answers come from the free stand-in model (GCT_PROVIDERS=standin), which matches "
     "words and does not really read.",
-    OPENAI: "Answers come from OpenAI, a paid service, using your API key (GCT_PROVIDERS=openai).",
 }
 
 EXAMPLES = {
@@ -124,17 +122,7 @@ def selected_generator() -> Generation:
         if not sdk_installed():
             raise _Stop(INSTALL_HINT)
         return ClaudeGeneration()
-    if choice == STANDIN:
-        return StandInGeneration()
-    if not load_settings().openai_api_key:
-        raise _Stop(
-            f"{PROVIDERS_ENV}={OPENAI} asks for OpenAI, a paid service, but no OpenAI API key is "
-            f"set. To use Claude on this Mac's login instead, remove the setting: "
-            f"unset {PROVIDERS_ENV}."
-        )
-    from gct.providers.openai_provider import OpenAIGeneration
-
-    return OpenAIGeneration()
+    return StandInGeneration()
 
 
 def run() -> int:
@@ -418,8 +406,6 @@ def _ask(arguments: argparse.Namespace, generator: Callable[[], Generation], out
                 f"Add one with:\n  {_command('import', arguments.library, target.name, 'FILE')}"
             )
         model = _Watched(generator())
-        if model.paid:
-            print(f"Using {model.answered_by}.", file=out)
         asked = ask(library, target.id, question, generator=model)
     _print_answer(asked, model, out)
     return 1 if asked.result.state is GrounderState.ERROR else 0
@@ -479,7 +465,6 @@ class _Watched:
     def __init__(self, inner: Generation) -> None:
         self._inner = inner
         self.failure: Exception | None = None
-        self.paid = type(inner).__module__ == "gct.providers.openai_provider"
 
     @property
     def model_id(self) -> str:
@@ -487,8 +472,6 @@ class _Watched:
 
     @property
     def answered_by(self) -> str:
-        if self.paid:
-            return f"OpenAI, using your paid API key ({self.model_id})"
         if isinstance(self._inner, ClaudeGeneration):
             return f"Claude on this Mac's login ({self.model_id})"
         if isinstance(self._inner, StandInGeneration):

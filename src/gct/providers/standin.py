@@ -2,12 +2,9 @@
 
 from __future__ import annotations
 
-import hashlib
-import math
 import re
 from collections.abc import Sequence
 
-from gct.config import EMBEDDING_DIM
 from gct.providers.base import Message
 
 _WORD_RE = re.compile(r"[a-z0-9]+")
@@ -29,25 +26,6 @@ def _words(text: str) -> list[str]:
 
 def _content_words(text: str) -> set[str]:
     return {w for w in _words(text) if len(w) >= _MIN_WORD_LETTERS and w not in _FILLER}
-
-
-class StandInEmbeddings:
-    model_id = "standin-hashed-words-v1"
-    dim = EMBEDDING_DIM
-
-    def embed(self, texts: Sequence[str]) -> list[list[float]]:
-        return [self._one(text) for text in texts]
-
-    def _one(self, text: str) -> list[float]:
-        vector = [0.0] * self.dim
-        for word in _words(text):
-            digest = hashlib.sha256(word.encode()).digest()
-            vector[int.from_bytes(digest[:8], "big") % self.dim] += 1.0
-        length = math.sqrt(sum(value * value for value in vector))
-        if length == 0.0:
-            vector[0] = 1.0
-            return vector
-        return [value / length for value in vector]
 
 
 class StandInGeneration:

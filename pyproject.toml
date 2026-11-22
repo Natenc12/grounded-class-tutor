@@ -4,8 +4,6 @@ version = "0.1.0"
 description = "A study tutor grounded in your own course materials — cited answers or an honest refusal."
 requires-python = ">=3.14"
 dependencies = [
-    "openai>=1.40",
-    "python-dotenv>=1.0",
     "pypdf[crypto]>=6.21.4",
     "python-pptx>=1.0.2",
 ]
@@ -59,5 +57,5 @@ select = ["E", "F", "I", "B", "UP", "W"]
 #   key carrying the flag — misspell it and both strict flags vanish with it.
 addopts = ["--strict-markers", "--strict-config"]
 markers = [
-    "live: test calls a real model: a paid external API (OpenAI, with .env secrets) or Claude on the Mac's own Claude login (no key; it draws from the owner's plan limits). Excluded from the per-PR CI gate, which runs `pytest -m 'not live'` (added in #18) — these run locally only, with .env secrets. This mark is DERIVED, never hand-declared (the promise made when it was registered ahead of its first carrier, kept in #8): `pytest_collection_modifyitems` in tests/conftest.py applies it to any test taking a `live_*` fixture, and constructing a real provider client through such a fixture is what makes a test paid — so the mark cannot drift from the dependency. New paid tests MUST take a `live_*` fixture from tests/conftest.py rather than constructing a provider client inline; an inline client is the one edge the derivation cannot see. How many tests carry it right now is a fetched fact, not one recorded here: `uv run pytest -m live -q --collect-only`.",
+    "live: test calls a real model: Claude on the Mac's own Claude login (no key; it draws from the owner's plan limits). Excluded from the per-PR CI gate, which runs `pytest -m 'not live'` (added in #18) — these run locally only, on the owner's Claude login. This mark is DERIVED, never hand-declared (the promise made when it was registered ahead of its first carrier, kept in #8): `pytest_collection_modifyitems` in tests/conftest.py applies it to any test taking a `live_*` fixture, and constructing a real provider client through such a fixture is what makes a test paid — so the mark cannot drift from the dependency. New paid tests MUST take a `live_*` fixture from tests/conftest.py rather than constructing a provider client inline; an inline client is the one edge the derivation cannot see. How many tests carry it right now is a fetched fact, not one recorded here: `uv run pytest -m live -q --collect-only`.",
 ]

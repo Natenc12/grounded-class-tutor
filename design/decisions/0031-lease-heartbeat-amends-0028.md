@@ -1,7 +1,10 @@
 # 0031. A slow file is not a failing file — the lease is renewed by a live worker, under a cap
 
 - **Date:** 2026-09-02
-- **Status:** **replaced by #205** for the lease heartbeat: exactly one worker runs, so there is no lease to guard. Kept as history. Previously: accepted — amends **ADR 0028** (its §1 lease row: the *value* is unchanged at 15
+- **Status:** **Superseded by #216 (desktop move)** (2026-11-22): there is no worker and no lease
+  (#253). Kept as history. Previously: **replaced by #205** for the lease heartbeat: exactly one
+  worker runs, so there is no lease to guard. Kept as history. Previously: accepted — amends **ADR
+  0028** (its §1 lease row: the *value* is unchanged at 15
   minutes, but what the number MEANS narrows — it is no longer the outer bound on one attempt, it
   is how long a SILENT worker may hold a job before it is presumed dead, and its safe-if-wrong
   direction changes with it. The table also gains two rows, so "the four numbers" is now six. §1's

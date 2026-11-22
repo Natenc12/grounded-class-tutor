@@ -1,5 +1,13 @@
 # Vision / Proposal — Grounded Class Tutor
 
+> **History note (2026-11-22):** This is the first proposal, written for a hosted web app that stage
+> 2 of the desktop move ([#216](https://github.com/Natenc12/grounded-class-tutor/issues/216))
+> removed; the app is now a personal app on one Mac. Still true: the problem it names, and the core
+> promise of answers only from your own course files, cited, or an honest refusal. Everything else
+> here, including the stack table, the deployment plan, the audience and the Supabase, pgvector and
+> embeddings details, is history. For the app as it is today, see the [README](../README.md) and the
+> code in `src/gct/`; for the plan, see #216.
+
 **One-liner:** A study tutor that answers questions and teaches Socratically — always grounded in
 *your own course materials*, with citations back to the source, and refusing to make things up
 beyond what's there.

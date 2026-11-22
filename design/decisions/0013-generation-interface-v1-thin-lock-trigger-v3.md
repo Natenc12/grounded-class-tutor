@@ -1,7 +1,10 @@
 # 0013. Generation interface: thin text-parse in V1; structured-output + provider-lock deferred to a pre-registered V3 trigger
 
 - **Date:** 2026-07-04
-- **Status:** accepted
+- **Status:** **Partly superseded by #216 (desktop move)** (2026-11-22): the embeddings interface
+  and the V3 lock trigger between GPT and Claude no longer hold: there are no embeddings today, and
+  Claude is the chosen model. Thin text-in, text-out generation, with the Grounder parsing the
+  citations, still holds. Before this: accepted
 - **Amends:** ADR 0004 (names the ceiling cost the abstraction carries, and a concrete revisit trigger)
 
 ## Context

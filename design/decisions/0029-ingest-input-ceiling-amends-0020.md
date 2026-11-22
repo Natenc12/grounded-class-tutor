@@ -1,7 +1,9 @@
 # 0029. The ingest input ceiling — counted in words, set at 250,000, refused as `too_long` — amending ADR 0020
 
 - **Date:** 2026-08-30
-- **Status:** accepted — amends **ADR 0020** (its §1 terminal/bad-input set, which enumerated three
+- **Status:** **Superseded by #216 (desktop move)** (2026-11-22): the word ceiling is gone; import
+  now limits a file's size and its pages or slides (#229, #183). Kept as history. Previously:
+  accepted — amends **ADR 0020** (its §1 terminal/bad-input set, which enumerated three
   kinds of bad input — corrupt, password-protected, unsupported/zero-text — and now carries a
   fourth; §1's transient half, §2's all-or-nothing replace and §3's index-write-only boundary all
   stand unchanged)

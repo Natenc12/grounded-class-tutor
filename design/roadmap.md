@@ -1,5 +1,12 @@
 # Roadmap — Grounded Class Tutor
 
+> **History note (2026-11-22):** This is the build plan for the retired hosted web app, removed in
+> stage 2 of the desktop move ([#216](https://github.com/Natenc12/grounded-class-tutor/issues/216));
+> #216 is the live build sequence. Slices 0 to 3 and Spike Pass 1 were built, and their grounding
+> core is still in use. Slice 4 (the React client) got only as far as a placeholder page, Spike Pass
+> 2 never ran, and the V2 and V3 turn-ons were never built. Everything here is history. For the app
+> as it is today, see the [README](../README.md) and the code in `src/gct/`; for the plan, see #216.
+
 **Phase:** 5 — Roadmap  **Rigor:** Deep (ADR 0001)
 **Delivery model:** the maturity ladder (ADR 0004). This roadmap sequences the **V1 walking skeleton**
 and the **spike slate** that tunes it. V2/V3 are *turn-ons* the architecture already shaped — listed

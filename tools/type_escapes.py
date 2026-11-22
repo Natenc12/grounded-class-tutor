@@ -11,8 +11,9 @@ The counting rule, read from Python's own tokens, so words in strings and docstr
   - every name `Any` (an import, an annotation, `typing.Any`);
   - every name `cast` followed by `(` (`cast(...)`, `typing.cast(...)`);
   - every comment containing `type: ignore` (the space after the colon is optional, as in mypy).
-Each occurrence counts once, so a line with two `Any` counts two. One blind spot, by design: an
-import under another name (`from typing import Any as A`) counts at the import only.
+A name bound by `Any as A` or `cast as c` in an import counts like the name it stands for. Each
+occurrence counts once, so a line with two `Any` counts two. Not followed: plain assignment
+(`c = cast`) and names imported from another module of the package.
 
 The working tree is counted; the base is read from git (`git show <ref>:<file>`), so nothing is
 checked out. In CI the base is the first parent of the merge commit a pull request is tested as.
@@ -39,14 +40,20 @@ def escapes(source: str) -> list[tuple[int, str]]:
     """Every escape hatch in one file's source, as (line number, what was found)."""
     found: list[tuple[int, str]] = []
     tokens = list(tokenize.generate_tokens(io.StringIO(source).readline))
-    for token, following in zip(tokens, tokens[1:] + [None], strict=True):
-        if token.type == tokenize.NAME and token.string == "Any":
-            found.append((token.start[0], "Any"))
-        elif token.type == tokenize.NAME and token.string == "cast":
-            if following is not None and following.string == "(":
-                found.append((token.start[0], "cast("))
-        elif token.type == tokenize.COMMENT and _IGNORE.search(token.string):
+    kinds = {"Any": "Any", "cast": "cast("}  # name -> the escape it is; import aliases join it
+    alias_at: set[int] = set()  # where an alias is bound: the original name was counted there
+    for i, token in enumerate(tokens):
+        if token.type == tokenize.COMMENT and _IGNORE.search(token.string):
             found.append((token.start[0], "type: ignore"))
+        if token.type != tokenize.NAME or token.string not in kinds or i in alias_at:
+            continue
+        kind = kinds[token.string]
+        after = [t.string for t in tokens[i + 1 : i + 3]]
+        if len(after) == 2 and after[0] == "as":
+            kinds[after[1]] = kind
+            alias_at.add(i + 2)
+        if kind == "Any" or after[:1] == ["("]:
+            found.append((token.start[0], kind))
     return found
 
 

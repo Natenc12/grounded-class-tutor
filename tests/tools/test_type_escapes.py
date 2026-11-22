@@ -43,6 +43,16 @@ def test_each_escape_counts_once_per_occurrence_by_its_tokens():
     ]
 
 
+def test_a_name_imported_as_an_alias_counts_like_the_original():
+    source = (
+        "from typing import Any as Anything, cast as to\n"  # 1: the Any; an uncalled cast is not
+        "def f(x: Anything) -> int:\n"  # 1
+        "    return to(int, x)\n"  # 1
+    )
+
+    assert type_escapes.escapes(source) == [(1, "Any"), (2, "Any"), (3, "cast(")]
+
+
 def test_words_in_strings_and_docstrings_are_not_escapes():
     source = (
         '"""Any caller may cast( a value; # type: ignore is banned."""\n'

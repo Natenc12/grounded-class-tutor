@@ -9,6 +9,7 @@ from pathlib import Path
 
 import pytest
 
+import gct.grounder.answer
 from gct.providers.base import TransientGenerationError
 from gct.providers.claude import NOT_SIGNED_IN, ClaudeGeneration
 from gct.providers.replay import Recording
@@ -46,10 +47,14 @@ class StopsAfter(StandInGeneration):
         return super().generate(messages)
 
 
-def fake_claude_program(tmp_path: Path, logged_in: bool) -> str:
+def fake_claude_program(tmp_path: Path, logged_in: bool | str) -> str:
+    """Prints what `claude auth status` prints: JSON with a `loggedIn` field, by default."""
     program = tmp_path / "claude"
-    answer = "true" if logged_in else "false"
-    program.write_text(f"#!/bin/sh\necho '{{\"loggedIn\": {answer}}}'\n", encoding="utf-8")
+    if isinstance(logged_in, str):
+        output = logged_in
+    else:
+        output = f'{{"loggedIn": {"true" if logged_in else "false"}, "authMethod": "claude.ai"}}'
+    program.write_text(f"#!/bin/sh\necho '{output}'\n", encoding="utf-8")
     program.chmod(program.stat().st_mode | stat.S_IEXEC)
     return str(program)
 
@@ -88,59 +93,166 @@ def test_a_finished_recording_is_never_replaced_without_again(replies, monkeypat
 
 def test_again_replaces_a_finished_recording(replies):
     command.main(["--stand-in"])
-    (replies / "standin.json").write_text(
-        COMMITTED.read_text(encoding="utf-8").replace("COVERAGE: complete", "COVERAGE: changed"),
-        encoding="utf-8",
-    )
+    (replies / "standin.json").write_text(TAMPERED, encoding="utf-8")
 
     assert command.main(["--stand-in", "--again"]) == 0
     assert (replies / "standin.json").read_bytes() == COMMITTED.read_bytes()
+    assert not (replies / "standin.json.draft").exists()
 
 
-def test_ctrl_c_keeps_what_was_recorded_and_the_next_run_asks_only_the_rest(
-    replies, monkeypatch, capsys
+class Budget(StandInGeneration):
+    """The stand-in, stopped by Ctrl-C after a given number of calls in each run."""
+
+    def __init__(self) -> None:
+        self.total = 0
+        self.left = 0
+
+    def generate(self, messages):
+        if self.left == 0:
+            raise KeyboardInterrupt
+        self.left -= 1
+        self.total += 1
+        return super().generate(messages)
+
+
+def run_until(budget: Budget, calls: int, args: list[str]) -> int:
+    budget.left = calls
+    return command.main(args)
+
+
+TAMPERED = COMMITTED.read_text(encoding="utf-8").replace("COVERAGE: complete", "COVERAGE: old")
+UNLIMITED = 10_000
+
+
+@pytest.mark.parametrize("stops", [(0, 1, 37), (1, 0, 0, 60), (94,)])
+def test_an_interrupted_first_recording_carries_on_and_asks_nothing_twice(
+    replies, monkeypatch, capsys, stops
 ):
-    first = StopsAfter(3, KeyboardInterrupt())
-    monkeypatch.setattr(command, "_stand_in", lambda: first)
+    budget = Budget()
+    monkeypatch.setattr(command, "_stand_in", lambda: budget)
 
-    assert command.main(["--stand-in"]) == 130
-    saved = Recording.read(replies / "standin.json")
-    assert "run the same command to carry on" in capsys.readouterr().out.lower()
+    for calls in stops:
+        assert run_until(budget, calls, ["--stand-in"]) == 130
+        assert not (replies / "standin.json").exists()
+        assert "Run the same command to carry on." in capsys.readouterr().out
+    assert run_until(budget, UNLIMITED, ["--stand-in"]) == 0
 
-    rest = StopsAfter(1000, KeyboardInterrupt())
-    monkeypatch.setattr(command, "_stand_in", lambda: rest)
-    assert command.main(["--stand-in"]) == 0
+    assert budget.total == 95
+    assert (replies / "standin.json").read_bytes() == COMMITTED.read_bytes()
+    assert not (replies / "standin.json.draft").exists()
 
-    assert first.calls == 3 and len(saved.questions) == 3
-    assert rest.calls == 95 - 3
-    assert "of which 97 are still to record (3 already recorded)" in capsys.readouterr().out
+
+@pytest.mark.parametrize(
+    "runs",
+    [
+        [(1, ["--again"]), (30, ["--again"]), (0, ["--again"])],
+        [(10, ["--again"]), (20, []), (5, [])],
+    ],
+)
+def test_an_interrupted_re_record_never_touches_the_finished_file_until_it_is_complete(
+    replies, monkeypatch, runs
+):
+    replies.mkdir()
+    (replies / "standin.json").write_text(TAMPERED, encoding="utf-8")
+    budget = Budget()
+    monkeypatch.setattr(command, "_stand_in", lambda: budget)
+
+    for calls, flags in runs:
+        assert run_until(budget, calls, ["--stand-in", *flags]) == 130
+        assert (replies / "standin.json").read_text(encoding="utf-8") == TAMPERED
+    assert run_until(budget, UNLIMITED, ["--stand-in", *runs[-1][1]]) == 0
+
+    assert budget.total == 95
     assert (replies / "standin.json").read_bytes() == COMMITTED.read_bytes()
 
 
-def test_a_failed_question_stops_the_run_and_is_not_saved(replies, monkeypatch, capsys):
-    monkeypatch.setattr(
-        command, "_stand_in", lambda: StopsAfter(2, TransientGenerationError("rate limited"))
+def test_a_draft_made_under_different_instructions_is_not_reused(replies, monkeypatch, capsys):
+    budget = Budget()
+    monkeypatch.setattr(command, "_stand_in", lambda: budget)
+    run_until(budget, 5, ["--stand-in"])
+    monkeypatch.setattr(gct.grounder.answer, "_SYSTEM_PROMPT", "Edited instructions.")
+    capsys.readouterr()
+
+    assert run_until(budget, UNLIMITED, ["--stand-in"]) == 0
+
+    out = capsys.readouterr().out
+    assert "no longer matches what the app sends now (s001: no recording" in out
+    assert "so it was removed and a fresh one starts. Nothing in it is reused." in out
+    assert "of which 100 are still to record." in out
+    assert budget.total == 5 + 95
+    assert (replies / "standin.json").read_bytes() != COMMITTED.read_bytes()
+
+
+class Flaky(StandInGeneration):
+    def __init__(self, busy_on: set[int]) -> None:
+        self.busy_on = busy_on
+        self.calls = 0
+
+    def generate(self, messages):
+        self.calls += 1
+        if self.calls in self.busy_on:
+            raise TransientGenerationError("rate limited")
+        return super().generate(messages)
+
+
+def test_a_busy_try_rescued_by_the_retry_is_recorded_and_the_run_goes_on(replies, monkeypatch):
+    model = Flaky({3})
+    monkeypatch.setattr(command, "_stand_in", lambda: model)
+
+    assert command.main(["--stand-in"]) == 0
+
+    recording = Recording.read(replies / "standin.json")
+    assert [(c.busy, c.reply is None) for c in recording.questions["s003"]][0] == (
+        "rate limited",
+        True,
     )
+    assert len(recording.questions["s003"]) == 2
+    assert model.calls == 96
+
+
+def test_busy_on_both_tries_stops_the_run_and_that_question_is_not_saved(
+    replies, monkeypatch, capsys
+):
+    monkeypatch.setattr(command, "_stand_in", lambda: Flaky({3, 4}))
 
     assert command.main(["--stand-in"]) == 1
     err = capsys.readouterr().err
     assert "Stopped at s003, which was not saved. Claude is busy" in err
     assert "run the same command to carry on" in err
-    assert set(Recording.read(replies / "standin.json").questions) == {"s001", "s002"}
+    assert set(Recording.read(replies / "standin.json.draft").questions) == {"s001", "s002"}
 
 
-def test_a_saved_part_made_before_a_change_stops_the_resume(replies, monkeypatch, capsys):
-    monkeypatch.setattr(command, "_stand_in", lambda: StopsAfter(2, KeyboardInterrupt()))
-    command.main(["--stand-in"])
-    path = replies / "standin.json"
-    stale = path.read_text(encoding="utf-8").replace('"sent": "', '"sent": "0', 1)
-    path.write_text(stale, encoding="utf-8")
-    monkeypatch.setattr(command, "_stand_in", StandInGeneration)
+def test_a_folder_it_cannot_write_stops_before_asking_anything(replies, monkeypatch, capsys):
+    replies.mkdir()
+    replies.chmod(0o500)
+    monkeypatch.setattr(StandInGeneration, "generate", never_called)
+    try:
+        assert command.main(["--stand-in"]) == 1
+    finally:
+        replies.chmod(0o700)
+
+    err = capsys.readouterr().err
+    assert "Cannot save in" in err and "Nothing was asked." in err
+    assert "Traceback" not in err
+
+
+def test_a_full_disk_mid_run_stops_plainly_and_keeps_what_was_saved(replies, monkeypatch, capsys):
+    real_write = Recording.write
+    writes = []
+
+    def fills_up(self, path):
+        writes.append(path)
+        if len(writes) == 3:
+            raise OSError(28, "No space left on device")
+        real_write(self, path)
+
+    monkeypatch.setattr(Recording, "write", fills_up)
 
     assert command.main(["--stand-in"]) == 1
     err = capsys.readouterr().err
-    assert "no longer matches what the app sends (s001: no recording" in err
-    assert "Start again with --again" in err
+    assert "Could not save to replies/standin.json.draft (No space left on device)." in err
+    assert "The 2 questions saved before this one are kept." in err
+    assert set(Recording.read(replies / "standin.json.draft").questions) == {"s001", "s002"}
 
 
 def test_claude_not_signed_in_stops_before_asking_anything(replies, tmp_path, monkeypatch, capsys):
@@ -192,3 +304,16 @@ def test_claude_cancelled_at_the_prompt_asks_nothing(replies, tmp_path, monkeypa
     assert command.main([]) == 1
     assert "Cancelled. Nothing was asked." in capsys.readouterr().err
     assert not (replies / "claude.json").exists()
+
+
+def test_unexpected_output_from_the_login_check_says_what_to_do(
+    replies, tmp_path, monkeypatch, capsys
+):
+    program = fake_claude_program(tmp_path, "Welcome! Something unexpected happened.")
+    monkeypatch.setattr(command, "_claude_program", lambda: program)
+    monkeypatch.setattr(ClaudeGeneration, "generate", never_called)
+
+    assert command.main([]) == 1
+    err = capsys.readouterr().err
+    assert command.LOGIN_UNKNOWN in err
+    assert "Expecting value" not in err

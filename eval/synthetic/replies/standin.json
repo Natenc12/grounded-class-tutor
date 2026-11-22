@@ -1,11 +1,13 @@
 {
   "format": 1,
   "model": "standin-quoted-sentence-v1",
+  "form": "messages",
   "settings": "44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a",
+  "passages": "250 words, overlapping by 40",
   "questions": {
     "i001": [
       {
-        "sent": "9045fc5a9f8c769a17cb5677bfa4ae413c5fcec61bb7be55b53d6eb9f6d85acc",
+        "sent": "39a28d0f7473233cc4a8c72932d1b8c683e3bf4c231048377789f9df4d4d0e7d",
         "sources": [
           "Lecture 07 Groundwater.pdf, p.4",
           "Lecture 07 Groundwater.pdf, p.1",
@@ -21,7 +23,7 @@
     ],
     "i002": [
       {
-        "sent": "30eda59db799343076a445108710247eadd0d7f68ab75982cf343988eeaeb3d1",
+        "sent": "1d4a5d07ea60f08a095d703b1b51a68cfa05124164a2127e056a410a2d5d74c0",
         "sources": [
           "Lecture 07 Groundwater.pdf, p.4",
           "HYD210 Syllabus.pdf, p.4",
@@ -37,7 +39,7 @@
     ],
     "i003": [
       {
-        "sent": "f07dc47c14df210170f92c6e6ef4e76800a0533db9b757503a5570c36d691ee0",
+        "sent": "48cbb467523b7a7c580c21425476882d474887c653458a1ad3ada3d1753469d8",
         "sources": [
           "Reader Floods.pdf, p.4",
           "Reader Floods.pdf, p.1",
@@ -53,7 +55,7 @@
     ],
     "i004": [
       {
-        "sent": "415644c0db3a5d3fbbd6fac888455abae4a166a819a413bb5fb899645cf2ea77",
+        "sent": "6e4297b170336b8da92db6c88dbe17f7d085af22352497c0f7357e398901e3ae",
         "sources": [
           "Reader Floods.pdf, p.4",
           "Reader Floods.pdf, p.1",
@@ -69,7 +71,7 @@
     ],
     "i005": [
       {
-        "sent": "be059e2b557e818acaf87df14108e0d099d6564f9076539070fb40f30286b011",
+        "sent": "0b775cc959e5089c2917d155a7e585f5ee701860ffa446d17e58acc0fb7699b9",
         "sources": [
           "Lecture 05 Goods.pdf, p.3",
           "Lecture 09 Decline.pdf, p.3",
@@ -86,7 +88,7 @@
     ],
     "i006": [
       {
-        "sent": "1f521e36b04b9943b430c2ef55581e3895b4ac194fd31eaa014d26b70930d2ef",
+        "sent": "78c6f798065a58191f9474885ff412630763fb5ff18d8da5f9c6a755a745f944",
         "sources": [
           "Lecture 05 Goods.pdf, p.3",
           "Lecture 02 Founding.pdf, p.2",
@@ -102,7 +104,7 @@
     ],
     "i007": [
       {
-        "sent": "30ef4819c7848ae2843262480e7628432465e24bdd93aff1dcc34946c7f6aa10",
+        "sent": "6c865a0b44c277994eae6c157d688f69898b6f0a4f9a82b3165bf393cb48d0f2",
         "sources": [
           "Reader Merchants.pdf, p.3",
           "Reader Merchants.pdf, p.1",
@@ -119,7 +121,7 @@
     ],
     "i008": [
       {
-        "sent": "f99b0b876506d971aa52c19cbae884f87fdf5c1137d2d8b64c125fd743979270",
+        "sent": "ac6a884a2999031122bfe974ba4cd4a81562b6c7585f4001e8ea124d94885c5c",
         "sources": [
           "Reader Merchants.pdf, p.3",
           "Reader Merchants.pdf, p.1",
@@ -135,7 +137,7 @@
     ],
     "i009": [
       {
-        "sent": "b3878756657044d6c2d0f6bca0fa5acc5cc5c4d9fa01d1c3bd1811962aded27e",
+        "sent": "e12ac15031d2b1c1d0884ced3e1df4261a2973db063300a3990660bfc6de2fea",
         "sources": [
           "Reader Merchants.pdf, p.4",
           "Reader Merchants.pdf, p.1",
@@ -151,7 +153,7 @@
     ],
     "i010": [
       {
-        "sent": "515fe855302a75c8ef943c22f3d9a9c3596779d695a181231556d3f6f6e437e3",
+        "sent": "bbc9b7942a5b634561386c029bcc983596f755a89bfa6c663b4994f062384e7f",
         "sources": [
           "Reader Merchants.pdf, p.4",
           "Reader Merchants.pdf, p.1",
@@ -167,7 +169,7 @@
     ],
     "m001": [
       {
-        "sent": "740c36eb6c80a1f8956e150d7159e05b5fc47e047c322d1b393ccb195d65c391",
+        "sent": "321e595688ad14db693e70cf1c1d473e3aaf0e44dfae949ea489a377b6e484fd",
         "sources": [
           "Basin Survey 2019.pdf, p.3",
           "Lecture 03 Reservoirs.pdf, p.2",
@@ -184,7 +186,7 @@
     ],
     "m002": [
       {
-        "sent": "46ed3e970b9c19d571c1d5dde34c790519cd9307d72a6698ebea265bba3ee47f",
+        "sent": "09622349ea5ab2416e8c32bd36a035838c888812a81235830c2dc7647c935701",
         "sources": [
           "Reader Floods.pdf, p.2",
           "Reader Floods.pdf, p.1",
@@ -200,7 +202,7 @@
     ],
     "m003": [
       {
-        "sent": "923cf414d18353e76ff5b6ecadf037674a450a829a0c50ef40bba1496e97b1ed",
+        "sent": "2388993e85f053f076a2fd2d5b1d786d92fb9635fe7d4ff412ae9c70ac6291c4",
         "sources": [
           "Lecture 09 Decline.pdf, p.3",
           "Lecture 09 Decline.pdf, p.2",
@@ -216,7 +218,7 @@
     ],
     "m004": [
       {
-        "sent": "e72ba60a21810e2e0dc2dc552bb4c9542c12816a7e251f37a44346353a7f2645",
+        "sent": "7a2e8de2ace9c068495b57fac85995a1e58a3fada7e0fc86e28777a8b9b64464",
         "sources": [
           "Basin Survey 2019.pdf, p.3",
           "Lecture 03 Reservoirs.pdf, p.4",
@@ -233,7 +235,7 @@
     ],
     "m005": [
       {
-        "sent": "f090b58fecf8268009e9aeaa244160099317392c05f5c592d7ffc979ebde8827",
+        "sent": "0616ecaff6f34d303d57830a7c7daf3382197f9fce6f4bc7770601112e62d19b",
         "sources": [
           "HYD210 Syllabus.pdf, p.3",
           "Lecture 03 Reservoirs.pdf, p.3",
@@ -249,7 +251,7 @@
     ],
     "m006": [
       {
-        "sent": "8070e0e5fbf105236d6051d4b88c41bd98a2737e715d3f8cdcd1bb4d82949ee6",
+        "sent": "a81835eebf2d167196619fe68d371f700c910815f5c090ab2d090abdf0d15698",
         "sources": [
           "Lecture 05 Goods.pdf, p.2",
           "Lecture 05 Goods.pdf, p.4",
@@ -265,7 +267,7 @@
     ],
     "m007": [
       {
-        "sent": "5e9a4f8e144fdf67517108cc6576e7223c5deac9a6a786de85258962e2eefda6",
+        "sent": "5740e68555042522b6164322469331d65e415f0b6f007c9f36c6f0d178929b00",
         "sources": [
           "Lecture 02 Founding.pdf, p.2",
           "Lecture 09 Decline.pdf, p.4",
@@ -281,7 +283,7 @@
     ],
     "m008": [
       {
-        "sent": "f3bc3d1ee2da633b834738cf46c361ab3f8e5c16237081113e003cdb22aecc7c",
+        "sent": "6d65beda460d2684eadb0eb3e1e672b377fc3c28fae2b99cac716289b822d62e",
         "sources": [
           "Reader Merchants.pdf, p.2",
           "Reader Merchants.pdf, p.1",
@@ -298,7 +300,7 @@
     ],
     "m009": [
       {
-        "sent": "3a70758ce8b15058ec0139d0921ad2421fce81940af8e46bd253372bd998d7da",
+        "sent": "2cde4af5adcf9fc0d8ac2fa695870d6ab0fadc235a33c32ec06de03360c9d6da",
         "sources": [
           "Reader Floods.pdf, p.3",
           "Reader Floods.pdf, p.1",
@@ -313,7 +315,7 @@
     ],
     "m010": [
       {
-        "sent": "ad298dc5f6d60b5c98bb1306ef5f1288cbb4400000b6324e79c771060d8ca0ac",
+        "sent": "28c3df88fc12a420019ef50617ba89d08b9fb7756adeae349c3fe42ca64e17cc",
         "sources": [
           "HIS140 Syllabus.pdf, p.1",
           "HIS140 Syllabus.pdf, p.2",
@@ -329,7 +331,7 @@
     ],
     "p001": [
       {
-        "sent": "01042be0a4b64dd929ff72e3f23afa0b5bd1382b3200f4655810fd59bfe95787",
+        "sent": "0a973387c3cf3c280a8d00a4013131cd3b628c9aef10ba944b750d2d321727a1",
         "sources": [
           "Lecture 02 Founding.pdf, p.1",
           "Lecture 02 Founding.pdf, p.2",
@@ -346,7 +348,7 @@
     ],
     "p002": [
       {
-        "sent": "33ef470e2e6d1eedb9bbe9c1acea85765a82b781dc674503e28245273f7cfb5f",
+        "sent": "310ffe846c7fa5c803a4b8900aa38f584d7e7721cdfeeed5ec199cc44b0b2f1e",
         "sources": [
           "Lecture 03 Reservoirs.pdf, p.3",
           "HYD210 Syllabus.pdf, p.3",
@@ -362,7 +364,7 @@
     ],
     "p003": [
       {
-        "sent": "a6b7c306f7416f34c3464d15471a1dcb5025ebde3c05f2b4dee075449079a78a",
+        "sent": "e3aa494b9d62b1918704234af4d93855f80839d14db6ea584b7b5a74fbfbd01d",
         "sources": [
           "Lecture 07 Groundwater.pdf, p.3",
           "Lecture 07 Groundwater.pdf, p.2",
@@ -377,7 +379,7 @@
     ],
     "p004": [
       {
-        "sent": "77ebf13562f3eca15478683b667ff250fb41bba8370bf399c64dfdea509ff3ab",
+        "sent": "00fdbaf6bcaf51f442770d3f50cefc0ee1a3b2effe4b357742f15ae6bf92f4b5",
         "sources": [
           "Lecture 05 Goods.pdf, p.4",
           "Reader Merchants.pdf, p.4",
@@ -393,7 +395,7 @@
     ],
     "p005": [
       {
-        "sent": "07a30fcfab08fea96387ee016ee04a01c4cf218404fc2c674e3a3f277464f37b",
+        "sent": "d1b66fbdf5a31a3d2b66b8cb723427844a07530f67f5057eed6800c02a6b3f7a",
         "sources": [
           "Basin Survey 2019.pdf, p.2",
           "Lecture 07 Groundwater.pdf, p.2",
@@ -409,7 +411,7 @@
     ],
     "p006": [
       {
-        "sent": "7af3497e1dd36ae2780444847431aee7df91b8cfd5d22fd756aa63bdc2db3a21",
+        "sent": "8819974659a3f77f81390d3d1c538be762d5d8f5f1eb52dc7349945a00158fb0",
         "sources": [
           "Reader Merchants.pdf, p.1",
           "Reader Merchants.pdf, p.3",
@@ -425,7 +427,7 @@
     ],
     "p007": [
       {
-        "sent": "fc1e40a68ea30841a1d5767a06db294186761a67cdf542dd9f7d3b24a39eac69",
+        "sent": "70495e291b7b7ff7ec9976b39e29aeee5cdbe8ba51423507104a65ca327c6798",
         "sources": [
           "Lecture 03 Reservoirs.pdf, p.4",
           "Basin Survey 2019.pdf, p.3",
@@ -441,7 +443,7 @@
     ],
     "p008": [
       {
-        "sent": "49fb6998b5c7950cf57b9090059e6b202621e4a6ecad57b7dfbb35c9aecb87b6",
+        "sent": "4daf55f5cfc28f652d5b3a536d60ba7c6055518b88dbd706046d5d15851a49cc",
         "sources": [
           "Lecture 09 Decline.pdf, p.4",
           "Lecture 09 Decline.pdf, p.1",
@@ -458,7 +460,7 @@
     ],
     "p009": [
       {
-        "sent": "54e7fd1e8b46f9087728d50becc56e2db9fb28d9dc534d888bccdf5f77969ab9",
+        "sent": "fc323816651b1f01748dec4a2830929cc38da2cf3bb302666c8bd0fd6d836bc6",
         "sources": [
           "HYD210 Syllabus.pdf, p.1",
           "HYD210 Syllabus.pdf, p.4",
@@ -474,7 +476,7 @@
     ],
     "p010": [
       {
-        "sent": "df2211112280173c5aeffc7c8cbf88b17833906f242c303332e05f54db975f55",
+        "sent": "e51ec267ba37dabd7395444aa43e843bac2bfdb45587b62c86273ed31744ca98",
         "sources": [
           "Lecture 05 Goods.pdf, p.1",
           "Reader Merchants.pdf, p.1",
@@ -487,7 +489,7 @@
     ],
     "r001": [
       {
-        "sent": "d3b906639e0388abdd9b1d316805bfe195efb38b476deeb57647e4281401cc10",
+        "sent": "e0d162e8a026511cbedb6bb3b17cdab8816e16a3009f6ce2c4546b6bcc4203eb",
         "sources": [
           "Lecture 07 Groundwater.pdf, p.3",
           "Lecture 07 Groundwater.pdf, p.4",
@@ -503,7 +505,7 @@
     ],
     "r002": [
       {
-        "sent": "eb08075e3b40964f31bf80e5dcd008856cd14c84c8cfda9073419ad67c61e822",
+        "sent": "671b08acf6bad8cd5b0c2c504998168ba433d67c5c0c914ac9e3e10e90d114dd",
         "sources": [
           "Basin Survey 2019.pdf, p.4",
           "Lecture 07 Groundwater.pdf, p.1",
@@ -518,7 +520,7 @@
     ],
     "r003": [
       {
-        "sent": "0fd115d6b1fe44923b0250d2c24054eb03fa56d7c9c1c9ac229fd31bb58715ab",
+        "sent": "5205103b610b9bf26259e0f7aa5a9da0ecdd3f5d9a56cde131a65622ce181211",
         "sources": [
           "Basin Survey 2019.pdf, p.1",
           "Reader Floods.pdf, p.3",
@@ -533,7 +535,7 @@
     ],
     "r004": [
       {
-        "sent": "e25bc2cb927dd8e1480594293b755981213fe2294e660600e93d042c113f9c06",
+        "sent": "bfdecd3c39af81bb7c8f2b90f57eede3486ae578086e3381e4f9476e9ff566ad",
         "sources": [
           "Lecture 03 Reservoirs.pdf, p.1",
           "Basin Survey 2019.pdf, p.3",
@@ -548,7 +550,7 @@
     ],
     "r005": [
       {
-        "sent": "ab9edb1b5857efba2afc00fe59d32b4949f6da881164447fb0833ebfab829158",
+        "sent": "54df3e3a44290cc096ec6595f440fd17cdec68861f6b3daf5ef18eac16e5c558",
         "sources": [
           "Lecture 03 Reservoirs.pdf, p.3",
           "HYD210 Syllabus.pdf, p.3",
@@ -563,7 +565,7 @@
     ],
     "r006": [
       {
-        "sent": "81742bdac0db677ed310e11c6b704b225b5fd2928a1cee82472135d0c6fb022e",
+        "sent": "1b9511334abcbed4d60bbb30d577f9d3c3297bd2093754c70034a2c55206db93",
         "sources": [
           "HYD210 Syllabus.pdf, p.1"
         ],
@@ -574,7 +576,7 @@
     ],
     "r007": [
       {
-        "sent": "44a6666d29a60e93c5ce15b584d18947c111a588dc08d5994e03d8316212a922",
+        "sent": "666b01321434629c1fb78139477657bc03f92e0a3e99a43e26255080c74ca3ce",
         "sources": [
           "Reader Floods.pdf, p.2",
           "Reader Floods.pdf, p.1",
@@ -589,7 +591,7 @@
     ],
     "r008": [
       {
-        "sent": "90c62d6399ec2861b401d618911149fade5e1c4450b47c1e4ac8155d0541e991",
+        "sent": "15a7aef9e249e206cb9beb2f6746df9064e9361f2c272f7bc32d9884748bd28f",
         "sources": [
           "Reader Floods.pdf, p.1",
           "Reader Floods.pdf, p.4",
@@ -605,7 +607,7 @@
     ],
     "r009": [
       {
-        "sent": "1e40c2797c546bbb6244e94c607052ca5fb9ef6105df68392fd6548d20be222f",
+        "sent": "90f934be190e6bd0c1b0a8a8d486019c72d7ffe49abfa818bcc0a12a47b800cc",
         "sources": [
           "Lecture 07 Groundwater.pdf, p.4",
           "HYD210 Syllabus.pdf, p.4",
@@ -621,7 +623,7 @@
     ],
     "r010": [
       {
-        "sent": "d2603a0982d81eb14a7a20ee836bea36bf95f17af34d68f147170a31c9d096e3",
+        "sent": "e847427da7a1b11b75d7dfb22d2c248c4ec367a3db54e0fbaf2f2edb97827ba3",
         "sources": [
           "Reader Floods.pdf, p.1",
           "Lecture 03 Reservoirs.pdf, p.1",
@@ -638,7 +640,7 @@
     ],
     "r011": [
       {
-        "sent": "fde039ecb2a2b2cdb68111943382b94fad54c9f1c21d125f9af9eb5e440ce746",
+        "sent": "3322b18a16a24dbb93c5b6cc066219694b60deff781e97311b64c33321c533f4",
         "sources": [
           "Lecture 03 Reservoirs.pdf, p.3",
           "Reader Floods.pdf, p.2"
@@ -652,7 +654,7 @@
     "r013": [],
     "r014": [
       {
-        "sent": "528dd08e82d0d23323316f85a174ca208ab178098aa42886b5b644343278e2eb",
+        "sent": "480045df2fe7b10ba31f12d4e1d269f7a1d94fccf3816ec630cb9c6c6193f19f",
         "sources": [
           "Lecture 03 Reservoirs.pdf, p.3",
           "Basin Survey 2019.pdf, p.3",
@@ -667,7 +669,7 @@
     ],
     "r015": [
       {
-        "sent": "3d1cd5a25951e1d8efa930523e0cca8b9ff7a3eaf25a422d33dd6dbf29cd93bc",
+        "sent": "0c54b4149cb8261d6d622c517c3ff7524f9da91be4edfbbc708d0f4cb7569c39",
         "sources": [
           "HYD210 Syllabus.pdf, p.1",
           "HYD210 Syllabus.pdf, p.4",
@@ -682,7 +684,7 @@
     ],
     "r016": [
       {
-        "sent": "1a1fae0419bcf71df1def8f39402896822c8eff9e9937d8c4d0b3ec47387fbd5",
+        "sent": "c122af4b386d5fef98c8ec65b77176bb6c2a16e101baeb2f47deff08a282a021",
         "sources": [
           "HIS140 Syllabus.pdf, p.4",
           "Lecture 02 Founding.pdf, p.2"
@@ -694,7 +696,7 @@
     ],
     "r017": [
       {
-        "sent": "f3b1a027bd35bb728b0e4b391155f4737f85c74e1c8949ca844b78a1f20c258c",
+        "sent": "4a8dce39e7ea6e520ca316c448f1042bfcaed6c0afac1ad3162d615f7f9d2fc0",
         "sources": [
           "Lecture 09 Decline.pdf, p.4",
           "Lecture 09 Decline.pdf, p.1",
@@ -711,7 +713,7 @@
     ],
     "r018": [
       {
-        "sent": "9e74497a60fc73234548aa2b9fd0047a98ad35a089405dbf03b6cfba953dd5da",
+        "sent": "98e7246c186151e8574bb528d6df8ebd1cd2d36736378f5bc25c061af35ddb69",
         "sources": [
           "Lecture 02 Founding.pdf, p.2",
           "Reader Merchants.pdf, p.2",
@@ -727,7 +729,7 @@
     ],
     "r019": [
       {
-        "sent": "127a5c548a77491be5ebf6914e5b896ab15dff8aebf70aa484e8d4c860d6e74e",
+        "sent": "da06642938c45393c063199db5e30d3b09457fcd4226805167fb4e0711a7d1c4",
         "sources": [
           "Lecture 09 Decline.pdf, p.3",
           "Lecture 05 Goods.pdf, p.4",
@@ -743,7 +745,7 @@
     ],
     "r020": [
       {
-        "sent": "707d9fc2b0213de2ec10f8ceaee629b8bfcabfb1ed1412c6a0fe728096c36d1d",
+        "sent": "3c761ad853dd9b1997cca45f75d728655060af6df5d6ed2271e50842004578aa",
         "sources": [
           "Lecture 02 Founding.pdf, p.1",
           "Lecture 09 Decline.pdf, p.1",
@@ -759,7 +761,7 @@
     ],
     "r021": [
       {
-        "sent": "40a8a0dc4d098ffe043786f72b52966b1928f94f05d183fe269edcbcf98a672d",
+        "sent": "fd3f54237dfe61aa400940913debb54e142d8f2c73cbc6dce0045e6057df3900",
         "sources": [
           "HIS140 Syllabus.pdf, p.3",
           "Lecture 02 Founding.pdf, p.2",
@@ -774,7 +776,7 @@
     ],
     "r022": [
       {
-        "sent": "fc3052ec8b592359d79462a2c58cbc8af9cf8f108886fe1e7f8e41e989bca0ec",
+        "sent": "fd84fc90349acb12c88438b737458bbedd9f7c8c46a85ca9b089b2b982d9d76c",
         "sources": [
           "HIS140 Syllabus.pdf, p.4"
         ],
@@ -787,7 +789,7 @@
     "r024": [],
     "r025": [
       {
-        "sent": "e1b625974249391d47b62247064050f3727a198d140ce6e861e76d58d22e8a2e",
+        "sent": "9b4c0fc75f00f59540fae378356248b4386dc065c51c929b8fa89488adc6a468",
         "sources": [
           "Lecture 02 Founding.pdf, p.1"
         ],
@@ -799,7 +801,7 @@
     ],
     "r026": [
       {
-        "sent": "a057c7eefcc614be58c489e58251c198f1af9bfea5efac59752acb4756b8379f",
+        "sent": "ed1e0b1b0c2c545b03b99ec9134deb9fe5fb4fb360e0be83187d0a5bebab4e2a",
         "sources": [
           "Lecture 02 Founding.pdf, p.4",
           "Lecture 02 Founding.pdf, p.2",
@@ -816,7 +818,7 @@
     ],
     "r027": [
       {
-        "sent": "a177f225d9929212596d37585c3944e40a7ec14ae4455db590539635dfac9b1e",
+        "sent": "e026e099b94a88f787477007c264fa544373b58c40e9f2fcfa8126447c28e7ad",
         "sources": [
           "HIS140 Syllabus.pdf, p.1",
           "HIS140 Syllabus.pdf, p.2",
@@ -832,7 +834,7 @@
     "r028": [],
     "r029": [
       {
-        "sent": "9bbfc4a433257a2e0da73495c457534b17ac00e5e97afc7bc4f60754227af1f4",
+        "sent": "33a715a3d3e04841e3840d930335a13768b3880e3454fc99e19f6a5ac0eefc56",
         "sources": [
           "Lecture 09 Decline.pdf, p.2"
         ],
@@ -844,7 +846,7 @@
     ],
     "r030": [
       {
-        "sent": "392e78496e94eabe387375d4c698e4bf0eb09d10142d93696ba3bf1e792aed9f",
+        "sent": "eca71f32b8d13767d949891b76059d4233cc14ffd42e9d7d954510d8926d75a6",
         "sources": [
           "Lecture 05 Goods.pdf, p.1",
           "Lecture 09 Decline.pdf, p.1",
@@ -857,7 +859,7 @@
     ],
     "s001": [
       {
-        "sent": "123946324573e384c18f14e4799c9dfe014e86ba0aa842ddc9d49d3897f549ff",
+        "sent": "775d37aec15a612739d52512336b9a5655964aec9a205b81b4e9d71f1af3af48",
         "sources": [
           "HYD210 Syllabus.pdf, p.1",
           "HYD210 Syllabus.pdf, p.4",
@@ -871,7 +873,7 @@
     ],
     "s002": [
       {
-        "sent": "6cf8b9243ed3a127aa71a89b4ce2c93d8a3ed7028ccf95cdc0690ecbc27dcd14",
+        "sent": "5f6d7394ba6174eb952b35bcc7ad1a225e694a81ac65138dc72712763a63fed1",
         "sources": [
           "HYD210 Syllabus.pdf, p.1",
           "HYD210 Syllabus.pdf, p.2",
@@ -886,7 +888,7 @@
     ],
     "s003": [
       {
-        "sent": "26a2ad7842b81effeb30c830f4303758d5e970340bcb3d43bb5467ef0151ee1a",
+        "sent": "b48ac77ffa2f09e52c56d985be571891e7ca5973b965eee169b023869c63a0f4",
         "sources": [
           "HYD210 Syllabus.pdf, p.2",
           "HYD210 Syllabus.pdf, p.1",
@@ -902,7 +904,7 @@
     ],
     "s004": [
       {
-        "sent": "ebf25d865c21919349c9b520cd822e2034e7c44149e287d7214b2757011191fd",
+        "sent": "8948af8c0c7c8d1fb25bbbbbd8c22dbdf216370fbd98255b088626f8ef79838c",
         "sources": [
           "HYD210 Syllabus.pdf, p.2",
           "HYD210 Syllabus.pdf, p.3",
@@ -918,7 +920,7 @@
     ],
     "s005": [
       {
-        "sent": "2b2684a984337a65dfda8fe1810fe067ff0c3630fe9cf636cfe6436d187752ed",
+        "sent": "7ec13c9842fb6aea4adb2d41c8b4b7bf83fc4650ae564dc9d9bb0926ec5a6b7f",
         "sources": [
           "HYD210 Syllabus.pdf, p.3",
           "HYD210 Syllabus.pdf, p.4",
@@ -934,7 +936,7 @@
     ],
     "s006": [
       {
-        "sent": "46063dd9b9847199e081bcf479915a2f17b2fe4f9c0f08acb66ededddee70420",
+        "sent": "1e40081ce267d7de61e941530c86c00a63452780f6e7b03a8ab570252838231a",
         "sources": [
           "HYD210 Syllabus.pdf, p.4",
           "HYD210 Syllabus.pdf, p.1",
@@ -949,7 +951,7 @@
     ],
     "s007": [
       {
-        "sent": "4a26c986d32945466ec9feb7e4aab08b37c358fa5f42d19cf287ab9f10f40c5e",
+        "sent": "61164e41c2161731732e7a9c566de736fa22c799dc79b311d23066e17636754e",
         "sources": [
           "HYD210 Syllabus.pdf, p.4",
           "HYD210 Syllabus.pdf, p.1",
@@ -965,7 +967,7 @@
     ],
     "s008": [
       {
-        "sent": "606fdc8d7699932b1b694e32ac5e2d44012e3f6ce2bd07e7b2d369a35fabea9c",
+        "sent": "e6bfa1ed5e62fc2bb0d3d6d5766a41defcb09fb27769993cf621fb6422a26807",
         "sources": [
           "Lecture 03 Reservoirs.pdf, p.1",
           "Basin Survey 2019.pdf, p.3",
@@ -982,7 +984,7 @@
     ],
     "s009": [
       {
-        "sent": "ab3a5588c6165775ee4b316ed705159d6ffee641fe913c641d79399cdec72a81",
+        "sent": "0c71e974a2ebeb14b7ddc11e8f30c0907d3d2fc60f91ecdf00fb86f5b070bf68",
         "sources": [
           "Lecture 03 Reservoirs.pdf, p.1",
           "Lecture 03 Reservoirs.pdf, p.2",
@@ -999,7 +1001,7 @@
     ],
     "s010": [
       {
-        "sent": "84d1cc1b31f76cc09e319c688912a4cd24490d257e82b5d6f08232705d0c5e25",
+        "sent": "dab50069a1a00c0e0dd1dbe8f2e1c238c3c85595172b395fa2b5a7d8dda93963",
         "sources": [
           "Lecture 03 Reservoirs.pdf, p.2",
           "Lecture 03 Reservoirs.pdf, p.1",
@@ -1015,7 +1017,7 @@
     ],
     "s011": [
       {
-        "sent": "13fd6c2f117efe0d1a07caca1cfda457a6ab5da11bbde7cfb19f0ab928185af1",
+        "sent": "3636b487bebfaf4cf04d56719b73dd1712ee029b5be1d83ce34ece3beb8b5b9e",
         "sources": [
           "Lecture 07 Groundwater.pdf, p.1",
           "Lecture 07 Groundwater.pdf, p.2",
@@ -1031,7 +1033,7 @@
     ],
     "s012": [
       {
-        "sent": "d05eb2ebe18da9d99fb380bb3708e8bdad7e5375fb2fd305791e0092b9fd6364",
+        "sent": "07aa0b36d1a1f42e34e5cac9c7c23181f5a520a5a608fd96008923d040e37402",
         "sources": [
           "Lecture 07 Groundwater.pdf, p.1",
           "Lecture 07 Groundwater.pdf, p.4",
@@ -1047,7 +1049,7 @@
     ],
     "s013": [
       {
-        "sent": "ef757e4b051bc23bfa3dfd91fccb2e49167be8194f22eedce7eea3cbea93f17b",
+        "sent": "fb1e2d8eca68080f2320c8213c8634424e294ca3330304fb8b9aafa596091ad9",
         "sources": [
           "Lecture 07 Groundwater.pdf, p.2",
           "Lecture 07 Groundwater.pdf, p.1",
@@ -1064,7 +1066,7 @@
     ],
     "s014": [
       {
-        "sent": "6765a5dff6ed920f1b1408b08706913f72357b70eb0ab0fc7d81edbabc380e2c",
+        "sent": "3a529211155dcf6dd64529cf88ebb14f456bea4a5dba58d1c65181f7fac2dfbf",
         "sources": [
           "Lecture 07 Groundwater.pdf, p.2",
           "Lecture 07 Groundwater.pdf, p.1",
@@ -1079,7 +1081,7 @@
     ],
     "s015": [
       {
-        "sent": "6dd647ecfdd35cf00f0205bd58334821873aad05c3893e06b3c0cc2db84cb0d7",
+        "sent": "aaf6c41b23e345ff1dc2bb9d5d0f73683c1450509df8a018ebf1710e25469cda",
         "sources": [
           "Lecture 07 Groundwater.pdf, p.3",
           "Reader Floods.pdf, p.1",
@@ -1095,7 +1097,7 @@
     ],
     "s016": [
       {
-        "sent": "2139e6bb7367c07517cd92cee85443de6bfe08be9ba39771d965d28ce2f01f1b",
+        "sent": "790dd6d4844c024e1503ca65314c242f2c5d478d6c87fc31fa451fbc79dd15d3",
         "sources": [
           "Basin Survey 2019.pdf, p.1",
           "Basin Survey 2019.pdf, p.3",
@@ -1112,7 +1114,7 @@
     ],
     "s017": [
       {
-        "sent": "110284620024f7e2bf6add8472d4257b07ee73d7ffc7fd4e55bb4ed43d46bc47",
+        "sent": "19b553bad99d1979b1f102fb21094e9a76c2430d36473897319f0c3d54fe8d99",
         "sources": [
           "Basin Survey 2019.pdf, p.1",
           "Basin Survey 2019.pdf, p.3",
@@ -1129,7 +1131,7 @@
     ],
     "s018": [
       {
-        "sent": "240cfd90d7adcaff5d052bf41c9de881cf5d266cee7daba3297c298ec0d2d76a",
+        "sent": "774e2464615a027712048e4e9e94addb92efa76048655823f493e224a6ec54ae",
         "sources": [
           "Basin Survey 2019.pdf, p.2",
           "Basin Survey 2019.pdf, p.1",
@@ -1146,7 +1148,7 @@
     ],
     "s019": [
       {
-        "sent": "85f2c1fe82bdde37087f215650d289e7b94c7496f3ddf108535a3b900853720b",
+        "sent": "e0113f1c223a3538838e2721df79c84bbbe80da12c94be9abd3ea6ad9f20a1f8",
         "sources": [
           "Basin Survey 2019.pdf, p.3",
           "Basin Survey 2019.pdf, p.1",
@@ -1162,7 +1164,7 @@
     ],
     "s020": [
       {
-        "sent": "cda4e3f21b6a7d9e6fff60bfa90ccb49753cc9142d34ce224c95a201a615046a",
+        "sent": "487d016c4b1c1c4deea75694aabaabcbe6f4861cd0e9f612a427771e78ea1f4d",
         "sources": [
           "Basin Survey 2019.pdf, p.4",
           "Basin Survey 2019.pdf, p.2",
@@ -1178,7 +1180,7 @@
     ],
     "s021": [
       {
-        "sent": "569d945359aeeb6d7bd5419a4f7dd1dbd3e9ab9ce782e6b70338e28391ad1cb9",
+        "sent": "9cc89fefb9c635e351a2bf5ce5fee6e4f7f0251c78e05d4d3c5be636eb91f86c",
         "sources": [
           "Reader Floods.pdf, p.1",
           "Reader Floods.pdf, p.3",
@@ -1195,7 +1197,7 @@
     ],
     "s022": [
       {
-        "sent": "9364a155fdad289ac370397dacced874916b53ef1eb63b28f336964a96a8294b",
+        "sent": "284a7598831c16bc380e0c6696236e94579c8f2789efe349d0b95e8f5a744d1a",
         "sources": [
           "Reader Floods.pdf, p.3",
           "Reader Floods.pdf, p.1",
@@ -1211,7 +1213,7 @@
     ],
     "s023": [
       {
-        "sent": "05e570dca7219ffd86aa32ae7da928c5f48f34776fe56af6a03db2d612d321e3",
+        "sent": "46a02b764c745a531b6df84e406cb73dcd8e3bcb5fd22d3238eecff3e92d2c5c",
         "sources": [
           "HIS140 Syllabus.pdf, p.1",
           "HIS140 Syllabus.pdf, p.2",
@@ -1227,7 +1229,7 @@
     ],
     "s024": [
       {
-        "sent": "8613009f6bfee1a60ab62c1e5405a38588368cbba8622a61a8e233fe8f48759b",
+        "sent": "0fa6fbe2c751ee5559cf35c0bccd505acadba5391c4965c43acbe67adf2e912e",
         "sources": [
           "HIS140 Syllabus.pdf, p.2",
           "HIS140 Syllabus.pdf, p.1",
@@ -1243,7 +1245,7 @@
     ],
     "s025": [
       {
-        "sent": "061d7ee90c77dcc1e9e4deadb94de0688bbd541570ca843f5ad6c77c27751e9b",
+        "sent": "bc7f6fe3ed114f27e465e1de54afc543d98419989de15ef7213adbe814be54a7",
         "sources": [
           "HIS140 Syllabus.pdf, p.3",
           "HIS140 Syllabus.pdf, p.2",
@@ -1258,7 +1260,7 @@
     ],
     "s026": [
       {
-        "sent": "de48bc4a49824887ff125c9d71018698b3b6c4ee1d8f3769557414c730a81a0f",
+        "sent": "d0d89fa08244e7d1739a861dadc472bce1b84972865e1dcdf801ed073d65f18e",
         "sources": [
           "HIS140 Syllabus.pdf, p.3",
           "HIS140 Syllabus.pdf, p.2",
@@ -1274,7 +1276,7 @@
     ],
     "s027": [
       {
-        "sent": "0e9b319de3ff858fd39897668669213340488edea40b73605c5e085032a1fa07",
+        "sent": "02e6242a3d9ed50cb08c0a6beb2bbe57e6232650b30a2d07bc48d0d6b5aee151",
         "sources": [
           "HIS140 Syllabus.pdf, p.4",
           "Lecture 09 Decline.pdf, p.3"
@@ -1287,7 +1289,7 @@
     ],
     "s028": [
       {
-        "sent": "f0555a61549fd150dba06799255bba3e8c8b3daf859017ca4b23b436d74c7bd2",
+        "sent": "b014bb17d5e87b0a8504912de2c7ad7c3e18c6923428a620d7e5d01615a52086",
         "sources": [
           "HIS140 Syllabus.pdf, p.4",
           "HIS140 Syllabus.pdf, p.1",
@@ -1302,7 +1304,7 @@
     ],
     "s029": [
       {
-        "sent": "1d818d058d0e35ac7afbda61d3df74a545a692c14caaebc830b0cb20254b0534",
+        "sent": "fbc185278f1f389ca50d8fdf03877a436e656d35c6477825233e37be413eed90",
         "sources": [
           "Lecture 02 Founding.pdf, p.1",
           "Lecture 02 Founding.pdf, p.2",
@@ -1319,7 +1321,7 @@
     ],
     "s030": [
       {
-        "sent": "3730f70ac9cda13c04dddbf75a3bb103d83d79c73cad8581d8df404ee62e44f5",
+        "sent": "8a02597641286d41b3506102f2e655e99e90051d6f66e8ae4e81a2ee8c9d896a",
         "sources": [
           "Lecture 02 Founding.pdf, p.2",
           "Lecture 02 Founding.pdf, p.1",
@@ -1336,7 +1338,7 @@
     ],
     "s031": [
       {
-        "sent": "a9ae82b799d60fe8d01344e23dc6ac031d265bf698ac9515b72d1fca8abeb8c2",
+        "sent": "73ed6ec73bdeea2fa6dc9dee74b8ea8898a7fa31c880469085b6d3c8a9b181a0",
         "sources": [
           "Lecture 02 Founding.pdf, p.3",
           "Lecture 02 Founding.pdf, p.4",
@@ -1352,7 +1354,7 @@
     ],
     "s032": [
       {
-        "sent": "263036c7c06a47e18db18dccf5d626ad94968b7955432214478f6eb39e332d16",
+        "sent": "daa4adb2be29951e7c12063d5d0ae2c31d813e8c92d8daca39058c69f0bffb0b",
         "sources": [
           "Lecture 02 Founding.pdf, p.3",
           "HIS140 Syllabus.pdf, p.2",
@@ -1369,7 +1371,7 @@
     ],
     "s033": [
       {
-        "sent": "c03e2a8a57354e15bd2281901181a192974ca4e1b00bb7bf95735c37fcac8b5a",
+        "sent": "f76ffc2a6e1bdf94d6e6f2ced69cc9895b285bc471d18207d6e3a41adb4de091",
         "sources": [
           "Lecture 02 Founding.pdf, p.4",
           "Lecture 09 Decline.pdf, p.4",
@@ -1386,7 +1388,7 @@
     ],
     "s034": [
       {
-        "sent": "f536463e10358741860e07bbdb9e2e480cb94d8b3aceffe8329b1fa804385e36",
+        "sent": "f1f6c31790a2a222cd4137df649dbc756ef4388dd52728672787a23f06333ac3",
         "sources": [
           "Lecture 02 Founding.pdf, p.4",
           "Lecture 09 Decline.pdf, p.4",
@@ -1402,7 +1404,7 @@
     ],
     "s035": [
       {
-        "sent": "bb5b822cf4e1af267ddcab38cfcde35319aa7a008130c215cf84840cb77b3d6a",
+        "sent": "ae9e7af637c3ba84271a340f44695f0e109afcabd0addecbf642c961895ab57d",
         "sources": [
           "Lecture 05 Goods.pdf, p.1",
           "Reader Merchants.pdf, p.2",
@@ -1418,7 +1420,7 @@
     ],
     "s036": [
       {
-        "sent": "a6416ef3ba45de32cf9683cdddd17dae00af2abe57bf5ca58a0328b7eae15802",
+        "sent": "343bb59bead64830e724b36bb3124a07c53f5edf8cfb253aa844c976deca1574",
         "sources": [
           "Lecture 05 Goods.pdf, p.2",
           "Lecture 02 Founding.pdf, p.1",
@@ -1435,7 +1437,7 @@
     ],
     "s037": [
       {
-        "sent": "c40e91005cf574a8d84c02fef5686f6954541aab8953d337eb88469bdbb50416",
+        "sent": "a193fdfb106e5e8877947b187ede873a86d1318e1ece4799e11d3b2451fc7fe3",
         "sources": [
           "Lecture 09 Decline.pdf, p.1",
           "Lecture 09 Decline.pdf, p.4",
@@ -1451,7 +1453,7 @@
     ],
     "s038": [
       {
-        "sent": "eef0b68e578e4ba06ad2d049d389c8455727939c3fd0541ab8d5acdcf6f24875",
+        "sent": "1863dca8e4d1b418c75dffdd50b162eb9f82c187baa395504a0d45f73b7414b2",
         "sources": [
           "Lecture 09 Decline.pdf, p.1",
           "Lecture 05 Goods.pdf, p.1",
@@ -1468,7 +1470,7 @@
     ],
     "s039": [
       {
-        "sent": "025665e4d2bd82fa9660ca82e03c5b1730ed277206e245ecd4c96081e51dc1eb",
+        "sent": "804b5a67863a6a2d41a09c58c5e10f34db7eb146cf27ae681f213a789d48b2fb",
         "sources": [
           "Lecture 09 Decline.pdf, p.3",
           "Lecture 02 Founding.pdf, p.2",
@@ -1484,7 +1486,7 @@
     ],
     "s040": [
       {
-        "sent": "b6d64bd448718f53a34719504583d74f63c5a86688bacbe18eebce7e973d360b",
+        "sent": "ef0568a87574b6d7ac3d083d8a991d22ea92847133deaca6e5f98fbaaa747f61",
         "sources": [
           "Lecture 09 Decline.pdf, p.4",
           "Lecture 02 Founding.pdf, p.4",

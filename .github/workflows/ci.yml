@@ -138,5 +138,13 @@ jobs:
           uv run python scripts/migrate.py
           uv run python scripts/migrate.py
 
+      # The whole tutor, end to end, in one process: a throwaway library, two generated course
+      # files, a cited answer and a refusal. It always uses the free stand-in model, whatever the
+      # environment says, so it needs no database and no paid service (#188). Not retried: a
+      # flaky step gets fixed. It finishes in about a second; two minutes means it is stuck.
+      - name: Drive the whole tutor (free stand-in, throwaway library)
+        timeout-minutes: 2
+        run: uv run python tools/drive.py
+
       - name: Tests (everything except paid-API `live`)
         run: uv run pytest -m "not live"

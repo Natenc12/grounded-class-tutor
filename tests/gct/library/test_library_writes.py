@@ -3,8 +3,8 @@ leaves the connection rolled back and ready for the next write (#226 review).
 
 A write that fails must not stay visible on the connection that tried it: the app would say the
 save failed, then show it, then lose it on restart. The page-count rule is checked only at
-COMMIT, which is exactly where #227's document save will fail, and a lock held by a second
-window makes COMMIT itself fail.
+COMMIT, which is exactly where a document save with a missing page fails (#227), and a lock held
+by a second window makes COMMIT itself fail.
 
 The failure messages say what the person can do about it: another window has the library open,
 the file is read-only, the disk is full, or something else.

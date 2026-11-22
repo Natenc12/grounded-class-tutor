@@ -14,10 +14,10 @@ _WORD = re.compile(r"[^\W_]+")
 
 _STOP_WORDS = frozenset(
     """
-    a about am an and any are as at be been being but by can could did do does doing for from
-    had has have he her here hers him his how i if in into is it its me my of on or our ours
-    she should so than that the their theirs them then there these they this those to us was
-    we were what when where which who whom whose why will with would you your yours
+    a about an and any are as at be been being but by could did do does doing for from had has
+    have he her here hers him his how i if in into is its me my of on or our ours she should so
+    than that the their theirs them then there these they this those to was we were what when
+    where which who whom whose why with would you your yours
     """.split()
 )
 
@@ -74,7 +74,7 @@ def search(
 def _expression(question: str) -> str:
     words: dict[str, str] = {}
     for word in _WORD.findall(question):
-        if word.lower() not in _STOP_WORDS:
+        if word.lower() not in _STOP_WORDS or (len(word) > 1 and word.isupper()):
             words.setdefault(word.lower(), word)
     return " OR ".join(f'"{word}"' for word in words.values())
 

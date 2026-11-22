@@ -91,6 +91,31 @@ def test_search_keywords_in_a_question_are_matched_as_words(library: Library, hy
     assert _places(search(library, hydrology, "near", k=1)) == [("lecture-03.pdf", 3)]
 
 
+def test_words_in_capitals_and_subject_words_are_kept(library: Library):
+    class_id = library.create_class("Environmental science").id
+    _save(
+        library,
+        class_id,
+        "lecture-07.pdf",
+        [
+            "The US Geological Survey measures streams.",
+            "IT support for the field laptops is in room 3.",
+            "The WHO sets drinking water limits.",
+            "Tin cans rust; a will names heirs.",
+        ],
+    )
+    assert _places(search(library, class_id, "Who measures for the US?", k=1)) == [
+        ("lecture-07.pdf", 1)
+    ]
+    assert _places(search(library, class_id, "Where is IT?", k=1)) == [("lecture-07.pdf", 2)]
+    assert _places(search(library, class_id, "What is the WHO?", k=1)) == [("lecture-07.pdf", 3)]
+    assert _places(search(library, class_id, "Why does a can rust?", k=1)) == [
+        ("lecture-07.pdf", 4)
+    ]
+    assert _places(search(library, class_id, "What is a will?", k=1)) == [("lecture-07.pdf", 4)]
+    assert search(library, class_id, "who is it?") != search(library, class_id, "WHO")
+
+
 def test_a_quoted_phrase_does_not_have_to_appear_as_a_phrase(library: Library, hydrology: str):
     assert _places(search(library, hydrology, '"river groundwater"', k=1)) == [
         ("lecture-03.pdf", 1)
@@ -138,7 +163,7 @@ def test_a_very_long_question_still_searches(library: Library, hydrology: str):
 
 
 @pytest.mark.parametrize(
-    "question", ["?", "", "   ", "!!! ...", "What is it?", "Who are they and why?", "_ __"]
+    "question", ["?", "", "   ", "!!! ...", "What is this?", "I A", "Who are they and why?", "_ __"]
 )
 def test_a_question_with_no_searchable_words_finds_nothing(
     library: Library, hydrology: str, question: str

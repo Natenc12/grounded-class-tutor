@@ -144,7 +144,13 @@ jobs:
       # flaky step gets fixed. It finishes in about a second; two minutes means it is stuck.
       - name: Drive the whole tutor (free stand-in, throwaway library)
         timeout-minutes: 2
-        run: uv run python tools/drive.py
+        run: |
+          for run in 1 2 3 4 5 6 7 8 9 10; do
+            echo "::group::drive run $run of 10"
+            uv run python tools/drive.py || exit 1
+            echo "::endgroup::"
+          done
+          echo "TEMPORARY LOOP: the drive passed 10 times out of 10"
 
       - name: Tests (everything except paid-API `live`)
         run: uv run pytest -m "not live"

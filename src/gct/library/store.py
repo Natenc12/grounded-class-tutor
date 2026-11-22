@@ -41,25 +41,65 @@ class LibraryClass:
     name: str
 
 
-_SCHEMA_QUERY = (
-    "SELECT type, name, tbl_name, sql FROM sqlite_schema "
-    "WHERE name NOT LIKE 'sqlite\\_%' ESCAPE '\\'"
-)
+_OWNED_TABLES = ("classes", "documents", "pages", "passages", "passages_fts")
+
+Shape = tuple[object, ...]
 
 
-def _schema_of(connection: sqlite3.Connection) -> frozenset[tuple[str, str, str, str]]:
-    return frozenset(connection.execute(_SCHEMA_QUERY))
+def _shape(connection: sqlite3.Connection) -> Shape:
+    names = tuple(
+        sorted(
+            connection.execute(
+                "SELECT type, name, tbl_name FROM sqlite_schema "
+                "WHERE type <> 'index' AND name NOT LIKE 'sqlite\\_%' ESCAPE '\\' "
+                "AND NOT (type = 'table' AND name LIKE 'passages\\_fts\\_%' ESCAPE '\\')"
+            )
+        )
+    )
+    tables = []
+    for table in _OWNED_TABLES:
+        unique_keys = sorted(
+            (
+                unique,
+                origin,
+                partial,
+                tuple(row[2] for row in connection.execute(f"PRAGMA index_info('{index}')")),
+            )
+            for _, index, unique, origin, partial in connection.execute(
+                f"PRAGMA index_list('{table}')"
+            )
+        )
+        tables.append(
+            (
+                table,
+                tuple(connection.execute(f"PRAGMA table_xinfo('{table}')")),
+                tuple(connection.execute(f"PRAGMA foreign_key_list('{table}')")),
+                tuple(unique_keys),
+            )
+        )
+    return names, tuple(tables)
 
 
 @cache
-def _expected_schema() -> frozenset[tuple[str, str, str, str]]:
+def _expected_shape() -> Shape:
     connection = sqlite3.connect(":memory:")
     try:
         for statement in STATEMENTS:
             connection.execute(statement)
-        return _schema_of(connection)
+        return _shape(connection)
     finally:
         connection.close()
+
+
+def _cause(exc: sqlite3.Error) -> str:
+    text = str(exc).lower()
+    if "locked" in text or "busy" in text:
+        return "another window is using the library; close it and try again"
+    if "readonly" in text or "read-only" in text:
+        return "the library file is read-only; make it writable and try again"
+    if "disk is full" in text:
+        return "the disk is full; free some space and try again"
+    return "something went wrong; try again, and run a check if it keeps happening"
 
 
 def _checked_name(name: object) -> str:
@@ -73,14 +113,14 @@ def _checked_name(name: object) -> str:
         ) from None
     if "\x00" in name:
         raise ClassNameError("Remove the NUL character from the class name.")
-    return name
+    return name.strip()
 
 
 class Library:
-    def __init__(self, path: str | Path) -> None:
+    def __init__(self, path: str | Path, *, timeout: float = 5.0) -> None:
         self.path = Path(path)
         try:
-            self._connection = sqlite3.connect(self.path, isolation_level=None)
+            self._connection = sqlite3.connect(self.path, timeout=timeout, isolation_level=None)
         except sqlite3.Error as exc:
             raise LibraryError(f"Could not open {self.path}; check the folder exists.") from exc
         try:
@@ -101,30 +141,29 @@ class Library:
     def close(self) -> None:
         self._connection.close()
 
-    def _state(self) -> tuple[int, int, frozenset[tuple[str, str, str, str]]]:
+    def _stamp(self) -> tuple[int, int, bool]:
         application_id = self._connection.execute("PRAGMA application_id").fetchone()[0]
         version = self._connection.execute("PRAGMA user_version").fetchone()[0]
-        return application_id, version, _schema_of(self._connection)
+        empty = self._connection.execute("SELECT count(*) FROM sqlite_schema").fetchone() == (0,)
+        return application_id, version, empty
 
     def _prepare(self) -> None:
         try:
-            state = self._state()
-            if state == (0, 0, frozenset()):
-                with self._write():
-                    state = self._state()
-                    if state == (0, 0, frozenset()):
-                        for statement in STATEMENTS:
-                            self._connection.execute(statement)
-                        self._connection.execute(f"PRAGMA application_id = {APPLICATION_ID}")
-                        self._connection.execute(f"PRAGMA user_version = {VERSION}")
-                        return
+            stamp = self._stamp()
         except sqlite3.OperationalError as exc:
-            raise LibraryError(
-                f"Could not use {self.path}; check it is not read-only or open in another app."
-            ) from exc
+            raise LibraryError(f"Could not open {self.path}: {_cause(exc)}.") from exc
         except sqlite3.DatabaseError as exc:
             raise NotALibraryError(f"{self.path} is not a class library; choose another.") from exc
-        application_id, version, schema = state
+        if stamp == (0, 0, True):
+            with self._transaction(f"Could not create a library at {self.path}"):
+                stamp = self._stamp()
+                if stamp == (0, 0, True):
+                    for statement in STATEMENTS:
+                        self._connection.execute(statement)
+                    self._connection.execute(f"PRAGMA application_id = {APPLICATION_ID}")
+                    self._connection.execute(f"PRAGMA user_version = {VERSION}")
+                    stamp = (APPLICATION_ID, VERSION, False)
+        application_id, version, _ = stamp
         if application_id != APPLICATION_ID:
             raise NotALibraryError(f"{self.path} is not a class library; choose another.")
         if version > VERSION:
@@ -132,35 +171,35 @@ class Library:
                 f"{self.path} was made by a newer version of the tutor; "
                 "update the tutor to open it."
             )
-        if version != VERSION or schema != _expected_schema():
+        if version != VERSION or _shape(self._connection) != _expected_shape():
             raise DamagedLibraryError(
                 f"{self.path} does not have the expected tables; restore it from a backup."
             )
 
     @contextmanager
-    def _write(self) -> Iterator[None]:
-        self._connection.execute("BEGIN IMMEDIATE")
+    def _transaction(self, failure: str = "The change was not saved") -> Iterator[None]:
         try:
-            yield
-        except BaseException:
-            if self._connection.in_transaction:
-                self._connection.execute("ROLLBACK")
-            raise
-        self._connection.execute("COMMIT")
-
-    @contextmanager
-    def _saving(self) -> Iterator[None]:
-        try:
-            with self._write():
+            try:
+                self._connection.execute("BEGIN IMMEDIATE")
                 yield
+                self._connection.execute("COMMIT")
+            finally:
+                if self._connection.in_transaction:
+                    self._connection.execute("ROLLBACK")
         except sqlite3.Error as exc:
-            raise LibraryError(
-                "The library could not save that change; check the disk has free space."
-            ) from exc
+            raise LibraryError(f"{failure}: {_cause(exc)}.") from exc
+
+    def _refuse_taken_name(self, name: str, *, except_id: str | None = None) -> None:
+        taken = self._connection.execute(
+            "SELECT 1 FROM classes WHERE name = ? AND id IS NOT ?", (name, except_id)
+        ).fetchone()
+        if taken is not None:
+            raise ClassNameError(f"A class called {name!r} already exists; choose another name.")
 
     def create_class(self, name: str) -> LibraryClass:
         created = LibraryClass(id=str(uuid.uuid4()), name=_checked_name(name))
-        with self._saving():
+        with self._transaction():
+            self._refuse_taken_name(created.name)
             self._connection.execute(
                 "INSERT INTO classes (id, name) VALUES (?, ?)", (created.id, created.name)
             )
@@ -174,7 +213,8 @@ class Library:
 
     def rename_class(self, class_id: str, name: str) -> LibraryClass:
         renamed = LibraryClass(id=class_id, name=_checked_name(name))
-        with self._saving():
+        with self._transaction():
+            self._refuse_taken_name(renamed.name, except_id=renamed.id)
             cursor = self._connection.execute(
                 "UPDATE classes SET name = ? WHERE id = ?", (renamed.name, renamed.id)
             )
@@ -183,25 +223,30 @@ class Library:
         return renamed
 
     def delete_class(self, class_id: str) -> None:
-        with self._saving():
+        with self._transaction():
             cursor = self._connection.execute("DELETE FROM classes WHERE id = ?", (class_id,))
             if cursor.rowcount == 0:
                 raise UnknownClassError("That class is not in this library; refresh the list.")
 
     def check(self) -> list[str]:
-        problems = [
-            f"SQLite integrity check: {row[0]}"
-            for row in self._connection.execute("PRAGMA integrity_check")
-            if row[0] != "ok"
-        ]
-        problems += [
-            f"A row in {table} points at a {parent} row that does not exist."
-            for table, _, parent, _ in self._connection.execute("PRAGMA foreign_key_check")
-        ]
         try:
-            self._connection.execute(
-                "INSERT INTO passages_fts (passages_fts, rank) VALUES ('integrity-check', 1)"
-            )
-        except sqlite3.DatabaseError:
-            problems.append("The keyword-search index does not match the passages.")
+            problems = [
+                f"SQLite integrity check: {row[0]}"
+                for row in self._connection.execute("PRAGMA integrity_check")
+                if row[0] != "ok"
+            ]
+            problems += [
+                f"A row in {table} points at a {parent} row that does not exist."
+                for table, _, parent, _ in self._connection.execute("PRAGMA foreign_key_check")
+            ]
+            try:
+                self._connection.execute(
+                    "INSERT INTO passages_fts (passages_fts, rank) VALUES ('integrity-check', 1)"
+                )
+            except sqlite3.OperationalError:
+                raise
+            except sqlite3.DatabaseError:
+                problems.append("The keyword-search index does not match the passages.")
+        except sqlite3.OperationalError as exc:
+            raise LibraryError(f"The check could not run: {_cause(exc)}.") from exc
         return problems

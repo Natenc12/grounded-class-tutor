@@ -36,13 +36,23 @@ def _columns(connection: sqlite3.Connection, table: str) -> list[str]:
     return [row[1] for row in connection.execute(f"PRAGMA table_xinfo({table})")]
 
 
-def _refused(connection: sqlite3.Connection, *statements: tuple[str, tuple]) -> None:
+def _refused(connection: sqlite3.Connection, rule: str, *statements: tuple[str, tuple]) -> None:
     connection.execute("BEGIN")
-    with pytest.raises(sqlite3.IntegrityError):
+    with pytest.raises(sqlite3.IntegrityError, match=rule):
         for sql, parameters in statements:
             connection.execute(sql, parameters)
         connection.execute("COMMIT")
     connection.execute("ROLLBACK")
+
+
+def _passage(
+    document_id: object, page: object, ordinal: object = 1, stable_id: object = "new-passage"
+) -> tuple[str, tuple]:
+    return (
+        "INSERT INTO passages (stable_id, document_id, page_or_slide, ordinal, text) "
+        "VALUES (?, ?, ?, ?, 'Some text.')",
+        (stable_id, document_id, page, ordinal),
+    )
 
 
 def test_a_document_has_no_status_column(raw_connection):
@@ -66,6 +76,7 @@ def test_a_passage_has_no_class_column(raw_connection):
     If you are adding a column, it must not name a class; then add it to this list."""
     assert _columns(raw_connection, "passages") == [
         "id",
+        "stable_id",
         "document_id",
         "page_or_slide",
         "ordinal",
@@ -74,32 +85,19 @@ def test_a_passage_has_no_class_column(raw_connection):
 
 
 def test_a_passage_on_a_page_its_document_does_not_have_is_refused(raw_connection, document_id):
-    _refused(
-        raw_connection,
-        (
-            "INSERT INTO passages (document_id, page_or_slide, ordinal, text) "
-            "VALUES (?, 4, 0, 'From nowhere.')",
-            (document_id,),
-        ),
-    )
+    _refused(raw_connection, "FOREIGN KEY", _passage(document_id, 4))
 
 
 def test_a_passage_with_no_document_is_refused(raw_connection, document_id):
-    for missing in (None, "00000000-0000-0000-0000-000000000000"):
-        _refused(
-            raw_connection,
-            (
-                "INSERT INTO passages (document_id, page_or_slide, ordinal, text) "
-                "VALUES (?, 1, 1, 'Orphan text.')",
-                (missing,),
-            ),
-        )
+    _refused(raw_connection, "NOT NULL", _passage(None, 1))
+    _refused(raw_connection, "FOREIGN KEY", _passage("00000000-0000-0000-0000-000000000000", 1))
 
 
 def test_a_page_with_no_document_is_refused(raw_connection, document_id):
-    for missing in (None, "00000000-0000-0000-0000-000000000000"):
+    for missing, rule in ((None, "NOT NULL"), ("00000000-0000-0000-0000-000000000000", "FOREIGN")):
         _refused(
             raw_connection,
+            rule,
             (
                 "INSERT INTO pages (document_id, page_count, page_or_slide, text) "
                 "VALUES (?, 3, 1, 'Orphan page.')",
@@ -109,9 +107,10 @@ def test_a_page_with_no_document_is_refused(raw_connection, document_id):
 
 
 def test_a_page_past_the_documents_page_count_is_refused(raw_connection, document_id):
-    for page_count in (3, 4):
+    for page_count, rule in ((3, "CHECK"), (4, "FOREIGN KEY")):
         _refused(
             raw_connection,
+            rule,
             (
                 "INSERT INTO pages (document_id, page_count, page_or_slide, text) "
                 "VALUES (?, ?, 4, 'Page four of three.')",
@@ -136,16 +135,17 @@ def test_a_document_missing_some_of_its_pages_is_refused(raw_connection, class_i
             (number,),
         )
 
-    _refused(raw_connection, document)
-    _refused(raw_connection, document, page(1), page(2))
-    _refused(raw_connection, document, page(1), page(3))
-    _refused(raw_connection, document, page(2), page(3))
+    _refused(raw_connection, "FOREIGN KEY", document)
+    _refused(raw_connection, "FOREIGN KEY", document, page(1), page(2))
+    _refused(raw_connection, "FOREIGN KEY", document, page(1), page(3))
+    _refused(raw_connection, "FOREIGN KEY", document, page(2), page(3))
 
 
 def test_removing_one_page_of_a_document_is_refused(raw_connection, document_id):
     for number in (1, 2, 3):
         _refused(
             raw_connection,
+            "FOREIGN KEY",
             (
                 "DELETE FROM pages WHERE document_id = ? AND page_or_slide = ?",
                 (document_id, number),
@@ -154,9 +154,10 @@ def test_removing_one_page_of_a_document_is_refused(raw_connection, document_id)
 
 
 def test_a_document_in_no_class_is_refused(raw_connection):
-    for missing in (None, "no-such-class"):
+    for missing, rule in ((None, "NOT NULL"), ("no-such-class", "FOREIGN KEY")):
         _refused(
             raw_connection,
+            rule,
             (
                 "INSERT INTO documents (id, class_id, filename, sha256, page_count, original) "
                 "VALUES ('d', ?, 'notes.pdf', ?, 1, x'25504446')",
@@ -173,7 +174,7 @@ def test_a_document_in_no_class_is_refused(raw_connection):
 def test_the_same_file_twice_in_one_class_is_refused(raw_connection, add_document, class_id):
     add_document(class_id, ["Same bytes."])
 
-    with pytest.raises(sqlite3.IntegrityError):
+    with pytest.raises(sqlite3.IntegrityError, match="UNIQUE"):
         add_document(class_id, ["Same bytes."])
     raw_connection.execute("ROLLBACK")
 
@@ -184,16 +185,40 @@ def test_the_same_file_in_two_classes_is_two_documents(library, add_document, cl
     add_document(class_id, ["Same bytes."])
     add_document(other, ["Same bytes."])
 
-    assert count("documents") == 2
+    assert (count("documents"), count("passages")) == (2, 2)
     assert library.check() == []
 
 
 def test_values_of_the_wrong_type_are_refused(raw_connection, document_id):
-    _refused(
-        raw_connection,
-        (
-            "INSERT INTO passages (document_id, page_or_slide, ordinal, text) "
-            "VALUES (?, 1, 'second', 'Typed wrong.')",
-            (document_id,),
-        ),
+    _refused(raw_connection, "cannot store TEXT", _passage(document_id, 1, ordinal="second"))
+
+
+def test_a_passage_needs_a_stable_id(raw_connection, document_id):
+    """#227 fills `stable_id` with an id derived from the content, which citations and
+    recordings (#198) rely on. A passage without one could not be cited."""
+    _refused(raw_connection, "NOT NULL", _passage(document_id, 1, stable_id=None))
+    _refused(raw_connection, "CHECK", _passage(document_id, 1, stable_id=" "))
+
+
+def test_a_stable_id_names_one_passage_in_the_whole_library(
+    library, raw_connection, add_document, class_id
+):
+    """The same id twice is refused even across classes, so a citation can never resolve to a
+    passage in another class. The same file in two classes therefore needs two ids: #227 derives
+    them so they differ (the stand-in in conftest includes the class)."""
+    other = add_document(library.create_class("Geology").id, ["Rivers carry water."])
+    taken = raw_connection.execute("SELECT stable_id FROM passages LIMIT 1").fetchone()[0]
+
+    _refused(raw_connection, "UNIQUE", _passage(other, 1, stable_id=taken))
+
+
+def test_a_stable_id_lookup_within_a_class_uses_an_index(raw_connection, document_id):
+    plan = " ".join(
+        row[3]
+        for row in raw_connection.execute(
+            "EXPLAIN QUERY PLAN SELECT p.text FROM passages p "
+            "JOIN documents d ON d.id = p.document_id WHERE p.stable_id = ? AND d.class_id = ?",
+            ("x", "y"),
+        )
     )
+    assert "SCAN" not in plan, plan

@@ -7,7 +7,7 @@ STATEMENTS = (
     """
     CREATE TABLE classes (
         id TEXT PRIMARY KEY,
-        name TEXT NOT NULL CHECK (trim(name) <> '')
+        name TEXT NOT NULL UNIQUE CHECK (name <> '' AND name = trim(name))
     ) STRICT
     """,
     """
@@ -41,6 +41,7 @@ STATEMENTS = (
     """
     CREATE TABLE passages (
         id INTEGER PRIMARY KEY,
+        stable_id TEXT NOT NULL UNIQUE CHECK (trim(stable_id) <> ''),
         document_id TEXT NOT NULL,
         page_or_slide INTEGER NOT NULL,
         ordinal INTEGER NOT NULL CHECK (ordinal >= 0),

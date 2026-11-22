@@ -56,7 +56,8 @@ def _add_document(
     """Insert one complete document (every page, one passage per page with text) in a transaction.
 
     This is the shape #227 will write: the document row, a row for each of its pages including
-    pages without text, and passages only on pages that have text.
+    pages without text, and passages only on pages that have text. The passage `stable_id` here
+    is a stand-in; #227 decides how it is derived.
     """
     document_id = str(uuid.uuid4())
     original = ("%PDF-1.7 " + filename + " ".join(pages)).encode()
@@ -74,9 +75,9 @@ def _add_document(
         )
         if text.strip():
             connection.execute(
-                "INSERT INTO passages (document_id, page_or_slide, ordinal, text) "
-                "VALUES (?, ?, 0, ?)",
-                (document_id, number, text),
+                "INSERT INTO passages (stable_id, document_id, page_or_slide, ordinal, text) "
+                "VALUES (?, ?, ?, 0, ?)",
+                (f"{class_id}:{sha256}:{number}:0", document_id, number, text),
             )
     connection.execute("COMMIT")
     return document_id

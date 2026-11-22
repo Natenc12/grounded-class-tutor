@@ -136,3 +136,55 @@ def test_a_library_stamped_with_an_older_version_is_refused(library_path: Path):
 def test_a_missing_folder_is_a_library_error(tmp_path: Path):
     with pytest.raises(LibraryError):
         Library(tmp_path / "no-such-folder" / "course.sqlite3")
+
+
+def _rewrite_stored_schema(path: Path, where: str) -> None:
+    connection = sqlite3.connect(path, isolation_level=None)
+    connection.execute("PRAGMA writable_schema = ON")
+    connection.execute(
+        "UPDATE sqlite_schema SET sql = replace(replace(sql, char(10), ' '), '    ', '  ') "
+        f"WHERE sql IS NOT NULL AND {where}"
+    )
+    connection.execute("PRAGMA writable_schema = OFF")
+    connection.close()
+
+
+def test_a_library_whose_stored_schema_text_is_reformatted_still_opens(
+    library_path: Path,
+):
+    """Opening compares what the app relies on (tables, columns, types, keys, triggers), not the
+    stored text, so reformatting it, or a SQLite update that words the keyword index's own
+    hidden tables differently, does not make a healthy library look damaged."""
+    with Library(library_path) as library:
+        hydrology = library.create_class("Hydrology")
+    _rewrite_stored_schema(library_path, "1")
+
+    with Library(library_path) as library:
+        assert library.list_classes() == [hydrology]
+        assert library.check() == []
+
+
+def test_a_library_whose_keyword_index_tables_are_worded_differently_still_opens(
+    library_path: Path,
+):
+    Library(library_path).close()
+    connection = sqlite3.connect(library_path, isolation_level=None)
+    connection.execute("PRAGMA writable_schema = ON")
+    connection.execute(
+        "UPDATE sqlite_schema SET sql = replace(sql, 'CREATE TABLE', 'create table') "
+        "WHERE name LIKE 'passages_fts_%' AND type = 'table'"
+    )
+    connection.execute("PRAGMA writable_schema = OFF")
+    connection.close()
+
+    Library(library_path).close()
+
+
+def test_a_library_missing_a_column_is_refused_and_left_untouched(library_path: Path):
+    Library(library_path).close()
+    connection = sqlite3.connect(library_path)
+    connection.execute("ALTER TABLE pages DROP COLUMN text")
+    connection.commit()
+    connection.close()
+
+    _refuses_untouched(library_path, DamagedLibraryError)

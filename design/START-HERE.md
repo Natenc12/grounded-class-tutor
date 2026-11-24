@@ -77,7 +77,7 @@ then package it up). It's done — the design is finished and ready to build.
 
 Three things that'll save you confusion:
 - **"Done" above means the design phase, not the build.** The docs are finished and ready to build
-  from — that's not the same claim as "the product is built." See `CLAUDE.md` → *Current status* for
+  from — that's not the same claim as "the product is built." See the README's [Status](../README.md#status) section for
   where building actually stands.
 - **ADRs** ("Architecture Decision Records", the numbered files in `decisions/`) each record *one*
   decision and *why* — e.g. "we're hand-rolling RAG instead of using a framework, because we want to

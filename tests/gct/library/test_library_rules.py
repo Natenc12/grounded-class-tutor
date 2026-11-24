@@ -49,8 +49,9 @@ def _passage(
     document_id: object, page: object, ordinal: object = 1, stable_id: object = "new-passage"
 ) -> tuple[str, tuple]:
     return (
-        "INSERT INTO passages (stable_id, document_id, page_or_slide, ordinal, text) "
-        "VALUES (?, ?, ?, ?, 'Some text.')",
+        "INSERT INTO passages "
+        "(stable_id, document_id, page_or_slide, ordinal, text, search_text) "
+        "VALUES (?, ?, ?, ?, 'Some text.', 'Some text.')",
         (stable_id, document_id, page, ordinal),
     )
 
@@ -81,6 +82,7 @@ def test_a_passage_has_no_class_column(raw_connection):
         "page_or_slide",
         "ordinal",
         "text",
+        "search_text",
     ]
 
 

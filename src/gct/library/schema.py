@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 APPLICATION_ID = 0x4743544C
-VERSION = 1
+VERSION = 2
 
 STATEMENTS = (
     """
@@ -46,6 +46,7 @@ STATEMENTS = (
         page_or_slide INTEGER NOT NULL,
         ordinal INTEGER NOT NULL CHECK (ordinal >= 0),
         text TEXT NOT NULL CHECK (trim(text) <> ''),
+        search_text TEXT NOT NULL,
         UNIQUE (document_id, page_or_slide, ordinal),
         FOREIGN KEY (document_id, page_or_slide) REFERENCES pages (document_id, page_or_slide)
             ON DELETE CASCADE
@@ -53,7 +54,7 @@ STATEMENTS = (
     """,
     """
     CREATE VIRTUAL TABLE passages_fts USING fts5 (
-        text,
+        search_text,
         content = 'passages',
         content_rowid = 'id',
         tokenize = 'porter unicode61'
@@ -61,18 +62,20 @@ STATEMENTS = (
     """,
     """
     CREATE TRIGGER passages_fts_insert AFTER INSERT ON passages BEGIN
-        INSERT INTO passages_fts (rowid, text) VALUES (new.id, new.text);
+        INSERT INTO passages_fts (rowid, search_text) VALUES (new.id, new.search_text);
     END
     """,
     """
     CREATE TRIGGER passages_fts_delete AFTER DELETE ON passages BEGIN
-        INSERT INTO passages_fts (passages_fts, rowid, text) VALUES ('delete', old.id, old.text);
+        INSERT INTO passages_fts (passages_fts, rowid, search_text)
+            VALUES ('delete', old.id, old.search_text);
     END
     """,
     """
     CREATE TRIGGER passages_fts_update AFTER UPDATE ON passages BEGIN
-        INSERT INTO passages_fts (passages_fts, rowid, text) VALUES ('delete', old.id, old.text);
-        INSERT INTO passages_fts (rowid, text) VALUES (new.id, new.text);
+        INSERT INTO passages_fts (passages_fts, rowid, search_text)
+            VALUES ('delete', old.id, old.search_text);
+        INSERT INTO passages_fts (rowid, search_text) VALUES (new.id, new.search_text);
     END
     """,
 )

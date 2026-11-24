@@ -75,9 +75,10 @@ def _add_document(
         )
         if text.strip():
             connection.execute(
-                "INSERT INTO passages (stable_id, document_id, page_or_slide, ordinal, text) "
-                "VALUES (?, ?, ?, 0, ?)",
-                (f"{class_id}:{sha256}:{number}:0", document_id, number, text),
+                "INSERT INTO passages "
+                "(stable_id, document_id, page_or_slide, ordinal, text, search_text) "
+                "VALUES (?, ?, ?, 0, ?, ?)",
+                (f"{class_id}:{sha256}:{number}:0", document_id, number, text, text),
             )
     connection.execute("COMMIT")
     return document_id

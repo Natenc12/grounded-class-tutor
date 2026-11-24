@@ -14,6 +14,7 @@ from pathlib import Path
 from gct.ingest.chunk import chunk_units
 from gct.ingest.parse import ParsedUnit
 from gct.library.schema import APPLICATION_ID, STATEMENTS, VERSION
+from gct.text_forms import comparable
 
 
 class LibraryError(Exception):
@@ -373,6 +374,7 @@ class Library:
                     chunk.page_or_slide,
                     ordinal,
                     chunk.text,
+                    comparable(chunk.text),
                 )
             )
         with self._transaction(f"{filename} was not saved"):
@@ -393,8 +395,9 @@ class Library:
                 [(saved.id, page_count, page, text) for page, text in enumerate(texts, start=1)],
             )
             self._connection.executemany(
-                "INSERT INTO passages (stable_id, document_id, page_or_slide, ordinal, text) "
-                "VALUES (?, ?, ?, ?, ?)",
+                "INSERT INTO passages "
+                "(stable_id, document_id, page_or_slide, ordinal, text, search_text) "
+                "VALUES (?, ?, ?, ?, ?, ?)",
                 passages,
             )
         return SavedDocument(saved, already_in_class=False)

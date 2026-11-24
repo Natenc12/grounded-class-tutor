@@ -35,7 +35,7 @@ which is still not *proven faithful* — see caveat).  **Rigor:** Deep (ADR 0001
   throughout, local Postgres V1 → Supabase V2 with no data-layer rewrite (C4) · index-time and query-time
   embeddings **must** be the identical model+version (invariant) · V1 = single hardcoded user, no auth, no
   deploy (F12/ADR 0004) · validate on **real** course materials, not synthetic (C5).
-- **Where to start:** whatever phase `CLAUDE.md` → *Current status* names — the slices below are the
+- **Where to start:** whatever stage the README's [Status](../README.md#status) section names — the slices below are the
   full arc, not a to-do list to begin at the top of. The order was Slice 0 (schema + provider
   interfaces), then Slice 1 (the synchronous tracer bullet) — that's the differentiator, proven
   programmatically before any HTTP or UI exists.
@@ -75,36 +75,14 @@ which is still not *proven faithful* — see caveat).  **Rigor:** Deep (ADR 0001
 - **Spike Pass 2 — tune:** full bake-off (chunking, k, embedder, generator) on a representative corpus,
   scored against the grown eval file; provisional defaults → evidence-backed choices.
 
-## Working the issue board  *(3 collaborators, parallel pickup)*
-GitHub issues for the active slice are generated from this roadmap by the `/roadmap-to-issues` skill
-(`.claude/skills/`). Each slice has an **epic** issue (dependency graph + child checklist + open flags) —
-that's the board's home base. Three conventions keep it honest:
-- **Pick from the ready-frontier.** Only take issues labeled `ready` (no open blockers). `blocked` means a
-  dependency isn't closed yet — leave it. The epic lists what's pickable *now*. This rule is only as good
-  as the labels, and only rows inside the slice currently being projected get theirs recomputed — see
-  *How far the recompute reaches* below before trusting a `ready`/`blocked` on anything else.
-- **Claim by assigning yourself** on GitHub before you start. That's the lock — there is no `wip` label; an
-  assignee means someone's on it.
-- **Reconcile after you close.** Closing a blocking issue does **not** auto-flip its dependents to `ready` —
-  GitHub doesn't know the graph. **Whoever closes a blocking issue re-runs `/roadmap-to-issues`** (no flag =
-  dry-run preview, `--create` to apply): it flips `blocked→ready` as deps close, re-ticks the epic, and adds
-  any new tasks — without duplicating existing ones (idempotent by hidden marker). Skip this and the labels
-  go stale and stop being trustworthy.
-  - **How far the recompute reaches — two conditions, and it is narrower than it looks.** A run projects
-    ONE slice: it fetches `--label slice-N`, then acts only on rows carrying the hidden
-    `<!-- gct:slice-N:slug -->` marker it stamps at create time. A row is recomputed only if it has
-    **both** — the label of the slice being projected, *and* a marker. Miss either and it keeps whatever a
-    human last set, however many times you run the skill.
-    **This is not the same as "hand-filed".** A spike parked under `spike-pass-2` is skill-created, marker
-    and all, and is still untouched by a Slice 1 run. So the test is the label of the run, not who wrote
-    the issue: treat any `ready`/`blocked` outside the slice being projected as a hint, not a fact — open
-    it and check. Note also that a row may carry *neither* label; absence is not `ready`.
-    Two consequences: a dependency written as a **phase** ("Slice 4 complete") can never auto-clear,
-    because no close event corresponds to it; and if you want a row machine-checkable later, give it a
-    `Depends on: #N` line naming a real issue or PR.
+## Working the issue board
+The board runs on labels:
+- **`needs-triage`**: captured, not yet reviewed with the owner. Don't pick these up.
+- **`ready`**: signed off by the owner, clearly defined, nothing blocking. Only these are pickable.
+- **`blocked`**: signed off, but waiting on another issue first. Leave it until that issue closes.
+- **`in-progress`**: someone is working the ticket. Add it when you start; one claim at a time.
 
-Dependencies + file footprints (`Touches:`) live in each issue body; disjoint footprints = safe to work in
-parallel. The skill reads CLAUDE.md **Current status** to know which slice to project — keep that current.
+Issues closed at triage get `duplicate` or `wontfix`.
 
 ## Readiness gate ✅  (all true → handoff valid)
 - [x] **No load-bearing design questions left open.** PM-1 (eval scoring rule) was the last one →

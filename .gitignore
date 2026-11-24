@@ -20,11 +20,8 @@ build/
 *.local
 
 # --- Claude Code ---
-# Ignore local/personal Claude config, but SHARE project skills + shared settings.
-.claude/*
-!.claude/skills/
-!.claude/settings.json
-.claude/settings.local.json
+# Local Claude config only; nothing under .claude/ is shared.
+.claude/
 
 # --- Dogfood corpus (real course materials — never committed, ADR 0021 / C5) ---
 # The eval bench references these by filename; the files themselves stay local.

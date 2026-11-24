@@ -1092,7 +1092,7 @@ class TestAttributionIsNotTheVector:
     `TestExpectedPlacement::test_expected_placement_is_absent_from_the_adr_0023_vector` already
     asserts it, and that check is not #67-specific — it is the same wall, and it fires for a
     prose field added for #66 exactly as it would for a rank field. A second copy of one fact is
-    the drift this repo's CLAUDE.md is about; if that test ever moves, this comment is the
+    the drift this repo guards against; if that test ever moves, this comment is the
     pointer to follow.
     """
 

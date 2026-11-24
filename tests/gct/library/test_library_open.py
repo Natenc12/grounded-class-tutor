@@ -194,7 +194,7 @@ def test_a_library_missing_a_column_is_refused_and_left_untouched(library_path: 
     ("name", "old", "new"),
     [
         ("pages", "BETWEEN 1 AND page_count", "BETWEEN 1 AND page_count + 1"),
-        ("passages_fts_delete", "old.id, old.text", "old.id, ''"),
+        ("passages_fts_delete", "old.id, old.search_text", "old.id, ''"),
         ("pages", "nullif(page_or_slide - 1, 0)", "nullif(page_or_slide - 2, 0)"),
     ],
     ids=["loosened check rule", "changed trigger body", "changed generated column"],

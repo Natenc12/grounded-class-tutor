@@ -32,9 +32,9 @@ def test_a_healthy_library_passes(library: Library, document_id):
 def test_a_passage_removed_from_the_search_index_is_reported(
     library: Library, raw_connection, document_id
 ):
-    rowid, text = raw_connection.execute("SELECT id, text FROM passages LIMIT 1").fetchone()
+    rowid, text = raw_connection.execute("SELECT id, search_text FROM passages LIMIT 1").fetchone()
     raw_connection.execute(
-        "INSERT INTO passages_fts (passages_fts, rowid, text) VALUES ('delete', ?, ?)",
+        "INSERT INTO passages_fts (passages_fts, rowid, search_text) VALUES ('delete', ?, ?)",
         (rowid, text),
     )
 
@@ -43,7 +43,7 @@ def test_a_passage_removed_from_the_search_index_is_reported(
 
 def test_a_search_entry_with_no_passage_is_reported(library: Library, raw_connection, document_id):
     raw_connection.execute(
-        "INSERT INTO passages_fts (rowid, text) VALUES (9999, 'text that is in no passage')"
+        "INSERT INTO passages_fts (rowid, search_text) VALUES (9999, 'text that is in no passage')"
     )
 
     assert library.check() == ["The keyword-search index does not match the passages."]
@@ -53,7 +53,10 @@ def test_a_passage_edited_behind_the_index_is_reported(
     library: Library, raw_connection, document_id
 ):
     raw_connection.execute("DROP TRIGGER passages_fts_update")
-    raw_connection.execute("UPDATE passages SET text = 'Something else entirely.'")
+    raw_connection.execute(
+        "UPDATE passages SET text = 'Something else entirely.', "
+        "search_text = 'Something else entirely.'"
+    )
 
     assert "The keyword-search index does not match the passages." in library.check()
 

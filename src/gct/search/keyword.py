@@ -7,6 +7,7 @@ from contextlib import contextmanager
 
 from gct.contracts import RetrievedChunk
 from gct.library import Library, LibraryError, UnknownClassError, UnknownDocumentError
+from gct.text_forms import comparable
 
 DEFAULT_K = 5
 
@@ -73,7 +74,7 @@ def search(
 
 def _expression(question: str) -> str:
     words: dict[str, str] = {}
-    for word in _WORD.findall(question):
+    for word in _WORD.findall(comparable(question)):
         if word.lower() not in _STOP_WORDS or (len(word) > 1 and word.isupper()):
             words.setdefault(word.lower(), word)
     return " OR ".join(f'"{word}"' for word in words.values())

@@ -114,6 +114,220 @@ class TestPptxHappyPath:
         assert "Grouped text two" in unit.text
 
 
+_DGM_URI = "http://schemas.openxmlformats.org/drawingml/2006/diagram"
+_A_URI = "http://schemas.openxmlformats.org/drawingml/2006/main"
+
+
+def _blank_slide(deck):
+    return deck.slides.add_slide(deck.slide_layouts[6])
+
+
+def _smartart_data(node_texts):
+    nodes = "".join(
+        f'<dgm:pt modelId="{i}"><dgm:t><a:bodyPr/><a:p><a:r><a:t>{text}</a:t></a:r></a:p>'
+        "</dgm:t></dgm:pt>"
+        for i, text in enumerate(node_texts, start=10)
+    )
+    return (
+        f'<dgm:dataModel xmlns:dgm="{_DGM_URI}" xmlns:a="{_A_URI}"><dgm:ptLst>'
+        '<dgm:pt modelId="0" type="doc"><dgm:t><a:bodyPr/><a:p><a:r><a:t>doc</a:t></a:r>'
+        "</a:p></dgm:t></dgm:pt>"
+        f"{nodes}"
+        '<dgm:pt modelId="1" type="sibTrans"><dgm:t><a:bodyPr/><a:p><a:r><a:t>connector</a:t>'
+        "</a:r></a:p></dgm:t></dgm:pt>"
+        '<dgm:pt modelId="2" type="parTrans"><dgm:t><a:bodyPr/><a:p><a:r><a:t>link</a:t>'
+        "</a:r></a:p></dgm:t></dgm:pt>"
+        '<dgm:pt modelId="3" type="pres"/>'
+        "</dgm:ptLst></dgm:dataModel>"
+    ).encode()
+
+
+def _add_smartart(slide, data):
+    from lxml import etree
+    from pptx.opc.constants import RELATIONSHIP_TYPE as RT
+    from pptx.opc.package import Part
+    from pptx.opc.packuri import PackURI
+
+    part = Part(
+        PackURI("/ppt/diagrams/data1.xml"),
+        "application/vnd.openxmlformats-officedocument.drawingml.diagramData+xml",
+        slide.part.package,
+        data,
+    )
+    rid = slide.part.relate_to(part, RT.DIAGRAM_DATA)
+    frame = (
+        '<p:graphicFrame xmlns:p="http://schemas.openxmlformats.org/presentationml/2006/main" '
+        f'xmlns:a="{_A_URI}" '
+        'xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">'
+        '<p:nvGraphicFramePr><p:cNvPr id="50" name="Diagram 1"/><p:cNvGraphicFramePr/><p:nvPr/>'
+        '</p:nvGraphicFramePr><p:xfrm><a:off x="0" y="0"/><a:ext cx="100" cy="100"/></p:xfrm>'
+        f'<a:graphic><a:graphicData uri="{_DGM_URI}">'
+        f'<dgm:relIds xmlns:dgm="{_DGM_URI}" r:dm="{rid}" r:lo="" r:qs="" r:cs=""/>'
+        "</a:graphicData></a:graphic></p:graphicFrame>"
+    )
+    slide.shapes._spTree.append(etree.fromstring(frame))
+
+
+def _add_chart(shapes, title=None):
+    from pptx.chart.data import CategoryChartData
+    from pptx.enum.chart import XL_CHART_TYPE
+
+    data = CategoryChartData()
+    data.categories = ["Africa", "Asia"]
+    data.add_series("Myths collected", (12, 30.5))
+    frame = shapes.add_chart(XL_CHART_TYPE.COLUMN_CLUSTERED, 0, 0, 100, 100, data)
+    if title is not None:
+        frame.chart.has_title = True
+        frame.chart.chart_title.text_frame.text = title
+    return frame
+
+
+def _replace_part(path, part_name, blob):
+    damaged = path.with_name("damaged-" + path.name)
+    with zipfile.ZipFile(path) as src, zipfile.ZipFile(damaged, "w") as dst:
+        names = [entry.filename for entry in src.infolist()]
+        assert part_name in names
+        for entry in src.infolist():
+            dst.writestr(entry, blob if entry.filename == part_name else src.read(entry))
+    return damaged
+
+
+class TestPptxGraphicFrames:
+    def test_table_only_slide_keeps_every_cell_and_row_boundaries_survive_chunking(self, tmp_path):
+        from pptx import Presentation as PresentationBuilder
+
+        from gct.ingest.chunk import chunk_units
+
+        deck = PresentationBuilder()
+        rows = [["Type", "Example"], ["Ex nihilo", "Genesis"], ["Emergence", "Navaho"]]
+        table = _blank_slide(deck).shapes.add_table(3, 2, 0, 0, 100, 100).table
+        for r, row in enumerate(rows):
+            for c, value in enumerate(row):
+                table.cell(r, c).text = value
+        path = tmp_path / "table.pptx"
+        deck.save(str(path))
+
+        [unit] = parse_file(path)
+        [chunk] = chunk_units([unit])
+
+        assert unit.page_or_slide == 1
+        assert chunk.text == (
+            "Row 1: Type | Example Row 2: Ex nihilo | Genesis Row 3: Emergence | Navaho"
+        )
+
+    def test_merged_cells_are_empty_and_empty_rows_dropped(self, tmp_path):
+        from pptx import Presentation as PresentationBuilder
+
+        deck = PresentationBuilder()
+        table = _blank_slide(deck).shapes.add_table(4, 3, 0, 0, 100, 100).table
+        table.cell(0, 1).text = "hidden under the merge"
+        table.cell(0, 0).merge(table.cell(0, 2))
+        table.cell(0, 0).text = "Header"
+        table.cell(2, 1).text = "b1"
+        path = tmp_path / "merged.pptx"
+        deck.save(str(path))
+
+        [unit] = parse_file(path)
+
+        assert unit.text.splitlines() == ["Row 1: Header |  | ", "Row 2:  | b1 | "]
+        assert "hidden" not in unit.text
+
+    def test_chart_title_categories_and_series_are_extracted(self, tmp_path):
+        from pptx import Presentation as PresentationBuilder
+
+        deck = PresentationBuilder()
+        _add_chart(_blank_slide(deck).shapes, title="Myths by region")
+        path = tmp_path / "chart.pptx"
+        deck.save(str(path))
+
+        [unit] = parse_file(path)
+
+        assert unit.text.splitlines() == [
+            "Chart: Myths by region",
+            "Categories: Africa, Asia",
+            "Myths collected: 12, 30.5",
+        ]
+
+    def test_chart_inside_a_group_is_extracted(self, tmp_path):
+        from pptx import Presentation as PresentationBuilder
+
+        deck = PresentationBuilder()
+        group = _blank_slide(deck).shapes.add_group_shape()
+        group.shapes.add_textbox(0, 0, 100, 100).text_frame.text = "Caption"
+        _add_chart(group.shapes)
+        path = tmp_path / "group-chart.pptx"
+        deck.save(str(path))
+
+        [unit] = parse_file(path)
+
+        assert unit.text.splitlines() == [
+            "Caption",
+            "Categories: Africa, Asia",
+            "Myths collected: 12, 30.5",
+        ]
+
+    def test_smartart_node_text_is_extracted_without_layout_points(self, tmp_path):
+        from pptx import Presentation as PresentationBuilder
+
+        deck = PresentationBuilder()
+        _add_smartart(_blank_slide(deck), _smartart_data(["Chaos", "Ordered cosmos"]))
+        path = tmp_path / "smartart.pptx"
+        deck.save(str(path))
+
+        [unit] = parse_file(path)
+
+        assert unit.text == "Chaos\nOrdered cosmos"
+
+    def test_graphic_text_comes_after_text_frame_text_and_before_notes(self, tmp_path):
+        from pptx import Presentation as PresentationBuilder
+
+        deck = PresentationBuilder()
+        slide = _blank_slide(deck)
+        slide.shapes.add_table(1, 1, 0, 0, 100, 100).table.cell(0, 0).text = "cell"
+        slide.shapes.add_textbox(0, 0, 100, 100).text_frame.text = "Body text"
+        slide.notes_slide.notes_text_frame.text = "Say this"
+        path = tmp_path / "order.pptx"
+        deck.save(str(path))
+
+        [unit] = parse_file(path)
+
+        assert unit.text == "Body text\nRow 1: cell\n\nSpeaker notes:\nSay this"
+
+    def test_damaged_chart_part_is_skipped_and_the_deck_still_imports(self, tmp_path):
+        from pptx import Presentation as PresentationBuilder
+
+        deck = PresentationBuilder()
+        slide = _blank_slide(deck)
+        slide.shapes.add_textbox(0, 0, 100, 100).text_frame.text = "Body text"
+        _add_chart(slide.shapes, title="Myths by region")
+        _blank_slide(deck).shapes.add_textbox(0, 0, 100, 100).text_frame.text = "Next slide"
+        path = tmp_path / "chart.pptx"
+        deck.save(str(path))
+        damaged = _replace_part(
+            path,
+            "ppt/charts/chart1.xml",
+            b'<c:chartSpace xmlns:c="http://schemas.openxmlformats.org/drawingml/2006/chart"/>',
+        )
+
+        units = parse_file(damaged)
+
+        assert [(u.page_or_slide, u.text) for u in units] == [(1, "Body text"), (2, "Next slide")]
+
+    def test_damaged_smartart_part_is_skipped_and_the_deck_still_imports(self, tmp_path):
+        from pptx import Presentation as PresentationBuilder
+
+        deck = PresentationBuilder()
+        slide = _blank_slide(deck)
+        slide.shapes.add_textbox(0, 0, 100, 100).text_frame.text = "Body text"
+        _add_smartart(slide, b"<dgm:dataModel not even xml")
+        path = tmp_path / "smartart.pptx"
+        deck.save(str(path))
+
+        [unit] = parse_file(path)
+
+        assert unit.text == "Body text"
+
+
 class TestTerminalFailures:
     def test_unsupported_extension(self, tmp_path):
         path = tmp_path / "notes.txt"

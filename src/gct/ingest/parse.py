@@ -25,6 +25,7 @@ from pathlib import Path
 import pypdf.errors
 from pptx import Presentation
 from pptx.enum.shapes import MSO_SHAPE_TYPE
+from pptx.oxml import parse_xml
 from pypdf import PdfReader, apply_configuration, get_configuration
 
 # The closed terminal-reason taxonomy, mirroring `files.failed_reason`'s CHECK
@@ -295,6 +296,86 @@ def _check_declared_sizes(path: Path, parts: list[zipfile.ZipInfo]) -> None:
         raise ParseError("too_long", f"{path.name} expands past the parser's limits")
 
 
+_A = "{http://schemas.openxmlformats.org/drawingml/2006/main}"
+_DGM = "{http://schemas.openxmlformats.org/drawingml/2006/diagram}"
+_R = "{http://schemas.openxmlformats.org/officeDocument/2006/relationships}"
+_DGM_LAYOUT_POINTS = {"parTrans", "sibTrans", "pres", "doc"}
+
+
+def _frame_lines(text_frame) -> list[str]:
+    lines = []
+    for paragraph in text_frame.paragraphs:
+        line = "".join(run.text for run in paragraph.runs)
+        if line:
+            lines.append(line)
+    return lines
+
+
+def _graphic_lines(shape) -> list[str]:
+    try:
+        if getattr(shape, "has_table", False):
+            return _table_lines(shape.table)
+        if getattr(shape, "has_chart", False):
+            return _chart_lines(shape.chart)
+        return _smartart_lines(shape)
+    except Exception:
+        return []
+
+
+def _table_lines(table) -> list[str]:
+    lines: list[str] = []
+    for row in table.rows:
+        cells = [
+            "" if cell.is_spanned else " ".join(_frame_lines(cell.text_frame)).strip()
+            for cell in row.cells
+        ]
+        if any(cells):
+            lines.append(f"Row {len(lines) + 1}: " + " | ".join(cells))
+    return lines
+
+
+def _chart_lines(chart) -> list[str]:
+    lines = []
+    if chart.has_title and chart.chart_title.has_text_frame:
+        title = " ".join(_frame_lines(chart.chart_title.text_frame)).strip()
+        if title:
+            lines.append(f"Chart: {title}")
+    for plot in chart.plots:
+        categories = [str(c) for c in plot.categories if str(c).strip()]
+        if categories:
+            lines.append("Categories: " + ", ".join(categories))
+        for series in plot.series:
+            values = ", ".join(_number(v) for v in series.values)
+            name = series.name or "Series"
+            lines.append(f"{name}: {values}" if values else name)
+    return lines
+
+
+def _number(value) -> str:
+    if value is None:
+        return ""
+    if isinstance(value, float) and value.is_integer():
+        return str(int(value))
+    return str(value)
+
+
+def _smartart_lines(shape) -> list[str]:
+    rel_ids = shape._element.find(f"{_A}graphic/{_A}graphicData/{_DGM}relIds")
+    rid = None if rel_ids is None else rel_ids.get(f"{_R}dm")
+    if not rid:
+        return []
+    data = parse_xml(shape.part.related_part(rid).blob)
+    lines = []
+    for point in data.iter(f"{_DGM}pt"):
+        if point.get("type", "node") in _DGM_LAYOUT_POINTS:
+            continue
+        for paragraph in point.iterfind(f"{_DGM}t/{_A}p"):
+            line = "".join(t.text or "" for t in paragraph.iter(f"{_A}t"))
+            if line.strip():
+                lines.append(line)
+    return lines
+
+
 def _parse_pptx(path: Path) -> list[ParsedUnit]:
     slides = _load_slides(path)
 
@@ -302,14 +383,13 @@ def _parse_pptx(path: Path) -> list[ParsedUnit]:
     for i, slide in enumerate(slides, start=1):
         try:
             lines = []
+            graphic_lines = []
             for shape in _iter_shapes(slide.shapes):
-                if not shape.has_text_frame:
-                    continue
-                for paragraph in shape.text_frame.paragraphs:
-                    line = "".join(run.text for run in paragraph.runs)
-                    if line:
-                        lines.append(line)
-            text = "\n".join(lines)
+                if shape.has_text_frame:
+                    lines.extend(_frame_lines(shape.text_frame))
+                else:
+                    graphic_lines.extend(_graphic_lines(shape))
+            text = "\n".join(lines + graphic_lines)
         except Exception as exc:
             # Body-text failure stays TERMINAL - unchanged by #12.
             raise ParseError(

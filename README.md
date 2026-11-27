@@ -20,6 +20,9 @@ account. This is a statement of intended use, not legal advice.
 
 ## Status
 
+**Where it is going:** [`design/VISION.md`](design/VISION.md) says what the app is when it is
+finished.
+
 **Now: a personal app on one Mac, built in stages.**
 [#216](https://github.com/Natenc12/grounded-class-tutor/issues/216) tracks the move from the hosted
 web app to a desktop app. Stage 1 is merged: one SQLite library file holds your classes and their

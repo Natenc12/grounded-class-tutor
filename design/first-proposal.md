@@ -7,6 +7,8 @@
 > here, including the stack table, the deployment plan, the audience and the Supabase, pgvector and
 > embeddings details, is history. For the app as it is today, see the [README](../README.md) and the
 > code in `src/gct/`; for the plan, see #216.
+>
+> **Where the app is going now:** see [`VISION.md`](VISION.md) (settled 2026-11-27).
 
 **One-liner:** A study tutor that answers questions and teaches Socratically — always grounded in
 *your own course materials*, with citations back to the source, and refusing to make things up

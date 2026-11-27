@@ -16,7 +16,7 @@ from scratch. This doc's only job is to get you from "no idea" to "I understand 
 why, and where to dig in." **You don't need to read the whole design to start** — read Part 1, then
 go into Part 2 when you want the implementation-level detail.
 
-> **A note on using AI:** the design lives in a pile of markdown docs (`vision.md`, `architecture.md`,
+> **A note on using AI:** the design lives in a pile of markdown docs (`first-proposal.md`, `architecture.md`,
 > the `components/` specs, the `decisions/` folder, etc.). Any of them can be pasted into Claude or
 > ChatGPT with "explain this to me like I'm new" — that's an intended way to read this project, not a
 > crutch. This doc gives you the map so the AI's answers land in context.
@@ -83,10 +83,10 @@ Three things that'll save you confusion:
   decision and *why* — e.g. "we're hand-rolling RAG instead of using a framework, because we want to
   learn the fundamentals." There are a couple dozen. You don't read them front to back; you consult one
   when a choice looks arbitrary and you want the reasoning.
-- **The ADRs and `architecture.md` are the current truth. `vision.md` is the origin story** — the
+- **The ADRs and `architecture.md` are the current truth. `first-proposal.md` is the origin story** — the
   first proposal. A few specifics changed after it was written (e.g. it names Claude + Supabase from
   day one; we actually settled on a *swappable* model layer with OpenAI as the starting default, and
-  plain local Postgres first, Supabase later). **Where vision.md and a later doc disagree, the later
+  plain local Postgres first, Supabase later). **Where first-proposal.md and a later doc disagree, the later
   doc wins.**
 
 ## The words we use (glossary)
@@ -128,7 +128,7 @@ Skim this, then refer back. These decode almost all the jargon in the other docs
 ## Where the design lives (read in this order)
 You do **not** need all of these before contributing. Start at the top; go as deep as your task needs.
 
-1. **`vision.md`** — *(everyone, ~10 min)* the why and the scope. Origin story — see the drift note above.
+1. **`first-proposal.md`** — *(everyone, ~10 min)* the why and the scope. Origin story — see the drift note above.
 2. **`requirements.md`** — *(everyone)* the specific things V1 must do, tagged by version and priority.
 3. **`architecture.md`** — *(implementers)* the system's shape, how the pieces fit, and the "citation
    spine." **This is the current source of truth for the stack.**

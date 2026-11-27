@@ -1,7 +1,11 @@
 # 0009. V1 is single-shot Q&A; multi-turn is an additive upgrade
 
 - **Date:** 2026-07-04
-- **Status:** accepted
+- **Status:** **Partly superseded by the vision ([`design/VISION.md`](../VISION.md), line 6)**
+  (2026-11-27): single-shot is no longer the target; the vision sets saved conversations per class,
+  with follow-up questions that remember the ones before them. This record's three additions
+  (query condensation, a conversations and messages store, history in the Grounder prompt) still
+  stand as the plan for getting there. Before this: accepted
 
 ## Context
 Real learning is conversational — the value shows up when a student asks follow-ups about details

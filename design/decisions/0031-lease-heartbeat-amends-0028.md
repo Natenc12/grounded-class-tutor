@@ -51,7 +51,7 @@ publish refused, `chunks = 0`, one attempt gone. A file that is **always** slowe
 therefore buried as `transient_exhausted` after six cycles, having paid for the ingest six times
 and never once failed. The student is told their file could not be processed after repeated
 attempts. That is a false statement about their file, which makes it a trust defect and not a
-throughput one — the product is the honesty of the answer (`vision.md`), and this is the same class
+throughput one — the product is the honesty of the answer (`first-proposal.md`), and this is the same class
 of harm as a `ready` file wearing a failure reason (ADR 0030).
 
 The defect needs a **second reaper** to be reachable, which is why nothing caught it: ADR 0028 §5

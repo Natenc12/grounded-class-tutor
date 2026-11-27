@@ -41,7 +41,7 @@ which is still not *proven faithful* — see caveat).  **Rigor:** Deep (ADR 0001
   programmatically before any HTTP or UI exists.
 
 ## Reading order (manifest — pointers into the artifacts)
-1. **vision.md** — why this exists, who it's for, scope.
+1. **first-proposal.md** — why this exists, who it's for, scope.
 2. **requirements.md** — F1–F15 / N1–N15 (tagged V1/V2/V3, P0/P1) + success-criteria rollup.
 3. **architecture.md** — system shape, component map, data flows, the **citation spine** (3 honor points),
    cross-cutting invariants.
